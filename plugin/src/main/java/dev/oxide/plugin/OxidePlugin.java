@@ -145,7 +145,8 @@ public final class OxidePlugin extends JavaPlugin {
         }
 
         try {
-            ChunkGenerator generator = new OxideChunkGenerator(generatorService.openHandle(seed));
+            ChunkGenerator generator =
+                    new OxideChunkGenerator(generatorService.openHandle(seed), getLogger());
             getLogger().warning("world '" + worldName + "' will generate NEW chunks with the Rust"
                     + " generator (seed " + seed + "). Existing chunks are untouched, and new ones"
                     + " will not match them: this generator produces noise-shaped stone/water/air"

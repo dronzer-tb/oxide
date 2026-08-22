@@ -80,6 +80,28 @@ Read this before doing it to a world you care about:
 There is no in-place "regenerate this world with Oxide". That would mean
 deleting the world's region files, which this plugin will not do for you.
 
+## What happens when generation fails
+
+Each chunk is generated one stage early, in `shouldGenerateNoise(worldInfo, random, chunkX,
+chunkZ)`, because that is the last point at which the server can still be told to generate the
+chunk itself. If the Rust side throws for a chunk, that one chunk is handed to the vanilla
+generator and the server logs why; the rest keep using Oxide. The first failure is logged in
+full, then every hundredth, since a failure here is usually systemic.
+
+This is fallback on **failure**, not on divergence from vanilla's output. Checking that Oxide's
+blocks match vanilla's requires running vanilla's generator to have something to compare
+against — for every chunk, that means running both generators for every chunk, which costs
+strictly more than not using Oxide at all. The useful forms of that check are:
+
+- **offline**: diff Oxide's chunks against a vanilla reference dump in `oxide-harness`. This is
+  the real parity proof and costs nothing at runtime.
+- **sampled at runtime**: verify one chunk in N against vanilla, as a canary. Cost is 1/N, and
+  `oxide-harness`'s merkle hashing (`build_merkle`, `diverging_sections`) already localizes a
+  mismatch to a section.
+
+Neither is meaningful yet: Oxide has no carvers, aquifers, or ore veins, so its output cannot
+match vanilla's, and a parity gate today would reject every chunk.
+
 ## Where the data comes from
 
 Oxide writes a sidecar file next to each `.mca` region file it touches:

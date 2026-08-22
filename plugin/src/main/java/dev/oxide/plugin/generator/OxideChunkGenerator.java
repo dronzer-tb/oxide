@@ -11,7 +11,12 @@ import org.jetbrains.annotations.NotNull;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Bridges Bukkit's world generation hook to {@code oxide-chunkgen} over
@@ -45,14 +50,55 @@ import java.util.Random;
  */
 public final class OxideChunkGenerator extends ChunkGenerator {
 
+    /**
+     * Cap on chunks generated-but-not-yet-placed. Each entry is one short per block --
+     * ~196 KB for a 384-tall world -- so this bounds the pending set at roughly 12 MB.
+     * Past it, a chunk is generated inline in {@link #generateNoise} instead of ahead of
+     * time, giving up per-chunk fallback for that chunk rather than growing without limit.
+     */
+    private static final int MAX_PENDING_CHUNKS = 64;
+
     private final OxideNative.Handle handle;
     private final OxidePalette palette;
+    private final Logger logger;
+    /** Chunk key -> palette indices generated in shouldGenerateNoise, consumed by generateNoise. */
+    private final Map<Long, short[]> pending = new ConcurrentHashMap<>();
+    private final AtomicLong failures = new AtomicLong();
 
-    public OxideChunkGenerator(OxideNative.Handle handle) {
+    public OxideChunkGenerator(OxideNative.Handle handle, Logger logger) {
         this.handle = handle;
+        this.logger = logger;
         this.palette = new OxidePalette(handle);
     }
 
+    /**
+     * Generates the chunk here, one stage early, so that a failure can still be answered by
+     * vanilla: this is the last point at which the server can be told to generate the chunk
+     * itself. Returning {@code true} hands this one chunk to the vanilla generator
+     * ("delegate to the Vanilla generator", per {@code ChunkGenerator}'s javadoc);
+     * {@code false} means Oxide's data -- already computed and stashed in {@link #pending} --
+     * is authoritative and vanilla should not waste the work.
+     *
+     * <p>This is fallback on <em>failure</em>, not on divergence. Verifying that Oxide's output
+     * matches vanilla's would mean running vanilla's generator for every chunk to have
+     * something to compare against, which costs more than it saves; that check belongs in the
+     * offline harness, and at runtime only as sampling. See plugin/README.md.
+     */
+    @Override
+    public boolean shouldGenerateNoise(@NotNull WorldInfo worldInfo, @NotNull Random random,
+                                       int chunkX, int chunkZ) {
+        if (pending.size() >= MAX_PENDING_CHUNKS) {
+            // Generation is outrunning placement. Let generateNoise do the work inline.
+            return false;
+        }
+        try {
+            pending.put(chunkKey(chunkX, chunkZ), generateIndices(chunkX, chunkZ));
+            return false;
+        } catch (RuntimeException e) {
+            reportFailure(chunkX, chunkZ, e);
+            return true;
+        }
+    }
 
     @Override
     public boolean shouldGenerateNoise() {
@@ -101,25 +147,61 @@ public final class OxideChunkGenerator extends ChunkGenerator {
     @Override
     public void generateNoise(@NotNull WorldInfo worldInfo, @NotNull Random random,
                                int chunkX, int chunkZ, @NotNull ChunkData chunkData) {
+        short[] blocks = pending.remove(chunkKey(chunkX, chunkZ));
+        if (blocks == null) {
+            // Either the pending cap was hit, or the server called the no-argument
+            // shouldGenerateNoise() and never the per-chunk one. Generate inline: writing
+            // nothing here would leave a hole in the world, which is worse than losing the
+            // per-chunk fallback for this one chunk.
+            try {
+                blocks = generateIndices(chunkX, chunkZ);
+            } catch (RuntimeException e) {
+                reportFailure(chunkX, chunkZ, e);
+                return;
+            }
+        }
+
         int minY = handle.minY();
         int height = handle.height();
-        long blockCount = 256L * height;
-        long biomeCount = 64L * (height / 16);
+        for (int z = 0; z < 16; z++) {
+            for (int x = 0; x < 16; x++) {
+                placeColumn(chunkData, blocks, minY, height, x, z);
+            }
+        }
+    }
+
+    /** Runs the Rust generator and copies its palette indices out of native memory. */
+    private short[] generateIndices(int chunkX, int chunkZ) {
+        int height = handle.height();
+        int blockCount = 256 * height;
+        int biomeCount = 64 * (height / 16);
 
         try (Arena arena = Arena.ofConfined()) {
-            MemorySegment blocks = arena.allocate(blockCount * Short.BYTES);
+            MemorySegment blocks = arena.allocate((long) blockCount * Short.BYTES);
             // Biomes cross the boundary in the same call but are consumed by
             // OxideBiomeProvider's per-position lookups, not here -- Bukkit gives a
             // ChunkGenerator no way to write the biome grid directly.
-            MemorySegment biomes = arena.allocate(biomeCount * Short.BYTES);
+            MemorySegment biomes = arena.allocate((long) biomeCount * Short.BYTES);
             handle.generateChunk(chunkX, chunkZ, blocks, biomes);
-
-            for (int z = 0; z < 16; z++) {
-                for (int x = 0; x < 16; x++) {
-                    placeColumn(chunkData, blocks, minY, height, x, z);
-                }
-            }
+            return blocks.toArray(ValueLayout.JAVA_SHORT);
         }
+    }
+
+    /**
+     * Logs the first failure in full and then only every 100th, since a failure here is
+     * usually systemic (a bad datapack, a closed handle) and would otherwise flood the log at
+     * chunk-generation rate.
+     */
+    private void reportFailure(int chunkX, int chunkZ, RuntimeException e) {
+        long count = failures.incrementAndGet();
+        if (count == 1 || count % 100 == 0) {
+            logger.log(Level.SEVERE, "oxide generation failed for chunk " + chunkX + ", " + chunkZ
+                    + " (failure #" + count + "); this chunk falls back to vanilla generation", e);
+        }
+    }
+
+    private static long chunkKey(int chunkX, int chunkZ) {
+        return ((long) chunkX << 32) ^ (chunkZ & 0xFFFFFFFFL);
     }
 
     /**
@@ -128,7 +210,7 @@ public final class OxideChunkGenerator extends ChunkGenerator {
      * collapsing each run into a single {@code setRegion} call is what keeps this from being
      * the slowest part of generation by a wide margin.
      */
-    private void placeColumn(ChunkData chunkData, MemorySegment blocks, int minY, int height,
+    private void placeColumn(ChunkData chunkData, short[] blocks, int minY, int height,
                              int x, int z) {
         int runStart = 0;
         int runIndex = paletteIndex(blocks, 0, x, z);
@@ -148,9 +230,8 @@ public final class OxideChunkGenerator extends ChunkGenerator {
         }
     }
 
-    private static int paletteIndex(MemorySegment blocks, int localY, int x, int z) {
-        long index = (long) (localY * 16 + z) * 16 + x;
+    private static int paletteIndex(short[] blocks, int localY, int x, int z) {
         // u16 on the Rust side: mask so a high palette index does not read as negative.
-        return blocks.get(ValueLayout.JAVA_SHORT, index * Short.BYTES) & 0xFFFF;
+        return blocks[(localY * 16 + z) * 16 + x] & 0xFFFF;
     }
 }

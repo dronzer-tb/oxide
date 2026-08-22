@@ -154,7 +154,9 @@ public final class OxideCommand implements CommandExecutor, TabCompleter {
                             + ", min_y/height: " + handle.minY() + "/" + handle.height()
                             + "). Creating world '" + name + "' seed=" + seed + "...", NamedTextColor.GRAY));
             try {
-                new WorldCreator(name).generator(new OxideChunkGenerator(handle)).createWorld();
+                new WorldCreator(name)
+                        .generator(new OxideChunkGenerator(handle, plugin.getLogger()))
+                        .createWorld();
                 sender.sendMessage(Component.text("World '" + name + "' created.", NamedTextColor.GREEN));
             } catch (RuntimeException e) {
                 sender.sendMessage(Component.text("World creation failed: " + e.getMessage(), NamedTextColor.RED));
