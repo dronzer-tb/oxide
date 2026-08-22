@@ -3,8 +3,11 @@ package dev.oxide.plugin;
 import dev.oxide.plugin.generator.GeneratorService;
 import dev.oxide.plugin.provenance.ProvenanceLookup;
 import dev.oxide.plugin.provenance.SidecarCache;
-import org.bukkit.command.PluginCommand;
+import io.papermc.paper.command.brigadier.Commands;
+import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents;
 import org.bukkit.plugin.java.JavaPlugin;
+
+import java.util.Arrays;
 
 /**
  * Oxide chunk-provenance debug plugin, plus (wave 5) a manual
@@ -16,14 +19,12 @@ import org.bukkit.plugin.java.JavaPlugin;
  * produce yet.
  */
 public final class OxidePlugin extends JavaPlugin {
-
     private DebugState debugState;
     private GeneratorService generatorService;
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
-
         debugState = new DebugState();
         SidecarCache sidecarCache = new SidecarCache(getLogger());
         ProvenanceLookup provenanceLookup = new ProvenanceLookup(sidecarCache);
@@ -33,13 +34,30 @@ public final class OxidePlugin extends JavaPlugin {
                 new ChunkTracker(this, debugState, provenanceLookup), this);
 
         OxideCommand command = new OxideCommand(this, debugState, provenanceLookup, generatorService);
-        PluginCommand pluginCommand = getCommand("oxide");
-        if (pluginCommand != null) {
-            pluginCommand.setExecutor(command);
-            pluginCommand.setTabCompleter(command);
-        } else {
-            getLogger().severe("`oxide` command not registered -- check paper-plugin.yml");
-        }
+
+        // Paper plugins (declared via paper-plugin.yml) do not support the legacy
+        // plugin.yml/getCommand() runtime lookup path -- JavaPlugin#getCommand throws
+        // UnsupportedOperationException during startup on Paper/Folia paper-plugin.yml
+        // plugins. Commands must be registered through the lifecycle COMMANDS event
+        // instead. The `commands:` block in paper-plugin.yml is retained for descriptor
+        // metadata/help text only -- it does not wire up execution on its own.
+        this.getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, event ->
+                event.registrar().register(
+                        Commands.literal("oxide")
+                                .executes(ctx -> {
+                                    String[] rawArgs = ctx.getInput().split("\\s+");
+                                    String[] args = rawArgs.length > 1
+                                            ? Arrays.copyOfRange(rawArgs, 1, rawArgs.length)
+                                            : new String[0];
+                                    boolean handled = command.onCommand(
+                                            ctx.getSource().getSender(), null, "oxide", args);
+                                    return handled
+                                            ? com.mojang.brigadier.Command.SINGLE_SUCCESS
+                                            : 0;
+                                })
+                                .build(),
+                        "Oxide chunk-provenance debug tools and generator test commands."
+                ));
     }
 
     @Override
