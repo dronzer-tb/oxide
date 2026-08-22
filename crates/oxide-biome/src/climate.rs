@@ -13,9 +13,10 @@ pub struct ClimateSample {
 }
 
 impl ClimateSample {
-    // PARITY-CHECK: the router-slot -> climate-axis mapping (humidity <- `vegetation`,
-    // weirdness <- `ridges`) is reconstructed from memory of `NoiseRouterData`'s overworld
-    // wiring, not verified against a real Minecraft 26.2 data export.
+    // Verified 2026-08-22 against decompiled `RandomState`'s constructor: `new
+    // Climate.Sampler(router.temperature(), router.vegetation(), router.continents(),
+    // router.erosion(), router.depth(), router.ridges(), ...)` — humidity <- vegetation and
+    // weirdness <- ridges are exactly this mapping, not a guess.
     pub fn sample(router: &NoiseRouterEvaluator, x: i32, y: i32, z: i32) -> Self {
         Self {
             temperature: router.sample(RouterSlot::Temperature, x, y, z),

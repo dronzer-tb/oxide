@@ -30,9 +30,9 @@ impl WorldRandom {
         }
     }
 
-    // PARITY-CHECK: `forkPositional`'s exact consumption (nextLong x2 for Xoroshiro's
-    // (lo, hi) pair vs nextLong x1 for legacy) is reconstructed from memory of
-    // `XoroshiroRandomSource`/`LegacyRandomSource`, not verified against decompiled 26.2.
+    // Verified 2026-08-22 against decompiled `XoroshiroRandomSource.forkPositional`
+    // (`new XoroshiroPositionalRandomFactory(nextLong(), nextLong())`) and
+    // `LegacyRandomSource.forkPositional` (`new LegacyPositionalRandomFactory(nextLong())`).
     pub fn fork_positional(&mut self) -> WorldPositionalFactory {
         match self {
             Self::Xoroshiro(r) => {

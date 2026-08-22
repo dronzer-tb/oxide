@@ -34,10 +34,8 @@ impl PerlinNoise {
         }
 
         let size = amplitudes.len() as i32;
-        // PARITY-CHECK: reconstructed from memory of `PerlinNoise`'s constructor. The freq
-        // doubling per octave (`lowestFreqInputFactor * 2^i`) is certain (that's the
-        // definition of an octave); the exact `lowestFreqValueFactor` normalization constant
-        // is the least-certain part of this file.
+        // Verified 2026-08-22 against decompiled `PerlinNoise`'s constructor:
+        // `lowestFreqInputFactor = 2^firstOctave`, `lowestFreqValueFactor = 2^(n-1)/(2^n-1)`.
         let lowest_freq_input_factor = 2f64.powi(first_octave);
         let lowest_freq_value_factor = 2f64.powi(size - 1) / (2f64.powi(size) - 1.0);
 
@@ -50,37 +48,27 @@ impl PerlinNoise {
     }
 
     pub fn get_value(&self, x: f64, y: f64, z: f64) -> f64 {
-        self.get_value_with_scale(x, y, z, 0.0, 0.0, false)
+        self.get_value_with_scale(x, y, z, 0.0, 0.0)
     }
 
-    pub fn get_value_with_scale(
-        &self,
-        x: f64,
-        y: f64,
-        z: f64,
-        y_scale: f64,
-        y_max: f64,
-        fix_y: bool,
-    ) -> f64 {
+    /// Verified 2026-08-22 against decompiled `PerlinNoise.getValue(x, y, z, yScale, yFudge)`:
+    /// `x`/`y`/`z` are each wrapped before scaling into the octave's `ImprovedNoise.noise`
+    /// call; `yScale`/`yFudge` are passed through scaled but *not* wrapped. There is no
+    /// "fixed Y" variant on this class at all — that was this crate's own invention, not
+    /// vanilla behavior, and has been removed.
+    pub fn get_value_with_scale(&self, x: f64, y: f64, z: f64, y_scale: f64, y_fudge: f64) -> f64 {
         let mut result = 0.0;
         let mut freq = self.lowest_freq_input_factor;
         let mut amp = self.lowest_freq_value_factor;
 
         for (i, level) in self.noise_levels.iter().enumerate() {
             if let Some(noise) = level {
-                let y_in = if fix_y {
-                    // PARITY-CHECK: mirrors vanilla's `-improvedNoise.yo` fixed-Y path (used
-                    // by `old_blended_noise`'s max-noise sampling).
-                    -noise.yo()
-                } else {
-                    wrap_coordinate(y * freq)
-                };
                 let sample = noise.noise_with_scale(
                     wrap_coordinate(x * freq),
-                    y_in,
+                    wrap_coordinate(y * freq),
                     wrap_coordinate(z * freq),
                     y_scale * freq,
-                    y_max * freq,
+                    y_fudge * freq,
                 );
                 result += self.amplitudes[i] * sample * amp;
             }
@@ -95,6 +83,16 @@ impl PerlinNoise {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Captured 2026-08-22 from a standalone Java transcription of the confirmed-correct
+    /// algorithm chain run on real OpenJDK 25 — see the session's scratchpad
+    /// `decomp/NoiseRef.java`.
+    #[test]
+    fn get_value_matches_real_java_seed_42() {
+        let mut r = WorldRandom::new(42, false);
+        let p = PerlinNoise::create(&mut r, -7, vec![1.0, 1.0, 1.0]);
+        assert_eq!(p.get_value(10.0, 20.0, 30.0), -0.14383364863583398);
+    }
 
     #[test]
     fn deterministic_for_same_seed() {

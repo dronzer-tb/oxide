@@ -29,12 +29,24 @@ fn mth_get_seed(x: i32, y: i32, z: i32) -> i64 {
 }
 
 /// MD5-digests `name` and returns its first two 8-byte big-endian halves as signed 64-bit
-/// values, per the task spec (`from_hash_of` uses the raw MD5 digest, not a type-3 UUID).
+/// values (Guava's `Longs.fromBytes`, big-endian with the first byte most significant).
+/// Verified 2026-08-22 against decompiled `RandomSupport.seedFromHashOf` — used by
+/// `XoroshiroPositionalRandomFactory::from_hash_of` only; `LegacyPositionalRandomFactory`
+/// doesn't hash at all, see `java_string_hash_code` below.
 fn md5_halves(name: &str) -> (i64, i64) {
     let digest = Md5::digest(name.as_bytes());
     let hi = i64::from_be_bytes(digest[0..8].try_into().expect("md5 digest is 16 bytes"));
     let lo = i64::from_be_bytes(digest[8..16].try_into().expect("md5 digest is 16 bytes"));
     (hi, lo)
+}
+
+/// Java's `String.hashCode()`: `s[0]*31^(n-1) + s[1]*31^(n-2) + ... + s[n-1]`, computed over
+/// UTF-16 code units with wrapping 32-bit arithmetic. Verified 2026-08-22 against decompiled
+/// `LegacyRandomSource.LegacyPositionalRandomFactory.fromHashOf` — it uses `name.hashCode()`
+/// directly, not MD5 (MD5 is Xoroshiro's `fromHashOf` only, via `RandomSupport.seedFromHashOf`).
+fn java_string_hash_code(name: &str) -> i32 {
+    name.encode_utf16()
+        .fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(c as i32))
 }
 
 /// Positional factory backed by `LegacyRandom` (`java.util.Random`-style).
@@ -56,11 +68,11 @@ impl PositionalRandomFactory for LegacyPositionalRandomFactory {
         LegacyRandom::new(mth_get_seed(x, y, z) ^ self.seed)
     }
 
+    // Verified 2026-08-22: vanilla's `LegacyPositionalRandomFactory.fromHashOf` is
+    // `(long) name.hashCode() ^ this.seed` — Java's `String.hashCode()`, not MD5. MD5 is
+    // Xoroshiro's `fromHashOf` only (see below).
     fn from_hash_of(&self, name: &str) -> LegacyRandom {
-        let (hi, lo) = md5_halves(name);
-        // Vanilla's `LegacyPositionalRandomFactory.fromHashOf`: XOR the two MD5 halves
-        // together to form the 64-bit legacy seed.
-        LegacyRandom::new(hi ^ lo)
+        LegacyRandom::new(java_string_hash_code(name) as i64 ^ self.seed)
     }
 }
 
@@ -86,15 +98,10 @@ impl XoroshiroPositionalRandomFactory {
     }
 }
 
-// PARITY-CHECK: `at`/`from_hash_of` for the Xoroshiro factory are reconstructed from memory
-// of `Xoroshiro128PlusPlusRandomSource.XoroshiroPositionalRandomFactory` and are the
-// least-certain part of this crate — the task spec only gives the legacy position-mix
-// formula explicitly ("the x*3129871 ^ z*116129781 ^ y style mix for legacy; the Xoroshiro
-// variant hashes differently") without pinning the exact Xoroshiro formula. Implemented here
-// as: `at` reuses `mth_get_seed` XORed into `seed_lo` only (seed_hi passed through
-// unchanged), `from_hash_of` XORs each MD5 half into the corresponding state half. This must
-// be checked against decompiled 26.2 source before any structure-placement code depends on
-// Xoroshiro-flavoured positional RNG matching vanilla.
+// Verified 2026-08-22 against decompiled `XoroshiroRandomSource.XoroshiroPositionalRandomFactory`:
+// `at` XORs `Mth.getSeed(x,y,z)` into `seedLo` only, leaving `seedHi` unchanged — exactly what
+// `at` below does. `fromHashOf` XORs each MD5 half into the corresponding state half via
+// `RandomSupport.seedFromHashOf(name).xor(seedLo, seedHi)` — matches `from_hash_of` below.
 impl PositionalRandomFactory for XoroshiroPositionalRandomFactory {
     type Rng = Xoroshiro128PlusPlus;
 
