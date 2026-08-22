@@ -303,7 +303,10 @@ mod tests {
         df_registry: &'a Registry<DensityFunction>,
         noises: &'a HashMap<ResourceLocation, NormalNoise>,
     ) -> EvalCtx<'a> {
-        EvalCtx { df_registry, noises }
+        EvalCtx {
+            df_registry,
+            noises,
+        }
     }
 
     #[test]
@@ -357,9 +360,18 @@ mod tests {
             from_value: 0.0,
             to_value: 10.0,
         }));
-        assert_eq!(evaluate(&df, FunctionContext { x: 0, y: 50, z: 0 }, &cx), 5.0);
-        assert_eq!(evaluate(&df, FunctionContext { x: 0, y: -10, z: 0 }, &cx), 0.0);
-        assert_eq!(evaluate(&df, FunctionContext { x: 0, y: 200, z: 0 }, &cx), 10.0);
+        assert_eq!(
+            evaluate(&df, FunctionContext { x: 0, y: 50, z: 0 }, &cx),
+            5.0
+        );
+        assert_eq!(
+            evaluate(&df, FunctionContext { x: 0, y: -10, z: 0 }, &cx),
+            0.0
+        );
+        assert_eq!(
+            evaluate(&df, FunctionContext { x: 0, y: 200, z: 0 }, &cx),
+            10.0
+        );
     }
 
     #[test]

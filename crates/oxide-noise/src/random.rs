@@ -9,7 +9,7 @@
 
 use oxide_core::{
     LegacyPositionalRandomFactory, LegacyRandom, PositionalRandomFactory, RandomSource,
-    XoroshiroPositionalRandomFactory, Xoroshiro128PlusPlus,
+    Xoroshiro128PlusPlus, XoroshiroPositionalRandomFactory,
 };
 
 /// Either RNG flavour a `noise_settings` entry can select (`legacy_random_source`).

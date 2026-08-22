@@ -102,7 +102,10 @@ mod tests {
         let p1 = PerlinNoise::create(&mut r1, -7, vec![1.0, 1.0, 1.0]);
         let mut r2 = WorldRandom::new(42, false);
         let p2 = PerlinNoise::create(&mut r2, -7, vec![1.0, 1.0, 1.0]);
-        assert_eq!(p1.get_value(10.0, 20.0, 30.0), p2.get_value(10.0, 20.0, 30.0));
+        assert_eq!(
+            p1.get_value(10.0, 20.0, 30.0),
+            p2.get_value(10.0, 20.0, 30.0)
+        );
     }
 
     #[test]
