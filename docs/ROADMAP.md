@@ -10,7 +10,7 @@ wave can be built concurrently; a wave starts when the previous one compiles and
 | 2 | `oxide-noise` | 1 | done — `6974f82`, 21 tests, **verified vs real Java 26.2** (2026-08-22, see below) |
 | 3 | `oxide-biome`, `oxide-chunkgen` | 1 | done (scoped) — `b3f5671`, 9 tests. Terrain fill + heightmaps + biome grid only; aquifers/ore veins/carvers/surface rules deferred, see `fill.rs` |
 | 4 | `oxide-structures`, `oxide-harness` | 3, 4 | done (scoped) — `0a3893c`, 21 tests, placement **verified vs real Java 26.2**. random_spread placement + weighted selection only; concentric_rings/frequency reduction/exclusion zones/piece layout deferred. Harness self-checks only — no vanilla reference data to diff against |
-| 5 | `plugin/` router, `oxide-ffi` | 5, 6, 7 | not started |
+| 5 | `plugin/` router, `oxide-ffi` | 5, 6, 7 | done (scoped) — 5 Rust tests + Java compiles (CI-verified, not yet run against a live Folia server). `/oxide createworld` hooks Bukkit's `ChunkGenerator` to `oxide-chunkgen` over Panama. Solid/fluid/air blob terrain only — no biomes/surface/caves/structures; single-platform (linux-x86_64) native lib, no packaging |
 
 ## v0 smoke test (out of band)
 
@@ -92,6 +92,32 @@ clampedLerp`) but stays a deliberate scope cut.
 right; others like `weird_scaled_sampler`'s shape are moot per above), `next_gaussian`'s
 `ln`/`sqrt` platform-exactness, and everything in `oxide-structures`/`oxide-chunkgen` marked as
 a deliberate scope cut rather than PARITY-CHECK.
+
+## Wave 5: plugin/oxide-ffi hookup
+
+`oxide-ffi` exposes a panic-safe C ABI (`oxide_open`/`oxide_generate_chunk`/`oxide_close`/
+accessors) over an opaque `OxideGenerator` handle — `NoiseRouterEvaluator` was changed to own
+its data (clone once at construction) rather than borrow, specifically so this handle isn't
+self-referential across the FFI boundary. The Java side (`plugin/.../ffi/OxideNative.java`) uses
+`java.lang.foreign` (Panama) — every API call used (`Arena.allocateFrom`/`.allocate`,
+`MemorySegment.getString`/`.reinterpret`, `Linker.downcallHandle`, `Bukkit.
+getGlobalRegionScheduler`, `ChunkGenerator.shouldGenerateNoise`/`generateNoise`,
+`WorldCreator.generator`) was confirmed against a real JDK 25 run and a real `paper-api` jar
+pulled from the Gradle cache (decompiled with CFR, same treatment as the 2026-08-22 pass below),
+not guessed — including one real bug that guessing would have missed:
+`ChunkGenerator.shouldGenerateNoise()` defaults to `false`, so `generateNoise` silently never
+fires without overriding it.
+
+What it produces: exactly `oxide-chunkgen::fill_chunk`'s output (solid/fluid/air blob terrain),
+transmitted as one byte per block — no biome, no surface rules, no structures. Single-platform
+scope cut: the native library path is a config value, no per-OS/arch resolution or
+jar-embedded bundling.
+
+**Not yet run against a live Folia server** — no Folia server available in this sandbox to
+launch. CI (Gradle build + Rust build/test) is what verifies this, not an actual game session.
+The one deployment requirement CI can't catch: the server's JVM needs
+`--enable-native-access=ALL-UNNAMED` on its launch command line for the Panama downcalls to
+work without a JDK warning (and, on a future JDK, without being blocked outright).
 
 ## Gates between waves
 

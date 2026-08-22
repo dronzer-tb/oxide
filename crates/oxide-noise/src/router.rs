@@ -34,21 +34,25 @@ pub enum RouterSlot {
     VeinGap,
 }
 
-pub struct NoiseRouterEvaluator<'a> {
-    df_registry: &'a Registry<DensityFunction>,
-    router: &'a NoiseRouter,
+/// Owns its inputs (clones `df_registry` and `settings.noise_router` once at construction)
+/// rather than borrowing them, so a caller can keep one of these alive independently of the
+/// `Datapack`/`NoiseGeneratorSettings` it was built from — e.g. behind an FFI handle, where
+/// tying the evaluator's lifetime to borrowed data would mean a self-referential struct.
+pub struct NoiseRouterEvaluator {
+    df_registry: Registry<DensityFunction>,
+    router: NoiseRouter,
     noises: HashMap<ResourceLocation, NormalNoise>,
 }
 
-impl<'a> NoiseRouterEvaluator<'a> {
+impl NoiseRouterEvaluator {
     /// Builds every `NormalNoise` in `noise_param_registry` up front, each seeded via
     /// `positional_factory.from_hash_of(id)` off a `RandomSource` seeded directly from `seed`
     /// — matches vanilla's `RandomState` construction. `settings.legacy_random_source` picks
     /// the RNG flavour.
     pub fn new(
         seed: i64,
-        settings: &'a NoiseGeneratorSettings,
-        df_registry: &'a Registry<DensityFunction>,
+        settings: &NoiseGeneratorSettings,
+        df_registry: &Registry<DensityFunction>,
         noise_param_registry: &Registry<NormalNoiseParameters>,
     ) -> Self {
         let mut base = WorldRandom::new(seed, settings.legacy_random_source);
@@ -66,8 +70,8 @@ impl<'a> NoiseRouterEvaluator<'a> {
         }
 
         Self {
-            df_registry,
-            router: &settings.noise_router,
+            df_registry: df_registry.clone(),
+            router: settings.noise_router.clone(),
             noises,
         }
     }
@@ -96,7 +100,7 @@ impl<'a> NoiseRouterEvaluator<'a> {
 
     pub fn sample(&self, slot: RouterSlot, x: i32, y: i32, z: i32) -> f64 {
         let cx = EvalCtx {
-            df_registry: self.df_registry,
+            df_registry: &self.df_registry,
             noises: &self.noises,
         };
         evaluate(self.slot_df(slot), FunctionContext { x, y, z }, &cx)
