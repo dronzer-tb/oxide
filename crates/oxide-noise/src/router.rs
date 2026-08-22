@@ -28,6 +28,7 @@ pub enum RouterSlot {
     Depth,
     Ridges,
     InitialDensityWithoutJaggedness,
+    PreliminarySurfaceLevel,
     FinalDensity,
     VeinToggle,
     VeinRidged,
@@ -91,6 +92,7 @@ impl NoiseRouterEvaluator {
             RouterSlot::InitialDensityWithoutJaggedness => {
                 &self.router.initial_density_without_jaggedness
             }
+            RouterSlot::PreliminarySurfaceLevel => &self.router.preliminary_surface_level,
             RouterSlot::FinalDensity => &self.router.final_density,
             RouterSlot::VeinToggle => &self.router.vein_toggle,
             RouterSlot::VeinRidged => &self.router.vein_ridged,
@@ -140,6 +142,7 @@ mod tests {
                 depth: DensityFunction::Constant(0.0),
                 ridges: DensityFunction::Constant(0.0),
                 initial_density_without_jaggedness: DensityFunction::Constant(1.0),
+                preliminary_surface_level: DensityFunction::Constant(1.0),
                 final_density: DensityFunction::Constant(1.0),
                 vein_toggle: DensityFunction::Constant(0.0),
                 vein_ridged: DensityFunction::Constant(0.0),

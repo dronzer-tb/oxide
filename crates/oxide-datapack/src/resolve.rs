@@ -94,7 +94,16 @@ fn walk_object(obj: &DensityFunctionObject, on_ref: &mut impl FnMut(RefKind, &Re
         | Cube { argument }
         | HalfNegative { argument }
         | QuarterNegative { argument }
-        | Squeeze { argument } => walk_density_function(argument, on_ref),
+        | Squeeze { argument }
+        | Invert { argument } => walk_density_function(argument, on_ref),
+        FindTopSurface {
+            upper_bound,
+            density,
+            ..
+        } => {
+            walk_density_function(upper_bound, on_ref);
+            walk_density_function(density, on_ref);
+        }
         BlendAlpha {} | BlendOffset {} | Beardifier {} => {}
         Add {
             argument1,
@@ -125,6 +134,14 @@ fn walk_object(obj: &DensityFunctionObject, on_ref: &mut impl FnMut(RefKind, &Re
             walk_density_function(input, on_ref);
             walk_density_function(when_in_range, on_ref);
             walk_density_function(when_out_of_range, on_ref);
+        }
+        IntervalSelect {
+            input, functions, ..
+        } => {
+            walk_density_function(input, on_ref);
+            for function in functions {
+                walk_density_function(function, on_ref);
+            }
         }
         Clamp { input, .. } => walk_density_function(input, on_ref),
         Spline { spline } => walk_spline(spline, on_ref),
@@ -278,6 +295,7 @@ pub fn resolve_noise_settings(
         &router.erosion,
         &router.depth,
         &router.ridges,
+        &router.preliminary_surface_level,
         &router.initial_density_without_jaggedness,
         &router.final_density,
         &router.vein_toggle,

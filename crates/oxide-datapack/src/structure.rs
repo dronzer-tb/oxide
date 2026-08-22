@@ -57,6 +57,10 @@ pub enum FrequencyReductionMethod {
     LegacyType1,
     #[serde(rename = "legacy_type_2")]
     LegacyType2,
+    /// 26.2 addition -- `mineshafts` uses it. Parsed only; nothing in this
+    /// workspace branches on the method yet.
+    #[serde(rename = "legacy_type_3")]
+    LegacyType3,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -45,6 +45,9 @@ pub enum SurfaceCondition {
         noise: ResourceLocation,
         min_threshold: f64,
         max_threshold: f64,
+        /// 26.2 addition; absent in older exports, where the sample was always 2D.
+        #[serde(default)]
+        is_3d: bool,
     },
 
     #[serde(rename = "minecraft:vertical_gradient")]
@@ -112,4 +115,29 @@ pub enum VerticalAnchor {
     Absolute { absolute: i32 },
     AboveBottom { above_bottom: i32 },
     BelowTop { below_top: i32 },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 26.2 writes a single biome as a bare string where earlier exports always
+    /// wrote a one-element array. Both mean the same condition.
+    #[test]
+    fn biome_is_accepts_a_bare_id_or_a_list() {
+        let scalar: SurfaceCondition = serde_json::from_slice(
+            br#"{"type":"minecraft:biome","biome_is":"minecraft:badlands"}"#,
+        )
+        .expect("26.2 scalar biome_is");
+        let list: SurfaceCondition = serde_json::from_slice(
+            br#"{"type":"minecraft:biome","biome_is":["minecraft:badlands"]}"#,
+        )
+        .expect("pre-26.2 list biome_is");
+        let ids = |condition: &SurfaceCondition| match condition {
+            SurfaceCondition::Biome { biome_is } => biome_is.clone(),
+            other => panic!("expected a biome condition, got {other:?}"),
+        };
+        assert_eq!(ids(&scalar), ids(&list));
+        assert_eq!(ids(&scalar).len(), 1);
+    }
 }
