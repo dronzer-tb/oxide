@@ -51,6 +51,11 @@ public final class OxideNative implements AutoCloseable {
     private final MethodHandle hDefaultBlockName;
     private final MethodHandle hDefaultFluidName;
     private final MethodHandle hGenerateChunk;
+    private final MethodHandle hBlockPaletteLen;
+    private final MethodHandle hBlockPaletteName;
+    private final MethodHandle hBiomePaletteLen;
+    private final MethodHandle hBiomePaletteName;
+    private final MethodHandle hBiomeAt;
     private final MethodHandle hLastError;
 
     public OxideNative(Path libraryPath) {
@@ -72,7 +77,19 @@ public final class OxideNative implements AutoCloseable {
                 FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.hGenerateChunk = downcall(lookup, "oxide_generate_chunk", FunctionDescriptor.of(
                 ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
-                ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
+                ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
+        this.hBlockPaletteLen = downcall(lookup, "oxide_block_palette_len",
+                FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
+        this.hBlockPaletteName = downcall(lookup, "oxide_block_palette_name", FunctionDescriptor.of(
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.hBiomePaletteLen = downcall(lookup, "oxide_biome_palette_len",
+                FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
+        this.hBiomePaletteName = downcall(lookup, "oxide_biome_palette_name", FunctionDescriptor.of(
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.hBiomeAt = downcall(lookup, "oxide_biome_at", FunctionDescriptor.of(
+                ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+                ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
         this.hLastError = downcall(lookup, "oxide_last_error", FunctionDescriptor.of(ValueLayout.ADDRESS));
     }
 
@@ -129,10 +146,12 @@ public final class OxideNative implements AutoCloseable {
          * tracking, so nothing catches this automatically) — callers must ensure every in-flight
          * {@code generateChunk} call has returned before closing.
          */
-        public void generateChunk(int chunkX, int chunkZ, MemorySegment out) {
+        public void generateChunk(int chunkX, int chunkZ, MemorySegment outBlocks, MemorySegment outBiomes) {
             long written;
             try {
-                written = (long) hGenerateChunk.invokeExact(ptr, chunkX, chunkZ, out, out.byteSize());
+                written = (long) hGenerateChunk.invokeExact(ptr, chunkX, chunkZ,
+                        outBlocks, outBlocks.byteSize() / 2,
+                        outBiomes, outBiomes.byteSize() / 2);
             } catch (Throwable t) {
                 throw new RuntimeException("oxide_generate_chunk threw across the FFI boundary", t);
             }
@@ -140,6 +159,45 @@ public final class OxideNative implements AutoCloseable {
                 throw new IllegalStateException(
                         "oxide_generate_chunk failed (code " + written + "): " + lastError());
             }
+        }
+
+        /** Number of block-state strings interned so far. Grows as generation meets new states. */
+        public int blockPaletteSize() {
+            return invokeInt(hBlockPaletteLen, ptr);
+        }
+
+        /**
+         * Block state at {@code index} in the form Bukkit's {@code createBlockData} parses,
+         * e.g. {@code minecraft:grass_block[snowy=false]}.
+         */
+        public String blockPaletteName(int index) {
+            return readCString(invokeAddressWithIndex(hBlockPaletteName, ptr, index));
+        }
+
+        public int biomePaletteSize() {
+            return invokeInt(hBiomePaletteLen, ptr);
+        }
+
+        /**
+         * Biome palette index at one block position, without generating a chunk. Backs the
+         * plugin's {@code BiomeProvider}, which Bukkit queries per position.
+         */
+        public int biomeAt(int x, int y, int z) {
+            int index;
+            try {
+                index = (int) hBiomeAt.invokeExact(ptr, x, y, z);
+            } catch (Throwable t) {
+                throw new RuntimeException("oxide_biome_at threw across the FFI boundary", t);
+            }
+            if (index < 0) {
+                throw new IllegalStateException("oxide_biome_at failed (code " + index + "): " + lastError());
+            }
+            return index;
+        }
+
+        /** Biome id at {@code index}, e.g. {@code minecraft:plains}. */
+        public String biomePaletteName(int index) {
+            return readCString(invokeAddressWithIndex(hBiomePaletteName, ptr, index));
         }
 
         @Override
@@ -196,6 +254,14 @@ public final class OxideNative implements AutoCloseable {
     private static MemorySegment invokeAddress(MethodHandle handle, MemorySegment ptr) {
         try {
             return ptr == null ? (MemorySegment) handle.invokeExact() : (MemorySegment) handle.invokeExact(ptr);
+        } catch (Throwable t) {
+            throw new RuntimeException("native call threw across the FFI boundary", t);
+        }
+    }
+
+    private static MemorySegment invokeAddressWithIndex(MethodHandle handle, MemorySegment ptr, int index) {
+        try {
+            return (MemorySegment) handle.invokeExact(ptr, index);
         } catch (Throwable t) {
             throw new RuntimeException("native call threw across the FFI boundary", t);
         }

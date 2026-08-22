@@ -5,10 +5,11 @@
 //! propagating across an `extern "C"` boundary is undefined behavior, so a panic here becomes
 //! an error return instead of a crash. Every pointer argument is null-checked before use.
 //!
-//! Scope of what this generates: exactly what `oxide-chunkgen::fill_chunk` produces today —
-//! noise-shaped solid/fluid/air, no surface rules, no biome transmission yet (see
-//! `oxide_generate_chunk`'s doc), no aquifers/ore veins/carvers/structures. See
-//! `oxide_chunkgen::fill`'s module doc for the full scope-cut list this inherits.
+//! Scope of what this generates: exactly what `oxide-chunkgen::generate_chunk` produces today
+//! — noise-shaped terrain plus surface rules (so grass/dirt/sand/bedrock, not bare stone) and
+//! the biome grid, transmitted as palette indices. Still absent: aquifers, ore veins, carvers,
+//! structures, features. See `oxide_chunkgen::fill` and `oxide_chunkgen::surface` module docs
+//! for the scope-cut list this inherits.
 
 mod handle;
 
@@ -138,41 +139,62 @@ pub unsafe extern "C" fn oxide_default_fluid_name(handle: *const OxideGenerator)
     with_handle(handle, std::ptr::null(), |g| g.default_fluid_name_ptr())
 }
 
-/// Fills `out_buf` with one byte per block: `0` = air, `1` = the block named by
-/// `oxide_default_block_name`, `2` = the block named by `oxide_default_fluid_name`. Index order
-/// is `(y * 16 + z) * 16 + x` within each 16-block-tall horizontal slice, slices stacked
-/// bottom-to-top from `oxide_min_y`; required buffer length is `256 * oxide_height(handle)`.
+/// Generates one chunk -- noise fill plus surface rules -- into two palette-index buffers.
 ///
-/// No surface-rule block variety (grass/dirt/sand), no biome, no structures, no features — see
-/// this crate's module doc. Returns the number of bytes written, or a negative value on error
-/// (check `oxide_last_error`): `-1` null/misused handle, `-2` buffer too small, `-3` panic.
+/// `out_blocks` takes one `u16` per block, index `(y * 16 + z) * 16 + x` within the whole
+/// column (`y` relative to `oxide_min_y`, not restarted per section); its required length in
+/// `u16`s is `256 * oxide_height(handle)`. `out_biomes` takes one `u16` per 4x4x4 biome quart,
+/// index `section_index * 64 + (qy * 4 + qz) * 4 + qx`; its required length is
+/// `64 * (oxide_height(handle) / 16)`.
+///
+/// Both hold indices into this handle's palettes, read back with `oxide_block_palette_len` /
+/// `oxide_block_palette_name` and the biome pair. Indices never change meaning for a handle's
+/// lifetime, so a caller resolves each one once and caches it.
+///
+/// Still absent (see this crate's module doc): aquifers, ore veins, carvers, structures,
+/// features.
+///
+/// Returns the number of blocks written, or a negative value on error (check
+/// `oxide_last_error`): `-1` null/misused handle, `-2` buffer too small or generation failed,
+/// `-3` panic.
 ///
 /// # Safety
-/// `handle` must be a live pointer from `oxide_open`. `out_buf` must be valid for
-/// `out_buf_len` writable bytes.
+/// `handle` must be a live pointer from `oxide_open`. `out_blocks` must be valid for
+/// `out_blocks_len` writable `u16`s, `out_biomes` for `out_biomes_len`.
 #[no_mangle]
 pub unsafe extern "C" fn oxide_generate_chunk(
     handle: *mut OxideGenerator,
     chunk_x: i32,
     chunk_z: i32,
-    out_buf: *mut u8,
-    out_buf_len: usize,
+    out_blocks: *mut u16,
+    out_blocks_len: usize,
+    out_biomes: *mut u16,
+    out_biomes_len: usize,
 ) -> i64 {
-    if handle.is_null() || out_buf.is_null() {
-        set_last_error("oxide_generate_chunk: handle/out_buf must not be null");
+    if handle.is_null() || out_blocks.is_null() || out_biomes.is_null() {
+        set_last_error("oxide_generate_chunk: handle/out_blocks/out_biomes must not be null");
         return -1;
     }
     let result = catch_unwind(AssertUnwindSafe(|| {
         let generator = &*handle;
-        let required = generator.buffer_len();
-        if out_buf_len < required {
+        let blocks_needed = generator.block_buffer_len();
+        let biomes_needed = generator.biome_buffer_len();
+        if out_blocks_len < blocks_needed {
             return Err(format!(
-                "out_buf too small: need {required} bytes, got {out_buf_len}"
+                "out_blocks too small: need {blocks_needed} u16s, got {out_blocks_len}"
             ));
         }
-        let buf = std::slice::from_raw_parts_mut(out_buf, required);
-        generator.generate_chunk(chunk_x, chunk_z, buf);
-        Ok(required)
+        if out_biomes_len < biomes_needed {
+            return Err(format!(
+                "out_biomes too small: need {biomes_needed} u16s, got {out_biomes_len}"
+            ));
+        }
+        let blocks = std::slice::from_raw_parts_mut(out_blocks, blocks_needed);
+        let biomes = std::slice::from_raw_parts_mut(out_biomes, biomes_needed);
+        generator
+            .generate_chunk(chunk_x, chunk_z, blocks, biomes)
+            .map_err(|e| format!("{e:#}"))?;
+        Ok(blocks_needed)
     }));
     match result {
         Ok(Ok(written)) => written as i64,
@@ -185,6 +207,94 @@ pub unsafe extern "C" fn oxide_generate_chunk(
             -3
         }
     }
+}
+
+/// Number of entries currently in this handle's block-state palette. Grows as generation meets
+/// new states, so a caller re-reads it after each `oxide_generate_chunk` call.
+///
+/// # Safety
+/// `handle` must be a live pointer from `oxide_open`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_block_palette_len(handle: *const OxideGenerator) -> i32 {
+    with_handle(handle, -1, |g| match g.block_palette().read() {
+        Ok(palette) => palette.len() as i32,
+        Err(_) => -1,
+    })
+}
+
+/// The block-state string at `index`, e.g. `minecraft:grass_block[snowy=false]` -- the exact
+/// form Bukkit's `createBlockData` parses. Null if `index` is out of range. Valid for the
+/// handle's lifetime; the caller must not free it.
+///
+/// # Safety
+/// `handle` must be a live pointer from `oxide_open`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_block_palette_name(
+    handle: *const OxideGenerator,
+    index: i32,
+) -> *const c_char {
+    with_handle(handle, std::ptr::null(), |g| {
+        if index < 0 {
+            return std::ptr::null();
+        }
+        match g.block_palette().read() {
+            Ok(palette) => palette.name_ptr(index as usize),
+            Err(_) => std::ptr::null(),
+        }
+    })
+}
+
+/// Biome palette index for one block position, without generating a chunk -- what a caller
+/// implementing a per-position biome lookup calls. Returns a negative value on error.
+///
+/// # Safety
+/// `handle` must be a live pointer from `oxide_open`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_biome_at(
+    handle: *const OxideGenerator,
+    x: i32,
+    y: i32,
+    z: i32,
+) -> i32 {
+    with_handle(handle, -1, |g| match g.biome_at(x, y, z) {
+        Ok(index) => index as i32,
+        Err(e) => {
+            set_last_error(format!("{e:#}"));
+            -2
+        }
+    })
+}
+
+/// Number of entries currently in this handle's biome palette. See `oxide_block_palette_len`.
+///
+/// # Safety
+/// `handle` must be a live pointer from `oxide_open`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_biome_palette_len(handle: *const OxideGenerator) -> i32 {
+    with_handle(handle, -1, |g| match g.biome_palette().read() {
+        Ok(palette) => palette.len() as i32,
+        Err(_) => -1,
+    })
+}
+
+/// The biome id at `index`, e.g. `minecraft:plains`. See `oxide_block_palette_name`.
+///
+/// # Safety
+/// `handle` must be a live pointer from `oxide_open`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_biome_palette_name(
+    handle: *const OxideGenerator,
+    index: i32,
+) -> *const c_char {
+    with_handle(handle, std::ptr::null(), |g| {
+        if index < 0 {
+            return std::ptr::null();
+        }
+        match g.biome_palette().read() {
+            Ok(palette) => palette.name_ptr(index as usize),
+            Err(_) => std::ptr::null(),
+        }
+    })
 }
 
 unsafe fn with_handle<T>(

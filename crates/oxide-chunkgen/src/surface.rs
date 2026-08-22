@@ -1,0 +1,598 @@
+//! Surface-rule evaluation: the pass that turns a column of `default_block` into grass, dirt,
+//! sand, gravel, snow -- and bedrock, which vanilla spells as a `vertical_gradient` rule rather
+//! than a special case.
+//!
+//! Runs after [`crate::fill_chunk`], over the terrain it produced. The rule tree comes from
+//! `noise_settings.surface_rule` and is walked top-down per column, exactly as vanilla's
+//! `SurfaceSystem` does: the first `minecraft:block` rule whose enclosing conditions all hold
+//! wins for that position.
+//!
+//! Two known gaps, named rather than approximated:
+//!
+//! - `minecraft:bandlands` (badlands terracotta banding) places plain terracotta. The real
+//!   thing is a 192-entry band table built from a seeded random; reproducing it from memory
+//!   would look right and be wrong, which is worse than being visibly incomplete.
+//! - `minecraft:temperature` uses the biome's base temperature with a height falloff. Vanilla
+//!   also folds in a temperature noise and the `frozen` temperature modifier.
+//!
+//! Everything else in the 26.2 overworld rule set is implemented. Every reconstructed formula
+//! carries a `PARITY-CHECK` marker: RNG and noise underneath are verified against the real
+//! 26.2 jar, but this layer's arithmetic is not yet diffed against a vanilla chunk dump.
+
+use std::collections::HashMap;
+
+use oxide_core::{
+    BlockState, ChunkData, ChunkPos, Heightmap, HeightmapType, RandomSource, ResourceLocation,
+};
+use oxide_datapack::{
+    NoiseGeneratorSettings, SurfaceCondition, SurfaceRule, SurfaceType, VerticalAnchor,
+};
+use oxide_noise::{NoiseRouterEvaluator, RouterSlot};
+
+use crate::fill::local_index;
+
+/// Per-biome climate data the `minecraft:temperature` condition needs. Keyed by biome id; the
+/// generator carries this instead of the whole biome registry, which it otherwise drops.
+pub type BiomeTemperatures = HashMap<ResourceLocation, f32>;
+
+/// Column-invariant state, computed once per (x, z).
+struct Column {
+    surface_depth: i32,
+    surface_secondary: f64,
+    min_surface_level: i32,
+}
+
+/// Per-position state, updated as the scan walks down the column.
+struct Cursor {
+    x: i32,
+    y: i32,
+    z: i32,
+    stone_depth_above: i32,
+    stone_depth_below: i32,
+    water_height: i32,
+    biome: ResourceLocation,
+}
+
+pub struct SurfaceSystem<'a> {
+    settings: &'a NoiseGeneratorSettings,
+    router: &'a NoiseRouterEvaluator,
+    biome_temperatures: &'a BiomeTemperatures,
+    min_y: i32,
+    height: i32,
+    /// Copied out of the chunk before the scan starts, because the scan mutates the chunk and
+    /// the `Steep` condition has to read heights the fill pass computed, not rewritten ones.
+    ocean_floor: Option<Heightmap>,
+}
+
+impl<'a> SurfaceSystem<'a> {
+    pub fn new(
+        settings: &'a NoiseGeneratorSettings,
+        router: &'a NoiseRouterEvaluator,
+        biome_temperatures: &'a BiomeTemperatures,
+    ) -> Self {
+        Self {
+            settings,
+            router,
+            biome_temperatures,
+            min_y: settings.noise.min_y,
+            height: settings.noise.height,
+            ocean_floor: None,
+        }
+    }
+
+    /// Rewrites `chunk`'s `default_block` positions per the rule tree. Positions holding fluid
+    /// or air are never rewritten -- vanilla only offers the rule tree a stone position.
+    pub fn apply(&mut self, chunk: &mut ChunkData, pos: ChunkPos) {
+        self.ocean_floor = chunk.heightmaps.get(&HeightmapType::OceanFloorWg).cloned();
+        let rule = &self.settings.surface_rule;
+        let default_block = &self.settings.default_block;
+        let top_y = self.min_y + self.height - 1;
+
+        for local_z in 0..16usize {
+            let z = pos.min_block_z() + local_z as i32;
+            for local_x in 0..16usize {
+                let x = pos.min_block_x() + local_x as i32;
+                let column = self.column_state(x, z);
+
+                let mut stone_depth_above = 0;
+                let mut water_height = i32::MIN;
+                // Start of the current run of stone, tracked so stone_depth_below can be
+                // derived without rescanning for every y.
+                let mut run_bottom = i32::MAX;
+
+                for y in (self.min_y..=top_y).rev() {
+                    let state = self.get_block(chunk, local_x, y, local_z);
+                    let Some(state) = state else { continue };
+
+                    if is_air(&state) {
+                        stone_depth_above = 0;
+                        water_height = i32::MIN;
+                        run_bottom = i32::MAX;
+                        continue;
+                    }
+                    if state == self.settings.default_fluid {
+                        // PARITY-CHECK: vanilla records the position *above* the fluid column.
+                        water_height = y + 1;
+                        stone_depth_above = 0;
+                        run_bottom = i32::MAX;
+                        continue;
+                    }
+
+                    if run_bottom > y {
+                        run_bottom = self.run_bottom(chunk, local_x, y, local_z);
+                    }
+                    stone_depth_above += 1;
+                    let stone_depth_below = y - run_bottom + 1;
+
+                    if &state != default_block {
+                        continue;
+                    }
+
+                    let cursor = Cursor {
+                        x,
+                        y,
+                        z,
+                        stone_depth_above,
+                        stone_depth_below,
+                        water_height,
+                        biome: self.biome_at(chunk, local_x, y, local_z),
+                    };
+                    if let Some(result) = self.eval_rule(rule, &cursor, &column) {
+                        self.set_block(chunk, local_x, y, local_z, result);
+                    }
+                }
+            }
+        }
+    }
+
+    /// PARITY-CHECK: `surface` noise scaled by 2.75, offset 3.0, plus a quarter of a
+    /// per-column random -- vanilla's `SurfaceSystem#getSurfaceDepth`, reconstructed.
+    fn column_state(&self, x: i32, z: i32) -> Column {
+        let surface = self.sample_noise("surface", x as f64, 0.0, z as f64);
+        let mut random = self.router.positional_factory().at(x, 0, z);
+        let surface_depth = (surface * 2.75 + 3.0 + random.next_double() * 0.25) as i32;
+        Column {
+            surface_depth,
+            surface_secondary: self.sample_noise("surface_secondary", x as f64, 0.0, z as f64),
+            min_surface_level: self
+                .router
+                .sample(RouterSlot::PreliminarySurfaceLevel, x, 0, z)
+                as i32,
+        }
+    }
+
+    fn sample_noise(&self, name: &str, x: f64, y: f64, z: f64) -> f64 {
+        match self.router.noise(&ResourceLocation::minecraft(name)) {
+            Some(noise) => noise.get_value(x, y, z),
+            // A datapack without the noise the rules ask for: 0.0 keeps the pass running
+            // rather than aborting a chunk, and reads as "no contribution".
+            None => 0.0,
+        }
+    }
+
+    /// Lowest y of the contiguous non-air, non-fluid run containing `y`.
+    fn run_bottom(&self, chunk: &ChunkData, local_x: usize, y: i32, local_z: usize) -> i32 {
+        let mut bottom = y;
+        while bottom > self.min_y {
+            match self.get_block(chunk, local_x, bottom - 1, local_z) {
+                Some(state) if !is_air(&state) && state != self.settings.default_fluid => {
+                    bottom -= 1;
+                }
+                _ => break,
+            }
+        }
+        bottom
+    }
+
+    fn eval_rule(
+        &self,
+        rule: &SurfaceRule,
+        cursor: &Cursor,
+        column: &Column,
+    ) -> Option<BlockState> {
+        match rule {
+            SurfaceRule::Sequence { sequence } => sequence
+                .iter()
+                .find_map(|inner| self.eval_rule(inner, cursor, column)),
+            SurfaceRule::Condition { if_true, then_run } => {
+                if self.eval_condition(if_true, cursor, column) {
+                    self.eval_rule(then_run, cursor, column)
+                } else {
+                    None
+                }
+            }
+            SurfaceRule::Block { result_state } => Some(result_state.clone()),
+            // See the module doc: deliberately plain terracotta, not a guessed band table.
+            SurfaceRule::Badlands {} => {
+                Some(BlockState::new(ResourceLocation::minecraft("terracotta")))
+            }
+        }
+    }
+
+    fn eval_condition(
+        &self,
+        condition: &SurfaceCondition,
+        cursor: &Cursor,
+        column: &Column,
+    ) -> bool {
+        match condition {
+            SurfaceCondition::Biome { biome_is } => biome_is.contains(&cursor.biome),
+
+            SurfaceCondition::NoiseThreshold {
+                noise,
+                min_threshold,
+                max_threshold,
+                is_3d,
+            } => {
+                let y = if *is_3d { cursor.y as f64 } else { 0.0 };
+                let value = match self.router.noise(noise) {
+                    Some(n) => n.get_value(cursor.x as f64, y, cursor.z as f64),
+                    None => return false,
+                };
+                value >= *min_threshold && value <= *max_threshold
+            }
+
+            // PARITY-CHECK: linear probability between the two anchors, sampled from the
+            // shared positional factory keyed by `random_name` -- vanilla's
+            // `SurfaceRules.VerticalGradientConditionSource`, reconstructed.
+            SurfaceCondition::VerticalGradient {
+                random_name,
+                true_at_and_below,
+                false_at_and_above,
+            } => {
+                let true_y = self.resolve_anchor(true_at_and_below);
+                let false_y = self.resolve_anchor(false_at_and_above);
+                if cursor.y <= true_y {
+                    return true;
+                }
+                if cursor.y >= false_y {
+                    return false;
+                }
+                let span = (false_y - true_y) as f64;
+                let probability = (false_y - cursor.y) as f64 / span;
+                let mut random = self
+                    .router
+                    .positional_factory()
+                    .from_hash_of(random_name)
+                    .fork_positional()
+                    .at(cursor.x, cursor.y, cursor.z);
+                // nextFloat, not nextDouble: vanilla compares a float draw here, and the two
+                // consume the generator differently, so the choice changes every bedrock
+                // position -- not just precision.
+                (random.next_float() as f64) < probability
+            }
+
+            SurfaceCondition::YAbove {
+                anchor,
+                surface_depth_multiplier,
+                add_stone_depth,
+            } => {
+                let stone = if *add_stone_depth {
+                    cursor.stone_depth_above
+                } else {
+                    0
+                };
+                cursor.y + stone
+                    >= self.resolve_anchor(anchor) + column.surface_depth * surface_depth_multiplier
+            }
+
+            SurfaceCondition::Water {
+                offset,
+                surface_depth_multiplier,
+                add_stone_depth,
+            } => {
+                if cursor.water_height == i32::MIN {
+                    return true;
+                }
+                let stone = if *add_stone_depth {
+                    cursor.stone_depth_above
+                } else {
+                    0
+                };
+                cursor.y + stone
+                    >= cursor.water_height
+                        + offset
+                        + column.surface_depth * surface_depth_multiplier
+            }
+
+            // PARITY-CHECK: vanilla's `coldEnoughToSnow` also folds in a temperature noise and
+            // the biome's temperature_modifier; this is base temperature with a height falloff
+            // above y=80 only. See the module doc.
+            SurfaceCondition::Temperature {} => {
+                let base = self
+                    .biome_temperatures
+                    .get(&cursor.biome)
+                    .copied()
+                    .unwrap_or(0.5);
+                let adjusted = if cursor.y > 80 {
+                    base - (cursor.y - 80) as f32 * 0.05 / 40.0
+                } else {
+                    base
+                };
+                adjusted < 0.15
+            }
+
+            // PARITY-CHECK: "steep" when the ocean-floor height differs by 4+ blocks between
+            // the columns one step away on Z -- vanilla's `Steep` condition, reconstructed.
+            // Vanilla clamps the neighbour lookup into this chunk rather than reaching into
+            // the next one, so edge columns compare against themselves; that clamp is kept.
+            SurfaceCondition::Steep {} => {
+                let Some(heightmap) = self.ocean_floor.as_ref() else {
+                    return false;
+                };
+                let local_x = (cursor.x & 15) as usize;
+                let local_z = (cursor.z & 15) as usize;
+                let below = heightmap.get(local_x, local_z.saturating_sub(1));
+                let above = heightmap.get(local_x, (local_z + 1).min(15));
+                above >= below + 4 || below >= above + 4
+            }
+
+            SurfaceCondition::Hole {} => column.surface_depth <= 0,
+
+            SurfaceCondition::AbovePreliminarySurface {} => cursor.y >= column.min_surface_level,
+
+            SurfaceCondition::StoneDepth {
+                offset,
+                add_surface_depth,
+                secondary_depth_range,
+                surface_type,
+            } => {
+                let depth = match surface_type {
+                    SurfaceType::Floor => cursor.stone_depth_above,
+                    SurfaceType::Ceiling => cursor.stone_depth_below,
+                };
+                let surface = if *add_surface_depth {
+                    column.surface_depth
+                } else {
+                    0
+                };
+                let secondary = if *secondary_depth_range == 0 {
+                    0
+                } else {
+                    // PARITY-CHECK: maps the secondary noise from [-1, 1] onto
+                    // [0, secondary_depth_range].
+                    map_range(
+                        column.surface_secondary,
+                        -1.0,
+                        1.0,
+                        0.0,
+                        *secondary_depth_range as f64,
+                    ) as i32
+                };
+                depth <= 1 + offset + surface + secondary
+            }
+
+            SurfaceCondition::Not { invert } => !self.eval_condition(invert, cursor, column),
+        }
+    }
+
+    fn resolve_anchor(&self, anchor: &VerticalAnchor) -> i32 {
+        match anchor {
+            VerticalAnchor::Absolute { absolute } => *absolute,
+            VerticalAnchor::AboveBottom { above_bottom } => self.min_y + above_bottom,
+            VerticalAnchor::BelowTop { below_top } => self.min_y + self.height - 1 - below_top,
+        }
+    }
+
+    fn section_of(&self, y: i32) -> Option<usize> {
+        if y < self.min_y || y >= self.min_y + self.height {
+            return None;
+        }
+        Some(((y - self.min_y) / 16) as usize)
+    }
+
+    fn get_block(
+        &self,
+        chunk: &ChunkData,
+        local_x: usize,
+        y: i32,
+        local_z: usize,
+    ) -> Option<BlockState> {
+        let index = self.section_of(y)?;
+        let section = chunk.sections.get(index)?;
+        let local_y = (y - self.min_y).rem_euclid(16) as usize;
+        Some(
+            section
+                .block_states
+                .get(local_index(local_x, local_y, local_z))
+                .clone(),
+        )
+    }
+
+    fn set_block(
+        &self,
+        chunk: &mut ChunkData,
+        local_x: usize,
+        y: i32,
+        local_z: usize,
+        state: BlockState,
+    ) {
+        let Some(index) = self.section_of(y) else {
+            return;
+        };
+        let Some(section) = chunk.sections.get_mut(index) else {
+            return;
+        };
+        let local_y = (y - self.min_y).rem_euclid(16) as usize;
+        section
+            .block_states
+            .set(local_index(local_x, local_y, local_z), state);
+    }
+
+    fn biome_at(
+        &self,
+        chunk: &ChunkData,
+        local_x: usize,
+        y: i32,
+        local_z: usize,
+    ) -> ResourceLocation {
+        let fallback = || ResourceLocation::minecraft("plains");
+        let Some(index) = self.section_of(y) else {
+            return fallback();
+        };
+        let Some(section) = chunk.sections.get(index) else {
+            return fallback();
+        };
+        let local_y = (y - self.min_y).rem_euclid(16) as usize;
+        let quart = ((local_y / 4) * 4 + local_z / 4) * 4 + local_x / 4;
+        section.biomes.get(quart).clone()
+    }
+}
+
+fn is_air(state: &BlockState) -> bool {
+    state.name == ResourceLocation::minecraft("air")
+}
+
+/// Vanilla `Mth.map`: linear remap of `value` from one range onto another, unclamped.
+fn map_range(value: f64, from_lo: f64, from_hi: f64, to_lo: f64, to_hi: f64) -> f64 {
+    to_lo + (value - from_lo) * (to_hi - to_lo) / (from_hi - from_lo)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxide_core::{ChunkStatus, HeightmapType};
+    use oxide_datapack::{
+        DensityFunction, DensityFunctionObject, NoiseDimensionSettings, NoiseRouter, Registry,
+    };
+
+    /// Solid at and below y=0, air above -- a step function, so every column has exactly one
+    /// surface position and the rule under test has an unambiguous target.
+    fn settings(surface_rule: SurfaceRule) -> NoiseGeneratorSettings {
+        let step = DensityFunction::Object(Box::new(DensityFunctionObject::YClampedGradient {
+            from_y: 0,
+            to_y: 1,
+            from_value: 1.0,
+            to_value: -1.0,
+        }));
+        NoiseGeneratorSettings {
+            sea_level: -64,
+            disable_mob_generation: false,
+            aquifers_enabled: false,
+            ore_veins_enabled: false,
+            legacy_random_source: false,
+            default_block: BlockState::new(ResourceLocation::minecraft("stone")),
+            default_fluid: BlockState::new(ResourceLocation::minecraft("water")),
+            noise: NoiseDimensionSettings {
+                min_y: -64,
+                height: 384,
+                size_horizontal: 1,
+                size_vertical: 2,
+            },
+            noise_router: NoiseRouter {
+                barrier: DensityFunction::Constant(0.0),
+                fluid_level_floodedness: DensityFunction::Constant(0.0),
+                fluid_level_spread: DensityFunction::Constant(0.0),
+                lava: DensityFunction::Constant(0.0),
+                temperature: DensityFunction::Constant(0.0),
+                vegetation: DensityFunction::Constant(0.0),
+                continents: DensityFunction::Constant(0.0),
+                erosion: DensityFunction::Constant(0.0),
+                depth: DensityFunction::Constant(0.0),
+                ridges: DensityFunction::Constant(0.0),
+                preliminary_surface_level: DensityFunction::Constant(0.0),
+                initial_density_without_jaggedness: DensityFunction::Constant(0.0),
+                final_density: step,
+                vein_toggle: DensityFunction::Constant(0.0),
+                vein_ridged: DensityFunction::Constant(0.0),
+                vein_gap: DensityFunction::Constant(0.0),
+            },
+            surface_rule,
+            spawn_target: Vec::new(),
+        }
+    }
+
+    fn run(rule: SurfaceRule) -> (oxide_core::ChunkData, NoiseGeneratorSettings) {
+        let settings = settings(rule);
+        let df_registry = Registry::default();
+        let noise_registry = Registry::default();
+        let router = NoiseRouterEvaluator::new(42, &settings, &df_registry, &noise_registry);
+        let temperatures = BiomeTemperatures::new();
+        let chunk =
+            crate::generate_chunk(ChunkPos::new(0, 0), &settings, &router, None, &temperatures);
+        (chunk, settings)
+    }
+
+    fn block_at(chunk: &oxide_core::ChunkData, x: usize, y: i32, z: usize) -> BlockState {
+        let index = ((y - chunk.min_y) / 16) as usize;
+        let local_y = (y - chunk.min_y).rem_euclid(16) as usize;
+        chunk.sections[index]
+            .block_states
+            .get(local_index(x, local_y, z))
+            .clone()
+    }
+
+    /// A bare `block` rule matches every stone position, so the whole solid column is rewritten
+    /// -- the check is that the pass reaches stone at all and leaves air alone.
+    #[test]
+    fn block_rule_rewrites_stone_and_leaves_air_alone() {
+        let (chunk, _) = run(SurfaceRule::Block {
+            result_state: BlockState::new(ResourceLocation::minecraft("grass_block")),
+        });
+        assert_eq!(chunk.status, ChunkStatus::Surface);
+        assert_eq!(
+            block_at(&chunk, 0, 0, 0).name,
+            ResourceLocation::minecraft("grass_block")
+        );
+        assert_eq!(
+            block_at(&chunk, 0, 100, 0).name,
+            ResourceLocation::minecraft("air")
+        );
+    }
+
+    /// `stone_depth` with offset 0 and no extras matches only the topmost stone position, which
+    /// is what every vanilla "put grass on the surface" rule is built from.
+    #[test]
+    fn stone_depth_floor_matches_only_the_top_block() {
+        let (chunk, settings) = run(SurfaceRule::Condition {
+            if_true: SurfaceCondition::StoneDepth {
+                offset: 0,
+                add_surface_depth: false,
+                secondary_depth_range: 0,
+                surface_type: SurfaceType::Floor,
+            },
+            then_run: Box::new(SurfaceRule::Block {
+                result_state: BlockState::new(ResourceLocation::minecraft("grass_block")),
+            }),
+        });
+
+        let surface_y = chunk.heightmaps[&HeightmapType::OceanFloorWg].get(0, 0) + chunk.min_y - 1;
+        assert_eq!(
+            block_at(&chunk, 0, surface_y, 0).name,
+            ResourceLocation::minecraft("grass_block"),
+            "top solid block at y={surface_y} should be grass"
+        );
+        assert_eq!(
+            block_at(&chunk, 0, surface_y - 1, 0),
+            settings.default_block,
+            "the block under the surface must stay stone"
+        );
+    }
+
+    /// Bedrock is a vertical_gradient rule in vanilla, not a special case: below the lower
+    /// anchor it always matches, above the upper one it never does.
+    #[test]
+    fn vertical_gradient_is_certain_outside_its_anchors() {
+        let (chunk, _) = run(SurfaceRule::Condition {
+            if_true: SurfaceCondition::VerticalGradient {
+                random_name: "minecraft:bedrock_floor".to_string(),
+                true_at_and_below: VerticalAnchor::AboveBottom { above_bottom: 0 },
+                false_at_and_above: VerticalAnchor::AboveBottom { above_bottom: 5 },
+            },
+            then_run: Box::new(SurfaceRule::Block {
+                result_state: BlockState::new(ResourceLocation::minecraft("bedrock")),
+            }),
+        });
+
+        assert_eq!(
+            block_at(&chunk, 0, -64, 0).name,
+            ResourceLocation::minecraft("bedrock"),
+            "the world's bottom layer is always bedrock"
+        );
+        assert_eq!(
+            block_at(&chunk, 0, -59, 0).name,
+            ResourceLocation::minecraft("stone"),
+            "at and above the upper anchor bedrock never appears"
+        );
+    }
+}

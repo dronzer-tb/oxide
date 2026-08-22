@@ -11,7 +11,7 @@ use oxide_datapack::{
 
 use crate::density::{evaluate, EvalCtx, FunctionContext};
 use crate::normal_noise::NormalNoise;
-use crate::random::WorldRandom;
+use crate::random::{WorldPositionalFactory, WorldRandom};
 
 /// The ~15 named router slots, for callers that want to sample a specific one without matching
 /// on `NoiseRouter`'s fields directly.
@@ -43,6 +43,10 @@ pub struct NoiseRouterEvaluator {
     df_registry: Registry<DensityFunction>,
     router: NoiseRouter,
     noises: HashMap<ResourceLocation, NormalNoise>,
+    /// Kept for consumers outside the density-function tree -- the surface system needs the
+    /// same `RandomState` positional factory vanilla's `SurfaceSystem` uses, and deriving a
+    /// second one from the seed would not match it.
+    positional_factory: WorldPositionalFactory,
 }
 
 impl NoiseRouterEvaluator {
@@ -74,6 +78,7 @@ impl NoiseRouterEvaluator {
             df_registry: df_registry.clone(),
             router: settings.noise_router.clone(),
             noises,
+            positional_factory: factory,
         }
     }
 
@@ -98,6 +103,17 @@ impl NoiseRouterEvaluator {
             RouterSlot::VeinRidged => &self.router.vein_ridged,
             RouterSlot::VeinGap => &self.router.vein_gap,
         }
+    }
+
+    /// The `RandomState` positional factory every seeded-per-position consumer must share.
+    pub fn positional_factory(&self) -> &WorldPositionalFactory {
+        &self.positional_factory
+    }
+
+    /// One named noise from the `worldgen/noise` registry, already seeded. `None` when the
+    /// datapack has no such entry -- callers decide whether that is fatal.
+    pub fn noise(&self, id: &ResourceLocation) -> Option<&NormalNoise> {
+        self.noises.get(id)
     }
 
     pub fn sample(&self, slot: RouterSlot, x: i32, y: i32, z: i32) -> f64 {

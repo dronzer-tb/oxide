@@ -7,8 +7,9 @@ use std::ffi::{CStr, CString};
 use std::path::{Path, PathBuf};
 
 use oxide_ffi::{
-    oxide_close, oxide_default_block_name, oxide_default_fluid_name, oxide_generate_chunk,
-    oxide_height, oxide_last_error, oxide_min_y, oxide_open, oxide_sea_level,
+    oxide_block_palette_len, oxide_block_palette_name, oxide_close, oxide_default_block_name,
+    oxide_default_fluid_name, oxide_generate_chunk, oxide_height, oxide_last_error, oxide_min_y,
+    oxide_open, oxide_sea_level,
 };
 
 fn fixture_path() -> PathBuf {
@@ -43,20 +44,58 @@ fn open_generate_close_round_trip() {
             .unwrap();
         assert_eq!(fluid_name, "minecraft:water");
 
-        let len = 256usize * 384;
-        let mut buf = vec![0xFFu8; len]; // poison value: every byte must be overwritten to 0/1/2
-        let written = oxide_generate_chunk(handle, 0, 0, buf.as_mut_ptr(), buf.len());
-        assert_eq!(written, len as i64);
+        let blocks_len = 256usize * 384;
+        let biomes_len = 64usize * (384 / 16);
+        // Poison values: every entry must be overwritten with a real palette index.
+        let mut blocks = vec![0xFFFFu16; blocks_len];
+        let mut biomes = vec![0xFFFFu16; biomes_len];
+        let written = oxide_generate_chunk(
+            handle,
+            0,
+            0,
+            blocks.as_mut_ptr(),
+            blocks.len(),
+            biomes.as_mut_ptr(),
+            biomes.len(),
+        );
+        assert_eq!(written, blocks_len as i64);
+
+        let palette_len = oxide_block_palette_len(handle);
+        assert!(palette_len > 0, "generation must intern at least one state");
         assert!(
-            buf.iter().all(|&b| b <= 2),
-            "buffer contains a byte outside {{0,1,2}} — poison value leaked through"
+            blocks.iter().all(|&i| (i as i32) < palette_len),
+            "a block index points outside the palette — poison value leaked through"
         );
 
-        // fixture's final_density is a flat 0.0 (not > 0), so every block is fluid below sea
-        // level and air above it — never the "1" (solid) value. Confirms the buffer reflects
-        // real generation, not just zero-fill.
-        assert!(buf.contains(&2), "expected at least one fluid block");
-        assert!(!buf.contains(&1), "density 0.0 should never produce solid");
+        let names: Vec<String> = (0..palette_len)
+            .map(|i| {
+                CStr::from_ptr(oxide_block_palette_name(handle, i))
+                    .to_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+
+        // The fixture's final_density is a flat 0.0 (not > 0), so every block is fluid below
+        // sea level and air above it, and no solid is ever placed. Confirms the buffers
+        // reflect real generation, not just zero-fill.
+        assert!(
+            names.iter().any(|n| n == "minecraft:water"),
+            "expected water in the palette, got {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n == "minecraft:air"),
+            "expected air in the palette, got {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n == "minecraft:stone"),
+            "density 0.0 should never produce solid, got {names:?}"
+        );
+
+        assert_eq!(
+            oxide_block_palette_name(handle, palette_len),
+            std::ptr::null()
+        );
 
         oxide_close(handle);
     }
@@ -92,8 +131,17 @@ fn generate_chunk_reports_buffer_too_small() {
         let handle = oxide_open(path.as_ptr(), dim.as_ptr(), 1);
         assert!(!handle.is_null());
 
-        let mut tiny_buf = [0u8; 4];
-        let result = oxide_generate_chunk(handle, 0, 0, tiny_buf.as_mut_ptr(), tiny_buf.len());
+        let mut tiny_blocks = [0u16; 4];
+        let mut tiny_biomes = [0u16; 4];
+        let result = oxide_generate_chunk(
+            handle,
+            0,
+            0,
+            tiny_blocks.as_mut_ptr(),
+            tiny_blocks.len(),
+            tiny_biomes.as_mut_ptr(),
+            tiny_biomes.len(),
+        );
         assert_eq!(result, -2);
 
         oxide_close(handle);
@@ -105,10 +153,24 @@ fn null_handle_is_reported_not_a_crash() {
     unsafe {
         assert_eq!(oxide_min_y(std::ptr::null()), i32::MIN);
         assert_eq!(oxide_height(std::ptr::null()), -1);
-        let mut buf = [0u8; 16];
+        let mut blocks = [0u16; 16];
+        let mut biomes = [0u16; 16];
         assert_eq!(
-            oxide_generate_chunk(std::ptr::null_mut(), 0, 0, buf.as_mut_ptr(), buf.len()),
+            oxide_generate_chunk(
+                std::ptr::null_mut(),
+                0,
+                0,
+                blocks.as_mut_ptr(),
+                blocks.len(),
+                biomes.as_mut_ptr(),
+                biomes.len(),
+            ),
             -1
+        );
+        assert_eq!(oxide_block_palette_len(std::ptr::null()), -1);
+        assert_eq!(
+            oxide_block_palette_name(std::ptr::null(), 0),
+            std::ptr::null()
         );
         oxide_close(std::ptr::null_mut()); // must not crash
     }

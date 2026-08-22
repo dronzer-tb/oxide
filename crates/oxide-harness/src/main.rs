@@ -15,7 +15,7 @@ use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 
 use oxide_biome::BiomeSearchTree;
-use oxide_chunkgen::fill_chunk;
+use oxide_chunkgen::{generate_chunk, BiomeTemperatures};
 use oxide_core::{BlockState, ChunkPos, ResourceLocation};
 use oxide_datapack::{load_datapack, BiomeSource};
 use oxide_noise::NoiseRouterEvaluator;
@@ -85,6 +85,15 @@ fn main() -> Result<()> {
 
     let air = BlockState::new(ResourceLocation::minecraft("air"));
 
+    // Surface rules need each biome's base temperature (the `minecraft:temperature`
+    // condition); the rest of the biome definition is not read by this pass.
+    let biome_temperatures: BiomeTemperatures = datapack
+        .biomes
+        .iter()
+        .map(|(id, biome)| (id.clone(), biome.temperature))
+        .collect();
+
+    let mut surface_census: std::collections::BTreeMap<String, usize> = Default::default();
     let mut total = 0usize;
     let mut with_failures = 0usize;
     let mut failure_counts: std::collections::HashMap<&'static str, usize> = Default::default();
@@ -92,11 +101,12 @@ fn main() -> Result<()> {
     for cx in -args.radius..=args.radius {
         for cz in -args.radius..=args.radius {
             total += 1;
-            let chunk = fill_chunk(
+            let chunk = generate_chunk(
                 ChunkPos::new(cx, cz),
                 settings,
                 &router,
                 biome_tree.as_ref(),
+                &biome_temperatures,
             );
             let tree = build_merkle(&chunk, args.leaf_size);
 
@@ -104,14 +114,25 @@ fn main() -> Result<()> {
             // time, with no vanilla reference needed to catch a regression here. Exercises
             // `diverging_sections` for real, not just in unit tests, since there's no vanilla
             // tree to diff against yet (see module doc).
-            let rebuilt = fill_chunk(
+            let rebuilt = generate_chunk(
                 ChunkPos::new(cx, cz),
                 settings,
                 &router,
                 biome_tree.as_ref(),
+                &biome_temperatures,
             );
             let rebuilt_tree = build_merkle(&rebuilt, args.leaf_size);
             let nondeterministic_sections = diverging_sections(&tree, &rebuilt_tree);
+
+            for local_z in 0..16usize {
+                for local_x in 0..16usize {
+                    if let Some(name) =
+                        top_solid_block(&chunk, local_x, local_z, &air, &settings.default_fluid)
+                    {
+                        *surface_census.entry(name).or_insert(0usize) += 1;
+                    }
+                }
+            }
 
             let mut failures = heightmaps_match_surface(&chunk, &air, &settings.default_fluid);
             failures.extend(biome_ids_are_registered(&chunk, &datapack.biomes));
@@ -138,6 +159,13 @@ fn main() -> Result<()> {
         }
     }
 
+    println!("surface blocks (top of each column):");
+    let mut census: Vec<_> = surface_census.iter().collect();
+    census.sort_by(|a, b| b.1.cmp(a.1));
+    for (name, count) in census.iter().take(12) {
+        println!("  {count:>7}  {name}");
+    }
+    println!();
     println!("chunks checked:  {total}");
     println!("chunks clean:    {}", total - with_failures);
     println!("chunks flagged:  {with_failures}");
@@ -153,4 +181,27 @@ fn main() -> Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// Name of the highest block in one column that is neither air nor the dimension's fluid --
+/// the surface material itself, which is the quickest read on whether surface rules ran. Skips
+/// fluid deliberately: an ocean column would otherwise report water and say nothing about the
+/// seabed the rules placed under it.
+fn top_solid_block(
+    chunk: &oxide_core::ChunkData,
+    local_x: usize,
+    local_z: usize,
+    air: &BlockState,
+    fluid: &BlockState,
+) -> Option<String> {
+    for section in chunk.sections.iter().rev() {
+        for local_y in (0..16usize).rev() {
+            let index = (local_y * 16 + local_z) * 16 + local_x;
+            let state = section.block_states.get(index);
+            if state != air && state != fluid {
+                return Some(state.name.to_string());
+            }
+        }
+    }
+    None
 }
