@@ -1,0 +1,11 @@
+# Path to the compiled oxide-ffi native library (liboxide_ffi.so on Linux). Single-platform
+# scope cut for wave 5 -- see docs/ARCHITECTURE.md -- no per-OS/arch resolution or
+# jar-embedded bundling, this must be a real path on the machine running the server.
+native-library-path: "plugins/Oxide/liboxide_ffi.so"
+
+# Root of a vanilla-exported worldgen datapack (contains data/<namespace>/worldgen/...).
+# See docs/REFERENCE_DATA.md for how to extract one.
+datapack-path: "plugins/Oxide/datapack"
+
+# worldgen/dimension id to generate for /oxide createworld, e.g. minecraft:overworld.
+dimension-id: "minecraft:overworld"

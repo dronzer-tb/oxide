@@ -10,7 +10,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 oxide-core.workspace = true
 oxide-datapack.workspace = true
+oxide-noise.workspace = true
+oxide-biome.workspace = true
 oxide-chunkgen.workspace = true
-oxide-anvil.workspace = true
 anyhow.workspace = true
-tracing.workspace = true

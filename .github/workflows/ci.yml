@@ -17,3 +17,12 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo build --release --workspace
       - run: cargo test --workspace
+      # oxide-ffi's crate-type = ["cdylib", "rlib"] means the above build already produces
+      # this .so; upload it so the plugin side (Panama, see plugin/src/main/java/dev/oxide/
+      # plugin/ffi/OxideNative.java) has something to load without a separate build step.
+      # linux-x86_64 only — see OxideNative's javadoc for why cross-platform packaging is a
+      # deliberate scope cut, not an oversight.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oxide-ffi-linux-x86_64
+          path: target/release/liboxide_ffi.so
