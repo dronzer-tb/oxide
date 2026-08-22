@@ -110,8 +110,19 @@ Download the jar straight from the rolling release -- no zip, no artifact
 extraction, and the link stays valid across builds:
 
 ```sh
-curl -LO https://github.com/dronzer-tb/oxide/releases/latest/download/OxideDebug.jar
+gh release download latest --repo dronzer-tb/oxide -p OxideDebug.jar
 ```
+
+`gh` rather than `curl` because this repo is private: release assets 404 for
+unauthenticated requests. While it stays private, a plain download needs a token:
+
+```sh
+curl -L -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/octet-stream" \
+  "$(gh api repos/dronzer-tb/oxide/releases/tags/latest -q '.assets[]|select(.name=="OxideDebug.jar").url')"
+```
+
+If the repo is ever made public, this becomes a plain link with no auth at all:
+`https://github.com/dronzer-tb/oxide/releases/latest/download/OxideDebug.jar`
 
 Every push to `main` replaces it (`.github/workflows/plugin.yml`). The same
 release also carries a bare `liboxide_ffi.so`, needed only for the

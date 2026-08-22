@@ -53,8 +53,10 @@ jobs:
           name: oxide-debug-plugin
           path: dist/*
 
-      # Rolling prerelease, replaced on every push to main, so these two links are
-      # permanent and download the raw files with no zip in between:
+      # Rolling release, replaced on every push to main, so these two links are
+      # permanent and download the raw files with no zip in between. NOTE: this
+      # repo is private, so they need credentials -- `gh release download latest`,
+      # or curl with a token. They become plain public links if it ever goes public.
       #   https://github.com/${{ github.repository }}/releases/latest/download/OxideDebug.jar
       #   https://github.com/${{ github.repository }}/releases/latest/download/liboxide_ffi.so
       # The .so is attached separately only for the `native-library-path` override
@@ -67,9 +69,11 @@ jobs:
         run: |
           set -euo pipefail
           gh release view latest >/dev/null 2>&1 || gh release create latest \
-            --prerelease \
             --title "Latest build (main)" \
-            --notes "Rolling build of main. OxideDebug.jar has liboxide_ffi.so embedded; download the .so separately only to use the native-library-path override."
+            --notes "Rolling build of main."
+          # Not a prerelease: /releases/latest/ resolves to the newest *non*-prerelease,
+          # so flagging it would 404 the permanent download URL below.
+          gh release edit latest --prerelease=false
           gh release upload latest dist/OxideDebug.jar dist/liboxide_ffi.so --clobber
           gh release edit latest --notes "Rolling build of \`main\`, rebuilt on every push.
 
