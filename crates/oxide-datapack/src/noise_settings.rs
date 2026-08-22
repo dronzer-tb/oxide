@@ -58,6 +58,15 @@ pub struct NoiseRouter {
     pub erosion: DensityFunction,
     pub depth: DensityFunction,
     pub ridges: DensityFunction,
+    /// 26.2 dropped the router's `initial_density_without_jaggedness` slot and
+    /// exports this instead -- vanilla no longer binary-searches a density for the
+    /// preliminary surface level, the datapack hands it over directly (see the new
+    /// `minecraft:find_top_surface` density function in the same export). Both are
+    /// defaulted so a pre-26.2 pack and a 26.2 pack each load; whichever the pack
+    /// omits stays a constant zero.
+    #[serde(default = "zero")]
+    pub preliminary_surface_level: DensityFunction,
+    #[serde(default = "zero")]
     pub initial_density_without_jaggedness: DensityFunction,
     pub final_density: DensityFunction,
     #[serde(default = "zero")]

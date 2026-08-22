@@ -29,9 +29,12 @@ import java.nio.file.Path;
  * the first thing to check.
  *
  * <p>Single-platform scope cut: loads exactly the library at the path given
- * to the constructor, no per-OS/arch resolution or jar-embedded native
- * bundling. Cross-platform native packaging is a separate, real piece of
- * work this class does not attempt.
+ * to the constructor and does no per-OS/arch resolution of its own. The jar
+ * does embed one prebuilt linux-x86_64 library, which
+ * {@code GeneratorService#extractBundledLibrary} unpacks to a real filesystem
+ * path before calling this constructor ({@code SymbolLookup.libraryLookup}
+ * cannot dlopen a jar entry). Anything beyond that one platform is a separate,
+ * real piece of work neither class attempts.
  */
 public final class OxideNative implements AutoCloseable {
 

@@ -199,6 +199,61 @@ fn evaluate_object(obj: &DensityFunctionObject, ctx: FunctionContext, cx: &EvalC
             }
         }
 
+        IntervalSelect {
+            input,
+            thresholds,
+            functions,
+        } => {
+            let v = evaluate(input, ctx, cx);
+            // The first threshold the input falls short of picks that slot; an input
+            // past every threshold picks the last function. That's the `<` chain
+            // vanilla hardcoded in the rarity tables this node replaced (see
+            // `map_rarity` below, kept for `weird_scaled_sampler`), so `thresholds`
+            // is read as ascending -- vanilla's own exports always are.
+            let index = thresholds.partition_point(|threshold| v >= *threshold);
+            match functions.get(index).or_else(|| functions.last()) {
+                Some(function) => evaluate(function, ctx, cx),
+                // functions is empty: a malformed node. 0.0 is what an absent
+                // density function contributes everywhere else in this file.
+                None => 0.0,
+            }
+        }
+
+        // PARITY-CHECK: reciprocal, inferred from vanilla's own use of it
+        // (`mul(0.2734375, invert(factor))` -- the reciprocal of `factor` the
+        // pre-26.2 hardcoded formula took), not from a decompiled source. The
+        // x == 0 case is likewise unpinned; f64 division gives +/-inf, which
+        // propagates rather than silently reading as a plausible density.
+        Invert { argument } => 1.0 / evaluate(argument, ctx, cx),
+
+        FindTopSurface {
+            cell_height,
+            lower_bound,
+            upper_bound,
+            density,
+        } => {
+            // Topmost cell-aligned y whose density is positive, scanning down.
+            // PARITY-CHECK: vanilla's tie-breaking and whether it scans down from
+            // the top or up from the bottom is not pinned to a decompiled source;
+            // this slot is not read by fill_chunk, so nothing generated today
+            // depends on it (see NoiseRouterEvaluator::sample's callers).
+            let top = evaluate(upper_bound, ctx, cx).floor() as i32;
+            let step = (*cell_height).max(1);
+            let mut y = top - top.rem_euclid(step);
+            while y > *lower_bound {
+                let at = FunctionContext {
+                    x: ctx.x,
+                    y,
+                    z: ctx.z,
+                };
+                if evaluate(density, at, cx) > 0.0 {
+                    return y as f64;
+                }
+                y -= step;
+            }
+            *lower_bound as f64
+        }
+
         Clamp { input, min, max } => evaluate(input, ctx, cx).clamp(*min, *max),
 
         Spline { spline } => evaluate_spline(spline, ctx, cx) as f64,
@@ -318,6 +373,72 @@ mod tests {
             df_registry,
             noises,
         }
+    }
+
+    /// Thresholds are boundaries between `functions[i]` and `functions[i+1]`: a
+    /// value exactly on a threshold belongs to the interval above it, matching the
+    /// `<` chain vanilla hardcoded before 26.2 made this a datapack node.
+    #[test]
+    fn interval_select_picks_by_interval() {
+        let df_registry = Registry::default();
+        let noises = HashMap::new();
+        let cx = empty_cx(&df_registry, &noises);
+        for (input, expected) in [
+            (-1.0, 10.0),
+            (-0.75, 20.0),
+            (-0.5, 30.0),
+            (0.0, 30.0),
+            (0.5, 40.0),
+            (0.75, 50.0),
+            (1.0, 50.0),
+        ] {
+            let df = DensityFunction::Object(Box::new(O::IntervalSelect {
+                input: DensityFunction::Constant(input),
+                thresholds: vec![-0.75, -0.5, 0.5, 0.75],
+                functions: vec![
+                    DensityFunction::Constant(10.0),
+                    DensityFunction::Constant(20.0),
+                    DensityFunction::Constant(30.0),
+                    DensityFunction::Constant(40.0),
+                    DensityFunction::Constant(50.0),
+                ],
+            }));
+            assert_eq!(evaluate(&df, ctx(), &cx), expected, "input {input}");
+        }
+    }
+
+    #[test]
+    fn invert_is_the_reciprocal_not_negation() {
+        let df_registry = Registry::default();
+        let noises = HashMap::new();
+        let cx = empty_cx(&df_registry, &noises);
+        let df = DensityFunction::Object(Box::new(O::Invert {
+            argument: DensityFunction::Constant(4.0),
+        }));
+        assert_eq!(evaluate(&df, ctx(), &cx), 0.25);
+    }
+
+    /// `y_clamped_gradient` rises with y, so the scan finds the topmost
+    /// cell-aligned y where it is still positive rather than the first one it
+    /// meets from the bottom.
+    #[test]
+    fn find_top_surface_scans_down_in_cell_steps() {
+        let df_registry = Registry::default();
+        let noises = HashMap::new();
+        let cx = empty_cx(&df_registry, &noises);
+        let df = DensityFunction::Object(Box::new(O::FindTopSurface {
+            cell_height: 8,
+            lower_bound: -64,
+            upper_bound: DensityFunction::Constant(320.0),
+            // positive at and below y=64, negative above it
+            density: DensityFunction::Object(Box::new(O::YClampedGradient {
+                from_y: 64,
+                to_y: 72,
+                from_value: 1.0,
+                to_value: -1.0,
+            })),
+        }));
+        assert_eq!(evaluate(&df, ctx(), &cx), 64.0);
     }
 
     #[test]

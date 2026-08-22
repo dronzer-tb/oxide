@@ -51,8 +51,20 @@ pub mod rl_vec {
         strs.serialize(s)
     }
 
+    /// Accepts either a list of ids or a single bare id -- 26.2's exports write
+    /// `"biome_is": "minecraft:wooded_badlands"` where earlier ones always wrote a
+    /// one-element array, and both forms mean the same thing.
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<ResourceLocation>, D::Error> {
-        let strs: Vec<String> = Vec::deserialize(d)?;
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum OneOrMany {
+            One(String),
+            Many(Vec<String>),
+        }
+        let strs = match OneOrMany::deserialize(d)? {
+            OneOrMany::One(s) => vec![s],
+            OneOrMany::Many(v) => v,
+        };
         strs.iter()
             .map(|s| ResourceLocation::from_str(s).map_err(|e| D::Error::custom(e.to_string())))
             .collect()
@@ -132,5 +144,35 @@ pub mod block_state {
             name,
             properties: raw.properties,
         })
+    }
+}
+
+/// Biome effect colours. 26.2 writes them as `"#rrggbb"` strings and omits the
+/// keys it considers defaulted; earlier exports wrote packed RGB ints and always
+/// wrote all four. Accepts either form, and absence.
+pub mod color_opt {
+    use super::*;
+
+    pub fn serialize<S: Serializer>(value: &Option<i32>, s: S) -> Result<S::Ok, S::Error> {
+        match value {
+            Some(color) => s.serialize_str(&format!("#{:06x}", color & 0x00ff_ffff)),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<i32>, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Color {
+            Packed(i32),
+            Hex(String),
+        }
+        match Option::<Color>::deserialize(d)? {
+            None => Ok(None),
+            Some(Color::Packed(packed)) => Ok(Some(packed)),
+            Some(Color::Hex(hex)) => i32::from_str_radix(hex.trim_start_matches('#'), 16)
+                .map(Some)
+                .map_err(|e| D::Error::custom(format!("invalid colour {hex:?}: {e}"))),
+        }
     }
 }

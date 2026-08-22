@@ -1,23 +1,31 @@
 name: plugin
 
-# Manual trigger only, deliberately.
-#
-# plugin/gradle.properties ships `foliaApiVersion` as an unresolvable
-# placeholder: nobody has confirmed which Folia build targets Minecraft 26.2.
-# Until a real version is set there, this build cannot resolve its dependencies
-# and will fail. Running it on every push would mean a permanently red repo
-# that everyone learns to ignore, so it stays opt-in until the version is real.
+# Builds the Rust cdylib first, then the plugin jar with that .so embedded in it
+# (see plugin/build.gradle.kts processResources). The two halves ship as one
+# artifact deliberately: a jar whose bundled library was built from different
+# source than the Java bindings fails at the first downcall, so they are never
+# built separately.
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: plugin
     steps:
       - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # linux-x86_64 only -- see OxideNative's javadoc for why cross-platform
+      # packaging is a deliberate scope cut.
+      - run: cargo build --release -p oxide-ffi
+
       - uses: actions/setup-java@v4
         with:
           java-version: '25'
@@ -26,7 +34,46 @@ jobs:
       # which this project keeps off the local machine.
       - uses: gradle/actions/setup-gradle@v4
       - run: gradle build
+        working-directory: plugin
+
+      # Fixed asset names: the download URLs below are meant to stay valid across
+      # builds, so a server admin can curl the same link every time.
+      - name: Stage release assets
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp plugin/build/libs/*.jar dist/OxideDebug.jar
+          cp target/release/liboxide_ffi.so dist/liboxide_ffi.so
+
+      # Kept for pull requests, which must not publish a release. GitHub always
+      # serves workflow artifacts as a .zip -- that is not configurable, which is
+      # exactly why main also publishes the rolling release below.
       - uses: actions/upload-artifact@v4
         with:
           name: oxide-debug-plugin
-          path: plugin/build/libs/*.jar
+          path: dist/*
+
+      # Rolling prerelease, replaced on every push to main, so these two links are
+      # permanent and download the raw files with no zip in between:
+      #   https://github.com/${{ github.repository }}/releases/latest/download/OxideDebug.jar
+      #   https://github.com/${{ github.repository }}/releases/latest/download/liboxide_ffi.so
+      # The .so is attached separately only for the `native-library-path` override
+      # in config.yml -- the jar already contains its own copy, and mixing a jar
+      # with a differently-built .so is what the embed exists to prevent.
+      - name: Publish rolling release
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release view latest >/dev/null 2>&1 || gh release create latest \
+            --prerelease \
+            --title "Latest build (main)" \
+            --notes "Rolling build of main. OxideDebug.jar has liboxide_ffi.so embedded; download the .so separately only to use the native-library-path override."
+          gh release upload latest dist/OxideDebug.jar dist/liboxide_ffi.so --clobber
+          gh release edit latest --notes "Rolling build of \`main\`, rebuilt on every push.
+
+          Built from ${{ github.sha }} on $(date -u +%Y-%m-%dT%H:%MZ).
+
+          - \`OxideDebug.jar\` -- the plugin, with \`liboxide_ffi.so\` embedded. This is the only file you need.
+          - \`liboxide_ffi.so\` -- the same library on its own, for the \`native-library-path\` override in \`config.yml\`."

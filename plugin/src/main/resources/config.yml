@@ -1,7 +1,9 @@
-# Path to the compiled oxide-ffi native library (liboxide_ffi.so on Linux). Single-platform
-# scope cut for wave 5 -- see docs/ARCHITECTURE.md -- no per-OS/arch resolution or
-# jar-embedded bundling, this must be a real path on the machine running the server.
-native-library-path: "plugins/Oxide/liboxide_ffi.so"
+# Optional override: path to a compiled oxide-ffi native library (liboxide_ffi.so on Linux).
+# Leave it pointing at nothing and the linux-x86_64 library embedded in this jar by CI is
+# extracted into this plugin's data folder and used instead. Set it only to run a locally
+# built .so without rebuilding the jar. Single-platform scope cut for wave 5 -- see
+# docs/ARCHITECTURE.md -- no per-OS/arch resolution beyond the one embedded library.
+native-library-path: ""
 
 # Root of a vanilla-exported worldgen datapack (contains data/<namespace>/worldgen/...).
 # See docs/REFERENCE_DATA.md for how to extract one.

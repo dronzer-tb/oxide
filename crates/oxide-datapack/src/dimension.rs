@@ -5,11 +5,21 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DimensionType {
+    // 26.2 moved the behaviour flags into an `attributes` map keyed by ids like
+    // `minecraft:gameplay/respawn_anchor_works`, so none of them appear at the top
+    // level any more. Defaulted rather than deleted so a pre-26.2 pack still loads
+    // with the values it states; nothing in this workspace reads them today.
+    #[serde(default)]
     pub ultrawarm: bool,
+    #[serde(default)]
     pub natural: bool,
+    #[serde(default)]
     pub piglin_safe: bool,
+    #[serde(default)]
     pub respawn_anchor_works: bool,
+    #[serde(default)]
     pub bed_works: bool,
+    #[serde(default)]
     pub has_raids: bool,
     pub has_skylight: bool,
     pub has_ceiling: bool,
@@ -20,8 +30,13 @@ pub struct DimensionType {
     pub logical_height: i32,
     /// Block tag reference, e.g. `#minecraft:infiniburn_overworld`.
     pub infiniburn: String,
-    #[serde(with = "crate::ident_serde::rl")]
-    pub effects: ResourceLocation,
+    /// Gone in 26.2 -- the visual settings it named now live in `attributes`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::ident_serde::rl_opt"
+    )]
+    pub effects: Option<ResourceLocation>,
     pub min_y: i32,
     pub height: i32,
     pub monster_spawn_light_level: MonsterSpawnLightLevel,
@@ -35,7 +50,14 @@ pub enum MonsterSpawnLightLevel {
     Uniform {
         #[serde(rename = "type", with = "crate::ident_serde::rl")]
         kind: ResourceLocation,
-        value: UniformIntRange,
+        /// Pre-26.2 nesting. 26.2 writes the bounds beside `type` instead, so both
+        /// shapes are optional here and exactly one of them is populated.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<UniformIntRange>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        min_inclusive: Option<i32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_inclusive: Option<i32>,
     },
 }
 

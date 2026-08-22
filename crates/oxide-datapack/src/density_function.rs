@@ -159,6 +159,39 @@ pub enum DensityFunctionObject {
         when_out_of_range: DensityFunction,
     },
 
+    /// 26.2 replaced `weird_scaled_sampler`'s hardcoded rarity tables with this
+    /// data-driven piecewise select: the interval `input` falls into picks one of
+    /// `functions`, which therefore always holds exactly one more entry than
+    /// `thresholds` (ascending). Vanilla's old `getSpaghettiRarity2D` chain --
+    /// thresholds -0.75/-0.5/0.5/0.75 over five values -- is now literally this
+    /// node in `overworld/caves/{entrances,spaghetti_2d}.json`.
+    /// 26.2. Multiplicative inverse (`1/x`), not negation -- vanilla's own
+    /// exports use it as `mul(0.2734375, invert(factor))`, the reciprocal the
+    /// pre-26.2 hardcoded preliminary-surface formula took of `factor`; negation
+    /// there would be spelled `mul(-1.0, ...)`, which the same files also use.
+    /// PARITY-CHECK: behaviour at `x == 0` is not pinned to a decompiled source.
+    #[serde(rename = "minecraft:invert")]
+    Invert { argument: DensityFunction },
+
+    /// 26.2. Data-driven replacement for the hardcoded preliminary-surface-level
+    /// scan: the topmost `cell_height`-aligned y in `[lower_bound, upper_bound]`
+    /// at which `density` is positive. Only ever appears in the router's
+    /// `preliminary_surface_level` slot in vanilla's exports.
+    #[serde(rename = "minecraft:find_top_surface")]
+    FindTopSurface {
+        cell_height: i32,
+        lower_bound: i32,
+        upper_bound: DensityFunction,
+        density: DensityFunction,
+    },
+
+    #[serde(rename = "minecraft:interval_select")]
+    IntervalSelect {
+        input: DensityFunction,
+        thresholds: Vec<f64>,
+        functions: Vec<DensityFunction>,
+    },
+
     #[serde(rename = "minecraft:clamp")]
     Clamp {
         input: DensityFunction,

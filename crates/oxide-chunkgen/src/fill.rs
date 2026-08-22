@@ -198,6 +198,7 @@ mod tests {
                 depth: DensityFunction::Constant(0.0),
                 ridges: DensityFunction::Constant(0.0),
                 initial_density_without_jaggedness: DensityFunction::Constant(0.0),
+                preliminary_surface_level: DensityFunction::Constant(0.0),
                 final_density,
                 vein_toggle: DensityFunction::Constant(0.0),
                 vein_ridged: DensityFunction::Constant(0.0),
