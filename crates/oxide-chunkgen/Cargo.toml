@@ -1,0 +1,13 @@
+[package]
+name = "oxide-chunkgen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+oxide-core.workspace = true
+oxide-datapack.workspace = true
+oxide-noise.workspace = true
+oxide-biome.workspace = true
+anyhow.workspace = true
+rayon.workspace = true

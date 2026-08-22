@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/dronzer-tb/oxide"
+
+[workspace.dependencies]
+oxide-core = { path = "crates/oxide-core" }
+oxide-datapack = { path = "crates/oxide-datapack" }
+oxide-noise = { path = "crates/oxide-noise" }
+oxide-biome = { path = "crates/oxide-biome" }
+oxide-chunkgen = { path = "crates/oxide-chunkgen" }
+oxide-structures = { path = "crates/oxide-structures" }
+oxide-anvil = { path = "crates/oxide-anvil" }
+
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+fastnbt = "2"
+fastanvil = "0.31"
+rayon = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+blake3 = "1"
+md-5 = "0.10"
+flate2 = "1"
+ahash = "0.8"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+[profile.bench]
+lto = "thin"

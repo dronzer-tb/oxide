@@ -1,0 +1,12 @@
+[package]
+name = "oxide-structures"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+oxide-core.workspace = true
+oxide-datapack.workspace = true
+oxide-biome.workspace = true
+oxide-chunkgen.workspace = true
+anyhow.workspace = true

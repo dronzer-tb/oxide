@@ -1,0 +1,10 @@
+/target
+**/*.rs.bk
+# Mojang-derived reference data must never leave this machine (PRD 4, 8)
+/reference/
+/fixtures/vanilla/
+*.mca
+*.jar
+/plugin/build
+/plugin/.gradle
+.DS_Store

@@ -1,0 +1,89 @@
+# PRD: Hybrid Rust/Java Chunk Generation Engine for Folia
+
+## 1. Summary
+
+A Folia server plugin that offloads terrain generation for high-priority chunks (near players) to a native Rust engine, writing Anvil (`.mca`) region data directly to disk, with vanilla Java generation retained as the fallback path for low-priority/background chunks. A local, offline validation harness compares Rust output against vanilla Java output using hierarchical (Merkle-tree) hashing to catch and localize generation drift during development.
+
+This is a solo/small-team infra project, not a live production service — the primary consumer of this PRD is a coding agent that will scaffold and implement the system incrementally.
+
+## 2. Problem Statement
+
+Folia's region-threaded architecture already parallelizes chunk generation across independent region threads, but generation itself is still bottlenecked by Java's per-chunk noise/carver/decoration pipeline. When many players spread across a large world, new-chunk generation near each player can still cause local stalls on that region's thread. A faster native generator for the "hot" radius around players would reduce this without touching Folia's threading model — it just needs to feed it faster.
+
+## 3. Goals
+
+- Generate terrain for chunks within a configurable radius of each player using a Rust-based engine.
+- Write generated chunks directly as valid Anvil format (`.mca`), bypassing per-chunk FFI marshaling overhead.
+- Fall back to standard Java/vanilla generation for all chunks outside the hot radius.
+- Build a local, offline validation harness to measure and localize divergence between Rust and Java generation output, used purely as a development tool to converge the Rust algorithm toward vanilla fidelity.
+- Avoid any live, in-request comparison or double-generation — validation is a pre-deployment/CI concern only.
+
+## 4. Non-Goals
+
+- Byte-perfect parity with vanilla generation is not required for cave noise / underground detail — only surface terrain, heightmaps, and structure placement need close fidelity (gameplay-visible correctness).
+- No live runtime fallback-on-mismatch — production fallback routing (if implemented at all) is rule-based and precomputed, not diffed in real time.
+- No redistribution of Mojang-derived reference data (raw vanilla chunk NBT) outside the local dev environment.
+- Not targeting every Minecraft version simultaneously — pin to one version per milestone.
+
+## 5. System Components
+
+### 5.1 Rust Generation Core
+- Noise/terrain generation ported to match a specific pinned Minecraft version.
+- Outputs raw block-state arrays, biome arrays, and heightmap data per chunk section.
+- Uses `fastnbt`/`fastanvil` (or equivalent) for NBT/region-file serialization.
+
+### 5.2 Anvil Writer
+- Direct `.mca` region file writer.
+- Correct `DataVersion`, section palettes, biome palettes, and multiple heightmap types (`WORLD_SURFACE`, `OCEAN_FLOOR`, `MOTION_BLOCKING`, etc.).
+- Chunks written with a "needs relight" status flag rather than self-computed lighting.
+- Region-file write locking to avoid races with the live Java server touching neighboring chunks in the same `.mca` file.
+
+### 5.3 Folia Plugin Shell
+- Tracks player positions per region thread.
+- Determines hot radius per player; requests Rust-generated chunks for that radius, ahead of the player where possible (pregen-ahead strategy).
+- Delegates chunks outside hot radius to standard Java `ChunkGenerator`.
+- Thread-safe/re-entrant handling for Folia's concurrent per-region threads.
+
+### 5.4 Validation Harness (Dev-Only)
+- Runs both generators against the same seed + coordinates locally.
+- Builds a Merkle tree per chunk: chunk → section hashes → sub-region hashes, down to a configurable leaf granularity.
+- Top-level hash mismatch triggers a walk down the tree to localize the exact diverging sub-region.
+- Tracks a global pass/fail rate plus a breakdown by biome and by structure-proximity (villages, strongholds, monuments, etc.) rather than a single aggregate number.
+- Includes property-based invariant checks (e.g. no floating trees, no exposed bedrock breaches, valid biome enum values, heightmap-consistent-with-actual-surface) that don't require a Java reference at all.
+- Reference Java chunk data stays local; only pass/fail results and code are shareable/committed.
+
+## 6. Milestones
+
+1. **Rust noise-gen core** — standalone library, no I/O, matching pinned MC version's terrain/biome noise.
+2. **Anvil writer** — serialize Rust-generated chunk data to valid `.mca`, load-tested by opening output in a vanilla client/server.
+3. **Validation harness v1** — Merkle-hash comparison + invariant checks, run offline against a batch of seeds/coordinates; produce a biome/structure-broken-down pass rate report.
+4. **Iterate on Rust core** using harness feedback until surface-level pass rate is consistently high (structures may lag; track separately).
+5. **Folia plugin shell** — player tracking, hot-radius determination, Rust-vs-Java routing, pregen-ahead scheduling.
+6. **Region-file concurrency handling** — locking strategy between live server and Rust pregen writes.
+7. **Integration test on a live Folia test server** — observe stalls/seams in practice, not just offline metrics.
+8. **(Optional, later)** Production fallback rules — precomputed, not live-diffed.
+
+## 7. Success Metrics
+
+- Reduction in region-thread stall time / chunk-gen latency near players, measured on a Folia test server, vs. Java-only baseline.
+- Harness pass rate on surface/heightmap fidelity trending toward >99% for non-structure chunks.
+- No visible terrain seam at the Rust/Java generation boundary during in-game flythrough testing.
+- Zero corrupted/unloadable chunks reported across test sessions.
+
+## 8. Risks
+
+| Risk | Mitigation |
+|---|---|
+| Version churn (DataVersion/palette/noise changes per MC update) | Pin to one version per milestone; treat version bumps as a separate planned migration |
+| Structural NBT errors causing unloadable chunks | Rely on established Rust NBT/Anvil crates rather than a hand-rolled writer |
+| Heightmap/light mismatches causing broken mob spawning or dark rendering | Always mark chunks as needing relight rather than self-computing light |
+| Region-file write races between Rust pregen and live Java server | Pregen strictly ahead of player radius, or shared file locking |
+| Terrain seams at generator boundary | Buffer zone re-generated/blended by Java, or accept the seam for non-vanilla-parity worlds |
+| Mojang EULA/distribution concerns | Keep all reference vanilla chunk data local; never redistribute reference fixtures |
+| Over-scoping dev-stage failover into a production feature | Keep dev harness and any future production fallback as explicitly separate systems |
+
+## 9. Open Questions
+
+- Which Minecraft version to pin for v1?
+- Is exact structure-placement parity a hard requirement, or acceptable to diverge (custom structure logic) if performance/stability is prioritized?
+- Is a production fallback feature in scope at all, or is this purely a hot-radius performance project with Java as permanent fallback for the cold radius?

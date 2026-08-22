@@ -1,0 +1,10 @@
+[package]
+name = "oxide-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+md-5.workspace = true
+ahash.workspace = true
