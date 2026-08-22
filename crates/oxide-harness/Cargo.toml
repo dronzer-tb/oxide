@@ -11,6 +11,8 @@ path = "src/main.rs"
 [dependencies]
 oxide-core.workspace = true
 oxide-datapack.workspace = true
+oxide-noise.workspace = true
+oxide-biome.workspace = true
 oxide-chunkgen.workspace = true
 oxide-structures.workspace = true
 oxide-anvil.workspace = true
