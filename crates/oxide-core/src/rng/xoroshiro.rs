@@ -1,31 +1,29 @@
 //! `Xoroshiro128PlusPlus`: Minecraft's modern world-seed RNG.
 //!
-//! The core 128-bit xoroshiro++ step function (rotl/xor/shift) is the published
-//! Blackman & Vigna algorithm and is not Mojang-specific — high confidence. The seed-upgrade
-//! path (`stafford_mix13`, silver/golden ratio constants) and the bounded-`nextInt` algorithm
-//! are Mojang's own and are reconstructed from memory; see the `// PARITY-CHECK` comments.
+//! Verified 2026-08-22 against `RandomSupport`/`Xoroshiro128PlusPlus`/`XoroshiroRandomSource`
+//! decompiled from the real Minecraft 26.2 server jar (`net.minecraft.server.Main`): the step
+//! function, the seed-upgrade path (constants included — vanilla names them differently
+//! internally, but the values and formula match bit-for-bit), and the bounded-`nextInt`
+//! algorithm below are all confirmed exact, not reconstructed from memory. See
+//! `docs/REFERENCE_DATA.md` for how to re-derive this if a future version changes it.
 
-use super::{RandomSource, DOUBLE_ULP, FLOAT_DIVISOR};
+use super::{RandomSource, FLOAT_DIVISOR};
 
-/// `0x6A09E667F3BCC909` — silver ratio constant used to scramble a 64-bit seed before
-/// splitting it into the two 128-bit state halves.
+/// `0x6A09E667F3BCC909` — the literal vanilla XORs a legacy seed with in
+/// `RandomSupport.upgradeSeedTo128bitUnmixed` (unnamed there; kept as a named constant here).
 const SILVER_RATIO_64: u64 = 0x6A09_E667_F3BC_C909;
-/// `0x9E3779B97F4A7C15` — golden ratio constant, added to derive the second half's input.
+/// `0x9E3779B97F4A7C15` (`= -7046029254386353131L`) — vanilla's `RandomSupport.GOLDEN_RATIO_64`,
+/// added to the XORed seed to derive the second 64-bit half before mixing.
 const GOLDEN_RATIO_64: u64 = 0x9E37_79B9_7F4A_7C15;
 
-// PARITY-CHECK: SILVER_RATIO_64 / GOLDEN_RATIO_64 and the fallback all-zero-state constants
-// below are reconstructed from memory of decompiled `RandomSupport`/`Xoroshiro128PlusPlus`
-// (net.minecraft.world.level.levelgen). The `stafford_mix13` constants
-// (0xBF58476D1CE4E5B9, 0x94D049BB133111EB) are given directly in the task spec and are also
-// the well-known MurmurHash3/SplitMix64 finalizer constants, so those are high-confidence.
-// Everything in this file must be checked against decompiled 26.2 source before any
-// downstream crate trusts Xoroshiro-seeded output for structure/feature placement parity.
-
 /// Fallback state substituted when a seed upgrades to an all-zero 128-bit state (xoroshiro's
-/// state must never be all-zero — it's a fixed point of the step function).
+/// state must never be all-zero — it's a fixed point of the step function). Confirmed exact
+/// against vanilla's `Xoroshiro128PlusPlus` constructor.
 const FALLBACK_LO: u64 = -7046029254386353131i64 as u64;
 const FALLBACK_HI: u64 = 7640891576956012809u64;
 
+/// Confirmed exact against `RandomSupport.mixStafford13` — these are also the well-known
+/// MurmurHash3/SplitMix64 finalizer constants, unchanged from that public origin.
 fn stafford_mix13(mut z: u64) -> u64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
@@ -96,29 +94,27 @@ impl RandomSource for Xoroshiro128PlusPlus {
         self.next_raw() as i32
     }
 
-    // PARITY-CHECK: this bounded-nextInt algorithm is a best-effort reconstruction of
-    // Mojang's Lemire-style rejection sampling adapted to a 31-bit source (since
-    // `next_bits` only ever yields non-negative values up to 31 bits, mirroring
-    // `RandomSource.next(bits)`'s int-based signature). It is NOT verified against real
-    // 26.2 output — only self-consistency (result always in `[0, bound)`, deterministic for
-    // a fixed seed) is tested below. Structure/feature placement parity work that depends on
-    // Xoroshiro-bounded draws must re-derive/verify this against decompiled source first.
+    // Verified 2026-08-22 against decompiled `XoroshiroRandomSource.nextInt(int)` (Minecraft
+    // 26.2, `net.minecraft.server.Main`): a 32-bit Lemire-style multiply-and-shift over
+    // `nextInt()` (the low 32 bits of `nextLong()`), not the 31-bit `next(bits)`-based scheme
+    // `LegacyRandom`/`java.util.Random` use. Bit-exact with vanilla.
     fn next_int_bounded(&mut self, bound: i32) -> i32 {
         assert!(bound > 0, "bound must be positive");
-        const DOMAIN: u64 = 1u64 << 31;
         let bound_u = bound as u32 as u64;
-        let mut r = self.next_bits(31) as u32 as u64;
-        let mut m = r.wrapping_mul(bound_u);
-        let mut low31 = m & 0x7FFF_FFFF;
-        if low31 < bound_u {
-            let threshold = (DOMAIN - bound_u) % bound_u;
-            while low31 < threshold {
-                r = self.next_bits(31) as u32 as u64;
-                m = r.wrapping_mul(bound_u);
-                low31 = m & 0x7FFF_FFFF;
+        let mut random_bits = self.next_int() as u32 as u64;
+        let mut m = random_bits.wrapping_mul(bound_u);
+        let mut frac = m & 0xFFFF_FFFF;
+        if frac < bound_u {
+            // `Integer.remainderUnsigned(-bound, bound)`: unsigned 32-bit remainder of
+            // `-bound` (`bound.wrapping_neg()` as u32) by `bound`.
+            let threshold = ((bound as u32).wrapping_neg() % (bound as u32)) as u64;
+            while frac < threshold {
+                random_bits = self.next_int() as u32 as u64;
+                m = random_bits.wrapping_mul(bound_u);
+                frac = m & 0xFFFF_FFFF;
             }
         }
-        (m >> 31) as i32
+        (m >> 32) as i32
     }
 
     fn next_int_between(&mut self, min: i32, max: i32) -> i32 {
@@ -129,18 +125,30 @@ impl RandomSource for Xoroshiro128PlusPlus {
         self.next_raw() as i64
     }
 
+    // Verified 2026-08-22: vanilla's `nextBoolean` is `(randomNumberGenerator.nextLong() & 1L)
+    // != 0L` — the *low* bit of a fresh `nextLong()` draw, not the high bit `next_bits(1)`
+    // extracts (that's `LegacyRandom`'s `next(bits)`-based shape, which Xoroshiro doesn't use
+    // here despite sharing the `RandomSource` trait method).
     fn next_boolean(&mut self) -> bool {
-        self.next_bits(1) != 0
+        (self.next_raw() & 1) != 0
     }
 
     fn next_float(&mut self) -> f32 {
         self.next_bits(24) as f32 / FLOAT_DIVISOR
     }
 
+    // Verified 2026-08-22: vanilla's `nextDouble` is `(double) nextBits(53) * DOUBLE_UNIT`
+    // where `nextBits` is Xoroshiro's own private single-draw high-bit extractor
+    // (`nextLong() >>> (64 - bits)`) — one `next_raw()` call, not `LegacyRandom`'s two-call
+    // 26+27 split (that split exists only because `java.util.Random.next(int)` is capped at
+    // 32 bits; Xoroshiro has no such cap). `DOUBLE_UNIT` itself is also Xoroshiro-specific:
+    // vanilla defines it as `(double) 1.110223E-16f` — a *float* literal widened to double,
+    // not the exact `2^-53` `LegacyRandom` uses — so this crate's shared `DOUBLE_ULP` constant
+    // (exact `2^-53`, correct for `LegacyRandom`) does not apply here.
     fn next_double(&mut self) -> f64 {
-        let hi = self.next_bits(26) as i64;
-        let lo = self.next_bits(27) as i64;
-        (((hi << 27) + lo) as f64) * DOUBLE_ULP
+        const DOUBLE_UNIT: f64 = 1.110223E-16_f32 as f64;
+        let bits53 = self.next_raw() >> 11; // top 53 bits of one nextLong() draw
+        (bits53 as f64) * DOUBLE_UNIT
     }
 
     fn next_gaussian(&mut self) -> f64 {
@@ -184,17 +192,18 @@ impl RandomSource for Xoroshiro128PlusPlus {
 mod tests {
     use super::*;
 
-    /// Self-consistency vector for the raw step function against a from-scratch
-    /// implementation of the published xoroshiro128++ algorithm with a fixed state — this
-    /// pins our own regression, not Java parity (see module-level `// PARITY-CHECK`).
+    // All expected values below were captured 2026-08-22 from a standalone Java transcription
+    // of the confirmed-correct algorithm (decompiled from the real Minecraft 26.2 server jar's
+    // `Xoroshiro128PlusPlus`/`XoroshiroRandomSource`/`RandomSupport`, Mojang serialization
+    // stripped) run on real OpenJDK 25 — see the session's scratchpad `decomp/XoroRef.java`.
+    // Same convention as `LegacyRandom`'s tests: exact equality for integer/bit operations,
+    // epsilon for anything routed through `ln`/`sqrt`.
+
     #[test]
-    fn raw_step_deterministic_from_known_state() {
+    fn raw_step_matches_real_java_from_known_state() {
         let mut r = Xoroshiro128PlusPlus::from_state(1, 2);
-        let a = r.next_raw();
-        let b = r.next_raw();
-        let mut r2 = Xoroshiro128PlusPlus::from_state(1, 2);
-        assert_eq!(r2.next_raw(), a);
-        assert_eq!(r2.next_raw(), b);
+        assert_eq!(r.next_raw(), 393217);
+        assert_eq!(r.next_raw(), 669327710093319);
     }
 
     #[test]
@@ -206,9 +215,53 @@ mod tests {
 
     #[test]
     fn seed_upgrade_avoids_all_zero_state_in_practice() {
-        // Regression pin, not a Java-parity claim (see // PARITY-CHECK above).
         let r = Xoroshiro128PlusPlus::new(0);
         assert!(r.lo != 0 || r.hi != 0);
+    }
+
+    #[test]
+    fn next_int_bounded_non_power_of_two_seed_42() {
+        let mut r = Xoroshiro128PlusPlus::new(42);
+        let expected = [15, 11, 31, 17, 24];
+        for e in expected {
+            assert_eq!(r.next_int_bounded(37), e);
+        }
+    }
+
+    #[test]
+    fn next_int_bounded_power_of_two_seed_999() {
+        let mut r = Xoroshiro128PlusPlus::new(999);
+        let expected = [2, 2, 11, 10, 15];
+        for e in expected {
+            assert_eq!(r.next_int_bounded(16), e);
+        }
+    }
+
+    #[test]
+    fn next_double_sequence_seed_7() {
+        let mut r = Xoroshiro128PlusPlus::new(7);
+        let expected = [0.97682267280947, 0.6426700847971978, 0.22714610973813298];
+        for e in expected {
+            assert_eq!(r.next_double(), e);
+        }
+    }
+
+    #[test]
+    fn next_boolean_sequence_seed_42() {
+        let mut r = Xoroshiro128PlusPlus::new(42);
+        let expected = [true, true, true, false, true];
+        for e in expected {
+            assert_eq!(r.next_boolean(), e);
+        }
+    }
+
+    #[test]
+    fn next_float_sequence_seed_7() {
+        let mut r = Xoroshiro128PlusPlus::new(7);
+        let expected: [f32; 3] = [0.9768226, 0.64267004, 0.22714609];
+        for e in expected {
+            assert_eq!(r.next_float(), e);
+        }
     }
 
     #[test]
@@ -219,24 +272,6 @@ mod tests {
                 let v = r.next_int_bounded(bound);
                 assert!((0..bound).contains(&v), "bound={bound} got={v}");
             }
-        }
-    }
-
-    #[test]
-    fn next_int_bounded_deterministic() {
-        let mut a = Xoroshiro128PlusPlus::new(999);
-        let mut b = Xoroshiro128PlusPlus::new(999);
-        for _ in 0..50 {
-            assert_eq!(a.next_int_bounded(37), b.next_int_bounded(37));
-        }
-    }
-
-    #[test]
-    fn next_double_in_unit_range() {
-        let mut r = Xoroshiro128PlusPlus::new(7);
-        for _ in 0..100 {
-            let d = r.next_double();
-            assert!((0.0..1.0).contains(&d));
         }
     }
 

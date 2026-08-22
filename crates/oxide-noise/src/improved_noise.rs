@@ -185,6 +185,18 @@ mod tests {
         }
     }
 
+    /// Captured 2026-08-22 from a standalone Java transcription of the confirmed-correct
+    /// algorithm chain (decompiled from the real Minecraft 26.2 server jar's `ImprovedNoise`/
+    /// `XoroshiroRandomSource`/`RandomSupport`) run on real OpenJDK 25 — see the session's
+    /// scratchpad `decomp/NoiseRef.java`.
+    #[test]
+    fn noise_matches_real_java_xoroshiro_seed_1234() {
+        use oxide_core::Xoroshiro128PlusPlus;
+        let mut r = Xoroshiro128PlusPlus::new(1234);
+        let noise = ImprovedNoise::new(&mut r);
+        assert_eq!(noise.noise(1.5, 2.5, 3.5), -0.2825922132396466);
+    }
+
     #[test]
     fn same_seed_gives_deterministic_noise() {
         let mut r1 = LegacyRandom::new(1234);

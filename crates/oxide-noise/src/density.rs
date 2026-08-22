@@ -4,8 +4,12 @@
 //!
 //! Scope cuts (return a constant + are flagged below, rather than fabricated): `old_blended_noise`
 //! and `end_islands` are each a distinct sub-algorithm outside "noise primitives + interpreter +
-//! router" (wave 2 per `docs/ROADMAP.md`); `beardifier` depends on structure placement, which is
-//! `oxide-structures` (wave 4, not built yet).
+//! router" (wave 2 per `docs/ROADMAP.md`); `beardifier` depends on real structure placement
+//! output (`oxide-structures` only has placement-chunk selection so far, not piece layout).
+//! `old_blended_noise`'s real algorithm (`BlendedNoise`) has been read from decompiled 26.2
+//! source since this was written — it's a real, implementable algorithm (three `PerlinNoise`
+//! instances built via the *legacy* init path plus `Mth.clampedLerp`), just still out of scope
+//! for this wave.
 
 use std::collections::HashMap;
 
@@ -97,9 +101,12 @@ fn evaluate_object(obj: &DensityFunctionObject, ctx: FunctionContext, cx: &EvalC
             rarity_value_mapper,
         } => {
             let input_value = evaluate(input, ctx, cx);
-            // PARITY-CHECK: rarity thresholds/outputs and the `d * |noise(pos / d)|` shape are
-            // reconstructed from memory of `WeirdScaledSampler` (used by the Amplified preset's
-            // caves-of-chaos "clay bands" style terrain). Not verified against 26.2.
+            // Checked 2026-08-22: `minecraft:weird_scaled_sampler` does not exist in the real
+            // 26.2 server's `DensityFunctions` at all (grepped the full decompiled class list —
+            // no match), so this node type is never emitted by a real 26.2 datapack and this
+            // branch is dead in practice. Left in place (harmless, and `oxide-datapack` still
+            // models the JSON shape) rather than deleted, in case a future version reintroduces
+            // it; formula/thresholds below remain an unverified reconstruction if that happens.
             let d = map_rarity(*rarity_value_mapper, input_value);
             d * sample_noise(noise, cx, bx / d, by / d, bz / d).abs()
         }
@@ -196,12 +203,15 @@ fn evaluate_object(obj: &DensityFunctionObject, ctx: FunctionContext, cx: &EvalC
 
         Spline { spline } => evaluate_spline(spline, ctx, cx) as f64,
 
-        // PARITY-CHECK: `0.25` xz/y scale and `ShiftB`'s x/z argument swap are reconstructed
-        // from memory of `ShiftNoise`/`ShiftA`/`ShiftB` (used for terrain-warping the
-        // continentalness/erosion/... climate samples). Not verified against 26.2.
-        Shift { argument } => sample_noise(argument, cx, bx * 0.25, by * 0.25, bz * 0.25),
-        ShiftA { argument } => sample_noise(argument, cx, bx * 0.25, 0.0, bz * 0.25),
-        ShiftB { argument } => sample_noise(argument, cx, bz * 0.25, bx * 0.25, 0.0),
+        // Verified 2026-08-22 against decompiled `DensityFunctions.ShiftNoise`'s default
+        // `compute` method: `offsetNoise.getValue(x*0.25, y*0.25, z*0.25) * 4.0` — the `*4.0`
+        // was missing here before. `ShiftA`/`ShiftB` each call it with a permuted (x,y,z):
+        // `Shift.compute` passes `(blockX, blockY, blockZ)` unchanged, `ShiftA.compute` passes
+        // `(blockX, 0, blockZ)`, `ShiftB.compute` passes `(blockZ, blockX, 0)` — confirming the
+        // x/z swap this crate already guessed for `ShiftB`.
+        Shift { argument } => sample_noise(argument, cx, bx * 0.25, by * 0.25, bz * 0.25) * 4.0,
+        ShiftA { argument } => sample_noise(argument, cx, bx * 0.25, 0.0, bz * 0.25) * 4.0,
+        ShiftB { argument } => sample_noise(argument, cx, bz * 0.25, bx * 0.25, 0.0) * 4.0,
     }
 }
 
@@ -246,9 +256,10 @@ fn map_rarity(mapper: RarityValueMapper, value: f64) -> f64 {
 }
 
 /// Cubic Hermite spline with explicit per-point derivatives, matching vanilla's
-/// `CubicSpline.Multipoint.apply`. PARITY-CHECK: reconstructed from memory; not verified
-/// against 26.2. `f32` throughout matches the vanilla type (`ToFloatFunction`/`float[]` fields
-/// in `SplinePoint`).
+/// `CubicSpline.Multipoint.apply`. Verified 2026-08-22 against decompiled `net.minecraft.util.
+/// CubicSpline` — formula, `findIntervalStart`'s "last point with location <= input" semantics,
+/// and the two-edge linear-extend cases outside the point range are all exact. `f32` throughout
+/// matches the vanilla type (`BoundedFloatFunction`/`float[]` fields in `Multipoint`).
 fn evaluate_spline(spline: &CubicSpline, ctx: FunctionContext, cx: &EvalCtx) -> f32 {
     let pos = evaluate(&spline.coordinate, ctx, cx) as f32;
     let points = &spline.points;
