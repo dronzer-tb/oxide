@@ -65,7 +65,11 @@ pub unsafe extern "C" fn oxide_open(
         let dim_str = CStr::from_ptr(dimension_id)
             .to_str()
             .map_err(|e| format!("dimension_id is not valid UTF-8: {e}"))?;
-        OxideGenerator::open(Path::new(path_str), dim_str, seed).map_err(|e| e.to_string())
+        // `{:#}` and not `to_string()`: anyhow's Display prints only the outermost
+        // context, so "loading datapack at <path>" reached callers with the actual
+        // cause -- missing version.json, a bad JSON file, an unknown density
+        // function -- silently dropped. The alternate form prints the whole chain.
+        OxideGenerator::open(Path::new(path_str), dim_str, seed).map_err(|e| format!("{e:#}"))
     }));
     match result {
         Ok(Ok(generator)) => Box::into_raw(Box::new(generator)),

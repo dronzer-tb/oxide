@@ -5,9 +5,24 @@
 # docs/ARCHITECTURE.md -- no per-OS/arch resolution beyond the one embedded library.
 native-library-path: ""
 
-# Root of a vanilla-exported worldgen datapack (contains data/<namespace>/worldgen/...).
-# See docs/REFERENCE_DATA.md for how to extract one.
-datapack-path: "plugins/Oxide/datapack"
+# Root of a vanilla-exported worldgen datapack: the folder that directly contains
+# version.json and data/<namespace>/worldgen/... A relative path is tried against the
+# server's working directory first, then against this plugin's data folder, so both
+# "datapack" and "plugins/OxideDebug/datapack" find plugins/OxideDebug/datapack.
+# Absolute paths are used as given. See docs/REFERENCE_DATA.md for how to extract one.
+datapack-path: "datapack"
 
 # worldgen/dimension id to generate for /oxide createworld, e.g. minecraft:overworld.
 dimension-id: "minecraft:overworld"
+
+# Seed used when a world opts into this generator via bukkit.yml:
+#
+#   worlds:
+#     world:
+#       generator: OxideDebug
+#
+# Override per world with a suffix: `generator: OxideDebug:12345`. Only new chunks are
+# affected -- a world's existing chunks are on disk and are never regenerated, so expect
+# a hard seam where new terrain meets old. Read OxideChunkGenerator's class doc before
+# pointing a world you care about at this.
+generator-seed: 0

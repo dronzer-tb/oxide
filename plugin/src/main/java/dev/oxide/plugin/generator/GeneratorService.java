@@ -56,12 +56,62 @@ public final class GeneratorService {
         if (nativeLib == null) {
             nativeLib = new OxideNative(resolveLibraryPath());
         }
-        String datapackPath = plugin.getConfig().getString("datapack-path", "plugins/Oxide/datapack");
+        Path datapack = resolveDatapackPath();
         String dimensionId = plugin.getConfig().getString("dimension-id", "minecraft:overworld");
-        OxideNative.Handle handle = nativeLib.open(
-                Path.of(datapackPath).toAbsolutePath().toString(), dimensionId, seed);
+        OxideNative.Handle handle = nativeLib.open(datapack.toString(), dimensionId, seed);
         openHandles.add(handle);
         return handle;
+    }
+
+    /**
+     * Resolves {@code datapack-path} by trying it against the server's working directory
+     * first, then against this plugin's own data folder, taking whichever is a real directory.
+     * Both because both conventions are in the wild here: the shipped default used to read
+     * {@code plugins/Oxide/datapack} (server-relative) while the plugin's data folder is named
+     * after the plugin, {@code plugins/OxideDebug/} -- so the default named a directory that
+     * never exists, and any config written against either reading has to keep working. An
+     * absolute path is used as given; an empty value means {@code datapack} in the data folder.
+     *
+     * <p>Validated here rather than left to the Rust loader so the failure names the missing
+     * piece: a pack root needs a {@code version.json} (or a {@code pack.mcmeta} carrying a
+     * DataVersion) and a {@code data/&lt;namespace&gt;/} tree. See docs/REFERENCE_DATA.md.
+     */
+    private Path resolveDatapackPath() {
+        String configured = plugin.getConfig().getString("datapack-path", "");
+        Path dataFolder = plugin.getDataFolder().toPath().toAbsolutePath();
+        if (configured == null || configured.isBlank()) {
+            configured = "datapack";
+        }
+
+        Path serverRelative = Path.of(configured).toAbsolutePath().normalize();
+        Path pluginRelative = dataFolder.resolve(configured).normalize();
+        Path datapack = Files.isDirectory(serverRelative) ? serverRelative : pluginRelative;
+
+        if (!Files.isDirectory(datapack)) {
+            throw new IllegalStateException(
+                    "datapack-path names no directory: tried " + serverRelative
+                            + " and " + pluginRelative
+                            + " -- fix `datapack-path` in " + dataFolder.resolve("config.yml")
+                            + ", or put an extracted worldgen datapack at "
+                            + dataFolder.resolve("datapack")
+                            + ". See docs/REFERENCE_DATA.md for how to produce one.");
+        }
+        if (!Files.isDirectory(datapack.resolve("data"))) {
+            throw new IllegalStateException(
+                    "not a datapack root: " + datapack + " has no `data/` directory."
+                            + " You want the folder that directly contains data/<namespace>/worldgen,"
+                            + " not the server's datapacks folder and not an archive around it.");
+        }
+        if (!Files.isRegularFile(datapack.resolve("version.json"))
+                && !Files.isRegularFile(datapack.resolve("pack.mcmeta"))) {
+            throw new IllegalStateException(
+                    "datapack at " + datapack + " has neither version.json nor pack.mcmeta;"
+                            + " one of them must supply the DataVersion (this project never"
+                            + " hardcodes it). version.json comes from the vanilla data"
+                            + " generator -- see docs/REFERENCE_DATA.md.");
+        }
+        plugin.getLogger().info("using datapack: " + datapack);
+        return datapack;
     }
 
     /**
