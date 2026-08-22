@@ -1,0 +1,32 @@
+name: plugin
+
+# Manual trigger only, deliberately.
+#
+# plugin/gradle.properties ships `foliaApiVersion` as an unresolvable
+# placeholder: nobody has confirmed which Folia build targets Minecraft 26.2.
+# Until a real version is set there, this build cannot resolve its dependencies
+# and will fail. Running it on every push would mean a permanently red repo
+# that everyone learns to ignore, so it stays opt-in until the version is real.
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+      # No Gradle wrapper is committed: generating one requires running Gradle,
+      # which this project keeps off the local machine.
+      - uses: gradle/actions/setup-gradle@v4
+      - run: gradle build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oxide-debug-plugin
+          path: plugin/build/libs/*.jar
