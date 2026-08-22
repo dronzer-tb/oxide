@@ -1,23 +1,28 @@
 name: plugin
 
-# Manual trigger only, deliberately.
-#
-# plugin/gradle.properties ships `foliaApiVersion` as an unresolvable
-# placeholder: nobody has confirmed which Folia build targets Minecraft 26.2.
-# Until a real version is set there, this build cannot resolve its dependencies
-# and will fail. Running it on every push would mean a permanently red repo
-# that everyone learns to ignore, so it stays opt-in until the version is real.
+# Builds the Rust cdylib first, then the plugin jar with that .so embedded in it
+# (see plugin/build.gradle.kts processResources). The two halves ship as one
+# artifact deliberately: a jar whose bundled library was built from different
+# source than the Java bindings fails at the first downcall, so they are never
+# built separately.
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: plugin
     steps:
       - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # linux-x86_64 only -- see OxideNative's javadoc for why cross-platform
+      # packaging is a deliberate scope cut.
+      - run: cargo build --release -p oxide-ffi
+
       - uses: actions/setup-java@v4
         with:
           java-version: '25'
@@ -26,6 +31,8 @@ jobs:
       # which this project keeps off the local machine.
       - uses: gradle/actions/setup-gradle@v4
       - run: gradle build
+        working-directory: plugin
+
       - uses: actions/upload-artifact@v4
         with:
           name: oxide-debug-plugin

@@ -43,6 +43,16 @@ tasks.test {
     // heavy/verifying builds run in GitHub Actions, not on this machine.
 }
 
+// The compiled oxide-ffi cdylib to embed in the jar. Defaults to where a workspace-root
+// `cargo build --release -p oxide-ffi` puts it, which is what CI runs immediately before
+// this build; override with -PnativeLibraryFile=/abs/path for a locally built one.
+// Deliberately not a hard requirement: the provenance-overlay half of this plugin works
+// without any native library, so a missing .so warns and produces a jar without one rather
+// than failing the build. GeneratorService then errors only if /oxide createworld is used.
+val nativeLibraryFile: File = providers.gradleProperty("nativeLibraryFile")
+    .map { file(it) }
+    .getOrElse(rootDir.resolve("../target/release/liboxide_ffi.so"))
+
 tasks.processResources {
     val props = mapOf(
         "version" to project.version.toString(),
@@ -51,6 +61,18 @@ tasks.processResources {
     inputs.properties(props)
     filesMatching("paper-plugin.yml") {
         expand(props)
+    }
+
+    if (nativeLibraryFile.isFile) {
+        from(nativeLibraryFile) {
+            into("natives/linux-x86_64")
+        }
+    } else {
+        logger.warn(
+            "oxide: no native library at ${nativeLibraryFile.absolutePath} -- building a jar " +
+                "WITHOUT an embedded liboxide_ffi.so; /oxide createworld will fail on it " +
+                "unless native-library-path in config.yml points at a real .so"
+        )
     }
 }
 
