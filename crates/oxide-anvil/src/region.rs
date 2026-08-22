@@ -24,6 +24,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::AnvilError;
 use crate::lock::RegionGuard;
+use crate::provenance;
 use oxide_core::ChunkPos;
 
 /// Region-file coordinates a chunk belongs to (`chunk_coord.div_euclid(32)`).
@@ -62,7 +63,9 @@ fn touch_timestamp(file: &mut File, x: usize, z: usize) -> std::io::Result<()> {
     Ok(())
 }
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), AnvilError> {
+/// Crash-safe whole-file replacement (temp-file-then-atomic-rename). Shared with
+/// [`crate::provenance`], which writes its sidecar the same way.
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), AnvilError> {
     let dir: PathBuf = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
         _ => PathBuf::from("."),
@@ -95,6 +98,10 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), AnvilError> {
 /// regenerating one Oxide fully owns) and is always crash-safe: the file is built in memory, then
 /// persisted via write-temp-then-atomic-rename, so a crash mid-write never leaves a truncated
 /// region on disk.
+///
+/// Also marks every written chunk Oxide-generated in the region's provenance sidecar (see
+/// `crate::provenance`), under the same [`RegionGuard`] as the region write itself, so the two
+/// files cannot be observed to disagree because of a race with another Oxide writer.
 pub fn write_region_file(path: &Path, chunks: &[(ChunkPos, Vec<u8>)]) -> Result<(), AnvilError> {
     let _guard = RegionGuard::acquire(path)?;
 
@@ -115,6 +122,10 @@ pub fn write_region_file(path: &Path, chunks: &[(ChunkPos, Vec<u8>)]) -> Result<
         }
     }
 
+    for (pos, _) in chunks {
+        provenance::mark_chunk_locked(path, *pos)?;
+    }
+
     Ok(())
 }
 
@@ -125,6 +136,9 @@ pub fn write_region_file(path: &Path, chunks: &[(ChunkPos, Vec<u8>)]) -> Result<
 /// it with zlib (scheme 2) via `fastanvil::Region::write_chunk`, which reuses the chunk's current
 /// sector run when the new payload still fits and otherwise appends at the end of the file and
 /// frees the old sectors — see the module docs above.
+///
+/// Also marks the chunk Oxide-generated in the region's provenance sidecar, under the same
+/// [`RegionGuard`] as the region write — see [`write_region_file`].
 pub fn update_chunk_in_place(
     path: &Path,
     pos: &ChunkPos,
@@ -147,6 +161,8 @@ pub fn update_chunk_in_place(
     if let Ok(mut file) = OpenOptions::new().write(true).open(path) {
         let _ = touch_timestamp(&mut file, x, z);
     }
+
+    provenance::mark_chunk_locked(path, *pos)?;
 
     Ok(())
 }

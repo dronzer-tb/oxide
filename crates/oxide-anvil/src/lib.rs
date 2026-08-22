@@ -8,11 +8,13 @@
 //! - [`nbt`] — `ChunkData` -> modern (1.18+) flattened chunk NBT, and back.
 //! - [`region`] — `.mca` region file read/write, including in-place single-chunk updates.
 //! - [`lock`] — advisory locking for region files a live Java server may hold open.
+//! - [`provenance`] — per-region sidecar tracking which chunks Oxide generated vs vanilla Java.
 //! - [`error`] — [`error::AnvilError`], this crate's error enum.
 
 pub mod error;
 pub mod lock;
 pub mod nbt;
+pub mod provenance;
 pub mod region;
 
 pub use error::AnvilError;

@@ -25,4 +25,13 @@ pub enum AnvilError {
 
     #[error("lock file {0} is malformed")]
     MalformedLock(PathBuf),
+
+    #[error("provenance sidecar {path} has wrong length {len} bytes (expected 136)")]
+    ProvenanceBadLength { path: PathBuf, len: usize },
+
+    #[error("provenance sidecar {path} has invalid magic (expected \"OXPV\")")]
+    ProvenanceBadMagic { path: PathBuf },
+
+    #[error("provenance sidecar {path} has unknown format version {version}")]
+    ProvenanceUnknownVersion { path: PathBuf, version: u8 },
 }
