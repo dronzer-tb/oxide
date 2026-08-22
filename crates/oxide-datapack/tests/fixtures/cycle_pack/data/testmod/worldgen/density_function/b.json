@@ -1,0 +1,5 @@
+{
+  "type": "minecraft:add",
+  "argument1": "testmod:a",
+  "argument2": 0.0
+}

@@ -1,0 +1,11 @@
+{
+  "type": "minecraft:overworld",
+  "generator": {
+    "type": "minecraft:noise",
+    "settings": "testmod:overworld",
+    "biome_source": {
+      "type": "minecraft:fixed",
+      "biome": "testmod:plains"
+    }
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "type": "minecraft:add",
+  "argument1": "testmod:left",
+  "argument2": "testmod:right"
+}

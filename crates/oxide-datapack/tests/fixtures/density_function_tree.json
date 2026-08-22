@@ -1,0 +1,23 @@
+{
+  "type": "minecraft:add",
+  "argument1": 5.5,
+  "argument2": {
+    "type": "minecraft:spline",
+    "spline": {
+      "coordinate": "testmod:erosion",
+      "points": [
+        {"location": -1.0, "value": 0.5, "derivative": 0.0},
+        {
+          "location": 0.0,
+          "value": {
+            "coordinate": 1.0,
+            "points": [
+              {"location": 0.0, "value": -0.2, "derivative": 0.1}
+            ]
+          },
+          "derivative": 0.0
+        }
+      ]
+    }
+  }
+}

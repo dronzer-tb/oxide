@@ -1,0 +1,20 @@
+{
+  "sea_level": 63,
+  "default_block": {"Name": "minecraft:stone"},
+  "default_fluid": {"Name": "minecraft:water"},
+  "noise": {"min_y": -64, "height": 384, "size_horizontal": 1, "size_vertical": 2},
+  "noise_router": {
+    "temperature": 0.0,
+    "vegetation": 0.0,
+    "continents": 0.0,
+    "erosion": 0.0,
+    "depth": 0.0,
+    "ridges": 0.0,
+    "initial_density_without_jaggedness": 0.0,
+    "final_density": 0.0
+  },
+  "surface_rule": {
+    "type": "minecraft:block",
+    "result_state": {"Name": "minecraft:stone"}
+  }
+}

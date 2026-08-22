@@ -1,0 +1,5 @@
+{
+  "type": "minecraft:add",
+  "argument1": "testmod:shared",
+  "argument2": 0.5
+}
