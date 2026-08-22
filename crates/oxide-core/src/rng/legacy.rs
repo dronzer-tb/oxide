@@ -40,7 +40,7 @@ impl RandomSource for LegacyRandom {
 
     fn next_int_bounded(&mut self, bound: i32) -> i32 {
         assert!(bound > 0, "bound must be positive");
-        if (bound & bound.wrapping_neg()) == bound {
+        if bound.isolate_lowest_one() == bound {
             // Power-of-two fast path: `(bound * (long) next(31)) >> 31`.
             return ((bound as i64).wrapping_mul(self.next_bits(31) as i64) >> 31) as i32;
         }
