@@ -5,12 +5,31 @@ wave can be built concurrently; a wave starts when the previous one compiles and
 
 | Wave | Crates | PRD milestone | Status |
 |---|---|---|---|
-| 0 | `oxide-core` | 1 | in progress |
-| 1 | `oxide-datapack`, `oxide-anvil`, CI | 1, 2 | in progress |
-| 2 | `oxide-noise` | 1 | blocked on wave 0–1 |
-| 3 | `oxide-biome`, `oxide-chunkgen` | 1 | blocked on wave 2 |
-| 4 | `oxide-structures`, `oxide-harness` | 3, 4 | blocked on wave 3 |
-| 5 | `plugin/`, `oxide-ffi` | 5, 6, 7 | blocked on wave 4 |
+| 0 | `oxide-core` | 1 | done — `9b1c332`, 43 tests |
+| 1 | `oxide-datapack`, `oxide-anvil`, CI | 1, 2 | done — `d727fb0`, `f401a90`, `3789e86` |
+| 2 | `oxide-noise` | 1 | not started |
+| 3 | `oxide-biome`, `oxide-chunkgen` | 1 | not started |
+| 4 | `oxide-structures`, `oxide-harness` | 3, 4 | not started |
+| 5 | `plugin/` router, `oxide-ffi` | 5, 6, 7 | not started |
+
+## v0 smoke test (out of band)
+
+Built ahead of wave 2 so the write path could be exercised before any real
+generator exists. It proves plumbing, not generation quality.
+
+| Piece | Commit | What it is |
+|---|---|---|
+| Provenance sidecar | `3789e86` | `r.X.Z.mca.oxide`, 136 bytes, magic `OXPV`, 1024-bit LSB-first bitmap indexed `local_z*32+local_x`. Marked inside the region write's `RegionGuard`. |
+| `oxide-pregen` | `5ac8224` | CLI writing deliberately synthetic checkerboard/flat chunks into a world's region dir. |
+| `plugin/` debug overlay | `b4fe0c8` | Folia action-bar readout of chunk provenance, `/oxide debug`, `/oxide here`. |
+
+The F3 screen is client-side and cannot be extended by a server, so the readout
+is the action bar. It works on vanilla Java clients and on Bedrock via Geyser.
+
+Blocked on two things only the user can supply: a real `--data-version` from a
+26.2 export, and a verified `foliaApiVersion` in `plugin/gradle.properties`
+(currently a deliberate placeholder that will not resolve). `.github/workflows/
+plugin.yml` is `workflow_dispatch` only until that version is real.
 
 ## Gates between waves
 
@@ -25,6 +44,11 @@ wave can be built concurrently; a wave starts when the previous one compiles and
 
 ## Known unknowns
 
+- **21 `PARITY-CHECK` markers** are open across the crates (`grep -rn "PARITY-CHECK" crates/`).
+  The load-bearing ones: `oxide-core`'s Xoroshiro seed constants, bounded-int path and positional
+  mix are reconstructed and unverified, while `LegacyRandom` **was** checked against a real JDK 25
+  run. `oxide-anvil`'s `isLightOn` relight key and `ChunkStatus` NBT strings, and `oxide-pregen`'s
+  world bounds and block-array index order, are conventions rather than confirmed 26.2 facts.
 - **Minecraft 26.2 specifics are not assumed.** The data-driven design exists precisely so that no
   26.2 constant, DataVersion, or noise parameter is written from memory. Anything a crate could not
   confirm is marked with a `// PARITY-CHECK:` comment naming what needs verification against a real
