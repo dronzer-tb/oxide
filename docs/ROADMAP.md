@@ -7,7 +7,7 @@ wave can be built concurrently; a wave starts when the previous one compiles and
 |---|---|---|---|
 | 0 | `oxide-core` | 1 | done — `9b1c332`, 43 tests |
 | 1 | `oxide-datapack`, `oxide-anvil`, CI | 1, 2 | done — `d727fb0`, `f401a90`, `3789e86` |
-| 2 | `oxide-noise` | 1 | not started |
+| 2 | `oxide-noise` | 1 | done — `6974f82`, 17 tests, unverified vs Java (see PARITY-CHECK) |
 | 3 | `oxide-biome`, `oxide-chunkgen` | 1 | not started |
 | 4 | `oxide-structures`, `oxide-harness` | 3, 4 | not started |
 | 5 | `plugin/` router, `oxide-ffi` | 5, 6, 7 | not started |
