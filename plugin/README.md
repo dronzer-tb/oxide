@@ -106,6 +106,18 @@ the resulting jar still runs the provenance overlay, and only
 
 ## Installing
 
+Download the jar straight from the rolling release -- no zip, no artifact
+extraction, and the link stays valid across builds:
+
+```sh
+curl -LO https://github.com/dronzer-tb/oxide/releases/latest/download/OxideDebug.jar
+```
+
+Every push to `main` replaces it (`.github/workflows/plugin.yml`). The same
+release also carries a bare `liboxide_ffi.so`, needed only for the
+`native-library-path` override below -- the jar already embeds its own copy,
+built from the same commit.
+
 Drop the jar in `plugins/`. On the first `/oxide createworld`, the embedded
 linux-x86_64 library is extracted to `plugins/OxideDebug/liboxide_ffi.so` and
 loaded from there (Panama's `SymbolLookup.libraryLookup` needs a real

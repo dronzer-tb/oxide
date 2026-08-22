@@ -11,6 +11,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -33,7 +36,44 @@ jobs:
       - run: gradle build
         working-directory: plugin
 
+      # Fixed asset names: the download URLs below are meant to stay valid across
+      # builds, so a server admin can curl the same link every time.
+      - name: Stage release assets
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp plugin/build/libs/*.jar dist/OxideDebug.jar
+          cp target/release/liboxide_ffi.so dist/liboxide_ffi.so
+
+      # Kept for pull requests, which must not publish a release. GitHub always
+      # serves workflow artifacts as a .zip -- that is not configurable, which is
+      # exactly why main also publishes the rolling release below.
       - uses: actions/upload-artifact@v4
         with:
           name: oxide-debug-plugin
-          path: plugin/build/libs/*.jar
+          path: dist/*
+
+      # Rolling prerelease, replaced on every push to main, so these two links are
+      # permanent and download the raw files with no zip in between:
+      #   https://github.com/${{ github.repository }}/releases/latest/download/OxideDebug.jar
+      #   https://github.com/${{ github.repository }}/releases/latest/download/liboxide_ffi.so
+      # The .so is attached separately only for the `native-library-path` override
+      # in config.yml -- the jar already contains its own copy, and mixing a jar
+      # with a differently-built .so is what the embed exists to prevent.
+      - name: Publish rolling release
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release view latest >/dev/null 2>&1 || gh release create latest \
+            --prerelease \
+            --title "Latest build (main)" \
+            --notes "Rolling build of main. OxideDebug.jar has liboxide_ffi.so embedded; download the .so separately only to use the native-library-path override."
+          gh release upload latest dist/OxideDebug.jar dist/liboxide_ffi.so --clobber
+          gh release edit latest --notes "Rolling build of \`main\`, rebuilt on every push.
+
+          Built from ${{ github.sha }} on $(date -u +%Y-%m-%dT%H:%MZ).
+
+          - \`OxideDebug.jar\` -- the plugin, with \`liboxide_ffi.so\` embedded. This is the only file you need.
+          - \`liboxide_ffi.so\` -- the same library on its own, for the \`native-library-path\` override in \`config.yml\`."
