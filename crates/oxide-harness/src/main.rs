@@ -1,2 +1,156 @@
-//! oxide-harness — offline Rust-vs-vanilla divergence harness. See docs/ARCHITECTURE.md
-fn main() {}
+//! oxide-harness — offline Rust-vs-vanilla divergence harness. See `docs/ARCHITECTURE.md`.
+//!
+//! Currently a "generate, hash, and self-check" tool, not yet a differ: there is no vanilla
+//! reference chunk dump to diff against (see `docs/ROADMAP.md`'s "Known unknowns" — that's a
+//! gitignored, manually-extracted artifact nobody has produced for 26.2 yet). Once one exists,
+//! `merkle::diverging_sections` is what localizes a mismatch.
+
+mod invariants;
+mod merkle;
+
+use std::path::PathBuf;
+use std::str::FromStr;
+
+use anyhow::{anyhow, Context, Result};
+use clap::Parser;
+
+use oxide_biome::BiomeSearchTree;
+use oxide_chunkgen::fill_chunk;
+use oxide_core::{BlockState, ChunkPos, ResourceLocation};
+use oxide_datapack::{load_datapack, BiomeSource};
+use oxide_noise::NoiseRouterEvaluator;
+
+use invariants::{biome_ids_are_registered, heightmaps_match_surface};
+use merkle::{build_merkle, diverging_sections};
+
+#[derive(Parser)]
+#[command(name = "oxide-harness")]
+struct Args {
+    /// Path to a datapack-shaped directory (`<path>/data/...`).
+    #[arg(long)]
+    datapack: PathBuf,
+    /// `worldgen/dimension` id to generate.
+    #[arg(long, default_value = "minecraft:overworld")]
+    dimension: String,
+    /// World seed.
+    #[arg(long)]
+    seed: i64,
+    /// Chunks from `-radius..=radius` on each axis around the origin.
+    #[arg(long, default_value_t = 2)]
+    radius: i32,
+    /// Merkle leaf cube side length (must evenly divide 16).
+    #[arg(long, default_value_t = 4)]
+    leaf_size: usize,
+}
+
+fn main() -> Result<()> {
+    tracing_subscriber::fmt::init();
+    let args = Args::parse();
+
+    let datapack = load_datapack(&args.datapack)
+        .with_context(|| format!("loading datapack at {}", args.datapack.display()))?;
+
+    let dim_id = ResourceLocation::from_str(&args.dimension)
+        .map_err(|e| anyhow!("invalid --dimension {:?}: {e}", args.dimension))?;
+    let dimension = datapack
+        .dimensions
+        .get(&dim_id)
+        .ok_or_else(|| anyhow!("dimension {dim_id} not found in datapack"))?;
+    let noise_settings_id = dimension
+        .generator
+        .settings
+        .as_ref()
+        .ok_or_else(|| anyhow!("dimension {dim_id}'s generator has no noise_settings (not a minecraft:noise generator?)"))?;
+    let settings = datapack
+        .noise_settings
+        .get(noise_settings_id)
+        .ok_or_else(|| anyhow!("noise_settings {noise_settings_id} not found in datapack"))?;
+
+    let router = NoiseRouterEvaluator::new(
+        args.seed,
+        settings,
+        &datapack.density_functions,
+        &datapack.noise_params,
+    );
+
+    let biome_tree = match dimension.generator.biome_source.as_ref() {
+        Some(BiomeSource::MultiNoise(source)) => BiomeSearchTree::from_source(source),
+        _ => None, // Fixed/Checkerboard/TheEnd/Unknown: not wired to a search tree yet.
+    };
+    if biome_tree.is_none() {
+        tracing::warn!(
+            "no explicit multi-noise biome source resolved for {dim_id} — chunks will keep the single fallback biome"
+        );
+    }
+
+    let air = BlockState::new(ResourceLocation::minecraft("air"));
+
+    let mut total = 0usize;
+    let mut with_failures = 0usize;
+    let mut failure_counts: std::collections::HashMap<&'static str, usize> = Default::default();
+
+    for cx in -args.radius..=args.radius {
+        for cz in -args.radius..=args.radius {
+            total += 1;
+            let chunk = fill_chunk(
+                ChunkPos::new(cx, cz),
+                settings,
+                &router,
+                biome_tree.as_ref(),
+            );
+            let tree = build_merkle(&chunk, args.leaf_size);
+
+            // Determinism self-check: the same seed and position must fill identically every
+            // time, with no vanilla reference needed to catch a regression here. Exercises
+            // `diverging_sections` for real, not just in unit tests, since there's no vanilla
+            // tree to diff against yet (see module doc).
+            let rebuilt = fill_chunk(
+                ChunkPos::new(cx, cz),
+                settings,
+                &router,
+                biome_tree.as_ref(),
+            );
+            let rebuilt_tree = build_merkle(&rebuilt, args.leaf_size);
+            let nondeterministic_sections = diverging_sections(&tree, &rebuilt_tree);
+
+            let mut failures = heightmaps_match_surface(&chunk, &air, &settings.default_fluid);
+            failures.extend(biome_ids_are_registered(&chunk, &datapack.biomes));
+            if !nondeterministic_sections.is_empty() {
+                failures.push(invariants::InvariantFailure {
+                    check: "fill_is_deterministic",
+                    detail: format!(
+                        "{} of {} sections differ across repeated fills",
+                        nondeterministic_sections.len(),
+                        tree.section_hashes.len()
+                    ),
+                });
+            }
+
+            if failures.is_empty() {
+                tracing::info!(x = cx, z = cz, hash = %tree.chunk_hash.to_hex(), "ok");
+            } else {
+                with_failures += 1;
+                for f in &failures {
+                    *failure_counts.entry(f.check).or_insert(0) += 1;
+                    tracing::warn!(x = cx, z = cz, check = f.check, detail = %f.detail, "invariant failed");
+                }
+            }
+        }
+    }
+
+    println!("chunks checked:  {total}");
+    println!("chunks clean:    {}", total - with_failures);
+    println!("chunks flagged:  {with_failures}");
+    for (check, count) in &failure_counts {
+        println!("  {check}: {count} failure(s)");
+    }
+    println!(
+        "\nno vanilla reference dump available — this run reports self-consistency only, not \
+         Java parity (see docs/ROADMAP.md's Known Unknowns)."
+    );
+
+    if with_failures > 0 {
+        std::process::exit(1);
+    }
+    Ok(())
+}
