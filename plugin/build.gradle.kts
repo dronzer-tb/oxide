@@ -32,6 +32,9 @@ dependencies {
 
     testImplementation(platform("org.junit:junit-bom:5.10.2"))
     testImplementation("org.junit.jupiter:junit-jupiter")
+    // Gradle 9's test executor needs the launcher on the runtime classpath
+    // explicitly; junit-jupiter no longer pulls it in transitively.
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
 tasks.test {
