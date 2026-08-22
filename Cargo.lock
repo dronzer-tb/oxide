@@ -652,6 +652,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxide-pregen"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "oxide-anvil",
+ "oxide-core",
+ "rayon",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "oxide-structures"
 version = "0.1.0"
 dependencies = [
