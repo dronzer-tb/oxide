@@ -14,7 +14,7 @@ mod ore_veins;
 mod surface;
 
 pub use carver::{apply_carvers, CarverWorld};
-pub use fill::fill_chunk;
+pub use fill::{base_height, fill_chunk};
 pub use surface::{BiomeTemperatures, SurfaceSystem};
 
 use oxide_biome::BiomeSearchTree;

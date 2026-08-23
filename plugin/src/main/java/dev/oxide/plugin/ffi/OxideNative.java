@@ -56,6 +56,7 @@ public final class OxideNative implements AutoCloseable {
     private final MethodHandle hBiomePaletteLen;
     private final MethodHandle hBiomePaletteName;
     private final MethodHandle hBiomeAt;
+    private final MethodHandle hBaseHeight;
     private final MethodHandle hLastError;
 
     public OxideNative(Path libraryPath) {
@@ -88,6 +89,9 @@ public final class OxideNative implements AutoCloseable {
         this.hBiomePaletteName = downcall(lookup, "oxide_biome_palette_name", FunctionDescriptor.of(
                 ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
         this.hBiomeAt = downcall(lookup, "oxide_biome_at", FunctionDescriptor.of(
+                ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+                ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
+        this.hBaseHeight = downcall(lookup, "oxide_base_height", FunctionDescriptor.of(
                 ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
                 ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
         this.hLastError = downcall(lookup, "oxide_last_error", FunctionDescriptor.of(ValueLayout.ADDRESS));
@@ -193,6 +197,19 @@ public final class OxideNative implements AutoCloseable {
                 throw new IllegalStateException("oxide_biome_at failed (code " + index + "): " + lastError());
             }
             return index;
+        }
+
+        /**
+         * Surface height at {@code (x, z)} for one heightmap type, selected by the ordinal of
+         * Bukkit's {@code HeightMap} enum. Backs the plugin's {@code getBaseHeight} override,
+         * without which CraftBukkit answers structure placement from the vanilla generator.
+         */
+        public int baseHeight(int x, int z, int heightMapOrdinal) {
+            try {
+                return (int) hBaseHeight.invokeExact(ptr, x, z, heightMapOrdinal);
+            } catch (Throwable t) {
+                throw new RuntimeException("oxide_base_height threw across the FFI boundary", t);
+            }
         }
 
         /** Biome id at {@code index}, e.g. {@code minecraft:plains}. */

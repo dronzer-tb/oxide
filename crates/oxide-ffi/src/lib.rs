@@ -20,6 +20,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 
 use handle::OxideGenerator;
+use oxide_core::HeightmapType;
 
 thread_local! {
     static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
@@ -117,6 +118,34 @@ pub unsafe extern "C" fn oxide_height(handle: *const OxideGenerator) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn oxide_sea_level(handle: *const OxideGenerator) -> i32 {
     with_handle(handle, i32::MIN, |g| g.sea_level())
+}
+
+/// Surface height at `(x, z)` for one heightmap type, as a Bukkit
+/// `ChunkGenerator.getBaseHeight` override answers it. `heightmap` selects the type by the
+/// ordinal of Bukkit's `HeightMap` enum, which this maps explicitly rather than by cast:
+/// `0` MOTION_BLOCKING, `1` MOTION_BLOCKING_NO_LEAVES, `2` OCEAN_FLOOR, `3` OCEAN_FLOOR_WG,
+/// `4` WORLD_SURFACE, `5` WORLD_SURFACE_WG. An unknown value is treated as WORLD_SURFACE.
+///
+/// Returns `i32::MIN` on a null handle.
+///
+/// # Safety
+/// `handle` must be a live pointer from `oxide_open`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_base_height(
+    handle: *const OxideGenerator,
+    x: i32,
+    z: i32,
+    heightmap: i32,
+) -> i32 {
+    let ty = match heightmap {
+        0 => HeightmapType::MotionBlocking,
+        1 => HeightmapType::MotionBlockingNoLeaves,
+        2 => HeightmapType::OceanFloor,
+        3 => HeightmapType::OceanFloorWg,
+        5 => HeightmapType::WorldSurfaceWg,
+        _ => HeightmapType::WorldSurface,
+    };
+    with_handle(handle, i32::MIN, |g| g.base_height(x, z, ty))
 }
 
 /// Null-terminated namespaced block id (e.g. `"minecraft:stone"`) for value `1` in

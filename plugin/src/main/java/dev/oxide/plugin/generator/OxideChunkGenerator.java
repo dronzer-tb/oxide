@@ -8,6 +8,7 @@ import org.bukkit.block.data.BlockData;
 import org.bukkit.generator.BiomeProvider;
 import org.bukkit.generator.ChunkGenerator;
 import org.bukkit.generator.WorldInfo;
+import org.bukkit.HeightMap;
 import org.jetbrains.annotations.NotNull;
 
 import java.lang.foreign.Arena;
@@ -27,11 +28,13 @@ import java.util.logging.Logger;
  * not bare stone. Biomes come from {@link OxideBiomeProvider}, backed by the
  * same generator handle.
  *
- * <p>Still absent, and so still left at {@code ChunkGenerator}'s defaults:
- * carvers (caves/ravines), aquifers, ore veins. Structures and decoration are
- * deliberately left to vanilla -- {@code shouldGenerateStructures()} and
- * {@code shouldGenerateDecorations()} return true -- since those run on top of
+ * <p>The Rust side now also runs carvers (caves/ravines), aquifers and ore
+ * veins. Structures, decoration and mobs are deliberately left to vanilla --
+ * {@code shouldGenerateStructures()}, {@code shouldGenerateDecorations()} and
+ * {@code shouldGenerateMobs()} return true -- since those run on top of
  * finished terrain and vanilla's implementations work against it unchanged.
+ * Structure <em>placement</em> still has to be answered from this generator
+ * though, which is what {@link #getBaseHeight} is for.
  *
  * <p>Coordinate convention for {@code ChunkData.setBlock}: {@code x}/{@code z}
  * are chunk-local (0-15), {@code y} is the world-absolute height -- the
@@ -137,6 +140,43 @@ public final class OxideChunkGenerator extends ChunkGenerator {
             }
             return backing;
         }
+    }
+
+    /**
+     * Answers structure placement from this generator's terrain. Without this override
+     * CraftBukkit falls through to the <em>vanilla</em> noise generator, which places villages
+     * and other structures at vanilla's heights on top of Rust-generated ground -- houses end
+     * up on dirt stilts or buried in a hillside. It is also what made {@code /locate} stall a
+     * Folia region thread past the 60s watchdog: the vanilla fallback rebuilds a whole noise
+     * router per column, where this reuses one corner grid per chunk.
+     */
+    @Override
+    public int getBaseHeight(@NotNull WorldInfo worldInfo, @NotNull Random random, int x, int z,
+                             @NotNull HeightMap heightMap) {
+        try {
+            return backing(worldInfo).handle().baseHeight(x, z, heightMapCode(heightMap));
+        } catch (RuntimeException e) {
+            // Falling back to vanilla here is wrong-but-survivable (a misplaced structure);
+            // letting it propagate would kill the region thread mid-placement.
+            logger.log(Level.WARNING, "oxide base height failed at " + x + "," + z
+                    + " -- falling back to vanilla for this query", e);
+            return super.getBaseHeight(worldInfo, random, x, z, heightMap);
+        }
+    }
+
+    /**
+     * Mapped by constant rather than by {@code ordinal()} so a reordering of Bukkit's enum
+     * cannot silently start asking for a different heightmap.
+     */
+    private static int heightMapCode(HeightMap heightMap) {
+        return switch (heightMap) {
+            case MOTION_BLOCKING -> 0;
+            case MOTION_BLOCKING_NO_LEAVES -> 1;
+            case OCEAN_FLOOR -> 2;
+            case OCEAN_FLOOR_WG -> 3;
+            case WORLD_SURFACE -> 4;
+            case WORLD_SURFACE_WG -> 5;
+        };
     }
 
     /**

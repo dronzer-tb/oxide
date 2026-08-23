@@ -125,6 +125,53 @@ pub fn fill_chunk_with(
     chunk
 }
 
+/// The height a structure would sit at in the column `(x, z)`, as vanilla's
+/// `NoiseBasedChunkGenerator.getBaseHeight` reports it: scan the column from the top down and
+/// return one above the first block the heightmap type counts, or the world floor if the
+/// column has none.
+///
+/// Vanilla scans noise + aquifer only -- no surface rules and no carvers -- so this does the
+/// same rather than generating the finished chunk. Two consequences, both deliberate: it is
+/// far cheaper than a full chunk (one shared corner grid, then 385 interpolated samples), and
+/// it reports the pre-carve surface, so a structure placed over a cave mouth sits where
+/// vanilla would put it.
+pub fn base_height(
+    x: i32,
+    z: i32,
+    settings: &NoiseGeneratorSettings,
+    router: &NoiseRouterEvaluator,
+    ty: HeightmapType,
+) -> i32 {
+    let min_y = settings.noise.min_y;
+    let air = BlockState::new(ResourceLocation::minecraft("air"));
+    let chunk_pos = ChunkPos::new(x.div_euclid(16), z.div_euclid(16));
+    let caches = router.chunk_caches(chunk_pos.x, chunk_pos.z);
+    let mut aquifer = crate::aquifer::for_settings(chunk_pos, settings, router, &caches);
+
+    for y in (min_y..min_y + settings.noise.height).rev() {
+        let density = router.sample_in_chunk(&caches, RouterSlot::FinalDensity, x, y, z);
+        let block = match aquifer.as_mut() {
+            Some(aquifer) => match aquifer.compute_substance(x, y, z, density) {
+                None => settings.default_block.clone(),
+                Some(state) => state,
+            },
+            None => {
+                if density > 0.0 {
+                    settings.default_block.clone()
+                } else if y <= settings.sea_level {
+                    settings.default_fluid.clone()
+                } else {
+                    air.clone()
+                }
+            }
+        };
+        if counts_for_heightmap(ty, &block, &air, &settings.default_fluid) {
+            return y + 1;
+        }
+    }
+    min_y
+}
+
 /// Per vanilla `Heightmap.Types`: `WORLD_SURFACE*` counts anything non-air (fluids included),
 /// `OCEAN_FLOOR*` counts only solid/opaque blocks (fluids excluded), `MOTION_BLOCKING*` counts
 /// anything that blocks movement *or* is a fluid — which, in our two-block-type model (no
@@ -280,6 +327,57 @@ mod tests {
         // Top section is entirely above sea level -> air.
         let top_section = chunk.sections.last().unwrap();
         assert_eq!(*top_section.block_states.get(local_index(0, 0, 0)), air);
+    }
+
+    #[test]
+    fn base_height_agrees_with_the_filled_chunk_heightmap() {
+        // `base_height` scans one column straight from the router instead of filling a chunk,
+        // so it has to land on exactly the same surface the fill's own heightmap reports --
+        // that agreement is the whole point of it standing in for vanilla's getBaseHeight.
+        let df = DensityFunction::Object(Box::new(
+            oxide_datapack::DensityFunctionObject::YClampedGradient {
+                from_y: 0,
+                to_y: 1,
+                from_value: 1.0,
+                to_value: -1.0,
+            },
+        ));
+        let settings = settings(df);
+        let df_registry = Registry::default();
+        let noise_registry = Registry::default();
+        let router = NoiseRouterEvaluator::new(11, &settings, &df_registry, &noise_registry);
+        let chunk = fill_chunk(ChunkPos::new(0, 0), &settings, &router, None);
+        let hm = &chunk.heightmaps[&HeightmapType::WorldSurface];
+
+        for (x, z) in [(0usize, 0usize), (5, 11), (15, 15)] {
+            let from_fill = hm.get(x, z) + settings.noise.min_y;
+            let from_scan = base_height(
+                x as i32,
+                z as i32,
+                &settings,
+                &router,
+                HeightmapType::WorldSurface,
+            );
+            assert_eq!(from_fill, from_scan, "column ({x}, {z})");
+        }
+    }
+
+    #[test]
+    fn base_height_reports_the_world_floor_for_an_empty_column() {
+        let settings = settings(DensityFunction::Constant(-1.0));
+        let df_registry = Registry::default();
+        let noise_registry = Registry::default();
+        let router = NoiseRouterEvaluator::new(3, &settings, &df_registry, &noise_registry);
+        // Aquifers are off in this fixture, so an all-negative density leaves water up to sea
+        // level -- which WORLD_SURFACE counts but OCEAN_FLOOR does not.
+        assert_eq!(
+            base_height(0, 0, &settings, &router, HeightmapType::OceanFloor),
+            settings.noise.min_y
+        );
+        assert_eq!(
+            base_height(0, 0, &settings, &router, HeightmapType::WorldSurface),
+            settings.sea_level + 1
+        );
     }
 
     #[test]

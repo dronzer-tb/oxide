@@ -13,6 +13,7 @@ use anyhow::{anyhow, Context, Result};
 
 use oxide_biome::BiomeSearchTree;
 use oxide_chunkgen::{generate_chunk, BiomeTemperatures, CarverSetup};
+use oxide_core::HeightmapType;
 use oxide_core::{ChunkPos, ResourceLocation};
 use oxide_datapack::{load_datapack, BiomeSource, NoiseGeneratorSettings};
 use oxide_noise::NoiseRouterEvaluator;
@@ -286,6 +287,14 @@ impl OxideGenerator {
             }
         }
         Ok(())
+    }
+
+    /// Surface height at `(x, z)` for one heightmap type -- what a Bukkit
+    /// `ChunkGenerator.getBaseHeight` override answers with. Without it CraftBukkit falls back
+    /// to the *vanilla* noise generator, so structures get placed at vanilla's heights on top
+    /// of this generator's terrain.
+    pub fn base_height(&self, x: i32, z: i32, ty: HeightmapType) -> i32 {
+        oxide_chunkgen::base_height(x, z, &self.settings, &self.router, ty)
     }
 
     /// Biome at one block position, without generating a chunk -- climate sample plus a search
