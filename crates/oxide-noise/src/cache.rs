@@ -36,8 +36,19 @@ fn node_id(df: &DensityFunction) -> usize {
 pub struct ChunkCaches {
     /// Horizontal cell size in blocks (`size_horizontal * 4` in vanilla's noise settings).
     cell_width: i32,
+    /// `log2(cell_width)` when the width is a power of two, which every vanilla noise setting
+    /// uses. `x >> k` is exactly `x.div_euclid(1 << k)` for a positive divisor, including for
+    /// negative `x`, so this is a substitution and not an approximation; `None` falls back to
+    /// the division.
+    cell_width_log2: Option<u32>,
     /// Vertical cell size in blocks (`size_vertical * 4`).
     cell_height: i32,
+    /// `log2(cell_height)`, as [`Self::cell_width_log2`].
+    cell_height_log2: Option<u32>,
+    /// `1.0 / cell_width` and `1.0 / cell_height`, so the per-block interpolation fraction is a
+    /// multiply rather than a divide.
+    inv_cell_width: f64,
+    inv_cell_height: f64,
     min_y: i32,
     /// Corner counts, derived from the chunk's 16x16 footprint and the world height.
     cells_x: usize,
@@ -51,8 +62,12 @@ pub struct ChunkCaches {
     // hashing -- and hashing is what these caches were spending their savings on: several
     // HashMap lookups per block, ~98k blocks per chunk, is millions of hashes to avoid
     // arithmetic that interpolation had already made cheap.
-    /// node -> cell-corner grid, built on first use within this chunk.
-    interpolated: RefCell<Vec<(usize, Vec<f64>)>>,
+    /// node -> cell-corner grid, built on first use within this chunk. Keys live in their own
+    /// packed `Vec` so the probe walks a contiguous run of `usize` instead of striding over a
+    /// 32-byte tuple per candidate; the grids never move once pushed, so a slot index found in
+    /// `interpolated_keys` indexes `interpolated_grids` directly.
+    interpolated_keys: RefCell<Vec<usize>>,
+    interpolated_grids: RefCell<Vec<Vec<f64>>>,
     /// node -> one value per column of this chunk, for the 2D subtrees (continents, erosion,
     /// factor, offset) that would otherwise be recomputed once per block of height.
     two_d: RefCell<Vec<(usize, Vec<Option<f64>>)>>,
@@ -74,21 +89,22 @@ impl ChunkCaches {
         let cell_height = (size_vertical * 4).max(1);
         Self {
             cell_width,
+            cell_width_log2: log2_exact(cell_width),
             cell_height,
+            cell_height_log2: log2_exact(cell_height),
+            inv_cell_width: 1.0 / cell_width as f64,
+            inv_cell_height: 1.0 / cell_height as f64,
             min_y,
             cells_x: (16 / cell_width) as usize,
             cells_y: (height / cell_height) as usize,
             cells_z: (16 / cell_width) as usize,
             origin_x: chunk_min_x,
             origin_z: chunk_min_z,
-            interpolated: RefCell::new(Vec::new()),
+            interpolated_keys: RefCell::new(Vec::new()),
+            interpolated_grids: RefCell::new(Vec::new()),
             two_d: RefCell::new(Vec::new()),
             once: RefCell::new(Vec::new()),
         }
-    }
-
-    fn corner_index(&self, cx: usize, cy: usize, cz: usize) -> usize {
-        (cy * (self.cells_z + 1) + cz) * (self.cells_x + 1) + cx
     }
 
     /// Value of an `interpolated` node: the tree is evaluated only at this chunk's cell corners
@@ -101,52 +117,74 @@ impl ChunkCaches {
         eval_cx: &EvalCtx,
     ) -> f64 {
         let id = node_id(node);
-        if !self.interpolated.borrow().iter().any(|(key, _)| *key == id) {
-            // Built into a local first: evaluating a corner recurses back through the
-            // evaluator, which may consult this same cache, so no borrow may be held here.
-            let grid = self.build_corner_grid(node, eval_cx);
-            self.interpolated.borrow_mut().push((id, grid));
+        // Hit path: one borrow, one probe over the packed key run, eight loads out of the grid
+        // it names. The previous shape scanned the association list twice (once to test for
+        // presence, once to read) and took two `RefCell` borrows to do it, three times per
+        // block -- `final_density` reaches five `interpolated` nodes for every block filled.
+        if let Some(slot) = self.slot_of(id) {
+            return self.blend(slot, ctx);
         }
-        let grids = self.interpolated.borrow();
-        let grid = &grids
-            .iter()
-            .find(|(key, _)| *key == id)
-            .expect("just inserted")
-            .1;
+        // Miss: build outside any borrow, since evaluating a corner recurses back through the
+        // evaluator and may consult this same cache. `push` only appends, so a slot handed out
+        // by a nested build stays valid.
+        let grid = self.build_corner_grid(node, eval_cx);
+        let slot = {
+            let mut keys = self.interpolated_keys.borrow_mut();
+            let mut grids = self.interpolated_grids.borrow_mut();
+            keys.push(id);
+            grids.push(grid);
+            keys.len() - 1
+        };
+        self.blend(slot, ctx)
+    }
 
+    fn slot_of(&self, id: usize) -> Option<usize> {
+        self.interpolated_keys
+            .borrow()
+            .iter()
+            .position(|key| *key == id)
+    }
+
+    /// The trilinear blend of the eight corners around `ctx` in the grid at `slot`.
+    fn blend(&self, slot: usize, ctx: FunctionContext) -> f64 {
         let local_x = ctx.x - self.origin_x;
         let local_z = ctx.z - self.origin_z;
         let rel_y = ctx.y - self.min_y;
 
-        let cx_index = (local_x.div_euclid(self.cell_width)).clamp(0, self.cells_x as i32 - 1);
-        let cz_index = (local_z.div_euclid(self.cell_width)).clamp(0, self.cells_z as i32 - 1);
-        let cy_index = (rel_y.div_euclid(self.cell_height)).clamp(0, self.cells_y as i32 - 1);
+        let cx_index = div_cell(local_x, self.cell_width, self.cell_width_log2)
+            .clamp(0, self.cells_x as i32 - 1);
+        let cz_index = div_cell(local_z, self.cell_width, self.cell_width_log2)
+            .clamp(0, self.cells_z as i32 - 1);
+        let cy_index = div_cell(rel_y, self.cell_height, self.cell_height_log2)
+            .clamp(0, self.cells_y as i32 - 1);
 
-        let dx = (local_x - cx_index * self.cell_width) as f64 / self.cell_width as f64;
-        let dz = (local_z - cz_index * self.cell_width) as f64 / self.cell_width as f64;
-        let dy = (rel_y - cy_index * self.cell_height) as f64 / self.cell_height as f64;
+        let dx = (local_x - cx_index * self.cell_width) as f64 * self.inv_cell_width;
+        let dz = (local_z - cz_index * self.cell_width) as f64 * self.inv_cell_width;
+        let dy = (rel_y - cy_index * self.cell_height) as f64 * self.inv_cell_height;
 
         let (cx_index, cy_index, cz_index) =
             (cx_index as usize, cy_index as usize, cz_index as usize);
-        let corner = |ox: usize, oy: usize, oz: usize| {
-            grid[self.corner_index(cx_index + ox, cy_index + oy, cz_index + oz)]
-        };
+
+        let grids = self.interpolated_grids.borrow();
+        let grid = &grids[slot];
+        // The eight corners of one cell are two adjacent x pairs on each of four (y, z) rows,
+        // so the row stride is all the indexing this needs.
+        let x_stride = 1usize;
+        let z_stride = self.cells_x + 1;
+        let y_stride = z_stride * (self.cells_z + 1);
+        let base = cy_index * y_stride + cz_index * z_stride + cx_index;
+        let v000 = grid[base];
+        let v100 = grid[base + x_stride];
+        let v010 = grid[base + y_stride];
+        let v110 = grid[base + y_stride + x_stride];
+        let v001 = grid[base + z_stride];
+        let v101 = grid[base + z_stride + x_stride];
+        let v011 = grid[base + y_stride + z_stride];
+        let v111 = grid[base + y_stride + z_stride + x_stride];
 
         // PARITY-CHECK: interpolation order follows vanilla's `Mth.lerp3` -- blend along x,
         // then y, then z. Any order gives nearly the same number, but not bit-identically.
-        lerp3(
-            dx,
-            dy,
-            dz,
-            corner(0, 0, 0),
-            corner(1, 0, 0),
-            corner(0, 1, 0),
-            corner(1, 1, 0),
-            corner(0, 0, 1),
-            corner(1, 0, 1),
-            corner(0, 1, 1),
-            corner(1, 1, 1),
-        )
+        lerp3(dx, dy, dz, v000, v100, v010, v110, v001, v101, v011, v111)
     }
 
     fn build_corner_grid(&self, node: &DensityFunction, eval_cx: &EvalCtx) -> Vec<f64> {
@@ -257,6 +295,21 @@ impl ChunkCaches {
             None => cache.push((id, (position, value))),
         }
         value
+    }
+}
+
+/// `log2(n)` when `n` is a positive power of two.
+fn log2_exact(n: i32) -> Option<u32> {
+    (n > 0 && (n & (n - 1)) == 0).then(|| n.trailing_zeros())
+}
+
+/// `value.div_euclid(cell)`, as a shift when `cell` is a power of two. Arithmetic right shift
+/// is floor division, which is what `div_euclid` is for a positive divisor.
+#[inline]
+fn div_cell(value: i32, cell: i32, log2: Option<u32>) -> i32 {
+    match log2 {
+        Some(k) => value >> k,
+        None => value.div_euclid(cell),
     }
 }
 
