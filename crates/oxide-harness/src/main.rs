@@ -123,6 +123,8 @@ fn main() -> Result<()> {
     };
 
     let mut air_below_zero = 0usize;
+    let mut underground_water = 0usize;
+    let mut underground_lava = 0usize;
     let mut vein_census: std::collections::BTreeMap<String, usize> = Default::default();
     let mut surface_census: std::collections::BTreeMap<String, usize> = Default::default();
     let mut total = 0usize;
@@ -171,8 +173,17 @@ fn main() -> Result<()> {
             let nondeterministic_sections = diverging_sections(&tree, &rebuilt_tree);
 
             for section in chunk.sections.iter() {
+                let section_min_y = (section.y as i32) * 16;
                 for index in 0..4096usize {
                     let name = section.block_states.get(index).name.path().to_string();
+                    // Fluid above sea level, or lava anywhere, can only come from an aquifer:
+                    // the old placeholder rule put water strictly below sea level.
+                    if name == "water" && section_min_y > settings.sea_level {
+                        underground_water += 1;
+                    }
+                    if name == "lava" {
+                        underground_lava += 1;
+                    }
                     if matches!(
                         name.as_str(),
                         "copper_ore"
@@ -235,6 +246,7 @@ fn main() -> Result<()> {
     }
 
     println!("air blocks below y=0 (carved): {air_below_zero}");
+    println!("aquifer fluids: {underground_water} water above sea level, {underground_lava} lava");
     println!("ore vein blocks:");
     for (name, count) in vein_census.iter() {
         println!("  {count:>7}  {name}");

@@ -87,9 +87,13 @@ fn open_generate_close_round_trip() {
             names.iter().any(|n| n == "minecraft:air"),
             "expected air in the palette, got {names:?}"
         );
+        // Stone *is* expected here, even at a flat density of 0.0: the fixture leaves
+        // aquifers enabled, and where two aquifers of different fluid levels meet, the
+        // barrier-pressure term makes the boundary solid. Before aquifers existed this
+        // asserted the opposite.
         assert!(
-            !names.iter().any(|n| n == "minecraft:stone"),
-            "density 0.0 should never produce solid, got {names:?}"
+            names.iter().any(|n| n == "minecraft:stone"),
+            "aquifer barriers should place some solid, got {names:?}"
         );
 
         assert_eq!(

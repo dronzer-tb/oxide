@@ -6,6 +6,7 @@
 //! large vanilla subsystem and are not built yet — see `fill.rs`'s module doc. Surface rules
 //! (grass/dirt/sand/bedrock) *are* evaluated now, with two named gaps — see `surface.rs`.
 
+mod aquifer;
 mod biome_grid;
 mod carver;
 mod fill;
@@ -35,7 +36,11 @@ pub fn generate_chunk(
     carvers: Option<&CarverSetup<'_>>,
 ) -> ChunkData {
     let caches = router.chunk_caches(pos.x, pos.z);
-    let mut chunk = fill_chunk(pos, settings, router, biomes);
+    // One aquifer for the whole chunk, shared by the fill and the carvers -- vanilla's carvers
+    // consult the same aquifer the fill used, which is what makes a cave that breaks into a
+    // flooded aquifer fill with water instead of staying dry.
+    let mut aquifer = aquifer::for_settings(pos, settings, router, &caches);
+    let mut chunk = fill::fill_chunk_with(pos, settings, router, biomes, &caches, aquifer.as_mut());
     // Before the surface pass, as vanilla orders it: veins run inside the noise fill, so the
     // surface rules see whatever the veins left.
     ore_veins::apply_ore_veins(&mut chunk, pos, settings, router, &caches);
@@ -49,7 +54,7 @@ pub fn generate_chunk(
             settings,
             seed: setup.seed,
         };
-        apply_carvers(&mut chunk, pos, &world, setup.carvers_at);
+        apply_carvers(&mut chunk, pos, &world, setup.carvers_at, aquifer.as_mut());
         // Carving removes blocks, so the heightmaps the fill pass computed are stale -- a
         // column whose surface was carved away now reports a surface that is not there.
         // Vanilla keeps its heightmaps updated as each block changes; recomputing once after

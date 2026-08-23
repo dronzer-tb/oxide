@@ -36,17 +36,28 @@ pub fn fill_chunk(
     router: &NoiseRouterEvaluator,
     biomes: Option<&oxide_biome::BiomeSearchTree>,
 ) -> ChunkData {
+    let caches = router.chunk_caches(pos.x, pos.z);
+    let mut aquifer = crate::aquifer::for_settings(pos, settings, router, &caches);
+    fill_chunk_with(pos, settings, router, biomes, &caches, aquifer.as_mut())
+}
+
+/// As [`fill_chunk`], but sharing a caller-owned cache set and aquifer -- what
+/// [`crate::generate_chunk`] uses so the carving pass can consult the same aquifer vanilla's
+/// carvers consult.
+pub fn fill_chunk_with(
+    pos: ChunkPos,
+    settings: &NoiseGeneratorSettings,
+    router: &NoiseRouterEvaluator,
+    biomes: Option<&oxide_biome::BiomeSearchTree>,
+    caches: &oxide_noise::ChunkCaches,
+    mut aquifer: Option<&mut crate::aquifer::Aquifer>,
+) -> ChunkData {
     let min_y = settings.noise.min_y;
     let height = settings.noise.height;
     let air = BlockState::new(ResourceLocation::minecraft("air"));
     // Fallback only: real biome resolution happens per quart-cell below when `biomes` is
     // `Some`; this is what an unresolved `Preset` source (see above) leaves every cell at.
     let default_biome = ResourceLocation::minecraft("plains");
-
-    // One cache set for the whole chunk: this is what turns the datapack's `interpolated` and
-    // `flat_cache` nodes into what they mean in vanilla (see oxide_noise::ChunkCaches). It is
-    // both the parity-correct path and ~80x less work than sampling each block exactly.
-    let caches = router.chunk_caches(pos.x, pos.z);
 
     let mut chunk = ChunkData::new(pos, min_y, height);
     let section_count = chunk.section_count();
@@ -63,22 +74,36 @@ pub fn fill_chunk(
                 for local_x in 0..16usize {
                     let block_x = pos.min_block_x() + local_x as i32;
                     let density = router.sample_in_chunk(
-                        &caches,
+                        caches,
                         RouterSlot::FinalDensity,
                         block_x,
                         y,
                         block_z,
                     );
-                    // PARITY-CHECK: this is the non-aquifer fallback rule reconstructed from
-                    // memory of `NoiseChunk`'s substance decision (`density > 0` => solid,
-                    // else fluid below sea level, else air). Real aquifer fluid-level logic
-                    // is out of scope for this wave.
-                    let block = if density > 0.0 {
-                        settings.default_block.clone()
-                    } else if y <= settings.sea_level {
-                        settings.default_fluid.clone()
-                    } else {
-                        continue; // air is already the section's default palette entry
+                    // The aquifer decides what a non-solid position holds -- air, water or
+                    // lava, at a level that varies per underground body. `None` means solid, so
+                    // the default block goes in. Vanilla runs exactly this as the first filler
+                    // in its noise fill.
+                    let block = match aquifer.as_deref_mut() {
+                        Some(aquifer) => {
+                            match aquifer.compute_substance(block_x, y, block_z, density) {
+                                None => settings.default_block.clone(),
+                                // Air is already the section's default palette entry.
+                                Some(state) if state == air => continue,
+                                Some(state) => state,
+                            }
+                        }
+                        // Aquifers disabled by the settings: solid below the surface, the
+                        // dimension's fluid up to sea level, air above.
+                        None => {
+                            if density > 0.0 {
+                                settings.default_block.clone()
+                            } else if y <= settings.sea_level {
+                                settings.default_fluid.clone()
+                            } else {
+                                continue;
+                            }
+                        }
                     };
                     section
                         .block_states
@@ -88,7 +113,7 @@ pub fn fill_chunk(
         }
 
         if let Some(tree) = biomes {
-            fill_biomes(&mut section, pos, section_min_y, router, &caches, tree);
+            fill_biomes(&mut section, pos, section_min_y, router, caches, tree);
         }
 
         chunk.sections.push(section);

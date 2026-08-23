@@ -9,11 +9,9 @@
 //!   carver config. Block tags are not modelled, so anything that is not air, fluid or bedrock
 //!   is carveable. For the terrain this crate produces -- stone, dirt, grass, sand, gravel --
 //!   that is the same set the vanilla tag names.
-//! - **Carved substance.** Vanilla asks the aquifer what to put in a carved block; below the
-//!   carver's `lava_level` it is lava regardless. Aquifers are not implemented, so a carved
-//!   block becomes air, or lava below `lava_level`. Vanilla with aquifers *disabled* would
-//!   flood every cave below sea level with water, which is not what the overworld looks like;
-//!   air is the closer wrong answer until aquifers land.
+//! - ~~**Carved substance.**~~ Resolved: carving now asks the same aquifer the fill pass used,
+//!   so a cave that breaks into a flooded aquifer fills with water and one that does not stays
+//!   dry. Below the carver's `lava_level` it is lava regardless, as vanilla checks first.
 //! - **Grass repair.** Vanilla re-runs the surface rule on dirt exposed under a carved-away
 //!   grass block. Not done here, so a cave breaching the surface leaves bare dirt.
 
@@ -109,6 +107,7 @@ pub fn apply_carvers(
     pos: ChunkPos,
     world: &CarverWorld,
     carvers_at: &dyn Fn(ChunkPos) -> Vec<ConfiguredCarver>,
+    mut aquifer: Option<&mut crate::aquifer::Aquifer>,
 ) {
     let mut mask = CarvingMask::new(world.min_y(), world.height());
     let mut random = LegacyRandom::new(0);
@@ -125,12 +124,30 @@ pub fn apply_carvers(
                 match &carver {
                     ConfiguredCarver::Cave { config } | ConfiguredCarver::NetherCave { config } => {
                         if random.next_float() <= config.base.probability {
-                            carve_cave(chunk, pos, world, config, &mut random, source, &mut mask);
+                            carve_cave(
+                                chunk,
+                                pos,
+                                world,
+                                config,
+                                &mut random,
+                                source,
+                                &mut mask,
+                                aquifer.as_deref_mut(),
+                            );
                         }
                     }
                     ConfiguredCarver::Canyon { config } => {
                         if random.next_float() <= config.base.probability {
-                            carve_canyon(chunk, pos, world, config, &mut random, source, &mut mask);
+                            carve_canyon(
+                                chunk,
+                                pos,
+                                world,
+                                config,
+                                &mut random,
+                                source,
+                                &mut mask,
+                                aquifer.as_deref_mut(),
+                            );
                         }
                     }
                 }
@@ -140,6 +157,7 @@ pub fn apply_carvers(
 }
 
 /// `CaveWorldCarver#carve`.
+#[allow(clippy::too_many_arguments)]
 fn carve_cave(
     chunk: &mut ChunkData,
     pos: ChunkPos,
@@ -148,6 +166,7 @@ fn carve_cave(
     random: &mut LegacyRandom,
     source: ChunkPos,
     mask: &mut CarvingMask,
+    mut aquifer: Option<&mut crate::aquifer::Aquifer>,
 ) {
     let max_distance = (CARVER_RANGE * 2 - 1) * 16;
     // Nested nextInt is vanilla's own shape: it biases hard toward few caves. Split into
@@ -182,6 +201,7 @@ fn carve_cave(
                 y_scale,
                 floor_level,
                 mask,
+                aquifer.as_deref_mut(),
             );
             tunnels += random.next_int_bounded(4);
         }
@@ -211,6 +231,7 @@ fn carve_cave(
                 1.0,
                 floor_level,
                 mask,
+                aquifer.as_deref_mut(),
             );
         }
     }
@@ -239,6 +260,7 @@ fn carve_room(
     y_scale: f64,
     floor_level: f64,
     mask: &mut CarvingMask,
+    aquifer: Option<&mut crate::aquifer::Aquifer>,
 ) {
     // sin(PI/2) == 1, written as vanilla writes it.
     let horizontal_radius = 1.5 + (std::f64::consts::FRAC_PI_2.sin() * thickness as f64);
@@ -255,6 +277,7 @@ fn carve_room(
         vertical_radius,
         floor_level,
         mask,
+        aquifer,
     );
 }
 
@@ -279,6 +302,7 @@ fn carve_tunnel(
     y_scale: f64,
     floor_level: f64,
     mask: &mut CarvingMask,
+    mut aquifer: Option<&mut crate::aquifer::Aquifer>,
 ) {
     let mut random = LegacyRandom::new(tunnel_seed);
     let split_point = random.next_int_bounded(distance / 2) + distance / 4;
@@ -329,6 +353,7 @@ fn carve_tunnel(
                 1.0,
                 floor_level,
                 mask,
+                aquifer.as_deref_mut(),
             );
             carve_tunnel(
                 chunk,
@@ -349,6 +374,7 @@ fn carve_tunnel(
                 1.0,
                 floor_level,
                 mask,
+                aquifer.as_deref_mut(),
             );
             return;
         }
@@ -370,6 +396,7 @@ fn carve_tunnel(
             vertical_radius * vertical_multiplier,
             floor_level,
             mask,
+            aquifer.as_deref_mut(),
         );
     }
 }
@@ -386,6 +413,7 @@ fn carve_canyon(
     random: &mut LegacyRandom,
     source: ChunkPos,
     mask: &mut CarvingMask,
+    mut aquifer: Option<&mut crate::aquifer::Aquifer>,
 ) {
     let max_distance = (CARVER_RANGE * 2 - 1) * 16;
     let mut x = (source.min_block_x() + random.next_int_bounded(16)) as f64;
@@ -445,6 +473,7 @@ fn carve_canyon(
             // A canyon has no floor cut-off; -1.0 lets the whole ellipsoid carve.
             -1.0,
             mask,
+            aquifer.as_deref_mut(),
         );
     }
 }
@@ -495,6 +524,7 @@ fn carve_ellipsoid(
     vertical_radius: f64,
     floor_level: f64,
     mask: &mut CarvingMask,
+    mut aquifer: Option<&mut crate::aquifer::Aquifer>,
 ) {
     let center_x = pos.min_block_x() as f64 + 8.0;
     let center_z = pos.min_block_z() as f64 + 8.0;
@@ -540,14 +570,28 @@ fn carve_ellipsoid(
                 if !can_replace(chunk, world, local_x as usize, world_y, local_z as usize) {
                     continue;
                 }
-                let state = if world_y <= lava_level { &lava } else { &air };
+                // Vanilla asks the aquifer what a carved position becomes: air above the water
+                // table, water inside a flooded one, and nothing at all -- left solid -- where
+                // the aquifer says so. Below the carver's lava_level it is lava regardless,
+                // checked first exactly as getCarveState does.
+                let state = if world_y <= lava_level {
+                    Some(lava.clone())
+                } else {
+                    match aquifer.as_deref_mut() {
+                        Some(aquifer) => aquifer.compute_substance(world_x, world_y, world_z, 0.0),
+                        None => Some(air.clone()),
+                    }
+                };
+                let Some(state) = state else {
+                    continue;
+                };
                 set_block(
                     chunk,
                     world,
                     local_x as usize,
                     world_y,
                     local_z as usize,
-                    state.clone(),
+                    state,
                 );
             }
         }
