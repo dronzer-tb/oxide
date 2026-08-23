@@ -17,6 +17,7 @@ pub mod loader;
 pub mod multi_noise;
 pub mod noise_param;
 pub mod noise_settings;
+pub mod presets;
 pub mod registry;
 pub mod resolve;
 pub mod structure;
@@ -42,6 +43,7 @@ pub use noise_param::NormalNoiseParameters;
 pub use noise_settings::{
     NoiseDimensionSettings, NoiseGeneratorSettings, NoiseRouter, SpawnTarget,
 };
+pub use presets::preset_entries;
 pub use registry::Registry;
 pub use structure::{
     BiomeFilter, ExclusionZone, FrequencyReductionMethod, ProcessorList, SpreadType, Structure,
