@@ -9,6 +9,7 @@
 mod biome_grid;
 mod carver;
 mod fill;
+mod ore_veins;
 mod surface;
 
 pub use carver::{apply_carvers, CarverWorld};
@@ -35,6 +36,9 @@ pub fn generate_chunk(
 ) -> ChunkData {
     let caches = router.chunk_caches(pos.x, pos.z);
     let mut chunk = fill_chunk(pos, settings, router, biomes);
+    // Before the surface pass, as vanilla orders it: veins run inside the noise fill, so the
+    // surface rules see whatever the veins left.
+    ore_veins::apply_ore_veins(&mut chunk, pos, settings, router, &caches);
     SurfaceSystem::new(settings, router, biome_temperatures).apply(&mut chunk, pos, &caches);
     chunk.status = ChunkStatus::Surface;
 

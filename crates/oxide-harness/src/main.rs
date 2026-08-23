@@ -123,6 +123,7 @@ fn main() -> Result<()> {
     };
 
     let mut air_below_zero = 0usize;
+    let mut vein_census: std::collections::BTreeMap<String, usize> = Default::default();
     let mut surface_census: std::collections::BTreeMap<String, usize> = Default::default();
     let mut total = 0usize;
     let mut with_failures = 0usize;
@@ -168,6 +169,23 @@ fn main() -> Result<()> {
             );
             let rebuilt_tree = build_merkle(&rebuilt, args.leaf_size);
             let nondeterministic_sections = diverging_sections(&tree, &rebuilt_tree);
+
+            for section in chunk.sections.iter() {
+                for index in 0..4096usize {
+                    let name = section.block_states.get(index).name.path().to_string();
+                    if matches!(
+                        name.as_str(),
+                        "copper_ore"
+                            | "deepslate_iron_ore"
+                            | "raw_copper_block"
+                            | "raw_iron_block"
+                            | "granite"
+                            | "tuff"
+                    ) {
+                        *vein_census.entry(name).or_insert(0usize) += 1;
+                    }
+                }
+            }
 
             // Air below y=0 is the carver's signature: the noise fill never leaves any there.
             for section in chunk.sections.iter() {
@@ -217,6 +235,10 @@ fn main() -> Result<()> {
     }
 
     println!("air blocks below y=0 (carved): {air_below_zero}");
+    println!("ore vein blocks:");
+    for (name, count) in vein_census.iter() {
+        println!("  {count:>7}  {name}");
+    }
     println!("surface blocks (top of each column):");
     let mut census: Vec<_> = surface_census.iter().collect();
     census.sort_by(|a, b| b.1.cmp(a.1));
