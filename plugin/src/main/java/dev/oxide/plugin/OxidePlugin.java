@@ -3,6 +3,7 @@ package dev.oxide.plugin;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import dev.oxide.plugin.generator.GeneratorService;
 import dev.oxide.plugin.generator.OxideChunkGenerator;
+import dev.oxide.plugin.provenance.LiveProvenance;
 import dev.oxide.plugin.provenance.ProvenanceLookup;
 import dev.oxide.plugin.provenance.SidecarCache;
 import io.papermc.paper.command.brigadier.Commands;
@@ -25,6 +26,7 @@ import java.util.List;
  */
 public final class OxidePlugin extends JavaPlugin {
     private DebugState debugState;
+    private LiveProvenance liveProvenance;
     private GeneratorService generatorService;
 
     @Override
@@ -33,12 +35,16 @@ public final class OxidePlugin extends JavaPlugin {
         debugState = new DebugState();
         SidecarCache sidecarCache = new SidecarCache(getLogger());
         ProvenanceLookup provenanceLookup = new ProvenanceLookup(sidecarCache);
+        liveProvenance = new LiveProvenance(this);
         generatorService = new GeneratorService(this);
 
         getServer().getPluginManager().registerEvents(
-                new ChunkTracker(this, debugState, provenanceLookup), this);
+                new ChunkTracker(this, debugState, liveProvenance), this);
+        // Stamps the mark onto each chunk Oxide generated, as it loads.
+        getServer().getPluginManager().registerEvents(liveProvenance, this);
 
-        OxideCommand command = new OxideCommand(this, debugState, provenanceLookup, generatorService);
+        OxideCommand command = new OxideCommand(
+                this, debugState, provenanceLookup, liveProvenance, generatorService);
 
         // Paper plugins (declared via paper-plugin.yml) do not support the legacy
         // plugin.yml/getCommand() runtime lookup path -- JavaPlugin#getCommand throws
@@ -147,7 +153,7 @@ public final class OxidePlugin extends JavaPlugin {
                 + ". Existing chunks are untouched, and new terrain will not match them: this"
                 + " generator has no carvers, aquifers, or ore veins yet, so expect no caves and"
                 + " a visible seam at the boundary.");
-        return new OxideChunkGenerator(generatorService, getLogger(), seed);
+        return new OxideChunkGenerator(generatorService, liveProvenance, getLogger(), seed);
     }
 
     @Override

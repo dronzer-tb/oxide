@@ -16,9 +16,9 @@ public final class ActionBarPresenter {
 
     public static Component render(ChunkProvenance provenance) {
         return switch (provenance) {
-            case OXIDE -> Component.text("chunkgen: oxide", NamedTextColor.AQUA);
-            case JAVA -> Component.text("chunkgen: java", NamedTextColor.GOLD);
-            case UNKNOWN -> Component.text("chunkgen: unknown", NamedTextColor.RED);
+            case OXIDE -> Component.text("\u25cf OXIDE (Rust)", NamedTextColor.AQUA);
+            case JAVA -> Component.text("\u25cf JAVA (vanilla)", NamedTextColor.GOLD);
+            case UNKNOWN -> Component.text("\u25cf UNKNOWN", NamedTextColor.RED);
         };
     }
 }

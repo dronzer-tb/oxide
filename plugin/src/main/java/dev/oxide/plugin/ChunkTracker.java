@@ -1,7 +1,7 @@
 package dev.oxide.plugin;
 
 import dev.oxide.plugin.provenance.ChunkProvenance;
-import dev.oxide.plugin.provenance.ProvenanceLookup;
+import dev.oxide.plugin.provenance.LiveProvenance;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
@@ -10,7 +10,6 @@ import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.plugin.Plugin;
 
-import java.io.File;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -44,17 +43,17 @@ public final class ChunkTracker implements Listener {
 
     private final Plugin plugin;
     private final DebugState debugState;
-    private final ProvenanceLookup provenanceLookup;
+    private final LiveProvenance liveProvenance;
 
     // Last chunk key (packed x,z) seen per player. ConcurrentHashMap
     // because different players are very likely owned by different region
     // threads at the same instant, all reading/writing this map.
     private final Map<UUID, Long> lastChunk = new ConcurrentHashMap<>();
 
-    public ChunkTracker(Plugin plugin, DebugState debugState, ProvenanceLookup provenanceLookup) {
+    public ChunkTracker(Plugin plugin, DebugState debugState, LiveProvenance liveProvenance) {
         this.plugin = plugin;
         this.debugState = debugState;
-        this.provenanceLookup = provenanceLookup;
+        this.liveProvenance = liveProvenance;
     }
 
     private static long chunkKey(int chunkX, int chunkZ) {
@@ -95,16 +94,11 @@ public final class ChunkTracker implements Listener {
     }
 
     private void pushUpdate(Player player, int chunkX, int chunkZ) {
-        String worldName = player.getWorld().getName();
-        File worldFolder = player.getWorld().getWorldFolder();
-
-        // Sidecar lookup is filesystem I/O, but it's cached (see
-        // SidecarCache) so the common case is a single mtime stat; doing it
-        // inline on the region thread that's already handling this move
-        // event is fine and keeps the entity-scheduler hop below focused on
-        // exactly the one thing that needs it: touching the Player.
-        ChunkProvenance provenance = provenanceLookup.lookup(worldName, worldFolder, chunkX, chunkZ)
-                .provenance();
+        // Reads the mark this server wrote when it generated the chunk (see LiveProvenance) --
+        // an in-memory persistent-data read on the chunk the player is standing in, which is
+        // loaded by definition. No file I/O, and unlike the sidecar lookup it reflects what
+        // actually generated this chunk on this server.
+        ChunkProvenance provenance = liveProvenance.of(player.getChunk());
 
         player.getScheduler().run(plugin, task -> player.sendActionBar(ActionBarPresenter.render(provenance)),
                 null /* retired: player already gone, nothing to do */);

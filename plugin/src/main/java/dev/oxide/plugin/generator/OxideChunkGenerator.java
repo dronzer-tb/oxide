@@ -1,6 +1,7 @@
 package dev.oxide.plugin.generator;
 
 import dev.oxide.plugin.ffi.OxideNative;
+import dev.oxide.plugin.provenance.LiveProvenance;
 import org.bukkit.Material;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.generator.BiomeProvider;
@@ -59,6 +60,7 @@ public final class OxideChunkGenerator extends ChunkGenerator {
     private static final int MAX_PENDING_CHUNKS = 64;
 
     private final GeneratorService service;
+    private final LiveProvenance liveProvenance;
     /** Explicit seed, or null to use the seed of whatever world asks for generation. */
     private final Long explicitSeed;
     private final Logger logger;
@@ -75,13 +77,15 @@ public final class OxideChunkGenerator extends ChunkGenerator {
      * added to {@code bukkit.yml} wants: chunks continuing the world the players are already
      * in, not chunks from an unrelated one.
      */
-    public OxideChunkGenerator(GeneratorService service, Logger logger) {
-        this(service, logger, null);
+    public OxideChunkGenerator(GeneratorService service, LiveProvenance liveProvenance, Logger logger) {
+        this(service, liveProvenance, logger, null);
     }
 
     /** Generates with {@code seed} regardless of the world's own -- what /oxide createworld wants. */
-    public OxideChunkGenerator(GeneratorService service, Logger logger, Long seed) {
+    public OxideChunkGenerator(GeneratorService service, LiveProvenance liveProvenance,
+                               Logger logger, Long seed) {
         this.service = service;
+        this.liveProvenance = liveProvenance;
         this.logger = logger;
         this.explicitSeed = seed;
     }
@@ -200,6 +204,11 @@ public final class OxideChunkGenerator extends ChunkGenerator {
                 return;
             }
         }
+
+        // Recorded before placement so the mark is pending by the time the chunk loads. Only
+        // chunks that actually reach here are recorded -- one that fell back to vanilla never
+        // does, so the readout distinguishes the two.
+        liveProvenance.record(worldInfo.getUID(), chunkX, chunkZ);
 
         Backing open = backing(worldInfo);
         int minY = open.handle().minY();
