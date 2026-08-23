@@ -1,0 +1,11 @@
+# Oxide is built on the machine it runs on (the generator ships as a native library loaded by
+# the server, not as a redistributed binary), so the compiler may use every instruction the
+# host has. This is worth 3.8% of chunk-generation time on legion-pro5 and does not change a
+# single generated block -- verified bit-for-bit over 100 chunks across two dimensions and two
+# seeds, which is expected: rustc does not contract or reassociate floating-point arithmetic
+# without explicit fast-math, which it has no stable way to request.
+#
+# Remove this if you need a binary that runs on a machine older than the one that built it --
+# it will fault with SIGILL rather than degrade.
+[build]
+rustflags = ["-C", "target-cpu=native"]

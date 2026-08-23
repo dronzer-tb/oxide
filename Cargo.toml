@@ -33,9 +33,9 @@ flate2 = "1"
 ahash = "0.8"
 
 [profile.release]
-lto = "thin"
+lto = "fat"
 codegen-units = 1
 panic = "abort"
 
 [profile.bench]
-lto = "thin"
+lto = "fat"
