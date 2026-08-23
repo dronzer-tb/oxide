@@ -194,55 +194,99 @@ fn counts_for_heightmap(
     }
 }
 
-fn column_top_y(
-    chunk: &ChunkData,
-    x: usize,
-    z: usize,
-    ty: HeightmapType,
-    settings: &NoiseGeneratorSettings,
-) -> Option<i32> {
-    let air = BlockState::new(ResourceLocation::minecraft("air"));
-    for section in chunk.sections.iter().rev() {
-        for local_y in (0..16usize).rev() {
-            let block = section.block_states.get(local_index(x, local_y, z));
-            if counts_for_heightmap(ty, block, &air, &settings.default_fluid) {
-                let section_min_y = (section.y as i32) * 16;
-                return Some(section_min_y + local_y as i32);
-            }
-        }
-    }
-    None
-}
-
 /// Value stored is one above the highest counting block (vanilla convention: the height you'd
 /// stand on), `0` (chunk floor) if a column has no counting block.
+///
+/// The six heightmap types this crate models collapse to two predicates -- `!air`, which
+/// `WORLD_SURFACE*` and `MOTION_BLOCKING*` share, and `!air && !fluid` for `OCEAN_FLOOR*` (see
+/// [`counts_for_heightmap`]) -- so both are resolved in one downward pass and the results are
+/// copied into the six slots. Classification happens once per section palette rather than once
+/// per block: a section holds 4096 blocks and a handful of distinct states, and comparing
+/// `BlockState` means comparing two `String`s and a `BTreeMap`.
 pub(crate) fn compute_heightmaps(
     chunk: &ChunkData,
     settings: &NoiseGeneratorSettings,
 ) -> HashMap<HeightmapType, Heightmap> {
-    const TYPES: [HeightmapType; 6] = [
-        HeightmapType::WorldSurface,
-        HeightmapType::WorldSurfaceWg,
-        HeightmapType::OceanFloor,
-        HeightmapType::OceanFloorWg,
-        HeightmapType::MotionBlocking,
-        HeightmapType::MotionBlockingNoLeaves,
-    ];
+    const COLUMNS: usize = 256;
+    /// Palette-entry flags: counts for `!air`, and for `!air && !fluid`.
+    const COUNTS_SURFACE: u8 = 1;
+    const COUNTS_FLOOR: u8 = 2;
 
-    let mut out = HashMap::new();
-    for ty in TYPES {
-        let mut hm = Heightmap::new(chunk.height);
-        for x in 0..16usize {
-            for z in 0..16usize {
-                let relative = match column_top_y(chunk, x, z, ty, settings) {
-                    Some(y) => y + 1 - chunk.min_y,
-                    None => 0,
-                };
-                hm.set(x, z, relative);
+    let air = BlockState::new(ResourceLocation::minecraft("air"));
+
+    // Relative y (vanilla's convention: one above the block) per column, 0 meaning "nothing
+    // found", plus how many columns are still unresolved so the scan can stop early.
+    let mut surface = [0i32; COLUMNS];
+    let mut floor = [0i32; COLUMNS];
+    let mut surface_left = COLUMNS;
+    let mut floor_left = COLUMNS;
+
+    for section in chunk.sections.iter().rev() {
+        if surface_left == 0 && floor_left == 0 {
+            break;
+        }
+        let flags: Vec<u8> = section
+            .block_states
+            .palette()
+            .iter()
+            .map(|state| {
+                if *state == air {
+                    0
+                } else if *state == settings.default_fluid {
+                    COUNTS_SURFACE
+                } else {
+                    COUNTS_SURFACE | COUNTS_FLOOR
+                }
+            })
+            .collect();
+        // A section made only of blocks no heightmap counts -- which is every section above
+        // the terrain, holding nothing but air -- cannot resolve a column, so skip its 4096
+        // slots outright.
+        if flags.iter().all(|f| *f == 0) {
+            continue;
+        }
+        let indices = section.block_states.indices();
+        let section_min_y = (section.y as i32) * 16;
+
+        for local_y in (0..16usize).rev() {
+            let relative = section_min_y + local_y as i32 + 1 - chunk.min_y;
+            let plane = local_y * 256;
+            for column in 0..COLUMNS {
+                if surface[column] != 0 && floor[column] != 0 {
+                    continue;
+                }
+                // `local_index` is `(y * 16 + z) * 16 + x`, so one y-plane is 256 contiguous
+                // slots in (z, x) order -- the same order `column` counts in.
+                let flag = flags[indices[plane + column] as usize];
+                if flag & COUNTS_SURFACE != 0 && surface[column] == 0 {
+                    surface[column] = relative;
+                    surface_left -= 1;
+                }
+                if flag & COUNTS_FLOOR != 0 && floor[column] == 0 {
+                    floor[column] = relative;
+                    floor_left -= 1;
+                }
             }
         }
-        out.insert(ty, hm);
     }
+
+    let to_heightmap = |values: &[i32; COLUMNS]| {
+        let mut hm = Heightmap::new(chunk.height);
+        for (column, value) in values.iter().enumerate() {
+            hm.set(column % 16, column / 16, *value);
+        }
+        hm
+    };
+    let surface = to_heightmap(&surface);
+    let floor = to_heightmap(&floor);
+
+    let mut out = HashMap::new();
+    out.insert(HeightmapType::WorldSurface, surface.clone());
+    out.insert(HeightmapType::WorldSurfaceWg, surface.clone());
+    out.insert(HeightmapType::MotionBlocking, surface.clone());
+    out.insert(HeightmapType::MotionBlockingNoLeaves, surface);
+    out.insert(HeightmapType::OceanFloor, floor.clone());
+    out.insert(HeightmapType::OceanFloorWg, floor);
     out
 }
 

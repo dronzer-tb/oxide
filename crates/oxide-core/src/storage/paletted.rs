@@ -64,6 +64,13 @@ impl<T: Clone + Eq + Hash> PalettedContainer<T> {
         &self.palette
     }
 
+    /// The raw palette index per slot. Reading these against a table built once from
+    /// [`Self::palette`] is what lets a whole-section scan classify blocks without comparing
+    /// `T` values one at a time.
+    pub fn indices(&self) -> &[u32] {
+        &self.data
+    }
+
     /// Packed bit width per entry: `0` for a single-value palette, otherwise
     /// `max(min_bits, ceil(log2(palette.len())))`.
     pub fn bits_per_entry(&self) -> u8 {
