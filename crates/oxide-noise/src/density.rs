@@ -2,14 +2,15 @@
 //! (`density_function.rs`); this is the "do not add `sample`/`compute` here" other half it
 //! points at.
 //!
-//! Scope cuts (return a constant + are flagged below, rather than fabricated): `old_blended_noise`
-//! and `end_islands` are each a distinct sub-algorithm outside "noise primitives + interpreter +
-//! router" (wave 2 per `docs/ROADMAP.md`); `beardifier` depends on real structure placement
-//! output (`oxide-structures` only has placement-chunk selection so far, not piece layout).
-//! `old_blended_noise`'s real algorithm (`BlendedNoise`) has been read from decompiled 26.2
-//! source since this was written — it's a real, implementable algorithm (three `PerlinNoise`
-//! instances built via the *legacy* init path plus `Mth.clampedLerp`), just still out of scope
-//! for this wave.
+//! Scope cuts (return a constant + are flagged below, rather than fabricated): `end_islands` is
+//! a distinct sub-algorithm outside "noise primitives + interpreter + router" (wave 2 per
+//! `docs/ROADMAP.md`); `beardifier` depends on real structure placement output
+//! (`oxide-structures` only has placement-chunk selection so far, not piece layout).
+//!
+//! `old_blended_noise` used to be one of these and is now implemented (see `blended_noise.rs`).
+//! Returning a constant for it was not a neutral stub: the nether's terrain shape is *only*
+//! that noise, so the dimension generated as a solid floor, 60 blocks of void, and a solid
+//! roof, while the overworld lost all of its 3D detail (overhangs, cliffs, cave-scale relief).
 
 use std::collections::HashMap;
 
@@ -39,6 +40,9 @@ pub struct EvalCtx<'a> {
     /// filling a chunk, which is what makes `interpolated`/`flat_cache`/`cache_2d` behave the
     /// way vanilla defines them instead of evaluating straight through. See `cache.rs`.
     pub caches: Option<&'a crate::cache::ChunkCaches>,
+    /// The router's shared `old_blended_noise` stacks. Held here rather than rebuilt per node
+    /// because seeding them costs 40 `ImprovedNoise` constructions.
+    pub blended: &'a crate::blended_noise::BlendedNoise,
 }
 
 pub fn evaluate(df: &DensityFunction, ctx: FunctionContext, cx: &EvalCtx) -> f64 {
@@ -95,7 +99,24 @@ fn evaluate_object(obj: &DensityFunctionObject, ctx: FunctionContext, cx: &EvalC
         }
 
         // Scope cut — see module doc.
-        OldBlendedNoise { .. } => 0.0,
+        OldBlendedNoise {
+            xz_scale,
+            y_scale,
+            xz_factor,
+            y_factor,
+            smear_scale_multiplier,
+        } => cx.blended.compute(
+            &crate::blended_noise::BlendedNoiseParams {
+                xz_scale: *xz_scale,
+                y_scale: *y_scale,
+                xz_factor: *xz_factor,
+                y_factor: *y_factor,
+                smear_scale_multiplier: *smear_scale_multiplier,
+            },
+            bx,
+            by,
+            bz,
+        ),
         EndIslands {} => 0.0,
         Beardifier {} => 0.0,
 
@@ -380,6 +401,16 @@ mod tests {
         FunctionContext { x: 1, y: 64, z: -1 }
     }
 
+    /// One shared seed-0 instance: building it costs 40 `ImprovedNoise` constructions, and
+    /// no test here depends on its values.
+    fn test_blended() -> &'static crate::blended_noise::BlendedNoise {
+        static BLENDED: std::sync::OnceLock<crate::blended_noise::BlendedNoise> =
+            std::sync::OnceLock::new();
+        BLENDED.get_or_init(|| {
+            crate::blended_noise::BlendedNoise::new(&mut crate::random::WorldRandom::new(0, false))
+        })
+    }
+
     fn empty_cx<'a>(
         df_registry: &'a Registry<DensityFunction>,
         noises: &'a HashMap<ResourceLocation, NormalNoise>,
@@ -388,6 +419,7 @@ mod tests {
             df_registry,
             noises,
             caches: None,
+            blended: test_blended(),
         }
     }
 

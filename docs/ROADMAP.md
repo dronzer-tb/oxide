@@ -82,9 +82,10 @@ heightmap predicates, and `oxide-biome`'s climate-axis-to-router-slot mapping.
 
 **Confirmed out of scope, not a bug**: `minecraft:weird_scaled_sampler` doesn't exist in 26.2's
 `DensityFunctions` at all (grepped the full decompiled class list) — that code path is dead
-against a real datapack. `old_blended_noise`'s real algorithm (`BlendedNoise`) was read in full;
-it's real and implementable (three `PerlinNoise` instances via the *legacy* init path + `Mth.
-clampedLerp`) but stays a deliberate scope cut.
+against a real datapack. `old_blended_noise` was a deliberate scope cut here
+and is now implemented (three `PerlinNoise` instances via the *legacy* init path +
+`Mth.clampedLerp`) — stubbing it to a constant turned out to flatten the nether into a slab
+and strip the overworld of all 3D detail, so it was never as inert as "scope cut" implied.
 
 **Still unverified** (not checked this pass): `oxide-anvil`'s `isLightOn` relight key and
 `ChunkStatus` NBT strings, `oxide-pregen`'s world bounds/block-array index order,

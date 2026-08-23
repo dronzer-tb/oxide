@@ -14,6 +14,7 @@
 //! real 26.2 datapack at all, like `weird_scaled_sampler`) stay `// PARITY-CHECK`-flagged
 //! per-node in `density.rs`.
 
+mod blended_noise;
 mod cache;
 mod density;
 mod improved_noise;
@@ -22,6 +23,7 @@ mod perlin_noise;
 mod random;
 mod router;
 
+pub use blended_noise::{BlendedNoise, BlendedNoiseParams};
 pub use cache::ChunkCaches;
 pub use density::{evaluate, EvalCtx, FunctionContext};
 pub use improved_noise::ImprovedNoise;

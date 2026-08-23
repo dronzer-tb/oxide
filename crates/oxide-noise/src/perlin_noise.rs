@@ -47,6 +47,64 @@ impl PerlinNoise {
         }
     }
 
+    /// Vanilla's `createLegacyForBlendedNoise`: the pre-1.18 initialisation path, where every
+    /// octave is drawn *sequentially* from one random rather than by name from a positional
+    /// factory. Order matters and is not the array order -- the zero octave (index
+    /// `-first_octave`) is constructed first, then the rest walk downwards from
+    /// `zero_octave_index - 1` to 0. Ported 2026-08-23 from decompiled 26.2 `PerlinNoise`'s
+    /// `useNewInitialization == false` branch.
+    ///
+    /// Vanilla also skips a zero-amplitude octave by burning 262 RNG draws
+    /// (`PerlinNoise.skipOctave`). Every caller here passes a contiguous all-ones amplitude
+    /// list (that is what `IntStream.rangeClosed` produces), so that branch is unreachable and
+    /// is asserted rather than modelled -- implementing it would mean guessing at
+    /// `consumeCount`'s per-flavour draw width without a test to pin it.
+    pub fn create_legacy_for_blended_noise(
+        random: &mut WorldRandom,
+        first_octave: i32,
+        amplitudes: Vec<f64>,
+    ) -> Self {
+        debug_assert!(
+            amplitudes.iter().all(|&a| a != 0.0),
+            "zero-amplitude octaves need vanilla's skipOctave draw, which is not modelled"
+        );
+
+        let octaves = amplitudes.len();
+        let zero_octave_index = -first_octave;
+        let mut noise_levels: Vec<Option<ImprovedNoise>> = vec![None; octaves];
+
+        // Constructed unconditionally -- it consumes RNG even when it lands outside the
+        // amplitude array and is thrown away.
+        let zero_octave = ImprovedNoise::new(random);
+        if zero_octave_index >= 0
+            && (zero_octave_index as usize) < octaves
+            && amplitudes[zero_octave_index as usize] != 0.0
+        {
+            noise_levels[zero_octave_index as usize] = Some(zero_octave);
+        }
+        for i in (0..zero_octave_index).rev() {
+            if (i as usize) < octaves {
+                noise_levels[i as usize] = Some(ImprovedNoise::new(random));
+            }
+        }
+
+        let size = octaves as i32;
+        Self {
+            noise_levels,
+            amplitudes,
+            lowest_freq_input_factor: 2f64.powi(first_octave),
+            lowest_freq_value_factor: 2f64.powi(size - 1) / (2f64.powi(size) - 1.0),
+        }
+    }
+
+    /// Octave `i` counting from the *highest* frequency, which is the order
+    /// `BlendedNoise` walks them in. Vanilla: `noiseLevels[noiseLevels.length - 1 - i]`.
+    pub fn get_octave_noise(&self, i: usize) -> Option<&ImprovedNoise> {
+        self.noise_levels
+            .get(self.noise_levels.len() - 1 - i)
+            .and_then(|level| level.as_ref())
+    }
+
     pub fn get_value(&self, x: f64, y: f64, z: f64) -> f64 {
         self.get_value_with_scale(x, y, z, 0.0, 0.0)
     }

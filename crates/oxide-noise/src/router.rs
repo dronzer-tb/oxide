@@ -9,6 +9,7 @@ use oxide_datapack::{
     NormalNoiseParameters, Registry, ResourceLocation,
 };
 
+use crate::blended_noise::BlendedNoise;
 use crate::cache::ChunkCaches;
 use crate::density::{evaluate, EvalCtx, FunctionContext};
 use crate::normal_noise::NormalNoise;
@@ -50,6 +51,11 @@ pub struct NoiseRouterEvaluator {
     positional_factory: WorldPositionalFactory,
     /// Cell dimensions and vertical bounds, needed to size a chunk's interpolation grid.
     noise: NoiseDimensionSettings,
+    /// The three Perlin stacks behind every `minecraft:old_blended_noise` node in this router.
+    /// Vanilla builds one `BlendedNoise` per node but seeds them all from the same
+    /// `"minecraft:terrain"` random, so the stacks are identical and only the per-node scaling
+    /// constants differ -- those travel with the node and are applied at evaluation.
+    blended: BlendedNoise,
 }
 
 impl NoiseRouterEvaluator {
@@ -65,6 +71,15 @@ impl NoiseRouterEvaluator {
     ) -> Self {
         let mut base = WorldRandom::new(seed, settings.legacy_random_source);
         let factory = base.fork_positional();
+
+        // `RandomState.NoiseWiringHelper.wrapNew`: a legacy-random world seeds the terrain
+        // noise straight off the world seed, everything else off `"minecraft:terrain"`.
+        let mut terrain_random = if settings.legacy_random_source {
+            WorldRandom::new(seed, true)
+        } else {
+            factory.from_hash_of("minecraft:terrain")
+        };
+        let blended = BlendedNoise::new(&mut terrain_random);
 
         let mut noises = HashMap::with_capacity(noise_param_registry.len());
         for (id, params) in noise_param_registry.iter() {
@@ -83,6 +98,7 @@ impl NoiseRouterEvaluator {
             noises,
             positional_factory: factory,
             noise: settings.noise.clone(),
+            blended,
         }
     }
 
@@ -128,6 +144,7 @@ impl NoiseRouterEvaluator {
             df_registry: &self.df_registry,
             noises: &self.noises,
             caches: None,
+            blended: &self.blended,
         };
         evaluate(self.slot_df(slot), FunctionContext { x, y, z }, &cx)
     }
@@ -148,6 +165,7 @@ impl NoiseRouterEvaluator {
             df_registry: &self.df_registry,
             noises: &self.noises,
             caches: Some(caches),
+            blended: &self.blended,
         };
         evaluate(self.slot_df(slot), FunctionContext { x, y, z }, &cx)
     }
