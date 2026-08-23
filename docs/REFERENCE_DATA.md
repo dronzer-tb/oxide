@@ -36,6 +36,26 @@ reference/
   pack.mcmeta            # optional
 ```
 
+The data generator does **not** emit `data/<namespace>/dimension/*.json`, so those are written
+by hand -- one per dimension you intend to generate. They are small, and each just names the
+noise settings and biome source vanilla uses:
+
+```json
+{
+  "type": "minecraft:the_nether",
+  "generator": {
+    "type": "minecraft:noise",
+    "settings": "minecraft:nether",
+    "biome_source": { "type": "minecraft:multi_noise", "preset": "minecraft:nether" }
+  }
+}
+```
+
+`overworld` uses `settings: minecraft:overworld` with the `minecraft:overworld` multi-noise
+preset; `the_end` uses `settings: minecraft:end` with `{"type": "minecraft:the_end"}`. Without
+the file for a dimension, opening a generator for it fails with "dimension ... not found in
+datapack".
+
 `reference/` is gitignored. `oxide-datapack`'s loader (`load_datapack`) takes this directory as its
 pack root.
 

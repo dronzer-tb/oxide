@@ -151,7 +151,12 @@ public final class OxideCommand implements CommandExecutor, TabCompleter {
                     "Opening oxide generator (loading datapack, building noise router)...", NamedTextColor.GRAY));
             final OxideNative.Handle handle;
             try {
-                handle = generatorService.openHandle(seed);
+                // createworld makes a NORMAL world, so overworld settings -- unless config
+                // names a dimension explicitly.
+                String dimensionId = generatorService.configuredDimensionId();
+                handle = generatorService.openHandle(
+                        seed, dimensionId == null || dimensionId.isBlank()
+                                ? "minecraft:overworld" : dimensionId);
             } catch (RuntimeException e) {
                 sender.sendMessage(Component.text("Failed to open oxide generator: " + e.getMessage(), NamedTextColor.RED));
                 return;

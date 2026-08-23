@@ -42,7 +42,7 @@ public final class GeneratorService {
      * seconds, and handles are read-only once open -- so two worlds on the same seed, or a
      * /oxide createworld whose world then generates through the same seed, share one.
      */
-    private final Map<Long, OxideNative.Handle> openHandles = new LinkedHashMap<>();
+    private final Map<String, OxideNative.Handle> openHandles = new LinkedHashMap<>();
     private OxideNative nativeLib;
 
     public GeneratorService(JavaPlugin plugin) {
@@ -50,15 +50,21 @@ public final class GeneratorService {
     }
 
     /**
-     * Opens a fresh generator handle for {@code seed}, using {@code config.yml}'s
-     * {@code dimension-id}. Loads the native library on first call, not in the constructor, so
-     * a server that never runs {@code /oxide createworld} never pays for it.
+     * Opens a generator handle for {@code seed} in {@code dimensionId}, reusing one already
+     * open for that pair -- opening parses the datapack and builds the noise router, which
+     * takes seconds, and handles are read-only afterwards. Loads the native library on first
+     * call, not in the constructor, so a server that never generates never pays for it.
+     *
+     * <p>The dimension is a parameter, not config: a server's overworld and nether are separate
+     * worlds with different noise settings, block palettes and heights, and each needs its own
+     * handle.
      *
      * @throws IllegalStateException if the native library or datapack fails to load/open --
      *         see {@link OxideNative#open} for what that wraps.
      */
-    public synchronized OxideNative.Handle openHandle(long seed) {
-        OxideNative.Handle existing = openHandles.get(seed);
+    public synchronized OxideNative.Handle openHandle(long seed, String dimensionId) {
+        String key = dimensionId + "@" + seed;
+        OxideNative.Handle existing = openHandles.get(key);
         if (existing != null) {
             return existing;
         }
@@ -66,9 +72,8 @@ public final class GeneratorService {
             nativeLib = new OxideNative(resolveLibraryPath());
         }
         Path datapack = resolveDatapackPath();
-        String dimensionId = plugin.getConfig().getString("dimension-id", "minecraft:overworld");
         OxideNative.Handle handle = nativeLib.open(datapack.toString(), dimensionId, seed);
-        openHandles.put(seed, handle);
+        openHandles.put(key, handle);
         return handle;
     }
 
@@ -166,6 +171,14 @@ public final class GeneratorService {
         }
         plugin.getLogger().info("extracted bundled oxide-ffi to: " + target);
         return target;
+    }
+
+    /**
+     * The {@code dimension-id} override from config.yml, or empty/null when a world should be
+     * generated as whatever dimension it actually is.
+     */
+    public String configuredDimensionId() {
+        return plugin.getConfig().getString("dimension-id", "");
     }
 
     /** Closes every handle opened through this service and unloads the native library. */

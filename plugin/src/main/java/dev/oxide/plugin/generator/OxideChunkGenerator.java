@@ -3,6 +3,7 @@ package dev.oxide.plugin.generator;
 import dev.oxide.plugin.ffi.OxideNative;
 import dev.oxide.plugin.provenance.LiveProvenance;
 import org.bukkit.Material;
+import org.bukkit.World;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.generator.BiomeProvider;
 import org.bukkit.generator.ChunkGenerator;
@@ -98,6 +99,27 @@ public final class OxideChunkGenerator extends ChunkGenerator {
      * <p>The open itself parses the datapack and builds the noise router, which takes seconds;
      * it happens once per generator, on whichever generation thread gets there first.
      */
+    /**
+     * The worldgen dimension a world should be generated as, from its environment: a nether
+     * world must be generated with nether noise settings (netherrack, lava, 0..128) and not the
+     * overworld's, or the terrain does not even fit the world's height.
+     *
+     * <p>{@code dimension-id} in config.yml overrides this when set, for generating one
+     * dimension's terrain into another world deliberately.
+     */
+    private String dimensionFor(WorldInfo worldInfo) {
+        String configured = service.configuredDimensionId();
+        if (configured != null && !configured.isBlank()) {
+            return configured;
+        }
+        World.Environment environment = worldInfo.getEnvironment();
+        return switch (environment) {
+            case NETHER -> "minecraft:the_nether";
+            case THE_END -> "minecraft:the_end";
+            default -> "minecraft:overworld";
+        };
+    }
+
     private Backing backing(WorldInfo worldInfo) {
         Backing current = backing;
         if (current != null) {
@@ -106,9 +128,11 @@ public final class OxideChunkGenerator extends ChunkGenerator {
         synchronized (this) {
             if (backing == null) {
                 long seed = explicitSeed != null ? explicitSeed : worldInfo.getSeed();
+                String dimensionId = dimensionFor(worldInfo);
                 logger.info("opening the oxide generator for world '" + worldInfo.getName()
-                        + "' with seed " + seed + " (parsing datapack, building noise router)");
-                OxideNative.Handle handle = service.openHandle(seed);
+                        + "' as " + dimensionId + " with seed " + seed
+                        + " (parsing datapack, building noise router)");
+                OxideNative.Handle handle = service.openHandle(seed, dimensionId);
                 backing = new Backing(handle, new OxidePalette(handle));
             }
             return backing;

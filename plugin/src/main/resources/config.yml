@@ -12,8 +12,16 @@ native-library-path: ""
 # Absolute paths are used as given. See docs/REFERENCE_DATA.md for how to extract one.
 datapack-path: "datapack"
 
-# worldgen/dimension id to generate for /oxide createworld, e.g. minecraft:overworld.
-dimension-id: "minecraft:overworld"
+# Optional override for which worldgen dimension every world is generated as. Left empty --
+# the default -- each world is generated as what it actually is: a nether world gets
+# minecraft:the_nether (netherrack, lava, 0..128), the end gets minecraft:the_end, everything
+# else gets minecraft:overworld. Set it only to force one dimension's terrain into a world
+# that is not that dimension.
+#
+# The datapack must contain data/<namespace>/dimension/<name>.json for whichever dimensions are
+# used; the vanilla data generator does not emit those, so they are written by hand. See
+# docs/REFERENCE_DATA.md.
+dimension-id: ""
 
 # Worlds opt into this generator in bukkit.yml, not here:
 #
