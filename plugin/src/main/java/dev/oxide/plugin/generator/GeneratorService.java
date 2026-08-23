@@ -178,7 +178,11 @@ public final class GeneratorService {
      * generated as whatever dimension it actually is.
      */
     public String configuredDimensionId() {
-        return plugin.getConfig().getString("dimension-id", "");
+        // Deliberately not the old `dimension-id` key. That one shipped defaulted to
+        // "minecraft:overworld", and config.yml is never overwritten on upgrade, so reading it
+        // would have every existing install silently force its nether to generate overworld
+        // terrain. A new key means a stale config reads as "no override", which is right.
+        return plugin.getConfig().getString("dimension-override", "");
     }
 
     /** Closes every handle opened through this service and unloads the native library. */
