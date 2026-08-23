@@ -66,6 +66,9 @@ pub struct SurfaceSystem<'a> {
     /// steps through a deep tree, once per column, so sharing the fill pass's caches is the
     /// difference between cheap and dominating the whole chunk.
     caches: Option<&'a oxide_noise::ChunkCaches>,
+    /// Built once rather than per column: these two are looked up for every column in a chunk.
+    surface_noise_id: ResourceLocation,
+    surface_secondary_noise_id: ResourceLocation,
 }
 
 impl<'a> SurfaceSystem<'a> {
@@ -82,6 +85,8 @@ impl<'a> SurfaceSystem<'a> {
             height: settings.noise.height,
             ocean_floor: None,
             caches: None,
+            surface_noise_id: ResourceLocation::minecraft("surface"),
+            surface_secondary_noise_id: ResourceLocation::minecraft("surface_secondary"),
         }
     }
 
@@ -159,12 +164,17 @@ impl<'a> SurfaceSystem<'a> {
     /// PARITY-CHECK: `surface` noise scaled by 2.75, offset 3.0, plus a quarter of a
     /// per-column random -- vanilla's `SurfaceSystem#getSurfaceDepth`, reconstructed.
     fn column_state(&self, x: i32, z: i32) -> Column {
-        let surface = self.sample_noise("surface", x as f64, 0.0, z as f64);
+        let surface = self.sample_noise(&self.surface_noise_id, x as f64, 0.0, z as f64);
         let mut random = self.router.positional_factory().at(x, 0, z);
         let surface_depth = (surface * 2.75 + 3.0 + random.next_double() * 0.25) as i32;
         Column {
             surface_depth,
-            surface_secondary: self.sample_noise("surface_secondary", x as f64, 0.0, z as f64),
+            surface_secondary: self.sample_noise(
+                &self.surface_secondary_noise_id,
+                x as f64,
+                0.0,
+                z as f64,
+            ),
             min_surface_level: self.sample(RouterSlot::PreliminarySurfaceLevel, x, 0, z) as i32,
         }
     }
@@ -177,8 +187,8 @@ impl<'a> SurfaceSystem<'a> {
         }
     }
 
-    fn sample_noise(&self, name: &str, x: f64, y: f64, z: f64) -> f64 {
-        match self.router.noise(&ResourceLocation::minecraft(name)) {
+    fn sample_noise(&self, id: &ResourceLocation, x: f64, y: f64, z: f64) -> f64 {
+        match self.router.noise(id) {
             Some(noise) => noise.get_value(x, y, z),
             // A datapack without the noise the rules ask for: 0.0 keeps the pass running
             // rather than aborting a chunk, and reads as "no contribution".
@@ -455,8 +465,10 @@ impl<'a> SurfaceSystem<'a> {
     }
 }
 
+/// Compares by name without building a `ResourceLocation`: this runs once per block the column
+/// scan walks -- ~98k times per chunk -- so allocating two strings to answer it was pure waste.
 fn is_air(state: &BlockState) -> bool {
-    state.name == ResourceLocation::minecraft("air")
+    state.name.path() == "air" && state.name.namespace() == "minecraft"
 }
 
 /// Vanilla `Mth.map`: linear remap of `value` from one range onto another, unclamped.
