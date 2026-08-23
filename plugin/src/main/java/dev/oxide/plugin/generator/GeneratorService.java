@@ -8,8 +8,8 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * Owns the one {@link OxideNative} library load for this plugin's lifetime, and every
@@ -37,7 +37,12 @@ public final class GeneratorService {
     private static final String LIBRARY_FILE_NAME = "liboxide_ffi.so";
 
     private final JavaPlugin plugin;
-    private final List<OxideNative.Handle> openHandles = new ArrayList<>();
+    /**
+     * Seed -> handle. Opening one parses the datapack and builds the noise router, which takes
+     * seconds, and handles are read-only once open -- so two worlds on the same seed, or a
+     * /oxide createworld whose world then generates through the same seed, share one.
+     */
+    private final Map<Long, OxideNative.Handle> openHandles = new LinkedHashMap<>();
     private OxideNative nativeLib;
 
     public GeneratorService(JavaPlugin plugin) {
@@ -53,13 +58,17 @@ public final class GeneratorService {
      *         see {@link OxideNative#open} for what that wraps.
      */
     public synchronized OxideNative.Handle openHandle(long seed) {
+        OxideNative.Handle existing = openHandles.get(seed);
+        if (existing != null) {
+            return existing;
+        }
         if (nativeLib == null) {
             nativeLib = new OxideNative(resolveLibraryPath());
         }
         Path datapack = resolveDatapackPath();
         String dimensionId = plugin.getConfig().getString("dimension-id", "minecraft:overworld");
         OxideNative.Handle handle = nativeLib.open(datapack.toString(), dimensionId, seed);
-        openHandles.add(handle);
+        openHandles.put(seed, handle);
         return handle;
     }
 
@@ -161,7 +170,7 @@ public final class GeneratorService {
 
     /** Closes every handle opened through this service and unloads the native library. */
     public synchronized void closeAll() {
-        for (OxideNative.Handle handle : openHandles) {
+        for (OxideNative.Handle handle : openHandles.values()) {
             try {
                 handle.close();
             } catch (RuntimeException e) {

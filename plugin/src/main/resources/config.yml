@@ -15,14 +15,14 @@ datapack-path: "datapack"
 # worldgen/dimension id to generate for /oxide createworld, e.g. minecraft:overworld.
 dimension-id: "minecraft:overworld"
 
-# Seed used when a world opts into this generator via bukkit.yml:
+# Worlds opt into this generator in bukkit.yml, not here:
 #
 #   worlds:
 #     world:
 #       generator: OxideDebug
 #
-# Override per world with a suffix: `generator: OxideDebug:12345`. Only new chunks are
-# affected -- a world's existing chunks are on disk and are never regenerated, so expect
-# a hard seam where new terrain meets old. Read OxideChunkGenerator's class doc before
-# pointing a world you care about at this.
-generator-seed: 0
+# Chunks are then generated with that world's own seed, so new terrain continues the world
+# the players are already in. Append a seed to override it: `generator: OxideDebug:12345`.
+# Only chunks that do not exist yet are affected -- a world's existing chunks are on disk and
+# are never regenerated, so expect a seam where new terrain meets old. Read
+# OxideChunkGenerator's class doc before pointing a world you care about at this.

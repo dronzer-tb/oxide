@@ -130,33 +130,24 @@ public final class OxidePlugin extends JavaPlugin {
      */
     @Override
     public @Nullable ChunkGenerator getDefaultWorldGenerator(@NotNull String worldName, @Nullable String id) {
-        long seed;
+        Long seed = null;
         if (id != null && !id.isBlank()) {
             try {
                 seed = Long.parseLong(id.trim());
             } catch (NumberFormatException e) {
                 getLogger().severe("generator id for world '" + worldName + "' is not a seed: '" + id
                         + "' -- use `generator: OxideDebug:<seed>` in bukkit.yml, or drop the suffix"
-                        + " to use `generator-seed` from config.yml. Falling back to vanilla.");
+                        + " to generate with the world's own seed. Falling back to vanilla.");
                 return null;
             }
-        } else {
-            seed = getConfig().getLong("generator-seed", 0L);
         }
 
-        try {
-            ChunkGenerator generator =
-                    new OxideChunkGenerator(generatorService.openHandle(seed), getLogger());
-            getLogger().warning("world '" + worldName + "' will generate NEW chunks with the Rust"
-                    + " generator (seed " + seed + "). Existing chunks are untouched, and new ones"
-                    + " will not match them: this generator produces noise-shaped stone/water/air"
-                    + " only -- no surface blocks, caves, structures, or bedrock.");
-            return generator;
-        } catch (RuntimeException e) {
-            getLogger().severe("could not open the oxide generator for world '" + worldName
-                    + "': " + e.getMessage() + " -- falling back to vanilla generation.");
-            return null;
-        }
+        getLogger().warning("world '" + worldName + "' will generate NEW chunks with the Rust"
+                + " generator" + (seed == null ? " using the world's own seed" : " with seed " + seed)
+                + ". Existing chunks are untouched, and new terrain will not match them: this"
+                + " generator has no carvers, aquifers, or ore veins yet, so expect no caves and"
+                + " a visible seam at the boundary.");
+        return new OxideChunkGenerator(generatorService, getLogger(), seed);
     }
 
     @Override

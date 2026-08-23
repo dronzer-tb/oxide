@@ -58,17 +58,57 @@ public final class OxideChunkGenerator extends ChunkGenerator {
      */
     private static final int MAX_PENDING_CHUNKS = 64;
 
-    private final OxideNative.Handle handle;
-    private final OxidePalette palette;
+    private final GeneratorService service;
+    /** Explicit seed, or null to use the seed of whatever world asks for generation. */
+    private final Long explicitSeed;
     private final Logger logger;
+    private volatile Backing backing;
     /** Chunk key -> palette indices generated in shouldGenerateNoise, consumed by generateNoise. */
     private final Map<Long, short[]> pending = new ConcurrentHashMap<>();
     private final AtomicLong failures = new AtomicLong();
 
-    public OxideChunkGenerator(OxideNative.Handle handle, Logger logger) {
-        this.handle = handle;
+    /** The generator handle plus its palette cache, opened together on first use. */
+    private record Backing(OxideNative.Handle handle, OxidePalette palette) {}
+
+    /**
+     * Generates with the seed of whichever world uses this generator. That is what a world
+     * added to {@code bukkit.yml} wants: chunks continuing the world the players are already
+     * in, not chunks from an unrelated one.
+     */
+    public OxideChunkGenerator(GeneratorService service, Logger logger) {
+        this(service, logger, null);
+    }
+
+    /** Generates with {@code seed} regardless of the world's own -- what /oxide createworld wants. */
+    public OxideChunkGenerator(GeneratorService service, Logger logger, Long seed) {
+        this.service = service;
         this.logger = logger;
-        this.palette = new OxidePalette(handle);
+        this.explicitSeed = seed;
+    }
+
+    /**
+     * Opens the generator on first use, when a {@link WorldInfo} -- and so the world's seed --
+     * is finally available. Bukkit asks for a ChunkGenerator before the world exists, so the
+     * seed cannot be known at construction.
+     *
+     * <p>The open itself parses the datapack and builds the noise router, which takes seconds;
+     * it happens once per generator, on whichever generation thread gets there first.
+     */
+    private Backing backing(WorldInfo worldInfo) {
+        Backing current = backing;
+        if (current != null) {
+            return current;
+        }
+        synchronized (this) {
+            if (backing == null) {
+                long seed = explicitSeed != null ? explicitSeed : worldInfo.getSeed();
+                logger.info("opening the oxide generator for world '" + worldInfo.getName()
+                        + "' with seed " + seed + " (parsing datapack, building noise router)");
+                OxideNative.Handle handle = service.openHandle(seed);
+                backing = new Backing(handle, new OxidePalette(handle));
+            }
+            return backing;
+        }
     }
 
     /**
@@ -92,7 +132,7 @@ public final class OxideChunkGenerator extends ChunkGenerator {
             return false;
         }
         try {
-            pending.put(chunkKey(chunkX, chunkZ), generateIndices(chunkX, chunkZ));
+            pending.put(chunkKey(chunkX, chunkZ), generateIndices(backing(worldInfo), chunkX, chunkZ));
             return false;
         } catch (RuntimeException e) {
             reportFailure(chunkX, chunkZ, e);
@@ -141,7 +181,7 @@ public final class OxideChunkGenerator extends ChunkGenerator {
     /** Biomes come from the same handle that generated the terrain. */
     @Override
     public @NotNull BiomeProvider getDefaultBiomeProvider(@NotNull WorldInfo worldInfo) {
-        return new OxideBiomeProvider(handle);
+        return new OxideBiomeProvider(backing(worldInfo).handle());
     }
 
     @Override
@@ -154,24 +194,26 @@ public final class OxideChunkGenerator extends ChunkGenerator {
             // nothing here would leave a hole in the world, which is worse than losing the
             // per-chunk fallback for this one chunk.
             try {
-                blocks = generateIndices(chunkX, chunkZ);
+                blocks = generateIndices(backing(worldInfo), chunkX, chunkZ);
             } catch (RuntimeException e) {
                 reportFailure(chunkX, chunkZ, e);
                 return;
             }
         }
 
-        int minY = handle.minY();
-        int height = handle.height();
+        Backing open = backing(worldInfo);
+        int minY = open.handle().minY();
+        int height = open.handle().height();
         for (int z = 0; z < 16; z++) {
             for (int x = 0; x < 16; x++) {
-                placeColumn(chunkData, blocks, minY, height, x, z);
+                placeColumn(open.palette(), chunkData, blocks, minY, height, x, z);
             }
         }
     }
 
     /** Runs the Rust generator and copies its palette indices out of native memory. */
-    private short[] generateIndices(int chunkX, int chunkZ) {
+    private short[] generateIndices(Backing open, int chunkX, int chunkZ) {
+        OxideNative.Handle handle = open.handle();
         int height = handle.height();
         int blockCount = 256 * height;
         int biomeCount = 64 * (height / 16);
@@ -210,8 +252,8 @@ public final class OxideChunkGenerator extends ChunkGenerator {
      * collapsing each run into a single {@code setRegion} call is what keeps this from being
      * the slowest part of generation by a wide margin.
      */
-    private void placeColumn(ChunkData chunkData, short[] blocks, int minY, int height,
-                             int x, int z) {
+    private void placeColumn(OxidePalette palette, ChunkData chunkData, short[] blocks, int minY,
+                             int height, int x, int z) {
         int runStart = 0;
         int runIndex = paletteIndex(blocks, 0, x, z);
 

@@ -63,8 +63,11 @@ Opt in per world in `bukkit.yml`, then restart:
 ```yaml
 worlds:
   world:
-    generator: OxideDebug        # or OxideDebug:12345 to choose the seed
+    generator: OxideDebug        # append :12345 to override the seed
 ```
+
+Chunks are generated with **that world's own seed**, so new terrain continues the world the
+players are already in rather than pasting in a different one.
 
 Read this before doing it to a world you care about:
 
