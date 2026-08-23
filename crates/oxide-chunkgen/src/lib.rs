@@ -30,8 +30,9 @@ pub fn generate_chunk(
     biomes: Option<&BiomeSearchTree>,
     biome_temperatures: &BiomeTemperatures,
 ) -> ChunkData {
+    let caches = router.chunk_caches(pos.x, pos.z);
     let mut chunk = fill_chunk(pos, settings, router, biomes);
-    SurfaceSystem::new(settings, router, biome_temperatures).apply(&mut chunk, pos);
+    SurfaceSystem::new(settings, router, biome_temperatures).apply(&mut chunk, pos, &caches);
     chunk.status = ChunkStatus::Surface;
     chunk
 }

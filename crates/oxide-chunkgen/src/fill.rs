@@ -43,6 +43,11 @@ pub fn fill_chunk(
     // `Some`; this is what an unresolved `Preset` source (see above) leaves every cell at.
     let default_biome = ResourceLocation::minecraft("plains");
 
+    // One cache set for the whole chunk: this is what turns the datapack's `interpolated` and
+    // `flat_cache` nodes into what they mean in vanilla (see oxide_noise::ChunkCaches). It is
+    // both the parity-correct path and ~80x less work than sampling each block exactly.
+    let caches = router.chunk_caches(pos.x, pos.z);
+
     let mut chunk = ChunkData::new(pos, min_y, height);
     let section_count = chunk.section_count();
 
@@ -57,7 +62,13 @@ pub fn fill_chunk(
                 let block_z = pos.min_block_z() + local_z as i32;
                 for local_x in 0..16usize {
                     let block_x = pos.min_block_x() + local_x as i32;
-                    let density = router.sample(RouterSlot::FinalDensity, block_x, y, block_z);
+                    let density = router.sample_in_chunk(
+                        &caches,
+                        RouterSlot::FinalDensity,
+                        block_x,
+                        y,
+                        block_z,
+                    );
                     // PARITY-CHECK: this is the non-aquifer fallback rule reconstructed from
                     // memory of `NoiseChunk`'s substance decision (`density > 0` => solid,
                     // else fluid below sea level, else air). Real aquifer fluid-level logic
@@ -77,7 +88,7 @@ pub fn fill_chunk(
         }
 
         if let Some(tree) = biomes {
-            fill_biomes(&mut section, pos, section_min_y, router, tree);
+            fill_biomes(&mut section, pos, section_min_y, router, &caches, tree);
         }
 
         chunk.sections.push(section);

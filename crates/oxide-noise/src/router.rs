@@ -5,10 +5,11 @@
 use std::collections::HashMap;
 
 use oxide_datapack::{
-    DensityFunction, NoiseGeneratorSettings, NoiseRouter, NormalNoiseParameters, Registry,
-    ResourceLocation,
+    DensityFunction, NoiseDimensionSettings, NoiseGeneratorSettings, NoiseRouter,
+    NormalNoiseParameters, Registry, ResourceLocation,
 };
 
+use crate::cache::ChunkCaches;
 use crate::density::{evaluate, EvalCtx, FunctionContext};
 use crate::normal_noise::NormalNoise;
 use crate::random::{WorldPositionalFactory, WorldRandom};
@@ -47,6 +48,8 @@ pub struct NoiseRouterEvaluator {
     /// same `RandomState` positional factory vanilla's `SurfaceSystem` uses, and deriving a
     /// second one from the seed would not match it.
     positional_factory: WorldPositionalFactory,
+    /// Cell dimensions and vertical bounds, needed to size a chunk's interpolation grid.
+    noise: NoiseDimensionSettings,
 }
 
 impl NoiseRouterEvaluator {
@@ -79,6 +82,7 @@ impl NoiseRouterEvaluator {
             router: settings.noise_router.clone(),
             noises,
             positional_factory: factory,
+            noise: settings.noise.clone(),
         }
     }
 
@@ -116,12 +120,48 @@ impl NoiseRouterEvaluator {
         self.noises.get(id)
     }
 
+    /// One-off sample with no chunk context: `interpolated` degrades to evaluating the tree
+    /// exactly, which is both slow and slightly off vanilla. Fine for a biome lookup or a
+    /// test; use [`Self::sample_in_chunk`] for anything filling a chunk.
     pub fn sample(&self, slot: RouterSlot, x: i32, y: i32, z: i32) -> f64 {
         let cx = EvalCtx {
             df_registry: &self.df_registry,
             noises: &self.noises,
+            caches: None,
         };
         evaluate(self.slot_df(slot), FunctionContext { x, y, z }, &cx)
+    }
+
+    /// Sample within a chunk, honouring the datapack's caching and interpolation nodes. This
+    /// is the path chunk generation must use: it is ~80x less work than [`Self::sample`] and,
+    /// because vanilla's terrain is the interpolated value rather than the exact one, it is
+    /// also the one that can match Java.
+    pub fn sample_in_chunk(
+        &self,
+        caches: &ChunkCaches,
+        slot: RouterSlot,
+        x: i32,
+        y: i32,
+        z: i32,
+    ) -> f64 {
+        let cx = EvalCtx {
+            df_registry: &self.df_registry,
+            noises: &self.noises,
+            caches: Some(caches),
+        };
+        evaluate(self.slot_df(slot), FunctionContext { x, y, z }, &cx)
+    }
+
+    /// A `ChunkCaches` sized for this router's settings, for the chunk at `(chunk_x, chunk_z)`.
+    pub fn chunk_caches(&self, chunk_x: i32, chunk_z: i32) -> ChunkCaches {
+        ChunkCaches::new(
+            chunk_x * 16,
+            chunk_z * 16,
+            self.noise.min_y,
+            self.noise.height,
+            self.noise.size_horizontal,
+            self.noise.size_vertical,
+        )
     }
 }
 

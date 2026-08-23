@@ -27,4 +27,24 @@ impl ClimateSample {
             weirdness: router.sample(RouterSlot::Ridges, x, y, z),
         }
     }
+
+    /// Same climate sample, taken through a chunk's caches. The six climate slots share most
+    /// of their subtrees with each other and with the terrain density, so inside a chunk this
+    /// costs a fraction of [`Self::sample`].
+    pub fn sample_in_chunk(
+        router: &NoiseRouterEvaluator,
+        caches: &oxide_noise::ChunkCaches,
+        x: i32,
+        y: i32,
+        z: i32,
+    ) -> Self {
+        Self {
+            temperature: router.sample_in_chunk(caches, RouterSlot::Temperature, x, y, z),
+            humidity: router.sample_in_chunk(caches, RouterSlot::Vegetation, x, y, z),
+            continentalness: router.sample_in_chunk(caches, RouterSlot::Continents, x, y, z),
+            erosion: router.sample_in_chunk(caches, RouterSlot::Erosion, x, y, z),
+            depth: router.sample_in_chunk(caches, RouterSlot::Depth, x, y, z),
+            weirdness: router.sample_in_chunk(caches, RouterSlot::Ridges, x, y, z),
+        }
+    }
 }

@@ -35,6 +35,10 @@ pub struct FunctionContext {
 pub struct EvalCtx<'a> {
     pub df_registry: &'a Registry<DensityFunction>,
     pub noises: &'a HashMap<ResourceLocation, NormalNoise>,
+    /// Per-chunk caches. `None` for a one-off sample (a biome lookup, a test); `Some` while
+    /// filling a chunk, which is what makes `interpolated`/`flat_cache`/`cache_2d` behave the
+    /// way vanilla defines them instead of evaluating straight through. See `cache.rs`.
+    pub caches: Option<&'a crate::cache::ChunkCaches>,
 }
 
 pub fn evaluate(df: &DensityFunction, ctx: FunctionContext, cx: &EvalCtx) -> f64 {
@@ -111,16 +115,27 @@ fn evaluate_object(obj: &DensityFunctionObject, ctx: FunctionContext, cx: &EvalC
             d * sample_noise(noise, cx, bx / d, by / d, bz / d).abs()
         }
 
-        FlatCache { argument }
-        | Cache2d { argument }
-        | CacheOnce { argument }
-        | CacheAllInCell { argument }
-        | Interpolated { argument } => {
-            // Memoization/cell-interpolation is a performance concern for the real chunk fill
-            // loop (`oxide-chunkgen`, wave 3), not a value-changing one for a single point
-            // sample — passthrough preserves the correct value here.
-            evaluate(argument, ctx, cx)
-        }
+        // These five are what keep vanilla's generator cheap, and `interpolated` is also what
+        // *defines* its terrain: the surface is the trilinear blend between cell corners, not
+        // the tree evaluated at every block. Without a chunk cache to hang that on (a single
+        // point sample, a test) they degrade to evaluating through, which is the right value
+        // for every node except `interpolated` -- see cache.rs.
+        Interpolated { argument } => match cx.caches {
+            Some(caches) => caches.interpolated(argument, ctx, cx),
+            None => evaluate(argument, ctx, cx),
+        },
+        FlatCache { argument } => match cx.caches {
+            Some(caches) => caches.flat_cache(argument, ctx, cx),
+            None => evaluate(argument, ctx, cx),
+        },
+        Cache2d { argument } => match cx.caches {
+            Some(caches) => caches.cache_2d(argument, ctx, cx),
+            None => evaluate(argument, ctx, cx),
+        },
+        CacheOnce { argument } | CacheAllInCell { argument } => match cx.caches {
+            Some(caches) => caches.once(argument, ctx, cx),
+            None => evaluate(argument, ctx, cx),
+        },
 
         BlendDensity { argument } => {
             // No legacy-chunk blending is in scope (see `docs/ARCHITECTURE.md`); alpha=1,
@@ -372,6 +387,7 @@ mod tests {
         EvalCtx {
             df_registry,
             noises,
+            caches: None,
         }
     }
 

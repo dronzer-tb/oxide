@@ -18,6 +18,7 @@ pub(crate) fn fill_biomes(
     pos: ChunkPos,
     section_min_y: i32,
     router: &NoiseRouterEvaluator,
+    caches: &oxide_noise::ChunkCaches,
     tree: &BiomeSearchTree,
 ) {
     if tree.is_empty() {
@@ -29,7 +30,7 @@ pub(crate) fn fill_biomes(
             let block_z = pos.min_block_z() + (qz * 4) as i32 + 2;
             for qx in 0..4usize {
                 let block_x = pos.min_block_x() + (qx * 4) as i32 + 2;
-                let sample = ClimateSample::sample(router, block_x, y, block_z);
+                let sample = ClimateSample::sample_in_chunk(router, caches, block_x, y, block_z);
                 if let Some(biome) = tree.nearest(sample) {
                     section
                         .biomes

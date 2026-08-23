@@ -62,6 +62,10 @@ pub struct SurfaceSystem<'a> {
     /// Copied out of the chunk before the scan starts, because the scan mutates the chunk and
     /// the `Steep` condition has to read heights the fill pass computed, not rewritten ones.
     ocean_floor: Option<Heightmap>,
+    /// The chunk's density-function caches. `find_top_surface` walks a column in cell-height
+    /// steps through a deep tree, once per column, so sharing the fill pass's caches is the
+    /// difference between cheap and dominating the whole chunk.
+    caches: Option<&'a oxide_noise::ChunkCaches>,
 }
 
 impl<'a> SurfaceSystem<'a> {
@@ -77,12 +81,19 @@ impl<'a> SurfaceSystem<'a> {
             min_y: settings.noise.min_y,
             height: settings.noise.height,
             ocean_floor: None,
+            caches: None,
         }
     }
 
     /// Rewrites `chunk`'s `default_block` positions per the rule tree. Positions holding fluid
     /// or air are never rewritten -- vanilla only offers the rule tree a stone position.
-    pub fn apply(&mut self, chunk: &mut ChunkData, pos: ChunkPos) {
+    pub fn apply(
+        &mut self,
+        chunk: &mut ChunkData,
+        pos: ChunkPos,
+        caches: &'a oxide_noise::ChunkCaches,
+    ) {
+        self.caches = Some(caches);
         self.ocean_floor = chunk.heightmaps.get(&HeightmapType::OceanFloorWg).cloned();
         let rule = &self.settings.surface_rule;
         let default_block = &self.settings.default_block;
@@ -154,10 +165,15 @@ impl<'a> SurfaceSystem<'a> {
         Column {
             surface_depth,
             surface_secondary: self.sample_noise("surface_secondary", x as f64, 0.0, z as f64),
-            min_surface_level: self
-                .router
-                .sample(RouterSlot::PreliminarySurfaceLevel, x, 0, z)
-                as i32,
+            min_surface_level: self.sample(RouterSlot::PreliminarySurfaceLevel, x, 0, z) as i32,
+        }
+    }
+
+    /// Router sample through the chunk's caches when the surface pass is running inside one.
+    fn sample(&self, slot: RouterSlot, x: i32, y: i32, z: i32) -> f64 {
+        match self.caches {
+            Some(caches) => self.router.sample_in_chunk(caches, slot, x, y, z),
+            None => self.router.sample(slot, x, y, z),
         }
     }
 
