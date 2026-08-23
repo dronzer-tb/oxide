@@ -7,6 +7,7 @@
 //! anything else — that belongs to the downstream crates.
 
 pub mod biome;
+pub mod carver;
 pub mod climate;
 pub mod density_function;
 pub mod dimension;
@@ -23,6 +24,10 @@ pub mod surface_rule;
 pub mod version;
 
 pub use biome::{Biome, BiomeEffects, SpawnerData};
+pub use carver::{
+    CanyonCarverConfig, CanyonShape, CarverConfig, CaveCarverConfig, ConfiguredCarver,
+    FloatProvider, HeightProvider,
+};
 pub use density_function::{
     CubicSpline, DensityFunction, DensityFunctionObject, RarityValueMapper, SplinePoint,
     SplineValue,

@@ -144,7 +144,7 @@ fn column_top_y(
 
 /// Value stored is one above the highest counting block (vanilla convention: the height you'd
 /// stand on), `0` (chunk floor) if a column has no counting block.
-fn compute_heightmaps(
+pub(crate) fn compute_heightmaps(
     chunk: &ChunkData,
     settings: &NoiseGeneratorSettings,
 ) -> HashMap<HeightmapType, Heightmap> {

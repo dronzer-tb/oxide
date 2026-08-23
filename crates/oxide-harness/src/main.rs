@@ -15,7 +15,7 @@ use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 
 use oxide_biome::BiomeSearchTree;
-use oxide_chunkgen::{generate_chunk, BiomeTemperatures};
+use oxide_chunkgen::{generate_chunk, BiomeTemperatures, CarverSetup};
 use oxide_core::{BlockState, ChunkPos, ResourceLocation};
 use oxide_datapack::{load_datapack, BiomeSource};
 use oxide_noise::NoiseRouterEvaluator;
@@ -101,6 +101,28 @@ fn main() -> Result<()> {
         .map(|(id, biome)| (id.clone(), biome.temperature))
         .collect();
 
+    // Carvers a source chunk's biome configures. Vanilla looks the biome up per source chunk;
+    // this resolves the ids once and hands back the same list, which is right for a pack whose
+    // overworld biomes all name the same carvers and is flagged where it is not.
+    let carver_ids: Vec<oxide_core::ResourceLocation> = datapack
+        .biomes
+        .iter()
+        .flat_map(|(_, biome)| biome.carvers.iter().cloned())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let configured: Vec<oxide_datapack::ConfiguredCarver> = carver_ids
+        .iter()
+        .filter_map(|id| datapack.configured_carvers.get(id).cloned())
+        .collect();
+    println!("carvers in play: {}", configured.len());
+    let carvers_at = |_pos: ChunkPos| configured.clone();
+    let carver_setup = CarverSetup {
+        seed: args.seed,
+        carvers_at: &carvers_at,
+    };
+
+    let mut air_below_zero = 0usize;
     let mut surface_census: std::collections::BTreeMap<String, usize> = Default::default();
     let mut total = 0usize;
     let mut with_failures = 0usize;
@@ -123,6 +145,7 @@ fn main() -> Result<()> {
                     &router,
                     biome_tree.as_ref(),
                     &biome_temperatures,
+                    Some(&carver_setup),
                 )
             };
             if args.time_only {
@@ -141,9 +164,22 @@ fn main() -> Result<()> {
                 &router,
                 biome_tree.as_ref(),
                 &biome_temperatures,
+                Some(&carver_setup),
             );
             let rebuilt_tree = build_merkle(&rebuilt, args.leaf_size);
             let nondeterministic_sections = diverging_sections(&tree, &rebuilt_tree);
+
+            // Air below y=0 is the carver's signature: the noise fill never leaves any there.
+            for section in chunk.sections.iter() {
+                if (section.y as i32) * 16 >= 0 {
+                    continue;
+                }
+                for index in 0..4096usize {
+                    if section.block_states.get(index).name.path() == "air" {
+                        air_below_zero += 1;
+                    }
+                }
+            }
 
             for local_z in 0..16usize {
                 for local_x in 0..16usize {
@@ -180,6 +216,7 @@ fn main() -> Result<()> {
         }
     }
 
+    println!("air blocks below y=0 (carved): {air_below_zero}");
     println!("surface blocks (top of each column):");
     let mut census: Vec<_> = surface_census.iter().collect();
     census.sort_by(|a, b| b.1.cmp(a.1));

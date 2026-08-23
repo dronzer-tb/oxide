@@ -536,8 +536,14 @@ mod tests {
         let noise_registry = Registry::default();
         let router = NoiseRouterEvaluator::new(42, &settings, &df_registry, &noise_registry);
         let temperatures = BiomeTemperatures::new();
-        let chunk =
-            crate::generate_chunk(ChunkPos::new(0, 0), &settings, &router, None, &temperatures);
+        let chunk = crate::generate_chunk(
+            ChunkPos::new(0, 0),
+            &settings,
+            &router,
+            None,
+            &temperatures,
+            None,
+        );
         (chunk, settings)
     }
 

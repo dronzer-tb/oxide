@@ -24,6 +24,28 @@ impl LegacyRandom {
     }
 }
 
+impl LegacyRandom {
+    /// Vanilla `WorldgenRandom#setLargeFeatureSeed`: reseeds this generator for one chunk of a
+    /// large, chunk-spanning feature -- what carvers use so that every chunk within carving
+    /// range derives the same tunnels from the same source chunk.
+    ///
+    /// Verified against the decompiled 26.2 `WorldgenRandom`:
+    /// ```text
+    /// setSeed(seed);
+    /// long xScale = nextLong();
+    /// long zScale = nextLong();
+    /// setSeed(chunkX * xScale ^ chunkZ * zScale ^ seed);
+    /// ```
+    pub fn set_large_feature_seed(&mut self, seed: i64, chunk_x: i32, chunk_z: i32) {
+        self.set_seed(seed);
+        let x_scale = self.next_long();
+        let z_scale = self.next_long();
+        let derived =
+            (chunk_x as i64).wrapping_mul(x_scale) ^ (chunk_z as i64).wrapping_mul(z_scale) ^ seed;
+        self.set_seed(derived);
+    }
+}
+
 impl RandomSource for LegacyRandom {
     fn next_bits(&mut self, bits: u32) -> i32 {
         debug_assert!(bits <= 32);

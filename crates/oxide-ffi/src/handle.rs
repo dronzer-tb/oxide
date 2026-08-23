@@ -12,7 +12,7 @@ use std::sync::RwLock;
 use anyhow::{anyhow, Context, Result};
 
 use oxide_biome::BiomeSearchTree;
-use oxide_chunkgen::{generate_chunk, BiomeTemperatures};
+use oxide_chunkgen::{generate_chunk, BiomeTemperatures, CarverSetup};
 use oxide_core::{ChunkPos, ResourceLocation};
 use oxide_datapack::{load_datapack, BiomeSource, NoiseGeneratorSettings};
 use oxide_noise::NoiseRouterEvaluator;
@@ -24,6 +24,11 @@ pub struct OxideGenerator {
     router: NoiseRouterEvaluator,
     biome_tree: Option<BiomeSearchTree>,
     biome_temperatures: BiomeTemperatures,
+    /// Carvers per biome id, as the biome's `carvers` list names them. Vanilla picks the
+    /// carver set from the biome at each source chunk, so this is kept per biome rather than
+    /// flattened into one list.
+    biome_carvers: HashMap<ResourceLocation, Vec<oxide_datapack::ConfiguredCarver>>,
+    seed: i64,
     /// Interned block-state strings, indexed by the u16 values `generate_chunk` writes. Grows
     /// as generation meets new states and never shrinks, so an index handed to the caller
     /// stays valid for the handle's whole life -- that is what lets the Java side resolve each
@@ -103,6 +108,23 @@ impl OxideGenerator {
             _ => None,
         };
 
+        // Carvers each biome configures, resolved once. A biome naming a carver the pack does
+        // not define is skipped rather than failing the open -- the datapack's own resolution
+        // report already flags dangling ids.
+        let biome_carvers: HashMap<ResourceLocation, Vec<oxide_datapack::ConfiguredCarver>> =
+            datapack
+                .biomes
+                .iter()
+                .map(|(id, biome)| {
+                    let carvers = biome
+                        .carvers
+                        .iter()
+                        .filter_map(|carver_id| datapack.configured_carvers.get(carver_id).cloned())
+                        .collect();
+                    (id.clone(), carvers)
+                })
+                .collect();
+
         // Surface rules read each biome's base temperature; the rest of the biome definitions
         // are not needed after this point, which is why only this map is kept.
         let biome_temperatures: BiomeTemperatures = datapack
@@ -131,6 +153,8 @@ impl OxideGenerator {
             router,
             biome_tree,
             biome_temperatures,
+            biome_carvers,
+            seed,
             block_palette: RwLock::new(Palette::default()),
             biome_palette: RwLock::new(biome_palette),
         })
@@ -197,12 +221,35 @@ impl OxideGenerator {
         out_blocks: &mut [u16],
         out_biomes: &mut [u16],
     ) -> Result<()> {
+        // Which carvers reach into this chunk depends on the biome at each source chunk, the
+        // same way vanilla's applyCarvers picks them.
+        let carvers_at = |source: ChunkPos| -> Vec<oxide_datapack::ConfiguredCarver> {
+            let Some(tree) = self.biome_tree.as_ref() else {
+                return Vec::new();
+            };
+            let sample = oxide_biome::ClimateSample::sample(
+                &self.router,
+                source.min_block_x(),
+                0,
+                source.min_block_z(),
+            );
+            match tree.nearest(sample) {
+                Some(biome) => self.biome_carvers.get(biome).cloned().unwrap_or_default(),
+                None => Vec::new(),
+            }
+        };
+        let carver_setup = CarverSetup {
+            seed: self.seed,
+            carvers_at: &carvers_at,
+        };
+
         let chunk = generate_chunk(
             ChunkPos::new(chunk_x, chunk_z),
             &self.settings,
             &self.router,
             self.biome_tree.as_ref(),
             &self.biome_temperatures,
+            Some(&carver_setup),
         );
 
         out_blocks.fill(0);

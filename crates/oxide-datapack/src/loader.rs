@@ -29,6 +29,7 @@ pub struct Datapack {
     pub dimensions: Registry<Dimension>,
     pub dimension_types: Registry<DimensionType>,
     pub multi_noise_parameter_lists: Registry<MultiNoiseBiomeSourceParameterList>,
+    pub configured_carvers: Registry<crate::carver::ConfiguredCarver>,
     pub structures: Registry<Structure>,
     pub structure_sets: Registry<StructureSet>,
     pub template_pools: Registry<TemplatePool>,
@@ -53,6 +54,8 @@ pub fn load_datapack(pack_root: &Path) -> Result<Datapack> {
         "multi_noise_biome_source_parameter_list",
         "worldgen/multi_noise_biome_source_parameter_list",
     )?;
+    let configured_carvers =
+        load_registry(pack_root, "configured_carver", "worldgen/configured_carver")?;
     let structures = load_registry(pack_root, "structure", "worldgen/structure")?;
     let structure_sets = load_registry(pack_root, "structure_set", "worldgen/structure_set")?;
     let template_pools = load_registry(pack_root, "template_pool", "worldgen/template_pool")?;
@@ -106,6 +109,7 @@ pub fn load_datapack(pack_root: &Path) -> Result<Datapack> {
         dimensions,
         dimension_types,
         multi_noise_parameter_lists,
+        configured_carvers,
         structures,
         structure_sets,
         template_pools,
