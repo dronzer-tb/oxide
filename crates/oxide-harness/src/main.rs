@@ -41,6 +41,14 @@ struct Args {
     /// Merkle leaf cube side length (must evenly divide 16).
     #[arg(long, default_value_t = 4)]
     leaf_size: usize,
+    /// Skip surface-rule evaluation, generating noise terrain only. For splitting where
+    /// generation time actually goes -- not a mode anything should ship with.
+    #[arg(long)]
+    skip_surface: bool,
+    /// Generate only, skipping the merkle build, invariant checks and the determinism
+    /// re-generation, so a timing run measures generation and nothing else.
+    #[arg(long)]
+    time_only: bool,
 }
 
 fn main() -> Result<()> {
@@ -101,13 +109,26 @@ fn main() -> Result<()> {
     for cx in -args.radius..=args.radius {
         for cz in -args.radius..=args.radius {
             total += 1;
-            let chunk = generate_chunk(
-                ChunkPos::new(cx, cz),
-                settings,
-                &router,
-                biome_tree.as_ref(),
-                &biome_temperatures,
-            );
+            let chunk = if args.skip_surface {
+                oxide_chunkgen::fill_chunk(
+                    ChunkPos::new(cx, cz),
+                    settings,
+                    &router,
+                    biome_tree.as_ref(),
+                )
+            } else {
+                generate_chunk(
+                    ChunkPos::new(cx, cz),
+                    settings,
+                    &router,
+                    biome_tree.as_ref(),
+                    &biome_temperatures,
+                )
+            };
+            if args.time_only {
+                std::hint::black_box(&chunk);
+                continue;
+            }
             let tree = build_merkle(&chunk, args.leaf_size);
 
             // Determinism self-check: the same seed and position must fill identically every
