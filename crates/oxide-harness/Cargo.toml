@@ -25,3 +25,10 @@ serde_json.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+pprof = { version = "0.14", features = ["flamegraph"], optional = true }
+
+[features]
+# Sampling profiler for the optimization pass: `--features profile` plus `--profile-out
+# <file.svg>` writes a flamegraph of a generation run. Off by default so the shipped binary
+# carries no SIGPROF handler.
+profile = ["dep:pprof"]
