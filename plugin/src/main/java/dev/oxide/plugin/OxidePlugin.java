@@ -150,9 +150,10 @@ public final class OxidePlugin extends JavaPlugin {
 
         getLogger().warning("world '" + worldName + "' will generate NEW chunks with the Rust"
                 + " generator" + (seed == null ? " using the world's own seed" : " with seed " + seed)
-                + ". Existing chunks are untouched, and new terrain will not match them: this"
-                + " generator has no carvers, aquifers, or ore veins yet, so expect no caves and"
-                + " a visible seam at the boundary.");
+                + ". Existing chunks are untouched. Noise terrain, surface rules, carvers, ore"
+                + " veins and aquifers all come from Rust; structures, decorations and mobs are"
+                + " still vanilla. Terrain is close to vanilla but not bit-identical, so expect a"
+                + " seam at the boundary with already-generated chunks.");
         return new OxideChunkGenerator(generatorService, liveProvenance, getLogger(), seed);
     }
 
