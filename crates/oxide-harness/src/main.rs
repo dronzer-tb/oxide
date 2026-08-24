@@ -61,16 +61,13 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     #[cfg(feature = "profile")]
-    let guard = args
-        .profile_out
-        .as_ref()
-        .map(|_| {
-            pprof::ProfilerGuardBuilder::default()
-                .frequency(999)
-                .blocklist(&["libc", "libgcc", "pthread", "vdso"])
-                .build()
-                .expect("starting the sampling profiler")
-        });
+    let guard = args.profile_out.as_ref().map(|_| {
+        pprof::ProfilerGuardBuilder::default()
+            .frequency(999)
+            .blocklist(&["libc", "libgcc", "pthread", "vdso"])
+            .build()
+            .expect("starting the sampling profiler")
+    });
 
     let datapack = load_datapack(&args.datapack)
         .with_context(|| format!("loading datapack at {}", args.datapack.display()))?;
@@ -289,8 +286,8 @@ fn main() -> Result<()> {
     #[cfg(feature = "profile")]
     if let (Some(guard), Some(path)) = (guard, args.profile_out.as_ref()) {
         let report = guard.report().build().context("building profile report")?;
-        let file = std::fs::File::create(path)
-            .with_context(|| format!("creating {}", path.display()))?;
+        let file =
+            std::fs::File::create(path).with_context(|| format!("creating {}", path.display()))?;
         // `.folded` asks for collapsed stacks instead of an SVG: one line per stack, which is
         // what a self-time table is derived from.
         if path.extension().is_some_and(|e| e == "folded") {
@@ -300,13 +297,7 @@ fn main() -> Result<()> {
                 let mut names: Vec<String> = frames
                     .frames
                     .iter()
-                    .map(|level| {
-                        level
-                            .iter()
-                            .map(|s| s.name())
-                            .collect::<Vec<_>>()
-                            .join("|")
-                    })
+                    .map(|level| level.iter().map(|s| s.name()).collect::<Vec<_>>().join("|"))
                     .collect();
                 names.reverse();
                 writeln!(out, "{} {}", names.join(";"), count)?;
