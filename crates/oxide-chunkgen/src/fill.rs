@@ -156,6 +156,12 @@ pub fn fill_chunk_with(
 /// far cheaper than a full chunk (one shared corner grid, then 385 interpolated samples), and
 /// it reports the pre-carve surface, so a structure placed over a cave mouth sits where
 /// vanilla would put it.
+///
+/// The "one shared corner grid" is what the thread-local below buys. A caller asking about a
+/// structure asks column by column, and building a chunk's caches means evaluating five
+/// `interpolated` nodes at 1225 cell corners each -- so building them per call made a single
+/// chunk's worth of `base_height` cost eighteen times more than generating that chunk. The
+/// caches depend only on the router and the chunk, so the last chunk's are kept and reused.
 pub fn base_height(
     x: i32,
     z: i32,
@@ -163,14 +169,45 @@ pub fn base_height(
     router: &NoiseRouterEvaluator,
     ty: HeightmapType,
 ) -> i32 {
+    let chunk_pos = ChunkPos::new(x.div_euclid(16), z.div_euclid(16));
+    COLUMN_CACHES.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        // Keyed by the router too: one process can hold generators for several worlds, and a
+        // chunk position means nothing without knowing whose.
+        let key = (router as *const NoiseRouterEvaluator as usize, chunk_pos);
+        match slot.as_ref() {
+            Some((cached, _)) if *cached == key => {}
+            _ => *slot = Some((key, router.chunk_caches(chunk_pos.x, chunk_pos.z))),
+        }
+        let caches = &slot.as_ref().expect("just populated").1;
+        base_height_with(x, z, chunk_pos, settings, router, caches, ty)
+    })
+}
+
+thread_local! {
+    /// The last chunk `base_height` was asked about, and its density caches. One entry is
+    /// enough: callers walk a chunk's columns together.
+    static COLUMN_CACHES: std::cell::RefCell<
+        Option<((usize, ChunkPos), oxide_noise::ChunkCaches)>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+#[allow(clippy::too_many_arguments)]
+fn base_height_with(
+    x: i32,
+    z: i32,
+    chunk_pos: ChunkPos,
+    settings: &NoiseGeneratorSettings,
+    router: &NoiseRouterEvaluator,
+    caches: &oxide_noise::ChunkCaches,
+    ty: HeightmapType,
+) -> i32 {
     let min_y = settings.noise.min_y;
     let air = BlockState::new(ResourceLocation::minecraft("air"));
-    let chunk_pos = ChunkPos::new(x.div_euclid(16), z.div_euclid(16));
-    let caches = router.chunk_caches(chunk_pos.x, chunk_pos.z);
-    let mut aquifer = crate::aquifer::for_settings(chunk_pos, settings, router, &caches);
+    let mut aquifer = crate::aquifer::for_settings(chunk_pos, settings, router, caches);
 
     for y in (min_y..min_y + settings.noise.height).rev() {
-        let density = router.sample_in_chunk(&caches, RouterSlot::FinalDensity, x, y, z);
+        let density = router.sample_in_chunk(caches, RouterSlot::FinalDensity, x, y, z);
         let block = match aquifer.as_mut() {
             Some(aquifer) => match aquifer.compute_substance(x, y, z, density) {
                 None => settings.default_block.clone(),
