@@ -187,6 +187,8 @@ fn main() -> Result<()> {
             chunks.len(),
             args.threads
         );
+        #[cfg(feature = "profile")]
+        write_profile(guard, args.profile_out.as_deref())?;
         return Ok(());
     }
 
@@ -312,33 +314,44 @@ fn main() -> Result<()> {
     );
 
     #[cfg(feature = "profile")]
-    if let (Some(guard), Some(path)) = (guard, args.profile_out.as_ref()) {
-        let report = guard.report().build().context("building profile report")?;
-        let file =
-            std::fs::File::create(path).with_context(|| format!("creating {}", path.display()))?;
-        // `.folded` asks for collapsed stacks instead of an SVG: one line per stack, which is
-        // what a self-time table is derived from.
-        if path.extension().is_some_and(|e| e == "folded") {
-            use std::io::Write;
-            let mut out = std::io::BufWriter::new(file);
-            for (frames, count) in report.data.iter() {
-                let mut names: Vec<String> = frames
-                    .frames
-                    .iter()
-                    .map(|level| level.iter().map(|s| s.name()).collect::<Vec<_>>().join("|"))
-                    .collect();
-                names.reverse();
-                writeln!(out, "{} {}", names.join(";"), count)?;
-            }
-        } else {
-            report.flamegraph(file).context("writing flamegraph")?;
-        }
-        println!("flamegraph written to {}", path.display());
-    }
+    write_profile(guard, args.profile_out.as_deref())?;
 
     if with_failures > 0 {
         std::process::exit(1);
     }
+    Ok(())
+}
+
+/// Writes the sampling profile, if one was requested. `.folded` asks for collapsed stacks --
+/// one line per stack, which is what a self-time table is derived from -- and anything else for
+/// a flamegraph SVG.
+#[cfg(feature = "profile")]
+fn write_profile(
+    guard: Option<pprof::ProfilerGuard<'_>>,
+    path: Option<&std::path::Path>,
+) -> Result<()> {
+    let (Some(guard), Some(path)) = (guard, path) else {
+        return Ok(());
+    };
+    let report = guard.report().build().context("building profile report")?;
+    let file =
+        std::fs::File::create(path).with_context(|| format!("creating {}", path.display()))?;
+    if path.extension().is_some_and(|e| e == "folded") {
+        use std::io::Write;
+        let mut out = std::io::BufWriter::new(file);
+        for (frames, count) in report.data.iter() {
+            let mut names: Vec<String> = frames
+                .frames
+                .iter()
+                .map(|level| level.iter().map(|s| s.name()).collect::<Vec<_>>().join("|"))
+                .collect();
+            names.reverse();
+            writeln!(out, "{} {}", names.join(";"), count)?;
+        }
+    } else {
+        report.flamegraph(file).context("writing flamegraph")?;
+    }
+    println!("profile written to {}", path.display());
     Ok(())
 }
 
