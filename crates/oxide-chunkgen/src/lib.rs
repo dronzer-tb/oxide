@@ -69,5 +69,21 @@ pub fn generate_chunk(
 /// biome configures.
 pub struct CarverSetup<'a> {
     pub seed: i64,
-    pub carvers_at: &'a dyn Fn(ChunkPos) -> Vec<oxide_datapack::ConfiguredCarver>,
+    /// `Sync` so a caller can generate several chunks at once off one setup -- which is how
+    /// Folia drives this, one region per thread. Nothing in generation mutates shared state:
+    /// the caches and the aquifer are built per chunk inside [`generate_chunk`].
+    pub carvers_at: &'a (dyn Fn(ChunkPos) -> Vec<oxide_datapack::ConfiguredCarver> + Sync),
 }
+
+/// Generation must be usable from several threads at once against one shared router and one
+/// shared carver setup: that is what lets a caller match Folia's per-region threading instead
+/// of serializing behind it. A compile failure here means a shared field stopped being `Sync`.
+#[cfg(test)]
+const _: fn() = || {
+    fn assert_sync<T: Sync>() {}
+    assert_sync::<NoiseRouterEvaluator>();
+    assert_sync::<BiomeSearchTree>();
+    assert_sync::<NoiseGeneratorSettings>();
+    assert_sync::<BiomeTemperatures>();
+    assert_sync::<CarverSetup<'static>>();
+};

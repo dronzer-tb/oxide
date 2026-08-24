@@ -14,6 +14,8 @@ use std::str::FromStr;
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 
+use rayon::prelude::*;
+
 use oxide_biome::BiomeSearchTree;
 use oxide_chunkgen::{generate_chunk, BiomeTemperatures, CarverSetup};
 use oxide_core::{BlockState, ChunkPos, ResourceLocation};
@@ -49,6 +51,11 @@ struct Args {
     /// re-generation, so a timing run measures generation and nothing else.
     #[arg(long)]
     time_only: bool,
+    /// Threads to generate on. Only honoured with `--time-only`: the invariant pass reports
+    /// per-chunk findings in a fixed order, and generation itself is what threading is being
+    /// measured for. One shared router and carver setup serve every thread.
+    #[arg(long, default_value_t = 1)]
+    threads: usize,
     /// Write a sampling-profiler flamegraph of the whole run to this path. Requires the
     /// `profile` cargo feature; ignored without it.
     #[cfg(feature = "profile")]
@@ -136,6 +143,53 @@ fn main() -> Result<()> {
         carvers_at: &carvers_at,
     };
 
+    let positions: Vec<ChunkPos> = (-args.radius..=args.radius)
+        .flat_map(|cx| (-args.radius..=args.radius).map(move |cz| ChunkPos::new(cx, cz)))
+        .collect();
+    let generate = |pos: ChunkPos| {
+        if args.skip_surface {
+            oxide_chunkgen::fill_chunk(pos, settings, &router, biome_tree.as_ref())
+        } else {
+            generate_chunk(
+                pos,
+                settings,
+                &router,
+                biome_tree.as_ref(),
+                &biome_temperatures,
+                Some(&carver_setup),
+            )
+        }
+    };
+    // One shared router and carver setup serve every thread; everything a chunk mutates -- its
+    // caches, its aquifer -- is built inside `generate_chunk`. Results come back in position
+    // order, so a threaded run and a single-threaded one are compared against the same
+    // fingerprint.
+    let pool = (args.threads > 1)
+        .then(|| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(args.threads)
+                .build()
+                .context("building the generation thread pool")
+        })
+        .transpose()?;
+    let generate_all = |positions: &[ChunkPos]| -> Vec<oxide_core::ChunkData> {
+        match &pool {
+            Some(pool) => pool.install(|| positions.par_iter().copied().map(generate).collect()),
+            None => positions.iter().copied().map(generate).collect(),
+        }
+    };
+
+    if args.time_only {
+        let chunks = generate_all(&positions);
+        std::hint::black_box(&chunks);
+        println!(
+            "generated {} chunks on {} thread(s)",
+            chunks.len(),
+            args.threads
+        );
+        return Ok(());
+    }
+
     let mut air_below_zero = 0usize;
     let mut underground_water = 0usize;
     let mut underground_lava = 0usize;
@@ -145,44 +199,18 @@ fn main() -> Result<()> {
     let mut with_failures = 0usize;
     let mut failure_counts: std::collections::HashMap<&'static str, usize> = Default::default();
 
-    for cx in -args.radius..=args.radius {
-        for cz in -args.radius..=args.radius {
+    let chunks = generate_all(&positions);
+    for (pos, chunk) in positions.iter().copied().zip(chunks) {
+        {
+            let (cx, cz) = (pos.x, pos.z);
             total += 1;
-            let chunk = if args.skip_surface {
-                oxide_chunkgen::fill_chunk(
-                    ChunkPos::new(cx, cz),
-                    settings,
-                    &router,
-                    biome_tree.as_ref(),
-                )
-            } else {
-                generate_chunk(
-                    ChunkPos::new(cx, cz),
-                    settings,
-                    &router,
-                    biome_tree.as_ref(),
-                    &biome_temperatures,
-                    Some(&carver_setup),
-                )
-            };
-            if args.time_only {
-                std::hint::black_box(&chunk);
-                continue;
-            }
             let tree = build_merkle(&chunk, args.leaf_size);
 
             // Determinism self-check: the same seed and position must fill identically every
             // time, with no vanilla reference needed to catch a regression here. Exercises
             // `diverging_sections` for real, not just in unit tests, since there's no vanilla
             // tree to diff against yet (see module doc).
-            let rebuilt = generate_chunk(
-                ChunkPos::new(cx, cz),
-                settings,
-                &router,
-                biome_tree.as_ref(),
-                &biome_temperatures,
-                Some(&carver_setup),
-            );
+            let rebuilt = generate(pos);
             let rebuilt_tree = build_merkle(&rebuilt, args.leaf_size);
             let nondeterministic_sections = diverging_sections(&tree, &rebuilt_tree);
 
