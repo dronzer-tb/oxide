@@ -14,6 +14,16 @@ java {
 }
 
 repositories {
+    // The Vertex Engine API is published to GitHub Packages by the vertex-engine repo, and to
+    // the local repository by a `publishToMavenLocal` there when working on both at once.
+    mavenLocal()
+    maven("https://maven.pkg.github.com/dronzer-tb/vertex-engine") {
+        name = "vertexEngine"
+        credentials {
+            username = System.getenv("GITHUB_ACTOR") ?: ""
+            password = System.getenv("VERTEX_PACKAGES_TOKEN") ?: System.getenv("GITHUB_TOKEN") ?: ""
+        }
+    }
     mavenCentral()
     // PaperMC's repo hosts both the Paper API and the Folia API
     // (dev.folia:folia-api) — Folia is a Paper fork and publishes its API
@@ -29,6 +39,11 @@ dependencies {
     // compileOnly: the Folia server jar provides this API at runtime; the
     // plugin must not shade or bundle it.
     compileOnly("dev.folia:folia-api:$foliaApiVersion")
+    // compileOnly for the same reason as the Folia API: on a Vertex server the engine already
+    // has these classes loaded on the parent class loader, and a bundled second copy would be a
+    // different class to the engine's -- the plugin half would then never see the module half's
+    // registration. See OxidePlugin#vertexOwnsGeneration.
+    compileOnly("dev.vertex:vertex-engine-api:${providers.gradleProperty("vertexApiVersion").get()}")
 
     testImplementation(platform("org.junit:junit-bom:5.10.2"))
     testImplementation("org.junit.jupiter:junit-jupiter")

@@ -1,7 +1,6 @@
 package dev.oxide.plugin.generator;
 
 import dev.oxide.plugin.ffi.OxideNative;
-import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -36,7 +35,7 @@ public final class GeneratorService {
 
     private static final String LIBRARY_FILE_NAME = "liboxide_ffi.so";
 
-    private final JavaPlugin plugin;
+    private final GeneratorHost host;
     /**
      * Seed -> handle. Opening one parses the datapack and builds the noise router, which takes
      * seconds, and handles are read-only once open -- so two worlds on the same seed, or a
@@ -45,8 +44,8 @@ public final class GeneratorService {
     private final Map<String, OxideNative.Handle> openHandles = new LinkedHashMap<>();
     private OxideNative nativeLib;
 
-    public GeneratorService(JavaPlugin plugin) {
-        this.plugin = plugin;
+    public GeneratorService(GeneratorHost host) {
+        this.host = host;
     }
 
     /**
@@ -91,8 +90,8 @@ public final class GeneratorService {
      * DataVersion) and a {@code data/&lt;namespace&gt;/} tree. See docs/REFERENCE_DATA.md.
      */
     private Path resolveDatapackPath() {
-        String configured = plugin.getConfig().getString("datapack-path", "");
-        Path dataFolder = plugin.getDataFolder().toPath().toAbsolutePath();
+        String configured = host.setting("datapack-path", "");
+        Path dataFolder = host.dataDirectory().toAbsolutePath();
         if (configured == null || configured.isBlank()) {
             configured = "datapack";
         }
@@ -124,7 +123,7 @@ public final class GeneratorService {
                             + " hardcodes it). version.json comes from the vanilla data"
                             + " generator -- see docs/REFERENCE_DATA.md.");
         }
-        plugin.getLogger().info("using datapack: " + datapack);
+        host.info("using datapack: " + datapack);
         return datapack;
     }
 
@@ -141,11 +140,11 @@ public final class GeneratorService {
      * single {@code new OxideNative(...)}.
      */
     private Path resolveLibraryPath() {
-        String configured = plugin.getConfig().getString("native-library-path", "");
+        String configured = host.setting("native-library-path", "");
         if (configured != null && !configured.isBlank()) {
             Path explicit = Path.of(configured).toAbsolutePath();
             if (Files.isRegularFile(explicit)) {
-                plugin.getLogger().info("loading oxide-ffi from configured path: " + explicit);
+                host.info("loading oxide-ffi from configured path: " + explicit);
                 return explicit;
             }
         }
@@ -155,8 +154,8 @@ public final class GeneratorService {
     /** Linux x86_64 only -- matches what the build embeds. See OxideNative's javadoc. */
     private Path extractBundledLibrary() {
         String resource = "natives/linux-x86_64/" + LIBRARY_FILE_NAME;
-        Path target = plugin.getDataFolder().toPath().resolve(LIBRARY_FILE_NAME).toAbsolutePath();
-        try (InputStream in = plugin.getClass().getClassLoader().getResourceAsStream(resource)) {
+        Path target = host.dataDirectory().resolve(LIBRARY_FILE_NAME).toAbsolutePath();
+        try (InputStream in = GeneratorService.class.getClassLoader().getResourceAsStream(resource)) {
             if (in == null) {
                 throw new IllegalStateException(
                         "no oxide-ffi library found: `native-library-path` in config.yml does not point at"
@@ -169,7 +168,7 @@ public final class GeneratorService {
         } catch (IOException e) {
             throw new IllegalStateException("failed to extract bundled oxide-ffi library to " + target, e);
         }
-        plugin.getLogger().info("extracted bundled oxide-ffi to: " + target);
+        host.info("extracted bundled oxide-ffi to: " + target);
         return target;
     }
 
@@ -182,7 +181,7 @@ public final class GeneratorService {
         // "minecraft:overworld", and config.yml is never overwritten on upgrade, so reading it
         // would have every existing install silently force its nether to generate overworld
         // terrain. A new key means a stale config reads as "no override", which is right.
-        return plugin.getConfig().getString("dimension-override", "");
+        return host.setting("dimension-override", "");
     }
 
     /** Closes every handle opened through this service and unloads the native library. */
@@ -191,7 +190,7 @@ public final class GeneratorService {
             try {
                 handle.close();
             } catch (RuntimeException e) {
-                plugin.getLogger().warning("failed to close an oxide-ffi handle: " + e.getMessage());
+                host.warn("failed to close an oxide-ffi handle: " + e.getMessage());
             }
         }
         openHandles.clear();
