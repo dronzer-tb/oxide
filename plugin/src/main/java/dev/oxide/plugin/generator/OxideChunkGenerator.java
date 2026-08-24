@@ -213,10 +213,21 @@ public final class OxideChunkGenerator extends ChunkGenerator {
         return true;
     }
 
-    /** Surface rules run on the Rust side, inside the same call as the noise fill. */
+    /**
+     * Surface rules run on the Rust side, inside the same call as the noise fill, so vanilla
+     * must not run its own pass on top.
+     *
+     * <p>These flags read the opposite way round to how the names suggest: CraftBukkit's
+     * {@code CustomChunkGenerator.buildSurface} branches {@code ifeq} on this and calls
+     * {@code delegate.buildSurface(...)} when it is <em>true</em>. Returning true therefore
+     * asked for vanilla's surface pass -- which rebuilds a whole vanilla {@code NoiseChunk} and
+     * re-runs the vanilla surface rule tree -- to run over terrain Rust had already surfaced,
+     * throwing that work away. Measured at 8.9% of generation samples and 14% of chunk CPU.
+     * {@link #shouldGenerateBedrock} below already reads the flags this way.
+     */
     @Override
     public boolean shouldGenerateSurface() {
-        return true;
+        return false;
     }
 
     /**
