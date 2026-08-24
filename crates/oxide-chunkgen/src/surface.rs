@@ -27,7 +27,7 @@ use oxide_core::{
 use oxide_datapack::{
     NoiseGeneratorSettings, SurfaceCondition, SurfaceRule, SurfaceType, VerticalAnchor,
 };
-use oxide_noise::{NoiseRouterEvaluator, RouterSlot};
+use oxide_noise::{NoiseRouterEvaluator, RouterSlot, WorldPositionalFactory};
 
 use crate::fill::local_index;
 
@@ -69,6 +69,11 @@ pub struct SurfaceSystem<'a> {
     /// Built once rather than per column: these two are looked up for every column in a chunk.
     surface_noise_id: ResourceLocation,
     surface_secondary_noise_id: ResourceLocation,
+    /// `noise_threshold`-style conditions name their randomizer by string, and deriving a
+    /// factory from that name costs an MD5 of it. The names are a handful of constants out of
+    /// the rule tree and the derivation is pure, so each is derived once per chunk instead of
+    /// once per block considered -- the profile had 2.5% of generation sitting in MD5.
+    named_randoms: std::cell::RefCell<Vec<(String, WorldPositionalFactory)>>,
 }
 
 impl<'a> SurfaceSystem<'a> {
@@ -87,6 +92,7 @@ impl<'a> SurfaceSystem<'a> {
             caches: None,
             surface_noise_id: ResourceLocation::minecraft("surface"),
             surface_secondary_noise_id: ResourceLocation::minecraft("surface_secondary"),
+            named_randoms: std::cell::RefCell::new(Vec::new()),
         }
     }
 
@@ -235,6 +241,27 @@ impl<'a> SurfaceSystem<'a> {
         }
     }
 
+    /// The positional factory a rule's named randomizer forks to, derived once per name.
+    fn named_random(&self, name: &str) -> WorldPositionalFactory {
+        if let Some((_, factory)) = self
+            .named_randoms
+            .borrow()
+            .iter()
+            .find(|(known, _)| known == name)
+        {
+            return factory.clone();
+        }
+        let factory = self
+            .router
+            .positional_factory()
+            .from_hash_of(name)
+            .fork_positional();
+        self.named_randoms
+            .borrow_mut()
+            .push((name.to_string(), factory.clone()));
+        factory
+    }
+
     fn eval_condition(
         &self,
         condition: &SurfaceCondition,
@@ -277,10 +304,7 @@ impl<'a> SurfaceSystem<'a> {
                 let span = (false_y - true_y) as f64;
                 let probability = (false_y - cursor.y) as f64 / span;
                 let mut random = self
-                    .router
-                    .positional_factory()
-                    .from_hash_of(random_name)
-                    .fork_positional()
+                    .named_random(random_name)
                     .at(cursor.x, cursor.y, cursor.z);
                 // nextFloat, not nextDouble: vanilla compares a float draw here, and the two
                 // consume the generator differently, so the choice changes every bedrock
