@@ -260,6 +260,19 @@ impl OxideGenerator {
         for (section_index, section) in chunk.sections.iter().enumerate() {
             let section_base_y = (section.y as i32) * 16 - self.min_y();
 
+            // Intern once per distinct state in the section, not once per block. A section
+            // holds 4096 positions and a handful of distinct states, and interning means
+            // formatting the state to a `String` and hashing it under a lock -- which, done per
+            // block, was 98304 allocations and lookups for every chunk the server asked for,
+            // dwarfing the generation the numbers were being measured for.
+            let block_indices: Vec<u16> = section
+                .block_states
+                .palette()
+                .iter()
+                .map(|state| self.intern(&self.block_palette, state.to_string()))
+                .collect::<Result<_>>()?;
+            let blocks = section.block_states.indices();
+
             for local_y in 0..16usize {
                 let column_y = section_base_y + local_y as i32;
                 if column_y < 0 || column_y >= height {
@@ -268,10 +281,8 @@ impl OxideGenerator {
                 for local_z in 0..16usize {
                     for local_x in 0..16usize {
                         let src = (local_y * 16 + local_z) * 16 + local_x;
-                        let block = section.block_states.get(src);
-                        let index = self.intern(&self.block_palette, block.to_string())?;
                         let dst = (column_y as usize * 16 + local_z) * 16 + local_x;
-                        out_blocks[dst] = index;
+                        out_blocks[dst] = block_indices[blocks[src] as usize];
                     }
                 }
             }
@@ -280,10 +291,15 @@ impl OxideGenerator {
             if biome_base + 64 > out_biomes.len() {
                 continue;
             }
+            let biome_indices: Vec<u16> = section
+                .biomes
+                .palette()
+                .iter()
+                .map(|biome| self.intern(&self.biome_palette, biome.to_string()))
+                .collect::<Result<_>>()?;
+            let biomes = section.biomes.indices();
             for quart in 0..64usize {
-                let biome = section.biomes.get(quart);
-                out_biomes[biome_base + quart] =
-                    self.intern(&self.biome_palette, biome.to_string())?;
+                out_biomes[biome_base + quart] = biome_indices[biomes[quart] as usize];
             }
         }
         Ok(())
@@ -331,5 +347,63 @@ impl OxideGenerator {
             .map_err(|_| anyhow!("palette lock poisoned"))?
             .intern(name.clone())
             .ok_or_else(|| anyhow!("block/biome palette is full, interning {name} failed"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    fn reference() -> &'static Path {
+        Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../reference"))
+    }
+
+    /// Answering `getBaseHeight` for a chunk's 256 columns must not cost more than generating
+    /// that chunk. It once cost thirty-two times more: `base_height` built the chunk's density
+    /// caches per call, and building them means evaluating five `interpolated` nodes at 1225
+    /// cell corners each. Bukkit asks this per column during structure placement, so the
+    /// regression was invisible offline and dominated the server.
+    ///
+    /// A ratio on one machine rather than an absolute time, with a wide margin, so this fails
+    /// on the shape of the bug and not on how fast the host is.
+    #[test]
+    fn asking_about_a_chunks_columns_costs_less_than_generating_it() {
+        let handle = OxideGenerator::open(reference(), "minecraft:overworld", 1234).unwrap();
+        let mut blocks = vec![0u16; 256 * 384];
+        let mut biomes = vec![0u16; 64 * 24];
+        // Warm: the first call of either kind pays for the caches the rest reuse.
+        handle
+            .generate_chunk(0, 0, &mut blocks, &mut biomes)
+            .unwrap();
+        handle.base_height(0, 0, HeightmapType::OceanFloorWg);
+
+        let t = Instant::now();
+        for i in 1..5 {
+            handle
+                .generate_chunk(i, 0, &mut blocks, &mut biomes)
+                .unwrap();
+        }
+        let per_chunk = t.elapsed().as_secs_f64() / 4.0;
+
+        let t = Instant::now();
+        for i in 1..5 {
+            for z in 0..16 {
+                for x in 0..16 {
+                    std::hint::black_box(handle.base_height(
+                        i * 16 + x,
+                        z,
+                        HeightmapType::OceanFloorWg,
+                    ));
+                }
+            }
+        }
+        let per_column_set = t.elapsed().as_secs_f64() / 4.0;
+
+        assert!(
+            per_column_set < per_chunk * 5.0,
+            "256 base_height calls cost {per_column_set:.4}s against {per_chunk:.4}s to \
+             generate the chunk they are asking about"
+        );
     }
 }
