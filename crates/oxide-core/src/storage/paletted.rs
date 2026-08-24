@@ -47,7 +47,19 @@ impl<T: Clone + Eq + Hash> PalettedContainer<T> {
     }
 
     pub fn set(&mut self, index: usize, value: T) {
-        let palette_index = match self.index_of.get(&value) {
+        let palette_index = self.index_of_or_insert(value);
+        self.set_index(index, palette_index);
+    }
+
+    /// The palette index for `value`, adding it to the palette if it is not there yet.
+    ///
+    /// Callers that write the same value into many slots -- a chunk fill placing its default
+    /// block -- resolve the index once with this and then use [`Self::set_index`], instead of
+    /// hashing and dropping a `T` per slot. Note that calling this *adds* to the palette, so a
+    /// caller must not resolve an index for a value it may end up never storing: the palette is
+    /// part of the serialized chunk.
+    pub fn index_of_or_insert(&mut self, value: T) -> u32 {
+        match self.index_of.get(&value) {
             Some(&i) => i,
             None => {
                 let i = self.palette.len() as u32;
@@ -55,7 +67,12 @@ impl<T: Clone + Eq + Hash> PalettedContainer<T> {
                 self.index_of.insert(value, i);
                 i
             }
-        };
+        }
+    }
+
+    /// Stores an already-resolved palette index. `palette_index` must have come from
+    /// [`Self::index_of_or_insert`] on this same container.
+    pub fn set_index(&mut self, index: usize, palette_index: u32) {
         self.data[index] = palette_index;
     }
 

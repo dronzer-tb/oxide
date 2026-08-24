@@ -66,6 +66,12 @@ pub fn fill_chunk_with(
         let section_y = min_y / 16 + i as i32;
         let mut section = ChunkSection::new(section_y as i8, air.clone(), default_biome.clone());
         let section_min_y = section_y * 16;
+        // Most slots a fill writes hold the dimension's default block, and resolving its
+        // palette index once per section spares a `BlockState` clone, an `AHashMap` probe over
+        // two `String`s and a `BTreeMap`, and a drop, at every one of them. Resolved lazily
+        // because resolving *inserts*: a section that stays all air must keep a one-entry
+        // palette, which is what makes it serialize to zero data longs.
+        let mut default_block_index: Option<u32> = None;
 
         for local_y in 0..16i32 {
             let y = section_min_y + local_y;
@@ -87,27 +93,42 @@ pub fn fill_chunk_with(
                     let block = match aquifer.as_deref_mut() {
                         Some(aquifer) => {
                             match aquifer.compute_substance(block_x, y, block_z, density) {
-                                None => settings.default_block.clone(),
+                                None => None,
                                 // Air is already the section's default palette entry.
                                 Some(state) if state == air => continue,
-                                Some(state) => state,
+                                Some(state) => Some(state),
                             }
                         }
                         // Aquifers disabled by the settings: solid below the surface, the
                         // dimension's fluid up to sea level, air above.
                         None => {
                             if density > 0.0 {
-                                settings.default_block.clone()
+                                None
                             } else if y <= settings.sea_level {
-                                settings.default_fluid.clone()
+                                Some(settings.default_fluid.clone())
                             } else {
                                 continue;
                             }
                         }
                     };
-                    section
-                        .block_states
-                        .set(local_index(local_x, local_y as usize, local_z), block);
+                    let slot = local_index(local_x, local_y as usize, local_z);
+                    match block {
+                        // `None` is the default block, the common case.
+                        None => {
+                            let index = match default_block_index {
+                                Some(index) => index,
+                                None => {
+                                    let index = section
+                                        .block_states
+                                        .index_of_or_insert(settings.default_block.clone());
+                                    default_block_index = Some(index);
+                                    index
+                                }
+                            };
+                            section.block_states.set_index(slot, index);
+                        }
+                        Some(state) => section.block_states.set(slot, state),
+                    }
                 }
             }
         }
