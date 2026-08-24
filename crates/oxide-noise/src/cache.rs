@@ -8,16 +8,15 @@
 //! match Java no matter what else it gets right. Honouring these nodes is a parity requirement
 //! that happens to also remove ~80x of the work.
 //!
-//! Scoped to one chunk and one thread: the caches are keyed by node identity (the address of
-//! the node inside the datapack registry, which is immutable and outlives generation) and held
-//! behind `RefCell`, so a `ChunkCaches` must not be shared across threads. Chunks in different
-//! Folia regions each build their own.
+//! Every cache node is given a dense slot when the router's density functions are compiled
+//! (see `compiled.rs`), so a lookup here is an array index rather than a search for a node.
+//! Scoped to one chunk and one thread: the storage sits behind `RefCell`, so a `ChunkCaches`
+//! must not be shared across threads. Chunks in different Folia regions each build their own.
 
 use std::cell::RefCell;
 
-use oxide_datapack::DensityFunction;
-
-use crate::density::{evaluate, EvalCtx, FunctionContext};
+use crate::compiled::{CacheKind, CacheSlotCounts, Program, RunCtx};
+use crate::density::FunctionContext;
 
 /// A remembered sample: the position it was taken at, and the value there.
 type LastSample = ((i32, i32, i32), f64);
@@ -26,12 +25,6 @@ type LastSample = ((i32, i32, i32), f64);
 /// cell corners one step past the chunk's far edge.
 const COLUMN_SPAN: usize = 17;
 const COLUMNS: usize = COLUMN_SPAN * COLUMN_SPAN;
-
-/// Identity of a node in the density-function tree. The datapack registry owns every node for
-/// the generator's lifetime and never mutates it, so its address is a stable key.
-fn node_id(df: &DensityFunction) -> usize {
-    df as *const DensityFunction as usize
-}
 
 pub struct ChunkCaches {
     /// Horizontal cell size in blocks (`size_horizontal * 4` in vanilla's noise settings).
@@ -57,26 +50,18 @@ pub struct ChunkCaches {
     origin_x: i32,
     origin_z: i32,
 
-    // All three are association lists keyed by node address, scanned linearly. A chunk's tree
-    // holds only a handful of each kind, so a scan of two or three pointer comparisons beats
-    // hashing -- and hashing is what these caches were spending their savings on: several
-    // HashMap lookups per block, ~98k blocks per chunk, is millions of hashes to avoid
-    // arithmetic that interpolation had already made cheap.
-    /// node -> cell-corner grid, built on first use within this chunk. Keys live in their own
-    /// packed `Vec` so the probe walks a contiguous run of `usize` instead of striding over a
-    /// 32-byte tuple per candidate; the grids never move once pushed, so a slot index found in
-    /// `interpolated_keys` indexes `interpolated_grids` directly.
-    interpolated_keys: RefCell<Vec<usize>>,
-    interpolated_grids: RefCell<Vec<Vec<f64>>>,
-    /// node -> one value per column of this chunk, for the 2D subtrees (continents, erosion,
+    /// Slot -> cell-corner grid, built on first use within this chunk.
+    interpolated: RefCell<Vec<Option<Vec<f64>>>>,
+    /// Slot -> one value per column of this chunk, for the 2D subtrees (continents, erosion,
     /// factor, offset) that would otherwise be recomputed once per block of height.
-    two_d: RefCell<Vec<(usize, Vec<Option<f64>>)>>,
-    /// node -> (last position, value).
-    once: RefCell<Vec<(usize, LastSample)>>,
+    two_d: RefCell<Vec<Option<Vec<Option<f64>>>>>,
+    /// Slot -> (last position, value).
+    once: RefCell<Vec<Option<LastSample>>>,
 }
 
 impl ChunkCaches {
-    /// `chunk_min_x`/`chunk_min_z` are the chunk's lowest block coordinates.
+    /// `chunk_min_x`/`chunk_min_z` are the chunk's lowest block coordinates. `slots` comes from
+    /// the compiler, and fixes how many entries of each kind this chunk can be asked for.
     pub fn new(
         chunk_min_x: i32,
         chunk_min_z: i32,
@@ -84,6 +69,7 @@ impl ChunkCaches {
         height: i32,
         size_horizontal: i32,
         size_vertical: i32,
+        slots: CacheSlotCounts,
     ) -> Self {
         let cell_width = (size_horizontal * 4).max(1);
         let cell_height = (size_vertical * 4).max(1);
@@ -100,127 +86,106 @@ impl ChunkCaches {
             cells_z: (16 / cell_width) as usize,
             origin_x: chunk_min_x,
             origin_z: chunk_min_z,
-            interpolated_keys: RefCell::new(Vec::new()),
-            interpolated_grids: RefCell::new(Vec::new()),
-            two_d: RefCell::new(Vec::new()),
-            once: RefCell::new(Vec::new()),
+            interpolated: RefCell::new((0..slots.interpolated).map(|_| None).collect()),
+            two_d: RefCell::new((0..slots.two_d).map(|_| None).collect()),
+            once: RefCell::new(vec![None; slots.once]),
+        }
+    }
+
+    /// Dispatches one `Op::Cache` to the storage its kind uses.
+    pub(crate) fn cached(
+        &self,
+        kind: CacheKind,
+        slot: usize,
+        argument: &Program,
+        ctx: FunctionContext,
+        cx: &RunCtx,
+    ) -> f64 {
+        match kind {
+            CacheKind::Interpolated => self.interpolated(slot, argument, ctx, cx),
+            CacheKind::Cache2d => self.column_cached(slot, argument, ctx.x, ctx.z, ctx, cx),
+            // `flat_cache`: like `cache_2d`, but vanilla samples once per quart cell and reuses
+            // that value across the 4x4 block area, so the sample position is snapped down to
+            // the quart origin rather than taken at the caller's exact x/z.
+            CacheKind::FlatCache => {
+                self.column_cached(slot, argument, ctx.x >> 2 << 2, ctx.z >> 2 << 2, ctx, cx)
+            }
+            CacheKind::Once => self.once(slot, argument, ctx, cx),
         }
     }
 
     /// Value of an `interpolated` node: the tree is evaluated only at this chunk's cell corners
     /// -- 5x5x49 samples for a standard 384-tall world, against 98304 blocks -- and every block
     /// inside a cell is a trilinear blend of the eight corners around it.
-    pub fn interpolated(
+    fn interpolated(
         &self,
-        node: &DensityFunction,
+        slot: usize,
+        argument: &Program,
         ctx: FunctionContext,
-        eval_cx: &EvalCtx,
+        cx: &RunCtx,
     ) -> f64 {
-        let id = node_id(node);
-        // Hit path: one borrow, one probe over the packed key run, eight loads out of the grid
-        // it names. The previous shape scanned the association list twice (once to test for
-        // presence, once to read) and took two `RefCell` borrows to do it, three times per
-        // block -- `final_density` reaches five `interpolated` nodes for every block filled.
-        if let Some(slot) = self.slot_of(id) {
-            return self.blend(slot, ctx);
+        if self.interpolated.borrow()[slot].is_none() {
+            // Built outside the borrow: evaluating a corner recurses back through the evaluator,
+            // which may consult this same cache.
+            let grid = self.build_corner_grid(argument, cx);
+            self.interpolated.borrow_mut()[slot] = Some(grid);
         }
-        // Miss: build outside any borrow, since evaluating a corner recurses back through the
-        // evaluator and may consult this same cache. `push` only appends, so a slot handed out
-        // by a nested build stays valid.
-        let grid = self.build_corner_grid(node, eval_cx);
-        let slot = {
-            let mut keys = self.interpolated_keys.borrow_mut();
-            let mut grids = self.interpolated_grids.borrow_mut();
-            keys.push(id);
-            grids.push(grid);
-            keys.len() - 1
-        };
-        self.blend(slot, ctx)
-    }
 
-    fn slot_of(&self, id: usize) -> Option<usize> {
-        self.interpolated_keys
-            .borrow()
-            .iter()
-            .position(|key| *key == id)
-    }
-
-    /// The trilinear blend of the eight corners around `ctx` in the grid at `slot`.
-    fn blend(&self, slot: usize, ctx: FunctionContext) -> f64 {
         let local_x = ctx.x - self.origin_x;
         let local_z = ctx.z - self.origin_z;
         let rel_y = ctx.y - self.min_y;
 
-        let cx_index = div_cell(local_x, self.cell_width, self.cell_width_log2)
+        let cell_x = div_cell(local_x, self.cell_width, self.cell_width_log2)
             .clamp(0, self.cells_x as i32 - 1);
-        let cz_index = div_cell(local_z, self.cell_width, self.cell_width_log2)
+        let cell_z = div_cell(local_z, self.cell_width, self.cell_width_log2)
             .clamp(0, self.cells_z as i32 - 1);
-        let cy_index = div_cell(rel_y, self.cell_height, self.cell_height_log2)
+        let cell_y = div_cell(rel_y, self.cell_height, self.cell_height_log2)
             .clamp(0, self.cells_y as i32 - 1);
 
-        let dx = (local_x - cx_index * self.cell_width) as f64 * self.inv_cell_width;
-        let dz = (local_z - cz_index * self.cell_width) as f64 * self.inv_cell_width;
-        let dy = (rel_y - cy_index * self.cell_height) as f64 * self.inv_cell_height;
+        let dx = (local_x - cell_x * self.cell_width) as f64 * self.inv_cell_width;
+        let dz = (local_z - cell_z * self.cell_width) as f64 * self.inv_cell_width;
+        let dy = (rel_y - cell_y * self.cell_height) as f64 * self.inv_cell_height;
 
-        let (cx_index, cy_index, cz_index) =
-            (cx_index as usize, cy_index as usize, cz_index as usize);
-
-        let grids = self.interpolated_grids.borrow();
-        let grid = &grids[slot];
+        let grids = self.interpolated.borrow();
+        let grid = grids[slot].as_ref().expect("just built");
         // The eight corners of one cell are two adjacent x pairs on each of four (y, z) rows,
-        // so the row stride is all the indexing this needs.
+        // so the row strides are all the indexing this needs.
         let x_stride = 1usize;
         let z_stride = self.cells_x + 1;
         let y_stride = z_stride * (self.cells_z + 1);
-        let base = cy_index * y_stride + cz_index * z_stride + cx_index;
-        let v000 = grid[base];
-        let v100 = grid[base + x_stride];
-        let v010 = grid[base + y_stride];
-        let v110 = grid[base + y_stride + x_stride];
-        let v001 = grid[base + z_stride];
-        let v101 = grid[base + z_stride + x_stride];
-        let v011 = grid[base + y_stride + z_stride];
-        let v111 = grid[base + y_stride + z_stride + x_stride];
+        let base = cell_y as usize * y_stride + cell_z as usize * z_stride + cell_x as usize;
 
         // PARITY-CHECK: interpolation order follows vanilla's `Mth.lerp3` -- blend along x,
         // then y, then z. Any order gives nearly the same number, but not bit-identically.
-        lerp3(dx, dy, dz, v000, v100, v010, v110, v001, v101, v011, v111)
+        lerp3(
+            dx,
+            dy,
+            dz,
+            grid[base],
+            grid[base + x_stride],
+            grid[base + y_stride],
+            grid[base + y_stride + x_stride],
+            grid[base + z_stride],
+            grid[base + z_stride + x_stride],
+            grid[base + y_stride + z_stride],
+            grid[base + y_stride + z_stride + x_stride],
+        )
     }
 
-    fn build_corner_grid(&self, node: &DensityFunction, eval_cx: &EvalCtx) -> Vec<f64> {
+    fn build_corner_grid(&self, argument: &Program, cx: &RunCtx) -> Vec<f64> {
         let mut grid =
             Vec::with_capacity((self.cells_x + 1) * (self.cells_y + 1) * (self.cells_z + 1));
         for cy in 0..=self.cells_y {
             let y = self.min_y + cy as i32 * self.cell_height;
             for cz in 0..=self.cells_z {
                 let z = self.origin_z + cz as i32 * self.cell_width;
-                for cx in 0..=self.cells_x {
-                    let x = self.origin_x + cx as i32 * self.cell_width;
-                    grid.push(evaluate(node, FunctionContext { x, y, z }, eval_cx));
+                for cx_index in 0..=self.cells_x {
+                    let x = self.origin_x + cx_index as i32 * self.cell_width;
+                    grid.push(argument.run(FunctionContext { x, y, z }, cx));
                 }
             }
         }
         grid
-    }
-
-    /// `cache_2d`: the wrapped subtree does not depend on y, so one value per column serves
-    /// every block above and below it.
-    pub fn cache_2d(&self, node: &DensityFunction, ctx: FunctionContext, eval_cx: &EvalCtx) -> f64 {
-        self.column_cached(node, ctx.x, ctx.z, ctx, eval_cx)
-    }
-
-    /// `flat_cache`: like `cache_2d`, but vanilla samples once per quart cell and reuses that
-    /// value across the 4x4 block area, so the sample position is snapped down to the quart
-    /// origin rather than taken at the caller's exact x/z.
-    pub fn flat_cache(
-        &self,
-        node: &DensityFunction,
-        ctx: FunctionContext,
-        eval_cx: &EvalCtx,
-    ) -> f64 {
-        let quart_x = ctx.x >> 2 << 2;
-        let quart_z = ctx.z >> 2 << 2;
-        self.column_cached(node, quart_x, quart_z, ctx, eval_cx)
     }
 
     /// One value per (x, z) within this chunk's span, stored densely. A position outside the
@@ -228,39 +193,32 @@ impl ChunkCaches {
     /// uncached rather than growing the storage.
     fn column_cached(
         &self,
-        node: &DensityFunction,
+        slot: usize,
+        argument: &Program,
         sample_x: i32,
         sample_z: i32,
         ctx: FunctionContext,
-        eval_cx: &EvalCtx,
+        cx: &RunCtx,
     ) -> f64 {
         let sample_ctx = FunctionContext {
             x: sample_x,
             y: ctx.y,
             z: sample_z,
         };
-        let Some(slot) = self.column_slot(sample_x, sample_z) else {
-            return evaluate(node, sample_ctx, eval_cx);
+        let Some(column) = self.column_slot(sample_x, sample_z) else {
+            return argument.run(sample_ctx, cx);
         };
-        let id = node_id(node);
 
-        if let Some((_, columns)) = self.two_d.borrow().iter().find(|(key, _)| *key == id) {
-            if let Some(value) = columns[slot] {
+        if let Some(columns) = self.two_d.borrow()[slot].as_ref() {
+            if let Some(value) = columns[column] {
                 return value;
             }
         }
-        // Not held across the recursive evaluate below, which may touch this same cache.
-        let value = evaluate(node, sample_ctx, eval_cx);
+        // Not held across the run below, which may touch this same cache.
+        let value = argument.run(sample_ctx, cx);
 
         let mut cache = self.two_d.borrow_mut();
-        match cache.iter_mut().find(|(key, _)| *key == id) {
-            Some((_, columns)) => columns[slot] = Some(value),
-            None => {
-                let mut columns = vec![None; COLUMNS];
-                columns[slot] = Some(value);
-                cache.push((id, columns));
-            }
-        }
+        cache[slot].get_or_insert_with(|| vec![None; COLUMNS])[column] = Some(value);
         value
     }
 
@@ -277,23 +235,15 @@ impl ChunkCaches {
 
     /// `cache_once` / `cache_all_in_cell`: remember only the last position, which is all the
     /// repeated-lookup pattern inside one column needs.
-    pub fn once(&self, node: &DensityFunction, ctx: FunctionContext, eval_cx: &EvalCtx) -> f64 {
-        let id = node_id(node);
+    fn once(&self, slot: usize, argument: &Program, ctx: FunctionContext, cx: &RunCtx) -> f64 {
         let position = (ctx.x, ctx.y, ctx.z);
-        if let Some((_, (cached_position, value))) =
-            self.once.borrow().iter().find(|(key, _)| *key == id)
-        {
-            if *cached_position == position {
-                return *value;
+        if let Some((cached_position, value)) = self.once.borrow()[slot] {
+            if cached_position == position {
+                return value;
             }
         }
-        let value = evaluate(node, ctx, eval_cx);
-
-        let mut cache = self.once.borrow_mut();
-        match cache.iter_mut().find(|(key, _)| *key == id) {
-            Some((_, slot)) => *slot = (position, value),
-            None => cache.push((id, (position, value))),
-        }
+        let value = argument.run(ctx, cx);
+        self.once.borrow_mut()[slot] = Some((position, value));
         value
     }
 }

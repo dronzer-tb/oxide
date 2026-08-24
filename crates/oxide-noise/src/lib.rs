@@ -16,6 +16,7 @@
 
 mod blended_noise;
 mod cache;
+mod compiled;
 mod density;
 mod improved_noise;
 mod normal_noise;
@@ -25,7 +26,7 @@ mod router;
 
 pub use blended_noise::{BlendedNoise, BlendedNoiseParams};
 pub use cache::ChunkCaches;
-pub use density::{evaluate, EvalCtx, FunctionContext};
+pub use density::FunctionContext;
 pub use improved_noise::ImprovedNoise;
 pub use normal_noise::NormalNoise;
 pub use perlin_noise::PerlinNoise;
