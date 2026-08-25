@@ -12,6 +12,7 @@ pub mod climate;
 pub mod density_function;
 pub mod dimension;
 pub mod error;
+pub mod feature;
 pub mod ident_serde;
 pub mod loader;
 pub mod multi_noise;

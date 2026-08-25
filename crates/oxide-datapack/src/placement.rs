@@ -9,18 +9,20 @@
 //! Mojang defines but no vanilla placed feature uses is still modelled where the enum would
 //! otherwise silently reject a datapack that does use it.
 
-use oxide_core::ResourceLocation;
 use serde::{Deserialize, Serialize};
 
 use crate::carver::HeightProvider;
+use crate::feature::{ConfiguredFeature, Holder};
 
 /// One entry of `worldgen/placed_feature`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlacedFeature {
-    /// The `worldgen/configured_feature` this places. Inline definitions are not modelled: the
-    /// vanilla export never uses them, and a reference keeps the two registries separable.
-    #[serde(with = "crate::ident_serde::rl")]
-    pub feature: ResourceLocation,
+    /// The `worldgen/configured_feature` this places, by id or written inline.
+    ///
+    /// Both really occur. Every file in `worldgen/placed_feature` uses an id, which is what made
+    /// the inline form easy to miss -- but a `sequence` or `simple_random_selector` inside a
+    /// configured feature embeds whole placed features, and those name their feature inline.
+    pub feature: Holder<ConfiguredFeature>,
     #[serde(default)]
     pub placement: Vec<PlacementModifier>,
 }
