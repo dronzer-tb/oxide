@@ -328,14 +328,14 @@ impl<'a> Aquifer<'a> {
 
     fn status(&mut self, index: usize) -> FluidStatus {
         if let Some(Some(status)) = self.statuses.get(index) {
-            return status.clone();
+            return *status;
         }
         let Some(Some(location)) = self.locations.get(index).copied() else {
             return self.global_fluid(0);
         };
         let status = self.compute_fluid(location.0, location.1, location.2);
         if let Some(slot) = self.statuses.get_mut(index) {
-            *slot = Some(status.clone());
+            *slot = Some(status);
         }
         status
     }
@@ -520,21 +520,35 @@ impl<'a> Aquifer<'a> {
         2.0 * (noise + gradient)
     }
 
-    /// `NoiseChunk#preliminarySurfaceLevel`, memoised the way vanilla memoises it.
+    /// `NoiseChunk#preliminarySurfaceLevel`.
     ///
-    /// `compute_fluid` samples thirteen chunk offsets around each aquifer centre, and adjacent
-    /// centres overlap heavily, so the same column is asked for many times per chunk. Running the
-    /// whole `PreliminarySurfaceLevel` program each time was the single largest cost in the
-    /// generator -- vanilla keeps a `Long2IntMap` here for exactly this reason.
+    /// Quantised to the quart column before both the lookup *and* the evaluation, because that
+    /// is what vanilla does: `QuartPos.toBlock(QuartPos.fromBlock(x))` is `x & !3`. Sampling the
+    /// exact column instead gives a different surface level for three columns in every four, and
+    /// therefore different aquifer levels and different terrain -- this is a parity requirement
+    /// that also happens to cut the distinct keys by sixteen.
+    ///
+    /// Memoised for the same reason vanilla keeps a `Long2IntMap`: `compute_fluid` samples
+    /// thirteen chunk offsets per aquifer centre and adjacent centres overlap heavily.
     fn preliminary_surface_level(&mut self, x: i32, z: i32) -> i32 {
-        let key = ((x as i64) << 32) | (z as i64 & 0xFFFF_FFFF);
+        let quart_x = x & !3;
+        let quart_z = z & !3;
+        let key = ((quart_x as i64) << 32) | (quart_z as i64 & 0xFFFF_FFFF);
         if let Some(&level) = self.surface_levels.get(&key) {
             return level;
         }
-        let level =
-            self.router
-                .sample_in_chunk(self.caches, RouterSlot::PreliminarySurfaceLevel, x, 0, z)
-                as i32;
+        // `Mth.floor`, not a cast: a cast truncates toward zero, so a negative surface level --
+        // which happens deep underground -- would come out one block too high.
+        let level = self
+            .router
+            .sample_in_chunk(
+                self.caches,
+                RouterSlot::PreliminarySurfaceLevel,
+                quart_x,
+                0,
+                quart_z,
+            )
+            .floor() as i32;
         self.surface_levels.insert(key, level);
         level
     }
