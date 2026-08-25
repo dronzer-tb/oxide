@@ -9,6 +9,7 @@
 mod aquifer;
 mod biome_grid;
 mod carver;
+pub mod feature_order;
 mod fill;
 mod ore_veins;
 mod surface;
