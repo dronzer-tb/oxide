@@ -1,8 +1,11 @@
 package dev.oxide.plugin.vertex;
 
 import dev.oxide.plugin.generator.GeneratorService;
+import dev.vertex.engine.api.ChunkStage;
 import dev.vertex.engine.api.ModuleContext;
 import dev.vertex.engine.api.VertexModule;
+
+import java.util.EnumSet;
 
 /**
  * Oxide as a Vertex Engine module: the same Rust generator the Bukkit plugin drives, wired in
@@ -35,6 +38,10 @@ public final class OxideVertexModule implements VertexModule {
         // so a server that never generates a chunk in an Oxide world never pays for it, and a
         // missing .so surfaces as chunks falling back rather than as a boot failure.
         this.service = new GeneratorService(new PropertiesGeneratorHost(context.dataDirectory(), logger));
-        context.registerChunkGeneration(new OxideChunkHook(this.service, logger));
+        // The same three stages the Bukkit half turns off through shouldGenerateSurface() and
+        // shouldGenerateCaves(): oxide_generate_chunk returns terrain that is already surfaced
+        // and carved, so vanilla running its own on top would apply both twice.
+        context.registerChunkGeneration(new OxideChunkHook(this.service, logger),
+                EnumSet.of(ChunkStage.SURFACE, ChunkStage.CARVERS));
     }
 }

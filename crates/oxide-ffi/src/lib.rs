@@ -6,10 +6,11 @@
 //! an error return instead of a crash. Every pointer argument is null-checked before use.
 //!
 //! Scope of what this generates: exactly what `oxide-chunkgen::generate_chunk` produces today
-//! — noise-shaped terrain plus surface rules (so grass/dirt/sand/bedrock, not bare stone) and
-//! the biome grid, transmitted as palette indices. Still absent: aquifers, ore veins, carvers,
-//! structures, features. See `oxide_chunkgen::fill` and `oxide_chunkgen::surface` module docs
-//! for the scope-cut list this inherits.
+//! — noise-shaped terrain with aquifers and ore veins, then surface rules (so grass/dirt/sand/
+//! bedrock, not bare stone), then carvers, in vanilla's order — plus the biome grid, all
+//! transmitted as palette indices. Still absent: structures and features. See
+//! `oxide_chunkgen::fill` and `oxide_chunkgen::surface` module docs for the scope-cut list this
+//! inherits.
 
 mod handle;
 
@@ -180,8 +181,11 @@ pub unsafe extern "C" fn oxide_default_fluid_name(handle: *const OxideGenerator)
 /// `oxide_block_palette_name` and the biome pair. Indices never change meaning for a handle's
 /// lifetime, so a caller resolves each one once and caches it.
 ///
-/// Still absent (see this crate's module doc): aquifers, ore veins, carvers, structures,
-/// features.
+/// Produces terrain that is already surfaced and carved: the noise fill runs with aquifers and
+/// ore veins, then the surface rules, then the carvers -- vanilla's own order. A caller must
+/// therefore suppress the server's surface and carver passes, or both apply twice.
+///
+/// Still absent (see this crate's module doc): structures and features.
 ///
 /// Returns the number of blocks written, or a negative value on error (check
 /// `oxide_last_error`): `-1` null/misused handle, `-2` buffer too small or generation failed,
