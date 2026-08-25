@@ -63,8 +63,10 @@ pub enum FrequencyReductionMethod {
     LegacyType3,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum SpreadType {
+    /// Vanilla's `optionalFieldOf("spread_type", RandomSpreadType.LINEAR)`.
+    #[default]
     #[serde(rename = "linear")]
     Linear,
     #[serde(rename = "triangular")]

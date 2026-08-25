@@ -1,8 +1,11 @@
 //! `minecraft:random_spread` structure-set placement: which chunks get a structure-start
 //! attempt, matching vanilla's `RandomSpreadStructurePlacement`.
 //!
-//! Scope cut, documented not fabricated: `minecraft:concentric_rings` (used almost exclusively
-//! for strongholds) is a distinct, much rarer algorithm and is not implemented here.
+//! Scope cut, documented not fabricated: `minecraft:concentric_rings` (strongholds) is a
+//! distinct algorithm and is not implemented. It needs a biome search over a 112-block radius,
+//! legacy `fork()` semantics, and `Math.cos`/`Math.sin` feeding `Math.round` -- and Rust's libm
+//! differs from Java's by 1 ulp on about 0.25% of inputs, so being bit-exact there means porting
+//! fdlibm rather than calling `f64::cos`. See `docs/ARCHITECTURE.md`.
 
 use oxide_core::{ChunkPos, LegacyRandom, RandomSource};
 use oxide_datapack::SpreadType;

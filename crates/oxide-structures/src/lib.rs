@@ -15,7 +15,9 @@
 mod frequency;
 mod placement;
 mod select;
+mod set;
 
 pub use frequency::{passes_frequency, should_generate};
 pub use placement::{is_random_spread_chunk, potential_structure_chunk};
 pub use select::pick_weighted;
+pub use set::{is_structure_chunk, is_structure_chunk_supported, StructureSetLookup};
