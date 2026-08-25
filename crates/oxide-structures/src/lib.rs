@@ -12,8 +12,10 @@
 //! actual NBT piece placement) are not built. What's here answers "does this chunk get a
 //! structure-start attempt, and which structure" — not "what gets placed there".
 
+mod frequency;
 mod placement;
 mod select;
 
+pub use frequency::{passes_frequency, should_generate};
 pub use placement::{is_random_spread_chunk, potential_structure_chunk};
 pub use select::pick_weighted;
