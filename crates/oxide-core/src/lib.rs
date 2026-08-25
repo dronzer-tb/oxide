@@ -10,6 +10,8 @@ mod pos;
 mod rng;
 mod storage;
 
+pub mod mth;
+
 pub use ident::{BiomeId, BlockState, ResourceLocation, ResourceLocationParseError};
 pub use pos::{BlockPos, ChunkPos, SectionPos};
 pub use rng::{

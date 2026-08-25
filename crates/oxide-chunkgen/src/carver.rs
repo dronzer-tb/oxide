@@ -262,8 +262,11 @@ fn carve_room(
     mask: &mut CarvingMask,
     aquifer: Option<&mut crate::aquifer::Aquifer>,
 ) {
-    // sin(PI/2) == 1, written as vanilla writes it.
-    let horizontal_radius = 1.5 + (std::f64::consts::FRAC_PI_2.sin() * thickness as f64);
+    // Vanilla writes `Mth.sin((float)(Math.PI / 2))` -- the table lookup, and of the *float*
+    // narrowing of PI/2, not the double. Neither detail is cosmetic: the table returns a
+    // quantised value rather than exactly 1, and narrowing first can select a different index.
+    let horizontal_radius =
+        1.5 + (oxide_core::mth::sin(std::f32::consts::FRAC_PI_2 as f64) as f64 * thickness as f64);
     let vertical_radius = horizontal_radius * y_scale;
     carve_ellipsoid(
         chunk,
@@ -312,14 +315,15 @@ fn carve_tunnel(
 
     for current_step in step..distance {
         let horizontal_radius = 1.5
-            + ((std::f32::consts::PI * current_step as f32 / distance as f32).sin() * thickness)
-                as f64;
+            + (oxide_core::mth::sin(
+                (std::f32::consts::PI * current_step as f32 / distance as f32) as f64,
+            ) * thickness) as f64;
         let vertical_radius = horizontal_radius * y_scale;
 
-        let cos_pitch = vertical_rotation.cos();
-        x += (horizontal_rotation.cos() * cos_pitch) as f64;
-        y += vertical_rotation.sin() as f64;
-        z += (horizontal_rotation.sin() * cos_pitch) as f64;
+        let cos_pitch = oxide_core::mth::cos(vertical_rotation as f64);
+        x += (oxide_core::mth::cos(horizontal_rotation as f64) * cos_pitch) as f64;
+        y += oxide_core::mth::sin(vertical_rotation as f64) as f64;
+        z += (oxide_core::mth::sin(horizontal_rotation as f64) * cos_pitch) as f64;
         vertical_rotation *= if steep { 0.92 } else { 0.7 };
         vertical_rotation += x_rota * 0.1;
         horizontal_rotation += y_rota * 0.1;
@@ -434,18 +438,19 @@ fn carve_canyon(
 
     for current_step in 0..distance {
         let mut horizontal_radius = 1.5
-            + ((current_step as f32 * std::f32::consts::PI / distance as f32).sin() * thickness)
-                as f64;
+            + (oxide_core::mth::sin(
+                (current_step as f32 * std::f32::consts::PI / distance as f32) as f64,
+            ) * thickness) as f64;
         let mut vertical_radius = horizontal_radius * y_scale;
         horizontal_radius *= config.shape.horizontal_radius_factor.sample(&mut walk) as f64;
         vertical_radius =
             update_vertical_radius(config, &mut walk, vertical_radius, distance, current_step);
 
-        let cos_pitch = vertical_rotation.cos();
-        let sin_pitch = vertical_rotation.sin();
-        x += (horizontal_rotation.cos() * cos_pitch) as f64;
+        let cos_pitch = oxide_core::mth::cos(vertical_rotation as f64);
+        let sin_pitch = oxide_core::mth::sin(vertical_rotation as f64);
+        x += (oxide_core::mth::cos(horizontal_rotation as f64) * cos_pitch) as f64;
         y += sin_pitch as f64;
-        z += (horizontal_rotation.sin() * cos_pitch) as f64;
+        z += (oxide_core::mth::sin(horizontal_rotation as f64) * cos_pitch) as f64;
         vertical_rotation *= 0.7;
         vertical_rotation += x_rota * 0.05;
         horizontal_rotation += y_rota * 0.05;
