@@ -34,6 +34,9 @@ pub struct Datapack {
     pub structure_sets: Registry<StructureSet>,
     pub template_pools: Registry<TemplatePool>,
     pub processor_lists: Registry<ProcessorList>,
+    /// `worldgen/placed_feature`. The configured features these point at are not loaded
+    /// yet -- see `placement.rs` for what this half covers.
+    pub placed_features: Registry<crate::placement::PlacedFeature>,
 }
 
 /// Load and fully validate a datapack-shaped directory tree rooted at
@@ -60,6 +63,7 @@ pub fn load_datapack(pack_root: &Path) -> Result<Datapack> {
     let structure_sets = load_registry(pack_root, "structure_set", "worldgen/structure_set")?;
     let template_pools = load_registry(pack_root, "template_pool", "worldgen/template_pool")?;
     let processor_lists = load_registry(pack_root, "processor_list", "worldgen/processor_list")?;
+    let placed_features = load_registry(pack_root, "placed_feature", "worldgen/placed_feature")?;
 
     // `dimension/*.json` lives directly under `data/<ns>/dimension/`, not
     // under `worldgen/`.
@@ -114,5 +118,6 @@ pub fn load_datapack(pack_root: &Path) -> Result<Datapack> {
         structure_sets,
         template_pools,
         processor_lists,
+        placed_features,
     })
 }

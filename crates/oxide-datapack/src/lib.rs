@@ -17,6 +17,7 @@ pub mod loader;
 pub mod multi_noise;
 pub mod noise_param;
 pub mod noise_settings;
+pub mod placement;
 pub mod presets;
 pub mod registry;
 pub mod resolve;
