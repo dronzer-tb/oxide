@@ -1,12 +1,18 @@
 //! oxide-harness — offline Rust-vs-vanilla divergence harness. See `docs/ARCHITECTURE.md`.
 //!
-//! Currently a "generate, hash, and self-check" tool, not yet a differ: there is no vanilla
-//! reference chunk dump to diff against (see `docs/ROADMAP.md`'s "Known unknowns" — that's a
-//! gitignored, manually-extracted artifact nobody has produced for 26.2 yet). Once one exists,
-//! `merkle::diverging_sections` is what localizes a mismatch.
+//! Diffs Oxide's chunks against a real vanilla world when `--reference` names one, and reports
+//! self-consistency only when it does not. A divergence is reported down to world block
+//! coordinates: the Merkle root narrows to a section, the section to a leaf, and the leaf to the
+//! individual blocks, so the output names a place to teleport to rather than a chunk. See
+//! `docs/REFERENCE_DATA.md` for producing a reference world (gitignored, never redistributed).
+//!
+//! Without `--reference` it still does what it always did: generate, hash, re-generate and
+//! compare, which catches non-determinism without needing Java at all.
 
+mod compare;
 mod invariants;
 mod merkle;
+mod reference;
 
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -22,8 +28,10 @@ use oxide_core::{BlockState, ChunkPos, ResourceLocation};
 use oxide_datapack::{load_datapack, BiomeSource};
 use oxide_noise::NoiseRouterEvaluator;
 
+use compare::compare_chunks;
 use invariants::{biome_ids_are_registered, heightmaps_match_surface};
 use merkle::{build_merkle, diverging_sections};
+use reference::ReferenceWorld;
 
 #[derive(Parser)]
 #[command(name = "oxide-harness")]
@@ -40,6 +48,18 @@ struct Args {
     /// Chunks from `-radius..=radius` on each axis around the origin.
     #[arg(long, default_value_t = 2)]
     radius: i32,
+    /// A vanilla-generated world directory to diff against, e.g. `/srv/mc/world`. Without it
+    /// this run reports self-consistency only, not Java parity. Reference worlds are gitignored
+    /// and must never be committed -- see docs/REFERENCE_DATA.md.
+    #[arg(long)]
+    reference: Option<PathBuf>,
+    /// Dimension subdirectory inside the reference world (`DIM-1` for the nether, `DIM1` for
+    /// the end). Omit for the overworld, whose regions sit directly under the world folder.
+    #[arg(long)]
+    reference_dimension_dir: Option<String>,
+    /// Differing blocks to print per chunk. Caps the detail, never the count.
+    #[arg(long, default_value_t = 8)]
+    max_reported_blocks: usize,
     /// Merkle leaf cube side length (must evenly divide 16).
     #[arg(long, default_value_t = 4)]
     leaf_size: usize,
@@ -180,6 +200,8 @@ fn main() -> Result<()> {
     };
 
     if args.time_only {
+        // No parity pass here on purpose: --time-only exists to measure generation and nothing
+        // else, and reading region files off disk mid-run would be measured along with it.
         let chunks = generate_all(&positions);
         std::hint::black_box(&chunks);
         println!(
@@ -201,6 +223,17 @@ fn main() -> Result<()> {
     let mut with_failures = 0usize;
     let mut failure_counts: std::collections::HashMap<&'static str, usize> = Default::default();
 
+    let reference_world = match args.reference.as_deref() {
+        Some(dir) => Some(
+            ReferenceWorld::open(dir, args.reference_dimension_dir.as_deref())
+                .map_err(|e| anyhow!("{e}"))?,
+        ),
+        None => None,
+    };
+    let mut reference_compared = 0usize;
+    let mut reference_missing = 0usize;
+    let mut reference_diverged = 0usize;
+
     let chunks = generate_all(&positions);
     for (pos, chunk) in positions.iter().copied().zip(chunks) {
         {
@@ -215,6 +248,49 @@ fn main() -> Result<()> {
             let rebuilt = generate(pos);
             let rebuilt_tree = build_merkle(&rebuilt, args.leaf_size);
             let nondeterministic_sections = diverging_sections(&tree, &rebuilt_tree);
+
+            // Vanilla parity. Runs per chunk rather than as a second pass so a divergence is
+            // reported next to the chunk that produced it, and so the generated chunk does not
+            // have to be kept alive twice.
+            if let Some(world) = reference_world.as_ref() {
+                match world.chunk(pos).map_err(|e| anyhow!("{e}"))? {
+                    None => reference_missing += 1,
+                    Some(vanilla) => {
+                        reference_compared += 1;
+                        let report = compare_chunks(
+                            &chunk,
+                            &vanilla,
+                            args.leaf_size,
+                            args.max_reported_blocks,
+                        );
+                        if !report.identical {
+                            reference_diverged += 1;
+                            println!(
+                                "chunk {cx},{cz}: {} block(s) differ from vanilla in section(s) {:?}",
+                                report.total_differing_blocks, report.diverging_sections
+                            );
+                            for missing in &report.section_presence {
+                                println!(
+                                    "  section {} exists only in {}",
+                                    missing.section_y, missing.only_in
+                                );
+                            }
+                            for block in &report.blocks {
+                                println!(
+                                    "  {} {} {}: oxide {} / vanilla {}",
+                                    block.x, block.y, block.z, block.oxide, block.vanilla
+                                );
+                            }
+                            if report.total_differing_blocks > report.blocks.len() {
+                                println!(
+                                    "  ... {} more not shown (raise --max-reported-blocks)",
+                                    report.total_differing_blocks - report.blocks.len()
+                                );
+                            }
+                        }
+                    }
+                }
+            }
 
             for section in chunk.sections.iter() {
                 let section_min_y = (section.y as i32) * 16;
@@ -308,10 +384,30 @@ fn main() -> Result<()> {
     for (check, count) in &failure_counts {
         println!("  {check}: {count} failure(s)");
     }
-    println!(
-        "\nno vanilla reference dump available — this run reports self-consistency only, not \
-         Java parity (see docs/ROADMAP.md's Known Unknowns)."
-    );
+    match reference_world.as_ref() {
+        None => println!(
+            "\nno --reference world given — this run reports self-consistency only, not Java \
+             parity. See docs/REFERENCE_DATA.md for producing one."
+        ),
+        Some(_) => {
+            println!();
+            println!("vanilla parity:");
+            println!("  compared:   {reference_compared}");
+            println!("  identical:  {}", reference_compared - reference_diverged);
+            println!("  diverged:   {reference_diverged}");
+            if reference_missing > 0 {
+                println!(
+                    "  skipped:    {reference_missing} (not generated in the reference world)"
+                );
+            }
+            if reference_compared == 0 {
+                println!(
+                    "  nothing was compared: the reference world has none of the chunks this \
+                     run generated. Check --radius and that the world covers the origin."
+                );
+            }
+        }
+    }
 
     #[cfg(feature = "profile")]
     write_profile(guard, args.profile_out.as_deref())?;

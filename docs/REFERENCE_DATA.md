@@ -59,6 +59,45 @@ datapack".
 `reference/` is gitignored. `oxide-datapack`'s loader (`load_datapack`) takes this directory as its
 pack root.
 
+## Reference worlds, for parity checking
+
+The datapack above tells Oxide *how* to generate. A reference world tells it *what vanilla
+actually produced*, which is what `oxide-harness --reference` diffs against.
+
+Produce one with a real server — not with Oxide, and not with a modified server:
+
+1. Run an unmodified vanilla or Paper server of the pinned version, with the seed you intend to
+   test and `level-type` left at default.
+2. Let it generate the spawn area, or pregenerate a square with Chunky. Stop the server so every
+   region file is flushed.
+3. Point the harness at the world folder:
+
+```bash
+cargo run -p oxide-harness -- \
+  --datapack reference \
+  --seed <the same seed> \
+  --radius 8 \
+  --reference /path/to/world
+```
+
+Use `--reference-dimension-dir DIM-1` for the nether and `DIM1` for the end; the overworld's
+regions sit directly under the world folder.
+
+The seed must match the world's, and the radius must be inside what the world actually
+generated. A chunk the reference world never generated is skipped and counted separately rather
+than reported as a difference — if the run says nothing was compared, the radius and the world
+do not overlap.
+
+A divergence is reported down to world block coordinates:
+
+```
+chunk -1,-1: 33564 block(s) differ from vanilla in section(s) [-4, -3, -2, -1]
+  -16 -63 -16: oxide minecraft:deepslate[axis=y] / vanilla minecraft:stone
+```
+
+Those coordinates are what you type into `/tp`. `--max-reported-blocks` caps how many are
+printed; it never changes the count.
+
 ## This data is Mojang-derived — it stays local
 
 Extracted registry JSON and any reference chunk NBT are **never committed or redistributed**. Do not

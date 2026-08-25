@@ -1,10 +1,12 @@
 //! Per-chunk Merkle tree over placed block state, matching `docs/ARCHITECTURE.md`'s validation
 //! harness design (`chunk -> section -> sub-region -> leaf`, leaf granularity configurable).
 //!
-//! This builds and compares trees; it does not itself diff against vanilla — that needs a real
-//! reference chunk dump, which is a gitignored, manually-extracted, per-`docs/REFERENCE_DATA.md`
-//! artifact nobody has produced for 26.2 yet (see `docs/ROADMAP.md`'s "Known unknowns"). Once
-//! one exists, feed both chunks' trees to [`diverging_sections`].
+//! Leaf hashes are retained rather than folded away, because the point of the tree is to answer
+//! *where* two chunks differ. A root mismatch narrows to a section, a section mismatch narrows
+//! to a leaf, and [`crate::compare`] takes it the last step to individual blocks -- so a
+//! divergence report names a coordinate instead of a chunk.
+//!
+//! Reference chunks come from a real vanilla world; see [`crate::reference`].
 
 use oxide_core::{ChunkData, ChunkSection};
 
@@ -20,6 +22,21 @@ pub struct MerkleTree {
     pub chunk_hash: blake3::Hash,
     /// One hash per placed section, in the chunk's section order (bottom to top).
     pub section_hashes: Vec<(i8, blake3::Hash)>,
+    /// Per section, one hash per leaf, in the same order [`build_merkle`] visits them.
+    pub leaf_hashes: Vec<(i8, Vec<blake3::Hash>)>,
+    /// The cube side length the leaves were built at, needed to turn a leaf position back into
+    /// block coordinates.
+    pub leaf_size: usize,
+}
+
+/// A leaf whose hash differs between two trees, in the coordinates needed to find it again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LeafLocation {
+    pub section_y: i8,
+    /// Sub-region indices within the section, each in `0..16 / leaf_size`.
+    pub sub_x: usize,
+    pub sub_y: usize,
+    pub sub_z: usize,
 }
 
 /// `leaf_size` is the cube side length of a sub-region within a 16x16x16 section (e.g. `4` =>
@@ -32,17 +49,21 @@ pub fn build_merkle(chunk: &ChunkData, leaf_size: usize) -> MerkleTree {
     let steps = 16 / leaf_size;
 
     let mut section_hashes = Vec::with_capacity(chunk.sections.len());
+    let mut leaf_hashes = Vec::with_capacity(chunk.sections.len());
     for section in &chunk.sections {
         let mut section_hasher = blake3::Hasher::new();
+        let mut leaves = Vec::with_capacity(steps * steps * steps);
         for sub_y in 0..steps {
             for sub_z in 0..steps {
                 for sub_x in 0..steps {
                     let leaf = hash_sub_region(section, sub_x, sub_y, sub_z, leaf_size);
                     section_hasher.update(leaf.as_bytes());
+                    leaves.push(leaf);
                 }
             }
         }
         section_hashes.push((section.y, section_hasher.finalize()));
+        leaf_hashes.push((section.y, leaves));
     }
 
     let mut chunk_hasher = blake3::Hasher::new();
@@ -53,7 +74,39 @@ pub fn build_merkle(chunk: &ChunkData, leaf_size: usize) -> MerkleTree {
     MerkleTree {
         chunk_hash: chunk_hasher.finalize(),
         section_hashes,
+        leaf_hashes,
+        leaf_size,
     }
+}
+
+/// Leaves whose hashes differ, across every section the two trees share.
+///
+/// Sections present in only one tree are reported by [`diverging_sections`] instead: a section
+/// that exists on one side and not the other has no leaf to compare, and silently skipping it
+/// would hide the largest possible difference.
+pub fn diverging_leaves(a: &MerkleTree, b: &MerkleTree) -> Vec<LeafLocation> {
+    assert_eq!(
+        a.leaf_size, b.leaf_size,
+        "comparing trees built at different leaf sizes compares different things"
+    );
+    let steps = 16 / a.leaf_size;
+    let mut out = Vec::new();
+
+    for ((section_y, leaves_a), (_, leaves_b)) in a.leaf_hashes.iter().zip(&b.leaf_hashes) {
+        for (index, (ha, hb)) in leaves_a.iter().zip(leaves_b).enumerate() {
+            if ha == hb {
+                continue;
+            }
+            // Inverse of the visit order in `build_merkle`: y outermost, then z, then x.
+            out.push(LeafLocation {
+                section_y: *section_y,
+                sub_x: index % steps,
+                sub_z: (index / steps) % steps,
+                sub_y: index / (steps * steps),
+            });
+        }
+    }
+    out
 }
 
 fn hash_sub_region(
