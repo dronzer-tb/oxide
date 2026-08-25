@@ -49,19 +49,32 @@ const SURFACE_SAMPLING_OFFSETS_IN_CHUNKS: [[i32; 2]; 13] = [
     [1, 1],
 ];
 
+/// Which of the three block states an aquifer can produce.
+///
+/// A tag rather than the `BlockState` itself, so [`FluidStatus`] is `Copy`. The old shape held a
+/// `BlockState`, which owns a `BTreeMap<String, String>` -- cloning one per block meant a map
+/// allocation on every position in the chunk, and `global_fluid` alone built two of them for
+/// every block it was asked about.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FluidKind {
+    Air,
+    Sea,
+    Lava,
+}
+
 /// A fluid surface: everything strictly below `level` is `fluid`, everything at or above is air.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct FluidStatus {
     level: i32,
-    fluid: BlockState,
+    fluid: FluidKind,
 }
 
 impl FluidStatus {
-    fn at(&self, y: i32, air: &BlockState) -> BlockState {
+    fn at_kind(&self, y: i32) -> FluidKind {
         if y < self.level {
-            self.fluid.clone()
+            self.fluid
         } else {
-            air.clone()
+            FluidKind::Air
         }
     }
 }
@@ -98,6 +111,8 @@ pub struct Aquifer<'a> {
     /// Per grid cell: the jittered centre position, and the fluid there once computed.
     locations: Vec<Option<(i32, i32, i32)>>,
     statuses: Vec<Option<FluidStatus>>,
+    /// Memoised `preliminary_surface_level`, keyed by packed `(x, z)`.
+    surface_levels: std::collections::HashMap<i64, i32>,
 }
 
 impl<'a> Aquifer<'a> {
@@ -147,6 +162,8 @@ impl<'a> Aquifer<'a> {
             skip_sampling_above_y: i32::MAX,
             locations: vec![None; total],
             statuses: vec![None; total],
+            // Thirteen offsets per aquifer centre, heavily overlapping between centres.
+            surface_levels: std::collections::HashMap::with_capacity(256),
         };
 
         // Above the highest surface in reach there is nothing to flood, so vanilla stops
@@ -168,17 +185,30 @@ impl<'a> Aquifer<'a> {
 
     /// The global rule: lava below both -54 and sea level, otherwise the dimension's fluid up
     /// to sea level. `createFluidPicker` in vanilla.
+    /// `Aquifer#globalFluidPicker`. Two fixed values, so this returns them rather than building
+    /// one -- the old shape allocated a `BlockState` (and its `BTreeMap`) on every call, and it
+    /// is called several times for every block in the chunk.
     fn global_fluid(&self, y: i32) -> FluidStatus {
         if y < (-54).min(self.sea_level) {
             FluidStatus {
                 level: -54,
-                fluid: self.lava.clone(),
+                fluid: FluidKind::Lava,
             }
         } else {
             FluidStatus {
                 level: self.sea_level,
-                fluid: self.sea_fluid.clone(),
+                fluid: FluidKind::Sea,
             }
+        }
+    }
+
+    /// The block state a [`FluidKind`] stands for. The only place a `BlockState` is cloned, and
+    /// it happens once per returned block rather than once per intermediate comparison.
+    fn block_for(&self, kind: FluidKind) -> BlockState {
+        match kind {
+            FluidKind::Air => self.air.clone(),
+            FluidKind::Sea => self.sea_fluid.clone(),
+            FluidKind::Lava => self.lava.clone(),
         }
     }
 
@@ -195,9 +225,9 @@ impl<'a> Aquifer<'a> {
         }
         let global = self.global_fluid(y);
         if y > self.skip_sampling_above_y {
-            return Some(global.at(y, &self.air));
+            return Some(self.block_for(global.at_kind(y)));
         }
-        if global.at(y, &self.air) == self.lava {
+        if global.at_kind(y) == FluidKind::Lava {
             return Some(self.lava.clone());
         }
 
@@ -232,12 +262,12 @@ impl<'a> Aquifer<'a> {
 
         let status1 = self.status(best[0].1);
         let similarity12 = similarity(best[0].0, best[1].0);
-        let fluid = status1.at(y, &self.air);
+        let fluid = status1.at_kind(y);
         if similarity12 <= 0.0 {
-            return Some(fluid);
+            return Some(self.block_for(fluid));
         }
-        if fluid == self.sea_fluid && self.global_fluid(y - 1).at(y - 1, &self.air) == self.lava {
-            return Some(fluid);
+        if fluid == FluidKind::Sea && self.global_fluid(y - 1).at_kind(y - 1) == FluidKind::Lava {
+            return Some(self.block_for(fluid));
         }
 
         // Where two aquifers of different levels meet, barrier pressure can make the boundary
@@ -269,7 +299,7 @@ impl<'a> Aquifer<'a> {
                 return None;
             }
         }
-        Some(fluid)
+        Some(self.block_for(fluid))
     }
 
     fn index(&self, gx: i32, gy: i32, gz: i32) -> usize {
@@ -331,7 +361,7 @@ impl<'a> Aquifer<'a> {
             let pokes_above = top_of_cell > adjusted;
             if pokes_above || start {
                 let at_surface = self.global_fluid(adjusted);
-                if at_surface.at(adjusted, &self.air) != self.air {
+                if at_surface.at_kind(adjusted) != FluidKind::Air {
                     if start {
                         surface_under_global_fluid = true;
                     }
@@ -414,17 +444,20 @@ impl<'a> Aquifer<'a> {
         z: i32,
         global: &FluidStatus,
         surface_level: i32,
-    ) -> BlockState {
-        if surface_level <= -10 && surface_level != WAY_BELOW_MIN_Y && global.fluid != self.lava {
+    ) -> FluidKind {
+        if surface_level <= -10
+            && surface_level != WAY_BELOW_MIN_Y
+            && global.fluid != FluidKind::Lava
+        {
             let cell_x = x.div_euclid(64);
             let cell_y = y.div_euclid(40);
             let cell_z = z.div_euclid(64);
             let lava_noise = self.router.sample(RouterSlot::Lava, cell_x, cell_y, cell_z);
             if lava_noise.abs() > 0.3 {
-                return self.lava.clone();
+                return FluidKind::Lava;
             }
         }
-        global.fluid.clone()
+        global.fluid
     }
 
     /// `calculatePressure`: how strongly the boundary between two aquifers resists being fluid.
@@ -437,11 +470,11 @@ impl<'a> Aquifer<'a> {
         first: &FluidStatus,
         second: &FluidStatus,
     ) -> f64 {
-        let type1 = first.at(y, &self.air);
-        let type2 = second.at(y, &self.air);
+        let type1 = first.at_kind(y);
+        let type2 = second.at_kind(y);
         // Water meeting lava is always a barrier -- that is why they never touch underground.
-        if (type1 == self.lava && type2 == self.sea_fluid)
-            || (type1 == self.sea_fluid && type2 == self.lava)
+        if (type1 == FluidKind::Lava && type2 == FluidKind::Sea)
+            || (type1 == FluidKind::Sea && type2 == FluidKind::Lava)
         {
             return 2.0;
         }
@@ -487,10 +520,23 @@ impl<'a> Aquifer<'a> {
         2.0 * (noise + gradient)
     }
 
-    fn preliminary_surface_level(&self, x: i32, z: i32) -> i32 {
-        self.router
-            .sample_in_chunk(self.caches, RouterSlot::PreliminarySurfaceLevel, x, 0, z)
-            as i32
+    /// `NoiseChunk#preliminarySurfaceLevel`, memoised the way vanilla memoises it.
+    ///
+    /// `compute_fluid` samples thirteen chunk offsets around each aquifer centre, and adjacent
+    /// centres overlap heavily, so the same column is asked for many times per chunk. Running the
+    /// whole `PreliminarySurfaceLevel` program each time was the single largest cost in the
+    /// generator -- vanilla keeps a `Long2IntMap` here for exactly this reason.
+    fn preliminary_surface_level(&mut self, x: i32, z: i32) -> i32 {
+        let key = ((x as i64) << 32) | (z as i64 & 0xFFFF_FFFF);
+        if let Some(&level) = self.surface_levels.get(&key) {
+            return level;
+        }
+        let level =
+            self.router
+                .sample_in_chunk(self.caches, RouterSlot::PreliminarySurfaceLevel, x, 0, z)
+                as i32;
+        self.surface_levels.insert(key, level);
+        level
     }
 }
 
