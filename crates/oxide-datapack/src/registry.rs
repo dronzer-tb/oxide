@@ -46,6 +46,17 @@ impl<T> Registry<T> {
         self.sources.get(id).map(PathBuf::as_path)
     }
 
+    /// Merges entries from another registry into this one, overwriting any colliding keys.
+    /// This enables layered multi-datapack overlay semantics.
+    pub fn merge(&mut self, other: Registry<T>) {
+        for (id, val) in other.entries {
+            self.entries.insert(id, val);
+        }
+        for (id, src) in other.sources {
+            self.sources.insert(id, src);
+        }
+    }
+
     fn insert(
         &mut self,
         registry_name: &'static str,

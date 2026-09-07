@@ -13,7 +13,7 @@
 use oxide_datapack::{StructurePlacement, StructureSet};
 
 use crate::frequency::passes_frequency;
-use crate::placement::is_random_spread_chunk;
+use crate::placement::{is_concentric_rings_chunk, is_random_spread_chunk};
 
 /// Looks up another structure set by id. Exclusion zones name a set, so testing one requires
 /// resolving it -- the caller owns the registry, so it supplies the lookup.
@@ -24,9 +24,6 @@ pub trait StructureSetLookup {
 /// Whether `(chunk_x, chunk_z)` is a structure-start chunk for `set`.
 ///
 /// `salt_override` is Paper's per-set seed configuration; `None` is vanilla behaviour.
-///
-/// `concentric_rings` always answers `false` here and is *not* silently treated as absent: see
-/// [`is_structure_chunk_supported`] for how to tell the two apart.
 pub fn is_structure_chunk(
     set: &StructureSet,
     lookup: &dyn StructureSetLookup,
@@ -80,18 +77,18 @@ pub fn is_structure_chunk(
                 ),
             }
         }
-        // Strongholds. Answering `false` would place none; answering `true` would place them
-        // everywhere. Neither is right, so callers must check support first.
-        StructurePlacement::ConcentricRings { .. } => false,
+        StructurePlacement::ConcentricRings {
+            distance,
+            spread,
+            count,
+            ..
+        } => is_concentric_rings_chunk(world_seed, *distance, *spread, *count, chunk_x, chunk_z),
     }
 }
 
 /// Whether this set's placement is one this crate can actually decide.
-///
-/// Exists so a caller can distinguish "vanilla would not place here" from "Oxide cannot say".
-/// Folding the two together is how a missing algorithm turns into a silently different world.
-pub fn is_structure_chunk_supported(set: &StructureSet) -> bool {
-    matches!(set.placement, StructurePlacement::RandomSpread { .. })
+pub fn is_structure_chunk_supported(_set: &StructureSet) -> bool {
+    true
 }
 
 /// `ExclusionZone.isPlacementForbidden` -> `hasStructureChunkInRange`.
@@ -280,10 +277,9 @@ mod tests {
         );
     }
 
-    /// Concentric rings answers `false`, and says so through `is_structure_chunk_supported` --
-    /// the caller must be able to tell "vanilla would not place here" from "Oxide cannot say".
+    /// Concentric rings structure sets are supported and generate candidate chunks.
     #[test]
-    fn concentric_rings_reports_itself_unsupported() {
+    fn concentric_rings_generates_expected_count() {
         let rings = StructureSet {
             structures: Vec::new(),
             placement: StructurePlacement::ConcentricRings {
@@ -299,13 +295,15 @@ mod tests {
                 exclusion_zone: None,
             },
         };
-        assert!(!is_structure_chunk_supported(&rings));
-        assert!(!is_structure_chunk(
+        assert!(is_structure_chunk_supported(&rings));
+        let chunks = crate::placement::concentric_rings_chunks(42, 32, 3, 128);
+        assert_eq!(chunks.len(), 128);
+        assert!(is_structure_chunk(
             &rings,
             &empty_registry(),
             42,
-            0,
-            0,
+            chunks[0].x,
+            chunks[0].z,
             None
         ));
 

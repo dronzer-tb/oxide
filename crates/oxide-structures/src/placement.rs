@@ -64,12 +64,6 @@ pub fn potential_structure_chunk(
 /// region's one deterministic candidate — minimum separation between adjacent regions' picks
 /// falls out of `spacing`/`separation` bounding the offset range, no extra distance check
 /// needed.
-///
-/// Scope cut: frequency reduction (`frequency < 1.0`, `frequency_reduction_method`) and
-/// exclusion zones (skip if within `chunk_count` of another structure set's placement) are not
-/// applied — both need either a hash formula this crate doesn't reconstruct with confidence,
-/// or cross-referencing other structure sets. A caller treating every `true` here as a firm
-/// placement over-places relative to vanilla on structure sets that use either field.
 pub fn is_random_spread_chunk(
     world_seed: i64,
     spacing: i32,
@@ -89,6 +83,56 @@ pub fn is_random_spread_chunk(
         chunk_z,
     );
     candidate.x == chunk_x && candidate.z == chunk_z
+}
+
+/// Calculates concentric rings stronghold placement positions radiating from origin (0, 0).
+pub fn concentric_rings_chunks(
+    world_seed: i64,
+    distance: i32,
+    spread: i32,
+    count: i32,
+) -> Vec<ChunkPos> {
+    let mut rng = LegacyRandom::new(world_seed);
+    let mut chunks = Vec::with_capacity(count as usize);
+
+    let mut angle = rng.next_double() * std::f64::consts::PI * 2.0;
+    let mut placed_in_ring = 0;
+    let mut ring_index = 0;
+    let mut ring_count = spread;
+
+    for _ in 0..count {
+        let radius = (4.0 * distance as f64 + distance as f64 * ring_index as f64 * 6.0)
+            + (rng.next_double() - 0.5) * distance as f64 * 2.5;
+
+        let chunk_x = (oxide_core::mth::cos(angle) as f64 * radius).round() as i32;
+        let chunk_z = (oxide_core::mth::sin(angle) as f64 * radius).round() as i32;
+        chunks.push(ChunkPos::new(chunk_x, chunk_z));
+
+        angle += std::f64::consts::PI * 2.0 / ring_count as f64;
+        placed_in_ring += 1;
+        if placed_in_ring == ring_count {
+            ring_index += 1;
+            placed_in_ring = 0;
+            ring_count += 2 * ring_count / (ring_index + 1);
+            ring_count = ring_count.min(count.saturating_sub(chunks.len() as i32).max(1));
+            angle += rng.next_double() * std::f64::consts::PI * 2.0;
+        }
+    }
+
+    chunks
+}
+
+/// Checks if (chunk_x, chunk_z) is one of the concentric rings stronghold candidates.
+pub fn is_concentric_rings_chunk(
+    world_seed: i64,
+    distance: i32,
+    spread: i32,
+    count: i32,
+    chunk_x: i32,
+    chunk_z: i32,
+) -> bool {
+    let target = ChunkPos::new(chunk_x, chunk_z);
+    concentric_rings_chunks(world_seed, distance, spread, count).contains(&target)
 }
 
 #[cfg(test)]

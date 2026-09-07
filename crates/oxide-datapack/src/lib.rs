@@ -37,7 +37,7 @@ pub use density_function::{
 };
 pub use dimension::{BiomeSource, Dimension, DimensionType, DimensionTypeRef, Generator};
 pub use error::{DatapackError, Result};
-pub use loader::{load_datapack, Datapack};
+pub use loader::{load_datapack, load_datapack_stack, Datapack};
 pub use multi_noise::{
     ClimateParameters, MultiNoiseBiomeEntry, MultiNoiseBiomeSourceParameterList, MultiNoiseSource,
 };
