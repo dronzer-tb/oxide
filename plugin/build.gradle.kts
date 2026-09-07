@@ -79,8 +79,10 @@ tasks.processResources {
     }
 
     if (nativeLibraryFile.isFile) {
+        val arch = System.getProperty("os.arch").lowercase()
+        val archFolder = if (arch.contains("aarch64") || arch.contains("arm64")) "linux-aarch64" else "linux-x86_64"
         from(nativeLibraryFile) {
-            into("natives/linux-x86_64")
+            into("natives/$archFolder")
         }
     } else {
         logger.warn(

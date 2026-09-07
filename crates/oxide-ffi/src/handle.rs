@@ -369,6 +369,10 @@ mod tests {
     /// on the shape of the bug and not on how fast the host is.
     #[test]
     fn asking_about_a_chunks_columns_costs_less_than_generating_it() {
+        if !reference().is_dir() {
+            eprintln!("skipping: no extracted vanilla export at {}", reference().display());
+            return;
+        }
         let handle = OxideGenerator::open(reference(), "minecraft:overworld", 1234).unwrap();
         let mut blocks = vec![0u16; 256 * 384];
         let mut biomes = vec![0u16; 64 * 24];

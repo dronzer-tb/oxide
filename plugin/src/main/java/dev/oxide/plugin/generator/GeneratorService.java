@@ -151,17 +151,34 @@ public final class GeneratorService {
         return extractBundledLibrary();
     }
 
-    /** Linux x86_64 only -- matches what the build embeds. See OxideNative's javadoc. */
+    /** Linux multi-arch (aarch64/x86_64) extraction. */
     private Path extractBundledLibrary() {
-        String resource = "natives/linux-x86_64/" + LIBRARY_FILE_NAME;
+        String arch = System.getProperty("os.arch", "").toLowerCase();
+        String archFolder = (arch.contains("aarch64") || arch.contains("arm64"))
+                ? "linux-aarch64"
+                : "linux-x86_64";
+        String resource = "natives/" + archFolder + "/" + LIBRARY_FILE_NAME;
         Path target = host.dataDirectory().resolve(LIBRARY_FILE_NAME).toAbsolutePath();
-        try (InputStream in = GeneratorService.class.getClassLoader().getResourceAsStream(resource)) {
-            if (in == null) {
-                throw new IllegalStateException(
-                        "no oxide-ffi library found: `native-library-path` in config.yml does not point at"
-                                + " an existing file, and this jar has no bundled " + resource
-                                + " (was it built without `cargo build --release -p oxide-ffi` first?)");
+        
+        InputStream inStream = GeneratorService.class.getClassLoader().getResourceAsStream(resource);
+        if (inStream == null) {
+            String fallbackResource = archFolder.equals("linux-aarch64")
+                    ? "natives/linux-x86_64/" + LIBRARY_FILE_NAME
+                    : "natives/linux-aarch64/" + LIBRARY_FILE_NAME;
+            inStream = GeneratorService.class.getClassLoader().getResourceAsStream(fallbackResource);
+            if (inStream != null) {
+                resource = fallbackResource;
             }
+        }
+
+        if (inStream == null) {
+            throw new IllegalStateException(
+                    "no oxide-ffi library found: `native-library-path` in config.yml does not point at"
+                            + " an existing file, and this jar has no bundled " + resource
+                            + " (was it built without `cargo build --release -p oxide-ffi` first?)");
+        }
+
+        try (InputStream in = inStream) {
             Files.createDirectories(target.getParent());
             Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
             target.toFile().setReadable(true, false);

@@ -53,6 +53,80 @@ struct Cursor {
     biome: ResourceLocation,
 }
 
+const BAND_COUNT: usize = 64;
+
+fn generate_clay_bands(random: &mut impl RandomSource) -> [BlockState; BAND_COUNT] {
+    let terracotta = BlockState::new(ResourceLocation::minecraft("terracotta"));
+    let orange = BlockState::new(ResourceLocation::minecraft("orange_terracotta"));
+    let yellow = BlockState::new(ResourceLocation::minecraft("yellow_terracotta"));
+    let brown = BlockState::new(ResourceLocation::minecraft("brown_terracotta"));
+    let red = BlockState::new(ResourceLocation::minecraft("red_terracotta"));
+    let white = BlockState::new(ResourceLocation::minecraft("white_terracotta"));
+    let light_gray = BlockState::new(ResourceLocation::minecraft("light_gray_terracotta"));
+
+    let mut bands = std::array::from_fn(|_| terracotta.clone());
+
+    let mut i = 0;
+    while i < BAND_COUNT {
+        i += random.next_int_bounded(5) as usize + 1;
+        if i >= BAND_COUNT {
+            break;
+        }
+        bands[i] = orange.clone();
+    }
+
+    make_bands(random, &mut bands, 1, &yellow);
+    make_bands(random, &mut bands, 2, &brown);
+    make_bands(random, &mut bands, 1, &red);
+
+    let mut i = (random.next_int_bounded(9) + 5) as usize;
+    while i < BAND_COUNT {
+        make_band(&mut bands, i, (random.next_int_bounded(2) + 1) as usize, &white);
+        if i >= 1 && random.next_boolean() {
+            make_band(&mut bands, i - 1, 1, &light_gray);
+        }
+        if i + 1 < BAND_COUNT && random.next_boolean() {
+            make_band(&mut bands, i + 1, 1, &light_gray);
+        }
+        i += (random.next_int_bounded(5) + 2) as usize;
+    }
+
+    bands
+}
+
+fn make_bands(
+    random: &mut impl RandomSource,
+    bands: &mut [BlockState; BAND_COUNT],
+    _count: usize,
+    state: &BlockState,
+) {
+    let j = random.next_int_bounded(4) as usize + 1;
+    for _ in 0..j {
+        let mut l = random.next_int_bounded(BAND_COUNT as i32) as usize;
+        let span = (random.next_int_bounded(3) + 1) as usize;
+        for _ in 0..span {
+            if l >= BAND_COUNT {
+                break;
+            }
+            bands[l] = state.clone();
+            l += 1;
+        }
+    }
+}
+
+fn make_band(
+    bands: &mut [BlockState; BAND_COUNT],
+    start: usize,
+    length: usize,
+    state: &BlockState,
+) {
+    for k in 0..length {
+        if start + k < BAND_COUNT {
+            bands[start + k] = state.clone();
+        }
+    }
+}
+
 pub struct SurfaceSystem<'a> {
     settings: &'a NoiseGeneratorSettings,
     router: &'a NoiseRouterEvaluator,
@@ -66,9 +140,12 @@ pub struct SurfaceSystem<'a> {
     /// steps through a deep tree, once per column, so sharing the fill pass's caches is the
     /// difference between cheap and dominating the whole chunk.
     caches: Option<&'a oxide_noise::ChunkCaches>,
-    /// Built once rather than per column: these two are looked up for every column in a chunk.
+    /// Built once rather than per column: these are looked up for every column in a chunk.
     surface_noise_id: ResourceLocation,
     surface_secondary_noise_id: ResourceLocation,
+    clay_bands_offset_id: ResourceLocation,
+    temperature_noise_id: ResourceLocation,
+    clay_bands: [BlockState; BAND_COUNT],
     /// `noise_threshold`-style conditions name their randomizer by string, and deriving a
     /// factory from that name costs an MD5 of it. The names are a handful of constants out of
     /// the rule tree and the derivation is pure, so each is derived once per chunk instead of
@@ -82,6 +159,11 @@ impl<'a> SurfaceSystem<'a> {
         router: &'a NoiseRouterEvaluator,
         biome_temperatures: &'a BiomeTemperatures,
     ) -> Self {
+        let mut clay_random = router
+            .positional_factory()
+            .from_hash_of("minecraft:clay_bands");
+        let clay_bands = generate_clay_bands(&mut clay_random);
+
         Self {
             settings,
             router,
@@ -92,6 +174,9 @@ impl<'a> SurfaceSystem<'a> {
             caches: None,
             surface_noise_id: ResourceLocation::minecraft("surface"),
             surface_secondary_noise_id: ResourceLocation::minecraft("surface_secondary"),
+            clay_bands_offset_id: ResourceLocation::minecraft("clay_bands_offset"),
+            temperature_noise_id: ResourceLocation::minecraft("temperature"),
+            clay_bands,
             named_randoms: std::cell::RefCell::new(Vec::new()),
         }
     }
@@ -234,9 +319,17 @@ impl<'a> SurfaceSystem<'a> {
                 }
             }
             SurfaceRule::Block { result_state } => Some(result_state.clone()),
-            // See the module doc: deliberately plain terracotta, not a guessed band table.
             SurfaceRule::Badlands {} => {
-                Some(BlockState::new(ResourceLocation::minecraft("terracotta")))
+                let offset_noise = self.router.noise(&self.clay_bands_offset_id);
+                let offset = match offset_noise {
+                    Some(noise) => {
+                        (noise.get_value(cursor.x as f64, 0.0, cursor.z as f64) * 4.0).round()
+                            as i32
+                    }
+                    None => 0,
+                };
+                let band = (cursor.y + offset).rem_euclid(BAND_COUNT as i32) as usize;
+                Some(self.clay_bands[band].clone())
             }
         }
     }
@@ -345,9 +438,6 @@ impl<'a> SurfaceSystem<'a> {
                         + column.surface_depth * surface_depth_multiplier
             }
 
-            // PARITY-CHECK: vanilla's `coldEnoughToSnow` also folds in a temperature noise and
-            // the biome's temperature_modifier; this is base temperature with a height falloff
-            // above y=80 only. See the module doc.
             SurfaceCondition::Temperature {} => {
                 let base = self
                     .biome_temperatures
@@ -355,7 +445,19 @@ impl<'a> SurfaceSystem<'a> {
                     .copied()
                     .unwrap_or(0.5);
                 let adjusted = if cursor.y > 80 {
-                    base - (cursor.y - 80) as f32 * 0.05 / 40.0
+                    let temp_noise = self.router.noise(&self.temperature_noise_id);
+                    let noise_val = match temp_noise {
+                        Some(noise) => {
+                            noise.get_value(
+                                cursor.x as f64 / 8.0,
+                                0.0,
+                                cursor.z as f64 / 8.0,
+                            ) as f32
+                                * 8.0
+                        }
+                        None => 0.0,
+                    };
+                    base - (noise_val + (cursor.y - 80) as f32) * 0.05 / 40.0
                 } else {
                     base
                 };
