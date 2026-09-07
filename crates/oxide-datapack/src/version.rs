@@ -34,6 +34,7 @@ pub struct VersionJson {
     pub name: String,
     #[serde(default)]
     pub stable: bool,
+    #[serde(alias = "world_version")]
     pub data_version: i32,
 }
 
