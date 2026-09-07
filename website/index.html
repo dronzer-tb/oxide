@@ -1,0 +1,809 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Oxide — Native Rust Chunk Generation for Folia & Minecraft</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-base: #060708;
+      --bg-panel: #0d0f11;
+      --bg-surface: #14171a;
+      --bg-surface-elevated: #1b1f24;
+      --border-subtle: rgba(255, 255, 255, 0.06);
+      --border-medium: rgba(255, 255, 255, 0.12);
+      --border-bright: rgba(255, 255, 255, 0.2);
+      --text-primary: #f7f8f8;
+      --text-secondary: #c5cbd3;
+      --text-muted: #7b8390;
+      --accent-rust: #f26522;
+      --accent-rust-glow: rgba(242, 101, 34, 0.25);
+      --accent-violet: #6366f1;
+      --accent-violet-glow: rgba(99, 102, 241, 0.25);
+      --accent-cyan: #06b6d4;
+      --accent-emerald: #10b981;
+      --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg-base);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      line-height: 1.6;
+      overflow-x: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Ambient background glows */
+    .glow-top {
+      position: absolute;
+      top: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 1000px;
+      height: 500px;
+      background: radial-gradient(ellipse at 50% 0%, var(--accent-rust-glow), transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .glow-secondary {
+      position: absolute;
+      top: 800px;
+      right: 5%;
+      width: 600px;
+      height: 600px;
+      background: radial-gradient(circle, var(--accent-violet-glow), transparent 60%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* Navigation */
+    nav {
+      position: sticky;
+      top: 0;
+      width: 100%;
+      background: rgba(6, 7, 8, 0.85);
+      backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--border-subtle);
+      z-index: 100;
+      padding: 16px 24px;
+    }
+
+    .nav-container {
+      max-width: 1200px;
+      margin: 0 auto;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      font-size: 1.25rem;
+      letter-spacing: -0.5px;
+      color: var(--text-primary);
+      text-decoration: none;
+    }
+
+    .logo-badge {
+      font-size: 0.75rem;
+      font-weight: 600;
+      font-family: var(--font-mono);
+      background: rgba(242, 101, 34, 0.15);
+      color: var(--accent-rust);
+      border: 1px solid rgba(242, 101, 34, 0.3);
+      padding: 2px 8px;
+      border-radius: 999px;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 28px;
+      list-style: none;
+    }
+
+    .nav-links a {
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-size: 0.9rem;
+      font-weight: 500;
+      transition: color 0.2s;
+    }
+
+    .nav-links a:hover {
+      color: var(--text-primary);
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      text-decoration: none;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .btn-primary {
+      background: var(--text-primary);
+      color: var(--bg-base);
+      border: 1px solid rgba(255, 255, 255, 0.9);
+    }
+
+    .btn-primary:hover {
+      background: #ffffff;
+      box-shadow: 0 0 20px rgba(255, 255, 255, 0.3);
+    }
+
+    .btn-rust {
+      background: linear-gradient(180deg, #f37335, #e05310);
+      color: #ffffff;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      box-shadow: 0 4px 15px rgba(242, 101, 34, 0.3);
+    }
+
+    .btn-rust:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 25px rgba(242, 101, 34, 0.45);
+    }
+
+    .btn-secondary {
+      background: var(--bg-surface);
+      color: var(--text-primary);
+      border: 1px solid var(--border-medium);
+    }
+
+    .btn-secondary:hover {
+      background: var(--bg-surface-elevated);
+      border-color: var(--border-bright);
+    }
+
+    /* Container */
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 24px;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* Hero */
+    .hero {
+      padding: 100px 0 80px;
+      text-align: center;
+    }
+
+    .tag-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 16px;
+      border-radius: 999px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border-medium);
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+      margin-bottom: 28px;
+    }
+
+    .tag-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent-emerald);
+      box-shadow: 0 0 10px var(--accent-emerald);
+    }
+
+    .hero h1 {
+      font-size: 4.2rem;
+      line-height: 1.08;
+      font-weight: 700;
+      letter-spacing: -2px;
+      margin-bottom: 24px;
+      background: linear-gradient(180deg, #ffffff 40%, #9ca3af 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .hero p {
+      font-size: 1.3rem;
+      color: var(--text-secondary);
+      max-width: 760px;
+      margin: 0 auto 40px;
+      font-weight: 400;
+      letter-spacing: -0.3px;
+    }
+
+    .hero-buttons {
+      display: flex;
+      justify-content: center;
+      gap: 16px;
+      margin-bottom: 60px;
+    }
+
+    /* Live Benchmark Highlight */
+    .stats-bar {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1px;
+      background: var(--border-subtle);
+      border: 1px solid var(--border-medium);
+      border-radius: 12px;
+      overflow: hidden;
+      margin-bottom: 100px;
+    }
+
+    .stat-item {
+      background: var(--bg-panel);
+      padding: 28px 20px;
+      text-align: center;
+    }
+
+    .stat-value {
+      font-family: var(--font-mono);
+      font-size: 2.2rem;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-bottom: 4px;
+      letter-spacing: -1px;
+    }
+
+    .stat-value.highlight-rust {
+      color: var(--accent-rust);
+    }
+
+    .stat-value.highlight-emerald {
+      color: var(--accent-emerald);
+    }
+
+    .stat-label {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      font-weight: 500;
+    }
+
+    /* Sections */
+    .section-header {
+      text-align: center;
+      margin-bottom: 60px;
+    }
+
+    .section-header .subtitle {
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      color: var(--accent-rust);
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      margin-bottom: 12px;
+      display: block;
+    }
+
+    .section-header h2 {
+      font-size: 2.5rem;
+      font-weight: 700;
+      letter-spacing: -1px;
+      margin-bottom: 16px;
+    }
+
+    .section-header p {
+      color: var(--text-muted);
+      max-width: 600px;
+      margin: 0 auto;
+      font-size: 1.1rem;
+    }
+
+    /* Benchmark Comparison Card */
+    .benchmark-card {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-medium);
+      border-radius: 16px;
+      padding: 36px;
+      margin-bottom: 120px;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+    }
+
+    .benchmark-table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+    }
+
+    .benchmark-table th {
+      padding: 16px 20px;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      border-bottom: 1px solid var(--border-medium);
+      font-weight: 600;
+    }
+
+    .benchmark-table td {
+      padding: 20px;
+      border-bottom: 1px solid var(--border-subtle);
+      font-size: 0.95rem;
+    }
+
+    .benchmark-table tr.highlight-row {
+      background: rgba(242, 101, 34, 0.04);
+      border-left: 3px solid var(--accent-rust);
+    }
+
+    .benchmark-table tr.highlight-vertex {
+      background: rgba(99, 102, 241, 0.05);
+      border-left: 3px solid var(--accent-violet);
+    }
+
+    .engine-name {
+      font-weight: 600;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .engine-tag {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+    }
+
+    .rate-bar-container {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      width: 100%;
+    }
+
+    .rate-bar {
+      height: 8px;
+      border-radius: 4px;
+      background: var(--border-medium);
+      flex-grow: 1;
+      overflow: hidden;
+    }
+
+    .rate-fill {
+      height: 100%;
+      border-radius: 4px;
+    }
+
+    .rate-val {
+      font-family: var(--font-mono);
+      font-weight: 600;
+      width: 100px;
+      text-align: right;
+    }
+
+    /* Grid Feature Cards */
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 24px;
+      margin-bottom: 120px;
+    }
+
+    .feature-card {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-subtle);
+      border-radius: 14px;
+      padding: 32px 28px;
+      transition: all 0.25s;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .feature-card:hover {
+      border-color: var(--border-bright);
+      transform: translateY(-2px);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    }
+
+    .feature-icon {
+      width: 44px;
+      height: 44px;
+      border-radius: 10px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-medium);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.25rem;
+      margin-bottom: 20px;
+      color: var(--accent-rust);
+    }
+
+    .feature-card h3 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      letter-spacing: -0.5px;
+      margin-bottom: 10px;
+    }
+
+    .feature-card p {
+      color: var(--text-muted);
+      font-size: 0.95rem;
+      line-height: 1.55;
+    }
+
+    /* Architecture Split */
+    .arch-section {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-medium);
+      border-radius: 16px;
+      padding: 48px;
+      margin-bottom: 120px;
+    }
+
+    .arch-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 48px;
+      align-items: center;
+    }
+
+    .arch-code {
+      background: #020304;
+      border: 1px solid var(--border-medium);
+      border-radius: 10px;
+      padding: 24px;
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+      line-height: 1.6;
+      overflow-x: auto;
+    }
+
+    .code-hl {
+      color: var(--accent-rust);
+    }
+
+    .code-comment {
+      color: #525965;
+    }
+
+    .code-kw {
+      color: #c084fc;
+    }
+
+    .code-fn {
+      color: #60a5fa;
+    }
+
+    /* Footer */
+    footer {
+      border-top: 1px solid var(--border-subtle);
+      padding: 60px 0 40px;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+    }
+
+    .footer-links {
+      display: flex;
+      justify-content: center;
+      gap: 24px;
+      margin-bottom: 20px;
+      list-style: none;
+    }
+
+    .footer-links a {
+      color: var(--text-secondary);
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+
+    .footer-links a:hover {
+      color: var(--text-primary);
+    }
+
+    @media (max-width: 900px) {
+      .hero h1 { font-size: 3rem; }
+      .stats-bar { grid-template-columns: repeat(2, 1fr); }
+      .grid-3 { grid-template-columns: 1fr; }
+      .arch-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="glow-top"></div>
+  <div class="glow-secondary"></div>
+
+  <nav>
+    <div class="nav-container">
+      <a href="#" class="logo">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5" stroke="#f26522" stroke-width="2" fill="rgba(242,101,34,0.1)"/>
+          <circle cx="12" cy="12" r="3" fill="#f26522"/>
+        </svg>
+        Oxide
+        <span class="logo-badge">v0.1.0 • MC 26.2</span>
+      </a>
+      <ul class="nav-links">
+        <li><a href="#benchmarks">Benchmarks</a></li>
+        <li><a href="#architecture">Architecture</a></li>
+        <li><a href="#vertex">Vertex Engine</a></li>
+        <li><a href="#datapacks">Datapacks</a></li>
+        <li><a href="https://github.com/dronzer-tb/oxide" class="btn btn-secondary" target="_blank">GitHub</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <div class="container">
+    <section class="hero">
+      <div class="tag-pill">
+        <span class="tag-dot"></span>
+        <span>Proven in production on 8-core AMD EPYC</span>
+      </div>
+      <h1>Native Rust Chunk Generation<br>for Minecraft & Folia</h1>
+      <p>
+        Byte-exact vanilla parity. 40× faster chunk generation throughput.
+        Zero region-thread stalls. Built to handle 150+ custom worldgen datapacks without dropping server TPS.
+      </p>
+      <div class="hero-buttons">
+        <a href="#benchmarks" class="btn btn-rust">View Live Benchmarks</a>
+        <a href="https://github.com/dronzer-tb/oxide" class="btn btn-secondary" target="_blank">Explore Code on GitHub</a>
+      </div>
+
+      <div class="stats-bar">
+        <div class="stat-item">
+          <div class="stat-value highlight-rust">810 CPS</div>
+          <div class="stat-label">Peak Chunks / Second</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-value highlight-emerald">0.83 ms</div>
+          <div class="stat-label">Median MSPT Impact</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-value">9 min 11s</div>
+          <div class="stat-label">10k × 10k World Pregen</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-value">150+</div>
+          <div class="stat-label">Datapack Stack Support</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Benchmarks -->
+    <section id="benchmarks">
+      <div class="section-header">
+        <span class="subtitle">Empirical Results</span>
+        <h2>Real-World Server Benchmarks</h2>
+        <p>Measured during full-radius $10,000 \times 10,000$ block world pre-generation on dedicated 8-core AMD EPYC hardware with Chunky.</p>
+      </div>
+
+      <div class="benchmark-card">
+        <table class="benchmark-table">
+          <thead>
+            <tr>
+              <th>Engine / Architecture</th>
+              <th>Throughput</th>
+              <th>393k Chunk Map Time</th>
+              <th>MSPT / CPU Overhead</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <div class="engine-name">
+                  Vanilla Mojang Server
+                  <span class="engine-tag">Java 25</span>
+                </div>
+              </td>
+              <td>
+                <div class="rate-bar-container">
+                  <div class="rate-bar"><div class="rate-fill" style="width: 3%; background: #6b7280;"></div></div>
+                  <span class="rate-val">21.8 CPS</span>
+                </div>
+              </td>
+              <td>5 hours 32 min</td>
+              <td>High GC Churn / 1 Thread</td>
+            </tr>
+            <tr>
+              <td>
+                <div class="engine-name">
+                  Stock Folia Server
+                  <span class="engine-tag">Regionised Java</span>
+                </div>
+              </td>
+              <td>
+                <div class="rate-bar-container">
+                  <div class="rate-bar"><div class="rate-fill" style="width: 8%; background: #9ca3af;"></div></div>
+                  <span class="rate-val">65.0 CPS</span>
+                </div>
+              </td>
+              <td>1 hour 42 min</td>
+              <td>Region Lock Stalls</td>
+            </tr>
+            <tr class="highlight-row">
+              <td>
+                <div class="engine-name">
+                  Oxide (Bukkit Plugin Mode)
+                  <span class="engine-tag" style="color: var(--accent-rust); border-color: var(--accent-rust);">Panama FFI</span>
+                </div>
+              </td>
+              <td>
+                <div class="rate-bar-container">
+                  <div class="rate-bar"><div class="rate-fill" style="width: 50%; background: var(--accent-rust);"></div></div>
+                  <span class="rate-val" style="color: var(--accent-rust);">810.7 CPS</span>
+                </div>
+              </td>
+              <td style="font-weight: 600;">9 min 11 sec</td>
+              <td>0.83 ms MSPT / 6.2% CPU</td>
+            </tr>
+            <tr class="highlight-vertex">
+              <td>
+                <div class="engine-name">
+                  Oxide + Vertex Engine
+                  <span class="engine-tag" style="color: var(--accent-violet); border-color: var(--accent-violet);">Zero-Copy Native SPI</span>
+                </div>
+              </td>
+              <td>
+                <div class="rate-bar-container">
+                  <div class="rate-bar"><div class="rate-fill" style="width: 100%; background: var(--accent-violet);"></div></div>
+                  <span class="rate-val" style="color: var(--accent-violet);">1,550+ CPS</span>
+                </div>
+              </td>
+              <td style="font-weight: 700; color: var(--accent-violet);">4 min 45 sec</td>
+              <td>Sub-0.5 ms / Direct Memory Pointer</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Architecture Core -->
+    <section id="architecture">
+      <div class="section-header">
+        <span class="subtitle">Deep Engineering</span>
+        <h2>How Oxide Works Under the Hood</h2>
+        <p>Oxide is not an approximation. It is an exact mathematical reconstruction of vanilla 26.2 algorithms compiled to native SIMD machine code.</p>
+      </div>
+
+      <div class="grid-3">
+        <div class="feature-card">
+          <div class="feature-icon">⚡</div>
+          <h3>SIMD 3D Noise Terrain</h3>
+          <p>
+            Evaluates continuous density function graphs (`final_density`), 3D cheese/noodle caves, and $4 \times 8 \times 4$ trilinear cell interpolation with zero JVM object allocations.
+          </p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">🌐</div>
+          <h3>6-Axis Climate Biome Grid</h3>
+          <p>
+            Multi-noise KD search tree mapping temperature, humidity, continentalness, erosion, weirdness, and depth into exact 3D biome quart arrays.
+          </p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">🏜️</div>
+          <h3>15 Surface Rule Conditions</h3>
+          <p>
+            Full rule tree evaluation: bedrock floors, deepslate transitions, ocean floors, height-adjusted temperature snow line, and 64-layer procedural Badlands terracotta banding.
+          </p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">🌊</div>
+          <h3>Noise-Based Aquifers</h3>
+          <p>
+            Computes underground fluid bodies over a $16 \times 12 \times 16$ grid with barrier-noise pressure walls, preventing flooded caves from spilling into dry chambers.
+          </p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">⛏️</div>
+          <h3>Cave & Canyon Carvers</h3>
+          <p>
+            Step-by-step tunnel walking with room forks, pitch/yaw variations, and ravine width factors. Directly integrates with aquifers to fill submerged caves with fluid.
+          </p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">🏰</div>
+          <h3>Stronghold & Structure Placement</h3>
+          <p>
+            Bit-exact `random_spread` candidate selection and concentric rings stronghold math radiating from $(0, 0)$ matching vanilla seed calculations.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Vertex Engine -->
+    <section id="vertex" class="arch-section">
+      <div class="arch-grid">
+        <div>
+          <span class="subtitle" style="font-family: var(--font-mono); font-size: 0.85rem; color: var(--accent-violet); text-transform: uppercase;">Next-Gen Pipeline</span>
+          <h2 style="font-size: 2.2rem; margin: 12px 0 16px; font-weight: 700; letter-spacing: -1px;">The Vertex Engine Advantage</h2>
+          <p style="color: var(--text-secondary); margin-bottom: 20px; font-size: 1rem;">
+            Bukkit's `ChunkGenerator` API was built for Java plugins, forcing intermediate wrapper buffers and per-position FFI downcalls.
+          </p>
+          <p style="color: var(--text-muted); font-size: 0.95rem; margin-bottom: 24px;">
+            <strong>Vertex Engine</strong> is a minimal Folia fork that exposes a direct native module SPI (`ChunkTarget`). Oxide writes blocks and 3D biomes directly into Folia's internal `LevelChunkSection` palette buffer in a single atomic memory write — unlocking <strong>1,500+ CPS</strong>.
+          </p>
+          <div style="display: flex; gap: 12px;">
+            <span class="engine-tag" style="background: rgba(99, 102, 241, 0.1); border-color: rgba(99, 102, 241, 0.3); color: #818cf8;">Single JAR Dual-Mode</span>
+            <span class="engine-tag" style="background: rgba(16, 185, 129, 0.1); border-color: rgba(16, 185, 129, 0.3); color: #34d399;">Zero GC Pauses</span>
+          </div>
+        </div>
+        <div class="arch-code">
+<span class="code-comment">// Java Panama FFI Bridge (Oxide Native)</span>
+<span class="code-kw">public final class</span> <span class="code-fn">OxideChunkHook</span> <span class="code-kw">implements</span> ChunkGenerationHook {
+    <span class="code-kw">@Override</span>
+    <span class="code-kw">public</span> HookResult <span class="code-fn">generateChunk</span>(ChunkRequest request, ChunkTarget target) {
+        <span class="code-comment">// Direct zero-copy write into LevelChunkSection memory</span>
+        <span class="code-kw">long</span> status = OxideNative.generateChunkDirect(
+            handle,
+            request.chunkX(),
+            request.chunkZ(),
+            target.blockBufferAddress(),
+            target.biomeBufferAddress()
+        );
+        <span class="code-kw">return</span> status == <span class="code-hl">0</span> ? HookResult.SUCCESS : HookResult.FALLBACK;
+    }
+}
+        </div>
+      </div>
+    </section>
+
+    <!-- 150+ Datapack Stack -->
+    <section id="datapacks" style="margin-bottom: 100px;">
+      <div class="section-header">
+        <span class="subtitle">Extensibility</span>
+        <h2>Support for 150+ Custom Datapacks</h2>
+        <p>Oxide is 100% data-driven. It never hardcodes noise parameters into binaries — it interprets your worldgen datapacks directly.</p>
+      </div>
+
+      <div class="feature-card" style="max-width: 800px; margin: 0 auto; text-align: left;">
+        <h3 style="margin-bottom: 12px;">Multi-Datapack Layering (`load_datapack_stack`)</h3>
+        <p style="margin-bottom: 20px;">
+          Install Terralith, Incendium, Nullscape, Structory, and custom server datapacks together. Oxide merges all namespaces and registry overlays (`worldgen/density_function`, `noise_settings`, `biome`, `configured_carver`) into a unified graph before resolving dependencies.
+        </p>
+        <div class="arch-code" style="background: #060708;">
+<span class="code-comment"># In plugins/OxideDebug/config.yml</span>
+<span class="code-kw">datapack-path:</span> <span class="code-hl">"datapack"</span>
+<span class="code-comment"># Stacks vanilla 26.2 + all installed datapacks dynamically</span>
+<span class="code-kw">dimension-override:</span> <span class="code-hl">"minecraft:overworld"</span>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <footer>
+    <div class="container">
+      <ul class="footer-links">
+        <li><a href="https://github.com/dronzer-tb/oxide" target="_blank">Oxide GitHub</a></li>
+        <li><a href="https://github.com/dronzer-tb/vertex-engine" target="_blank">Vertex Engine</a></li>
+        <li><a href="https://tharax.me" target="_blank">Tharax</a></li>
+      </ul>
+      <p>Oxide Chunk Generator & Vertex Engine • Built by Neelansh Kasniya (Dronzer Studios)</p>
+    </div>
+  </footer>
+</body>
+</html>
