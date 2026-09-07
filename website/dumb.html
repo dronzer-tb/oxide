@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Oxide Explained Simply — The Dumb Guide to Minecraft Worldgen Performance</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-base: #060708;
+      --bg-panel: #0d0f11;
+      --bg-surface: #14171a;
+      --bg-surface-elevated: #1b1f24;
+      --border-subtle: rgba(255, 255, 255, 0.06);
+      --border-medium: rgba(255, 255, 255, 0.12);
+      --border-bright: rgba(255, 255, 255, 0.2);
+      --text-primary: #f7f8f8;
+      --text-secondary: #c5cbd3;
+      --text-muted: #7b8390;
+      --accent-rust: #f26522;
+      --accent-rust-glow: rgba(242, 101, 34, 0.22);
+      --accent-violet: #6366f1;
+      --accent-violet-glow: rgba(99, 102, 241, 0.22);
+      --accent-cyan: #06b6d4;
+      --accent-emerald: #10b981;
+      --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg-base);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      line-height: 1.65;
+      overflow-x: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .glow-top {
+      position: absolute;
+      top: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 1000px;
+      height: 480px;
+      background: radial-gradient(ellipse at 50% 0%, var(--accent-rust-glow), transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    nav {
+      position: sticky;
+      top: 0;
+      width: 100%;
+      background: rgba(6, 7, 8, 0.85);
+      backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--border-subtle);
+      z-index: 100;
+      padding: 16px 24px;
+    }
+
+    .nav-container {
+      max-width: 1000px;
+      margin: 0 auto;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      font-size: 1.25rem;
+      letter-spacing: -0.5px;
+      color: var(--text-primary);
+      text-decoration: none;
+    }
+
+    .logo-badge {
+      font-size: 0.75rem;
+      font-weight: 600;
+      font-family: var(--font-mono);
+      background: rgba(242, 101, 34, 0.15);
+      color: var(--accent-rust);
+      border: 1px solid rgba(242, 101, 34, 0.3);
+      padding: 2px 8px;
+      border-radius: 999px;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      list-style: none;
+    }
+
+    .nav-links a {
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-size: 0.9rem;
+      font-weight: 500;
+      transition: color 0.2s;
+    }
+
+    .nav-links a:hover {
+      color: var(--text-primary);
+    }
+
+    .btn-secondary {
+      background: var(--bg-surface);
+      color: var(--text-primary);
+      border: 1px solid var(--border-medium);
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      text-decoration: none;
+    }
+
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 60px 24px 100px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .hero-dumb {
+      text-align: center;
+      margin-bottom: 60px;
+    }
+
+    .hero-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 14px;
+      border-radius: 999px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border-medium);
+      font-size: 0.8rem;
+      font-family: var(--font-mono);
+      color: var(--accent-rust);
+      margin-bottom: 20px;
+    }
+
+    .hero-dumb h1 {
+      font-size: 3.4rem;
+      font-weight: 700;
+      letter-spacing: -1.5px;
+      line-height: 1.15;
+      margin-bottom: 16px;
+      background: linear-gradient(180deg, #ffffff 30%, #9ca3af 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .hero-dumb p {
+      font-size: 1.2rem;
+      color: var(--text-secondary);
+      max-width: 700px;
+      margin: 0 auto;
+    }
+
+    /* Dumb Explanation Cards */
+    .card-block {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-subtle);
+      border-radius: 14px;
+      padding: 32px;
+      margin-bottom: 32px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+      transition: border-color 0.2s;
+    }
+
+    .card-block:hover {
+      border-color: var(--border-medium);
+    }
+
+    .card-header-line {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .num-pill {
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      font-weight: 700;
+      color: var(--accent-rust);
+      background: rgba(242, 101, 34, 0.12);
+      border: 1px solid rgba(242, 101, 34, 0.3);
+      padding: 2px 10px;
+      border-radius: 6px;
+    }
+
+    .card-block h2 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+    }
+
+    .card-block p {
+      color: var(--text-secondary);
+      font-size: 1.05rem;
+      margin-bottom: 16px;
+    }
+
+    .comparison-box {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-top: 20px;
+    }
+
+    .box-item {
+      background: #060708;
+      border: 1px solid var(--border-medium);
+      border-radius: 8px;
+      padding: 18px;
+    }
+
+    .box-item.good {
+      border-color: rgba(16, 185, 129, 0.3);
+      background: rgba(16, 185, 129, 0.03);
+    }
+
+    .box-item.bad {
+      border-color: rgba(239, 68, 68, 0.3);
+      background: rgba(239, 68, 68, 0.03);
+    }
+
+    .box-title {
+      font-weight: 600;
+      font-size: 0.95rem;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .box-item.good .box-title { color: var(--accent-emerald); }
+    .box-item.bad .box-title { color: #f87171; }
+
+    .box-item p {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+      margin: 0;
+    }
+
+    .highlight-pill {
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-medium);
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: var(--accent-rust);
+    }
+
+    .analogy-callout {
+      background: rgba(99, 102, 241, 0.06);
+      border-left: 3px solid var(--accent-violet);
+      padding: 16px 20px;
+      border-radius: 0 8px 8px 0;
+      margin: 20px 0 10px;
+    }
+
+    .analogy-callout strong {
+      color: #a5b4fc;
+      display: block;
+      font-size: 0.9rem;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+
+    .analogy-callout p {
+      margin: 0;
+      font-size: 0.95rem;
+      color: var(--text-secondary);
+    }
+
+    footer {
+      border-top: 1px solid var(--border-subtle);
+      padding: 50px 0 30px;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+    }
+
+    footer a {
+      color: var(--text-secondary);
+      text-decoration: none;
+    }
+
+    footer a:hover {
+      color: var(--text-primary);
+    }
+
+    @media (max-width: 768px) {
+      .hero-dumb h1 { font-size: 2.5rem; }
+      .comparison-box { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="glow-top"></div>
+
+  <nav>
+    <div class="nav-container">
+      <a href="/" class="logo">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#f26522" stroke-width="2">
+          <polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5" fill="rgba(242,101,34,0.1)"/>
+          <circle cx="12" cy="12" r="3" fill="#f26522"/>
+        </svg>
+        Oxide
+        <span class="logo-badge">Dumb Guide</span>
+      </a>
+      <ul class="nav-links">
+        <li><a href="/">Home</a></li>
+        <li><a href="/#benchmarks">Benchmarks</a></li>
+        <li><a href="https://github.com/dronzer-tb/oxide" class="btn-secondary" target="_blank">GitHub</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <div class="container">
+    <div class="hero-dumb">
+      <div class="hero-tag">PLAIN ENGLISH EXPLANATION</div>
+      <h1>The Simple Guide to Minecraft Performance</h1>
+      <p>No math degree required. Here is exactly what CPS, DPS, MSPT, FFI, Vanilla, and Oxide actually mean and how they work together.</p>
+    </div>
+
+    <!-- 1. What is a Chunk -->
+    <div class="card-block">
+      <div class="card-header-line">
+        <span class="num-pill">01</span>
+        <h2>What is a Chunk?</h2>
+      </div>
+      <p>
+        Minecraft cuts the world into vertical columns called <strong>Chunks</strong>.
+      </p>
+      <p>
+        Each chunk is <strong>16 blocks wide, 16 blocks long, and 384 blocks tall</strong> (from Y = -64 to Y = 320).
+        That means building just <em>one chunk</em> requires calculating and placing <strong>98,304 individual blocks</strong> (stone, dirt, caves, water, air, ores).
+      </p>
+    </div>
+
+    <!-- 2. What is CPS -->
+    <div class="card-block">
+      <div class="card-header-line">
+        <span class="num-pill">02</span>
+        <h2>What is CPS? (Chunks Per Second)</h2>
+      </div>
+      <p>
+        <strong>CPS</strong> measures how many full 16x384x16 chunk columns the server can generate from scratch in <strong>one single second</strong>.
+      </p>
+      <div class="comparison-box">
+        <div class="box-item bad">
+          <div class="box-title">Vanilla Minecraft (~20 CPS)</div>
+          <p>Takes <strong>5 to 6 hours</strong> to pre-generate a 10,000 x 10,000 map. Players running or flying cause massive server lag spikes.</p>
+        </div>
+        <div class="box-item good">
+          <div class="box-title">Oxide Native (~800+ CPS)</div>
+          <p>Generates the entire 10,000 x 10,000 world in <strong>under 9 minutes</strong>. Elytra flight causes zero lag.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. What is DPS -->
+    <div class="card-block">
+      <div class="card-header-line">
+        <span class="num-pill">03</span>
+        <h2>What is DPS? (Density Evaluations Per Second)</h2>
+      </div>
+      <p>
+        Minecraft does not guess where mountains and caves are. It evaluates complex 3D mathematical noise curves called <strong>Density Functions</strong>.
+      </p>
+      <p>
+        <strong>DPS</strong> is the number of 3D math equations the engine solves per second to figure out if a position in the world should be solid rock, open cave, or water.
+      </p>
+      <div class="analogy-callout">
+        <strong>The Connection Between CPS and DPS:</strong>
+        <p>
+          To generate <strong>800 CPS</strong>, Oxide solves over <strong>1,000,000 density math equations per second</strong> and writes over <strong>78,000,000 blocks per second</strong> into server memory.
+        </p>
+      </div>
+    </div>
+
+    <!-- 4. What is MSPT -->
+    <div class="card-block">
+      <div class="card-header-line">
+        <span class="num-pill">04</span>
+        <h2>What is MSPT? (Milliseconds Per Tick)</h2>
+      </div>
+      <p>
+        A Minecraft server runs at <strong>20 ticks per second (TPS)</strong>. That means the server has exactly <strong>50 milliseconds (ms)</strong> to compute everything in the world before the next tick starts.
+      </p>
+      <p>
+        <strong>MSPT</strong> is how many milliseconds the server actually spent doing work during that 50ms window.
+      </p>
+      <div class="comparison-box">
+        <div class="box-item bad">
+          <div class="box-title">MSPT &gt; 50 ms (LAG)</div>
+          <p>The server cannot finish work in time. TPS drops below 20, mobs stutter, block breaks rubberband.</p>
+        </div>
+        <div class="box-item good">
+          <div class="box-title">MSPT &lt; 2 ms (LIGHTNING FAST)</div>
+          <p>Oxide finishes generating terrain in <strong>0.83 ms</strong>, leaving 98% of the CPU free for players, redstone, and entities.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- 5. What Vanilla is Doing vs Oxide -->
+    <div class="card-block">
+      <div class="card-header-line">
+        <span class="num-pill">05</span>
+        <h2>What Vanilla Java is Doing (Why it's Slow)</h2>
+      </div>
+      <p>
+        Official Minecraft is written in Java. When vanilla generates terrain:
+      </p>
+      <ul style="margin-left: 20px; color: var(--text-secondary); margin-bottom: 16px;">
+        <li>It creates millions of temporary Java objects (<span class="highlight-pill">Vector3f</span>, <span class="highlight-pill">BlockPos</span>, <span class="highlight-pill">Holder</span>) every second.</li>
+        <li>The Java <strong>Garbage Collector (GC)</strong> has to constantly pause the server to clean up these discarded objects.</li>
+        <li>It evaluates complex noise functions through slow, virtual Java method calls one block at a time.</li>
+      </ul>
+    </div>
+
+    <!-- 6. What Oxide is Doing -->
+    <div class="card-block">
+      <div class="card-header-line">
+        <span class="num-pill">06</span>
+        <h2>What Oxide is Doing (Why it's Fast)</h2>
+      </div>
+      <p>
+        Oxide takes over the heavy math and runs it in <strong>Rust</strong>:
+      </p>
+      <ul style="margin-left: 20px; color: var(--text-secondary); margin-bottom: 16px;">
+        <li><strong>Zero Garbage Collection:</strong> Rust allocates flat memory buffers and frees them immediately. Zero GC pauses.</li>
+        <li><strong>SIMD Vectorization:</strong> Solves math for 8 to 16 blocks simultaneously using direct CPU vector instructions.</li>
+        <li><strong>Cell Skipping:</strong> If a 4x8x4 box is deep underground, Oxide instantly marks all 128 blocks solid rock without wasting time calculating each block.</li>
+      </ul>
+    </div>
+
+    <!-- 7. What is FFI -->
+    <div class="card-block">
+      <div class="card-header-line">
+        <span class="num-pill">07</span>
+        <h2>What is Panama FFI?</h2>
+      </div>
+      <p>
+        <strong>FFI (Foreign Function Interface)</strong> is a bridge that lets Java talk directly to native Rust machine code in the same process.
+      </p>
+      <p>
+        Java 22+ introduced the <strong>Foreign Function and Memory API (Project Panama)</strong>. Instead of slow legacy JNI wrappers, Panama passes raw memory addresses directly to Rust with near-zero overhead.
+      </p>
+    </div>
+
+    <!-- 8. What is Vertex Engine -->
+    <div class="card-block">
+      <div class="card-header-line">
+        <span class="num-pill">08</span>
+        <h2>What is Vertex Engine?</h2>
+      </div>
+      <p>
+        Bukkit's standard plugin API was made for simple Java plugins, forcing data to be copied back and forth through Bukkit wrapper arrays.
+      </p>
+      <p>
+        <strong>Vertex Engine</strong> is a specialized Folia server fork that gives Oxide direct access to the server's internal memory (<span class="highlight-pill">ChunkTarget</span>). Oxide writes blocks and 3D biomes simultaneously in one memory pass, doubling generation speed to <strong>1,550+ CPS</strong>.
+      </p>
+    </div>
+  </div>
+
+  <footer>
+    <div class="container">
+      <p>Oxide & Vertex Engine • Created by x00f8 (Dronzer Studios) • Licensed under GPL-3.0</p>
+    </div>
+  </footer>
+</body>
+</html>
