@@ -11,11 +11,13 @@ mod biome_grid;
 mod carver;
 pub mod decoration_seed;
 pub mod feature_order;
+pub mod feature_placer;
 mod fill;
 mod ore_veins;
 mod surface;
 
 pub use carver::{apply_carvers, CarverWorld};
+pub use feature_placer::{place_feature, PlacementContext};
 pub use fill::{base_height, fill_chunk};
 pub use surface::{BiomeTemperatures, SurfaceSystem};
 
