@@ -20,9 +20,9 @@
       --text-secondary: #c5cbd3;
       --text-muted: #7b8390;
       --accent-rust: #f26522;
-      --accent-rust-glow: rgba(242, 101, 34, 0.25);
+      --accent-rust-glow: rgba(242, 101, 34, 0.22);
       --accent-violet: #6366f1;
-      --accent-violet-glow: rgba(99, 102, 241, 0.25);
+      --accent-violet-glow: rgba(99, 102, 241, 0.22);
       --accent-cyan: #06b6d4;
       --accent-emerald: #10b981;
       --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
@@ -44,14 +44,13 @@
       -webkit-font-smoothing: antialiased;
     }
 
-    /* Ambient background glows */
     .glow-top {
       position: absolute;
       top: 0;
       left: 50%;
       transform: translateX(-50%);
       width: 1000px;
-      height: 500px;
+      height: 480px;
       background: radial-gradient(ellipse at 50% 0%, var(--accent-rust-glow), transparent 70%);
       pointer-events: none;
       z-index: 0;
@@ -59,7 +58,7 @@
 
     .glow-secondary {
       position: absolute;
-      top: 800px;
+      top: 850px;
       right: 5%;
       width: 600px;
       height: 600px;
@@ -68,7 +67,6 @@
       z-index: 0;
     }
 
-    /* Navigation */
     nav {
       position: sticky;
       top: 0;
@@ -142,17 +140,6 @@
       transition: all 0.2s;
     }
 
-    .btn-primary {
-      background: var(--text-primary);
-      color: var(--bg-base);
-      border: 1px solid rgba(255, 255, 255, 0.9);
-    }
-
-    .btn-primary:hover {
-      background: #ffffff;
-      box-shadow: 0 0 20px rgba(255, 255, 255, 0.3);
-    }
-
     .btn-rust {
       background: linear-gradient(180deg, #f37335, #e05310);
       color: #ffffff;
@@ -176,7 +163,6 @@
       border-color: var(--border-bright);
     }
 
-    /* Container */
     .container {
       max-width: 1200px;
       margin: 0 auto;
@@ -185,7 +171,6 @@
       z-index: 1;
     }
 
-    /* Hero */
     .hero {
       padding: 100px 0 80px;
       text-align: center;
@@ -224,7 +209,7 @@
     }
 
     .hero p {
-      font-size: 1.3rem;
+      font-size: 1.25rem;
       color: var(--text-secondary);
       max-width: 760px;
       margin: 0 auto 40px;
@@ -239,7 +224,6 @@
       margin-bottom: 60px;
     }
 
-    /* Live Benchmark Highlight */
     .stats-bar {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
@@ -282,7 +266,6 @@
       font-weight: 500;
     }
 
-    /* Sections */
     .section-header {
       text-align: center;
       margin-bottom: 60px;
@@ -312,7 +295,6 @@
       font-size: 1.1rem;
     }
 
-    /* Benchmark Comparison Card */
     .benchmark-card {
       background: var(--bg-panel);
       border: 1px solid var(--border-medium);
@@ -398,7 +380,6 @@
       text-align: right;
     }
 
-    /* Grid Feature Cards */
     .grid-3 {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
@@ -412,8 +393,6 @@
       border-radius: 14px;
       padding: 32px 28px;
       transition: all 0.25s;
-      position: relative;
-      overflow: hidden;
     }
 
     .feature-card:hover {
@@ -422,7 +401,7 @@
       box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
     }
 
-    .feature-icon {
+    .feature-icon-svg {
       width: 44px;
       height: 44px;
       border-radius: 10px;
@@ -431,7 +410,6 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 1.25rem;
       margin-bottom: 20px;
       color: var(--accent-rust);
     }
@@ -449,7 +427,6 @@
       line-height: 1.55;
     }
 
-    /* Architecture Split */
     .arch-section {
       background: var(--bg-panel);
       border: 1px solid var(--border-medium);
@@ -477,23 +454,11 @@
       overflow-x: auto;
     }
 
-    .code-hl {
-      color: var(--accent-rust);
-    }
+    .code-hl { color: var(--accent-rust); }
+    .code-comment { color: #525965; }
+    .code-kw { color: #c084fc; }
+    .code-fn { color: #60a5fa; }
 
-    .code-comment {
-      color: #525965;
-    }
-
-    .code-kw {
-      color: #c084fc;
-    }
-
-    .code-fn {
-      color: #60a5fa;
-    }
-
-    /* Footer */
     footer {
       border-top: 1px solid var(--border-subtle);
       padding: 60px 0 40px;
@@ -535,8 +500,8 @@
   <nav>
     <div class="nav-container">
       <a href="#" class="logo">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5" stroke="#f26522" stroke-width="2" fill="rgba(242,101,34,0.1)"/>
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#f26522" stroke-width="2">
+          <polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5" fill="rgba(242,101,34,0.1)"/>
           <circle cx="12" cy="12" r="3" fill="#f26522"/>
         </svg>
         Oxide
@@ -556,11 +521,11 @@
     <section class="hero">
       <div class="tag-pill">
         <span class="tag-dot"></span>
-        <span>Proven in production on 8-core AMD EPYC</span>
+        <span>Empirically measured on dedicated 8-core AMD EPYC server</span>
       </div>
       <h1>Native Rust Chunk Generation<br>for Minecraft & Folia</h1>
       <p>
-        Byte-exact vanilla parity. 40× faster chunk generation throughput.
+        Byte-exact vanilla parity. 40x faster chunk generation throughput.
         Zero region-thread stalls. Built to handle 150+ custom worldgen datapacks without dropping server TPS.
       </p>
       <div class="hero-buttons">
@@ -579,7 +544,7 @@
         </div>
         <div class="stat-item">
           <div class="stat-value">9 min 11s</div>
-          <div class="stat-label">10k × 10k World Pregen</div>
+          <div class="stat-label">10,000 x 10,000 World Pregen</div>
         </div>
         <div class="stat-item">
           <div class="stat-value">150+</div>
@@ -593,7 +558,7 @@
       <div class="section-header">
         <span class="subtitle">Empirical Results</span>
         <h2>Real-World Server Benchmarks</h2>
-        <p>Measured during full-radius $10,000 \times 10,000$ block world pre-generation on dedicated 8-core AMD EPYC hardware with Chunky.</p>
+        <p>Measured during full-radius 10,000 x 10,000 block world pre-generation on dedicated 8-core AMD EPYC hardware with Chunky.</p>
       </div>
 
       <div class="benchmark-card">
@@ -621,7 +586,7 @@
                 </div>
               </td>
               <td>5 hours 32 min</td>
-              <td>High GC Churn / 1 Thread</td>
+              <td>High GC Churn / Single-Threaded</td>
             </tr>
             <tr>
               <td>
@@ -686,15 +651,19 @@
 
       <div class="grid-3">
         <div class="feature-card">
-          <div class="feature-icon">⚡</div>
+          <div class="feature-icon-svg">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+          </div>
           <h3>SIMD 3D Noise Terrain</h3>
           <p>
-            Evaluates continuous density function graphs (`final_density`), 3D cheese/noodle caves, and $4 \times 8 \times 4$ trilinear cell interpolation with zero JVM object allocations.
+            Evaluates continuous density function graphs, 3D cheese/noodle caves, and 4x8x4 trilinear cell interpolation with zero JVM object allocations.
           </p>
         </div>
 
         <div class="feature-card">
-          <div class="feature-icon">🌐</div>
+          <div class="feature-icon-svg">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          </div>
           <h3>6-Axis Climate Biome Grid</h3>
           <p>
             Multi-noise KD search tree mapping temperature, humidity, continentalness, erosion, weirdness, and depth into exact 3D biome quart arrays.
@@ -702,7 +671,9 @@
         </div>
 
         <div class="feature-card">
-          <div class="feature-icon">🏜️</div>
+          <div class="feature-icon-svg">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+          </div>
           <h3>15 Surface Rule Conditions</h3>
           <p>
             Full rule tree evaluation: bedrock floors, deepslate transitions, ocean floors, height-adjusted temperature snow line, and 64-layer procedural Badlands terracotta banding.
@@ -710,15 +681,19 @@
         </div>
 
         <div class="feature-card">
-          <div class="feature-icon">🌊</div>
+          <div class="feature-icon-svg">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+          </div>
           <h3>Noise-Based Aquifers</h3>
           <p>
-            Computes underground fluid bodies over a $16 \times 12 \times 16$ grid with barrier-noise pressure walls, preventing flooded caves from spilling into dry chambers.
+            Computes underground fluid bodies over a 16x12x16 grid with barrier-noise pressure walls, preventing flooded caves from spilling into dry chambers.
           </p>
         </div>
 
         <div class="feature-card">
-          <div class="feature-icon">⛏️</div>
+          <div class="feature-icon-svg">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+          </div>
           <h3>Cave & Canyon Carvers</h3>
           <p>
             Step-by-step tunnel walking with room forks, pitch/yaw variations, and ravine width factors. Directly integrates with aquifers to fill submerged caves with fluid.
@@ -726,10 +701,12 @@
         </div>
 
         <div class="feature-card">
-          <div class="feature-icon">🏰</div>
+          <div class="feature-icon-svg">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+          </div>
           <h3>Stronghold & Structure Placement</h3>
           <p>
-            Bit-exact `random_spread` candidate selection and concentric rings stronghold math radiating from $(0, 0)$ matching vanilla seed calculations.
+            Bit-exact random_spread candidate selection and concentric rings stronghold math radiating from (0, 0) matching vanilla seed calculations.
           </p>
         </div>
       </div>
@@ -742,10 +719,10 @@
           <span class="subtitle" style="font-family: var(--font-mono); font-size: 0.85rem; color: var(--accent-violet); text-transform: uppercase;">Next-Gen Pipeline</span>
           <h2 style="font-size: 2.2rem; margin: 12px 0 16px; font-weight: 700; letter-spacing: -1px;">The Vertex Engine Advantage</h2>
           <p style="color: var(--text-secondary); margin-bottom: 20px; font-size: 1rem;">
-            Bukkit's `ChunkGenerator` API was built for Java plugins, forcing intermediate wrapper buffers and per-position FFI downcalls.
+            Bukkit's ChunkGenerator API was built for Java plugins, forcing intermediate wrapper buffers and per-position FFI downcalls.
           </p>
           <p style="color: var(--text-muted); font-size: 0.95rem; margin-bottom: 24px;">
-            <strong>Vertex Engine</strong> is a minimal Folia fork that exposes a direct native module SPI (`ChunkTarget`). Oxide writes blocks and 3D biomes directly into Folia's internal `LevelChunkSection` palette buffer in a single atomic memory write — unlocking <strong>1,500+ CPS</strong>.
+            <strong>Vertex Engine</strong> is a minimal Folia fork that exposes a direct native module SPI (ChunkTarget). Oxide writes blocks and 3D biomes directly into Folia's internal LevelChunkSection palette buffer in a single atomic memory write — unlocking <strong>1,550+ CPS</strong>.
           </p>
           <div style="display: flex; gap: 12px;">
             <span class="engine-tag" style="background: rgba(99, 102, 241, 0.1); border-color: rgba(99, 102, 241, 0.3); color: #818cf8;">Single JAR Dual-Mode</span>
@@ -781,9 +758,9 @@
       </div>
 
       <div class="feature-card" style="max-width: 800px; margin: 0 auto; text-align: left;">
-        <h3 style="margin-bottom: 12px;">Multi-Datapack Layering (`load_datapack_stack`)</h3>
+        <h3 style="margin-bottom: 12px;">Multi-Datapack Layering (load_datapack_stack)</h3>
         <p style="margin-bottom: 20px;">
-          Install Terralith, Incendium, Nullscape, Structory, and custom server datapacks together. Oxide merges all namespaces and registry overlays (`worldgen/density_function`, `noise_settings`, `biome`, `configured_carver`) into a unified graph before resolving dependencies.
+          Install Terralith, Incendium, Nullscape, Structory, and custom server datapacks together. Oxide merges all namespaces and registry overlays (worldgen/density_function, noise_settings, biome, configured_carver) into a unified graph before resolving dependencies.
         </p>
         <div class="arch-code" style="background: #060708;">
 <span class="code-comment"># In plugins/OxideDebug/config.yml</span>
@@ -800,9 +777,8 @@
       <ul class="footer-links">
         <li><a href="https://github.com/dronzer-tb/oxide" target="_blank">Oxide GitHub</a></li>
         <li><a href="https://github.com/dronzer-tb/vertex-engine" target="_blank">Vertex Engine</a></li>
-        <li><a href="https://tharax.me" target="_blank">Tharax</a></li>
       </ul>
-      <p>Oxide Chunk Generator & Vertex Engine • Built by Neelansh Kasniya (Dronzer Studios)</p>
+      <p>Oxide Chunk Generator & Vertex Engine • Built by x00f8 (Dronzer Studios) • Licensed under GPL-3.0</p>
     </div>
   </footer>
 </body>
