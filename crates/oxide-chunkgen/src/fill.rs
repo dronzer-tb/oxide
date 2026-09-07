@@ -73,61 +73,119 @@ pub fn fill_chunk_with(
         // palette, which is what makes it serialize to zero data longs.
         let mut default_block_index: Option<u32> = None;
 
-        for local_y in 0..16i32 {
-            let y = section_min_y + local_y;
-            for local_z in 0..16usize {
-                let block_z = pos.min_block_z() + local_z as i32;
-                for local_x in 0..16usize {
-                    let block_x = pos.min_block_x() + local_x as i32;
-                    let density = router.sample_in_chunk(
-                        caches,
-                        RouterSlot::FinalDensity,
-                        block_x,
-                        y,
-                        block_z,
-                    );
-                    // The aquifer decides what a non-solid position holds -- air, water or
-                    // lava, at a level that varies per underground body. `None` means solid, so
-                    // the default block goes in. Vanilla runs exactly this as the first filler
-                    // in its noise fill.
-                    let block = match aquifer.as_deref_mut() {
-                        Some(aquifer) => {
-                            match aquifer.compute_substance(block_x, y, block_z, density) {
-                                None => None,
-                                // Air is already the section's default palette entry.
-                                Some(state) if state == air => continue,
-                                Some(state) => Some(state),
+        // Cell-level bounding culling: 32 cells (4x2x4) per 16x16x16 section
+        for cell_cy in 0..2usize {
+            let cy_min = cell_cy * 8;
+            let cy_max = cy_min + 8;
+            let y_bot = section_min_y + cy_min as i32;
+            let y_top = section_min_y + cy_max as i32;
+
+            for cell_cz in 0..4usize {
+                let cz_min = cell_cz * 4;
+                let cz_max = cz_min + 4;
+                let z_bot = pos.min_block_z() + cz_min as i32;
+                let z_top = pos.min_block_z() + cz_max as i32;
+
+                for cell_cx in 0..4usize {
+                    let cx_min = cell_cx * 4;
+                    let cx_max = cx_min + 4;
+                    let x_bot = pos.min_block_x() + cx_min as i32;
+                    let x_top = pos.min_block_x() + cx_max as i32;
+
+                    // Sample 8 corners of the 4x8x4 cell
+                    let d000 = router.sample_in_chunk(caches, RouterSlot::FinalDensity, x_bot, y_bot, z_bot);
+                    let d100 = router.sample_in_chunk(caches, RouterSlot::FinalDensity, x_top, y_bot, z_bot);
+                    let d010 = router.sample_in_chunk(caches, RouterSlot::FinalDensity, x_bot, y_top, z_bot);
+                    let d110 = router.sample_in_chunk(caches, RouterSlot::FinalDensity, x_top, y_top, z_bot);
+                    let d001 = router.sample_in_chunk(caches, RouterSlot::FinalDensity, x_bot, y_bot, z_top);
+                    let d101 = router.sample_in_chunk(caches, RouterSlot::FinalDensity, x_top, y_bot, z_top);
+                    let d011 = router.sample_in_chunk(caches, RouterSlot::FinalDensity, x_bot, y_top, z_top);
+                    let d111 = router.sample_in_chunk(caches, RouterSlot::FinalDensity, x_top, y_top, z_top);
+
+                    let min_d = d000.min(d100).min(d010).min(d110).min(d001).min(d101).min(d011).min(d111);
+                    let max_d = d000.max(d100).max(d010).max(d110).max(d001).max(d101).max(d011).max(d111);
+
+                    // Fast path 1: 100% Solid Rock Cell
+                    if min_d > 0.0 {
+                        let idx = match default_block_index {
+                            Some(idx) => idx,
+                            None => {
+                                let idx = section
+                                    .block_states
+                                    .index_of_or_insert(settings.default_block.clone());
+                                default_block_index = Some(idx);
+                                idx
                             }
-                        }
-                        // Aquifers disabled by the settings: solid below the surface, the
-                        // dimension's fluid up to sea level, air above.
-                        None => {
-                            if density > 0.0 {
-                                None
-                            } else if y <= settings.sea_level {
-                                Some(settings.default_fluid.clone())
-                            } else {
-                                continue;
-                            }
-                        }
-                    };
-                    let slot = local_index(local_x, local_y as usize, local_z);
-                    match block {
-                        // `None` is the default block, the common case.
-                        None => {
-                            let index = match default_block_index {
-                                Some(index) => index,
-                                None => {
-                                    let index = section
-                                        .block_states
-                                        .index_of_or_insert(settings.default_block.clone());
-                                    default_block_index = Some(index);
-                                    index
+                        };
+                        for ly in cy_min..cy_max {
+                            for lz in cz_min..cz_max {
+                                for lx in cx_min..cx_max {
+                                    let slot = local_index(lx, ly, lz);
+                                    section.block_states.set_index(slot, idx);
                                 }
-                            };
-                            section.block_states.set_index(slot, index);
+                            }
                         }
-                        Some(state) => section.block_states.set(slot, state),
+                        continue;
+                    }
+
+                    // Fast path 2: 100% Pure Air Cell above sea level
+                    if max_d < 0.0 && y_bot >= settings.sea_level {
+                        continue;
+                    }
+
+                    // Boundary cell: evaluate exact voxel interpolation & aquifers
+                    for ly in cy_min..cy_max {
+                        let y = section_min_y + ly as i32;
+                        for lz in cz_min..cz_max {
+                            let block_z = pos.min_block_z() + lz as i32;
+                            for lx in cx_min..cx_max {
+                                let block_x = pos.min_block_x() + lx as i32;
+                                let density = router.sample_in_chunk(
+                                    caches,
+                                    RouterSlot::FinalDensity,
+                                    block_x,
+                                    y,
+                                    block_z,
+                                );
+
+                                let block = match aquifer.as_deref_mut() {
+                                    Some(aquifer) => {
+                                        match aquifer.compute_substance(block_x, y, block_z, density) {
+                                            None => None,
+                                            Some(state) if state == air => continue,
+                                            Some(state) => Some(state),
+                                        }
+                                    }
+                                    None => {
+                                        if density > 0.0 {
+                                            None
+                                        } else if y <= settings.sea_level {
+                                            Some(settings.default_fluid.clone())
+                                        } else {
+                                            continue;
+                                        }
+                                    }
+                                };
+
+                                let slot = local_index(lx, ly, lz);
+                                match block {
+                                    None => {
+                                        let index = match default_block_index {
+                                            Some(index) => index,
+                                            None => {
+                                                let index = section
+                                                    .block_states
+                                                    .index_of_or_insert(settings.default_block.clone());
+                                                default_block_index = Some(index);
+                                                index
+                                            }
+                                        };
+                                        section.block_states.set_index(slot, index);
+                                    }
+                                    Some(state) => section.block_states.set(slot, state),
+                                }
+                            }
+                        }
                     }
                 }
             }
