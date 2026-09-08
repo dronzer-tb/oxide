@@ -92,6 +92,25 @@ public final class OxideCommand implements CommandExecutor, TabCompleter {
                         .append(Component.text(pacsideManager.getPrefetcher().getPrefetchedCount(), NamedTextColor.AQUA)));
                 return true;
             }
+            if (args.length >= 2 && args[1].equalsIgnoreCase("fetch")) {
+                if (!(sender instanceof Player player)) {
+                    sender.sendMessage(Component.text("The fetch command can only be used by a player in-game.", NamedTextColor.RED));
+                    return true;
+                }
+                int radius = 1000;
+                try {
+                    if (args.length >= 4 && args[2].equalsIgnoreCase("radius")) {
+                        radius = Integer.parseInt(args[3]);
+                    } else if (args.length >= 3) {
+                        radius = Integer.parseInt(args[2]);
+                    }
+                } catch (NumberFormatException e) {
+                    player.sendMessage(Component.text("Invalid radius number: " + (args.length >= 4 ? args[3] : args[2]), NamedTextColor.RED));
+                    return true;
+                }
+                pacsideManager.getPrefetcher().prefetchRadius(player, radius);
+                return true;
+            }
             if (args.length == 2 && args[1].equalsIgnoreCase("clear")) {
                 dev.oxide.plugin.pacside.PacsideNative.clear();
                 sender.sendMessage(Component.text("Pacside native off-heap cache cleared.", NamedTextColor.GREEN));
@@ -104,7 +123,7 @@ public final class OxideCommand implements CommandExecutor, TabCompleter {
                         enable ? NamedTextColor.GREEN : NamedTextColor.RED));
                 return true;
             }
-            sender.sendMessage(Component.text("Usage: /oxide pacside [stats|clear|prefetch on/off]", NamedTextColor.RED));
+            sender.sendMessage(Component.text("Usage: /oxide pacside [stats|fetch radius <blocks>|clear|prefetch on/off]", NamedTextColor.RED));
             return true;
         }
 
