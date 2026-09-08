@@ -13,11 +13,17 @@
 //! structure-start attempt, and which structure" — not "what gets placed there".
 
 mod frequency;
+pub mod jigsaw;
 mod placement;
+pub mod pool;
 mod select;
 mod set;
+pub mod template;
 
 pub use frequency::{passes_frequency, should_generate};
+pub use jigsaw::{assemble_jigsaw, AssembledPiece, AssembledStructure, BoundingBox};
 pub use placement::{is_random_spread_chunk, potential_structure_chunk};
+pub use pool::{PoolElement, PoolElementEntry, TemplatePool};
 pub use select::pick_weighted;
 pub use set::{is_structure_chunk, is_structure_chunk_supported, StructureSetLookup};
+pub use template::{JigsawConnector, JigsawJoint, PlacedTemplateBlock, StructureTemplate};
