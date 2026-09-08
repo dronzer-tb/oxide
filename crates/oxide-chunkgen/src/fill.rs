@@ -205,8 +205,8 @@ pub(crate) fn compute_heightmaps(
 ) -> HashMap<HeightmapType, Heightmap> {
     let min_y = chunk.min_y;
     let height = chunk.height;
-    let mut ocean_floor = Heightmap::new(min_y);
-    let mut world_surface = Heightmap::new(min_y);
+    let mut ocean_floor = Heightmap::new(height);
+    let mut world_surface = Heightmap::new(height);
 
     let default_fluid = &settings.default_fluid;
 
@@ -252,8 +252,10 @@ pub(crate) fn compute_heightmaps(
     let mut map = HashMap::new();
     map.insert(HeightmapType::OceanFloor, ocean_floor.clone());
     map.insert(HeightmapType::WorldSurface, world_surface.clone());
-    map.insert(HeightmapType::OceanFloorWg, ocean_floor);
-    map.insert(HeightmapType::WorldSurfaceWg, world_surface);
+    map.insert(HeightmapType::OceanFloorWg, ocean_floor.clone());
+    map.insert(HeightmapType::WorldSurfaceWg, world_surface.clone());
+    map.insert(HeightmapType::MotionBlocking, world_surface.clone());
+    map.insert(HeightmapType::MotionBlockingNoLeaves, world_surface);
     map
 }
 
