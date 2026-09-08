@@ -469,18 +469,22 @@
       </p>
     </div>
 
-    <!-- 8. What is Vertex Engine -->
+    <!-- Pacside Chunk Streamer -->
     <div class="card-block">
       <div class="card-header-line">
-        <span class="num-pill">08</span>
-        <h2>What is Vertex Engine?</h2>
+        <span class="num-pill">09</span>
+        <h2>What is Pacside? (Zero-Latency Chunk Streaming)</h2>
       </div>
       <p>
-        Bukkit's standard plugin API was made for simple Java plugins, forcing data to be copied back and forth through Bukkit wrapper arrays.
+        Generating chunks fast is only half the battle. When a player flies with an Elytra at 30 m/s, the server has to serialize and send chunks across the network before the player hits the unloaded void.
       </p>
       <p>
-        <strong>Vertex Engine</strong> is a specialized Folia server fork that gives Oxide direct access to the server's internal memory (<span class="highlight-pill">ChunkTarget</span>). Oxide writes blocks and 3D biomes simultaneously in one memory pass, doubling generation speed to <strong>1,550+ CPS</strong>.
+        <strong>Pacside</strong> is Oxide's predictive chunk streaming engine:
       </p>
+      <ul style="margin-left: 20px; color: var(--text-secondary); margin-bottom: 16px;">
+        <li><strong>Predictive Trajectory Prefetching:</strong> Tracks player velocity vectors and pre-loads a 60-degree forward cone of chunks 5–7 chunks ahead of flight.</li>
+        <li><strong>Off-Heap Native Packet Cache:</strong> Caches pre-compressed network payloads in native RAM (32,768 chunks), eliminating repeated Java Netty Zlib compression passes.</li>
+      </ul>
     </div>
   </div>
 
