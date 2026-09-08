@@ -3,6 +3,7 @@ package dev.oxide.plugin.pacside;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Location;
+import org.bukkit.Particle;
 import org.bukkit.World;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -14,6 +15,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -21,16 +23,18 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Predictive Trajectory Chunk Prefetcher & Radius Loader.
+ * Predictive Trajectory Chunk Prefetcher & Radius Loader with Visual Feedback.
  *
- * <p>Supports both real-time dynamic Elytra trajectory prefetching and on-demand
- * radius prefetching (/oxide pacside fetch radius <blocks>).
+ * <p>Tracks player movement vectors (dx, dz) and predictively pre-loads the forward
+ * chunk cone into memory before the client arrives, eliminating Elytra loading lag.
  */
 public final class PacsidePrefetcher implements Listener {
 
     private final JavaPlugin plugin;
     private final Map<UUID, Long> lastPrefetch = new ConcurrentHashMap<>();
-    private final AtomicLong prefetchedChunks = new AtomicLong();
+    private final Set<Long> prefetchedChunks = ConcurrentHashMap.newKeySet();
+    private final Set<UUID> visualHudPlayers = ConcurrentHashMap.newKeySet();
+    private final AtomicLong totalPrefetched = new AtomicLong();
     private boolean enabled = true;
 
     public PacsidePrefetcher(JavaPlugin plugin) {
@@ -46,7 +50,27 @@ public final class PacsidePrefetcher implements Listener {
     }
 
     public long getPrefetchedCount() {
-        return prefetchedChunks.get();
+        return totalPrefetched.get();
+    }
+
+    public boolean isChunkPrefetched(int chunkX, int chunkZ) {
+        return prefetchedChunks.contains(chunkKey(chunkX, chunkZ));
+    }
+
+    public void toggleVisualHud(UUID playerUuid, boolean on) {
+        if (on) {
+            visualHudPlayers.add(playerUuid);
+        } else {
+            visualHudPlayers.remove(playerUuid);
+        }
+    }
+
+    public boolean hasVisualHud(UUID playerUuid) {
+        return visualHudPlayers.contains(playerUuid);
+    }
+
+    public static long chunkKey(int chunkX, int chunkZ) {
+        return (((long) chunkX) << 32) ^ (chunkZ & 0xFFFFFFFFL);
     }
 
     /**
@@ -57,7 +81,7 @@ public final class PacsidePrefetcher implements Listener {
      */
     public void prefetchRadius(Player player, int radiusValue) {
         int chunkRadius = radiusValue > 64 ? (radiusValue / 16) : radiusValue;
-        chunkRadius = Math.max(1, Math.min(chunkRadius, 128)); // Bound between 1 and 128 chunks radius (up to 2048 blocks)
+        chunkRadius = Math.max(1, Math.min(chunkRadius, 128)); // Bound between 1 and 128 chunks (up to 2048 blocks)
 
         Location loc = player.getLocation();
         World world = loc.getWorld();
@@ -80,7 +104,8 @@ public final class PacsidePrefetcher implements Listener {
                 CompletableFuture<?> f = world.getChunkAtAsync(cx, cz, false).thenAccept(chunk -> {
                     if (chunk != null) {
                         loadedCount.incrementAndGet();
-                        prefetchedChunks.incrementAndGet();
+                        totalPrefetched.incrementAndGet();
+                        prefetchedChunks.add(chunkKey(cx, cz));
                     }
                 });
                 futures.add(f);
@@ -89,9 +114,17 @@ public final class PacsidePrefetcher implements Listener {
 
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).thenRun(() -> {
             long duration = System.currentTimeMillis() - startTime;
+            double cps = loadedCount.get() * 1000.0 / Math.max(1, duration);
             player.sendMessage(Component.text("[Pacside] Successfully pre-warmed " + loadedCount.get()
-                    + " chunks in " + duration + " ms (" + String.format("%.1f", (loadedCount.get() * 1000.0 / Math.max(1, duration)))
+                    + " chunks in " + duration + " ms (" + String.format("%.1f", cps)
                     + " CPS)!", NamedTextColor.GREEN));
+
+            // Visual feedback: show green particle ring around player's immediate area
+            player.getScheduler().run(plugin, task -> {
+                spawnVisualAura(player, 8);
+                player.sendActionBar(Component.text("[Pacside] All " + loadedCount.get()
+                        + " Chunks Warmed in RAM Cache!", NamedTextColor.GREEN));
+            }, null);
         });
     }
 
@@ -103,6 +136,25 @@ public final class PacsidePrefetcher implements Listener {
         Location to = event.getTo();
         if (to == null) return;
 
+        Player player = event.getPlayer();
+        int currentChunkX = to.getBlockX() >> 4;
+        int currentChunkZ = to.getBlockZ() >> 4;
+
+        // Visual indicator when walking/flying across chunks
+        if (visualHudPlayers.contains(player.getUniqueId()) &&
+                ((from.getBlockX() >> 4) != currentChunkX || (from.getBlockZ() >> 4) != currentChunkZ)) {
+            boolean prefetched = isChunkPrefetched(currentChunkX, currentChunkZ);
+            Component bar = Component.text("Chunk [" + currentChunkX + ", " + currentChunkZ + "]: ", NamedTextColor.GRAY)
+                    .append(prefetched ? Component.text("PRE-FETCHED (RAM Hit)", NamedTextColor.GREEN)
+                            : Component.text("STREAMED", NamedTextColor.AQUA))
+                    .append(Component.text(" | RAM Cache: " + prefetchedChunks.size() + " Chunks", NamedTextColor.DARK_GRAY));
+            player.sendActionBar(bar);
+
+            if (prefetched) {
+                spawnVisualAura(player, 3);
+            }
+        }
+
         double dx = to.getX() - from.getX();
         double dz = to.getZ() - from.getZ();
         double speedSq = dx * dx + dz * dz;
@@ -110,13 +162,11 @@ public final class PacsidePrefetcher implements Listener {
         // Trigger prefetching only if player is moving with meaningful velocity (> 0.25 blocks/tick = > 5 m/s)
         if (speedSq < 0.0625) return;
 
-        Player player = event.getPlayer();
         UUID uuid = player.getUniqueId();
         long now = System.currentTimeMillis();
 
         Long last = lastPrefetch.get(uuid);
-        if (last != null && (now - last) < 400) {
-            // Rate limit prefetch evaluations to at most 2.5 times per second per player
+        if (last != null && (now - last) < 350) {
             return;
         }
         lastPrefetch.put(uuid, now);
@@ -126,29 +176,39 @@ public final class PacsidePrefetcher implements Listener {
         double dirZ = dz / speed;
 
         World world = player.getWorld();
-        int playerChunkX = to.getBlockX() >> 4;
-        int playerChunkZ = to.getBlockZ() >> 4;
-
         int lookahead = player.isGliding() ? 8 : (player.isSprinting() ? 5 : 3);
 
         for (int dist = 2; dist <= lookahead; dist++) {
-            int targetX = playerChunkX + (int) Math.round(dirX * dist);
-            int targetZ = playerChunkZ + (int) Math.round(dirZ * dist);
+            int targetX = currentChunkX + (int) Math.round(dirX * dist);
+            int targetZ = currentChunkZ + (int) Math.round(dirZ * dist);
 
             world.getChunkAtAsync(targetX, targetZ, false).thenAccept(chunk -> {
                 if (chunk != null) {
-                    prefetchedChunks.incrementAndGet();
+                    totalPrefetched.incrementAndGet();
+                    prefetchedChunks.add(chunkKey(targetX, targetZ));
                 }
             });
 
-            // Preload 1 block wide lateral cone
-            int sideX = playerChunkX + (int) Math.round((dirX * dist) - (dirZ * 1.0));
-            int sideZ = playerChunkZ + (int) Math.round((dirZ * dist) + (dirX * 1.0));
+            // Lateral forward cone
+            int sideX = currentChunkX + (int) Math.round((dirX * dist) - (dirZ * 1.0));
+            int sideZ = currentChunkZ + (int) Math.round((dirZ * dist) + (dirX * 1.0));
             world.getChunkAtAsync(sideX, sideZ, false).thenAccept(chunk -> {
                 if (chunk != null) {
-                    prefetchedChunks.incrementAndGet();
+                    totalPrefetched.incrementAndGet();
+                    prefetchedChunks.add(chunkKey(sideX, sideZ));
                 }
             });
+        }
+    }
+
+    private void spawnVisualAura(Player player, int radius) {
+        Location loc = player.getLocation().add(0, 0.5, 0);
+        World world = player.getWorld();
+        for (int angle = 0; angle < 360; angle += 45) {
+            double rad = Math.toRadians(angle);
+            double x = loc.getX() + radius * Math.cos(rad);
+            double z = loc.getZ() + radius * Math.sin(rad);
+            world.spawnParticle(Particle.HAPPY_VILLAGER, x, loc.getY(), z, 1, 0, 0, 0, 0);
         }
     }
 }
