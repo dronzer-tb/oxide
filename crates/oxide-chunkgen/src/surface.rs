@@ -474,9 +474,13 @@ impl<'a> SurfaceSystem<'a> {
                 };
                 let local_x = (cursor.x & 15) as usize;
                 let local_z = (cursor.z & 15) as usize;
-                let below = heightmap.get(local_x, local_z.saturating_sub(1));
-                let above = heightmap.get(local_x, (local_z + 1).min(15));
-                above >= below + 4 || below >= above + 4
+
+                let x_below = heightmap.get(local_x.saturating_sub(1), local_z);
+                let x_above = heightmap.get((local_x + 1).min(15), local_z);
+                let z_below = heightmap.get(local_x, local_z.saturating_sub(1));
+                let z_above = heightmap.get(local_x, (local_z + 1).min(15));
+
+                (x_above - x_below).abs() >= 4 || (z_above - z_below).abs() >= 4
             }
 
             SurfaceCondition::Hole {} => column.surface_depth <= 0,
