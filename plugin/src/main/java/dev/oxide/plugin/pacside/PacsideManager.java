@@ -12,11 +12,13 @@ public final class PacsideManager {
     private final JavaPlugin plugin;
     private final Logger logger;
     private final PacsidePrefetcher prefetcher;
+    private final FlightStressSimulator stressSimulator;
 
     public PacsideManager(JavaPlugin plugin) {
         this.plugin = plugin;
         this.logger = plugin.getLogger();
         this.prefetcher = new PacsidePrefetcher(plugin);
+        this.stressSimulator = new FlightStressSimulator(plugin, this);
     }
 
     public void enable() {
@@ -25,11 +27,16 @@ public final class PacsideManager {
     }
 
     public void disable() {
+        stressSimulator.stop();
         PacsideNative.clear();
         logger.info("[Pacside] Off-heap chunk packet cache cleared.");
     }
 
     public PacsidePrefetcher getPrefetcher() {
         return prefetcher;
+    }
+
+    public FlightStressSimulator getStressSimulator() {
+        return stressSimulator;
     }
 }

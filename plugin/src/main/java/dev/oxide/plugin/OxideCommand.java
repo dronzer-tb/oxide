@@ -78,6 +78,37 @@ public final class OxideCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
+        if (args.length >= 1 && args[0].equalsIgnoreCase("stress")) {
+            if (!sender.hasPermission("oxide.debug")) {
+                sender.sendMessage(Component.text("You do not have permission to use this command.", NamedTextColor.RED));
+                return true;
+            }
+            if (args.length >= 2 && args[1].equalsIgnoreCase("stop")) {
+                pacsideManager.getStressSimulator().stop();
+                return true;
+            }
+            if (args.length >= 2 && args[1].equalsIgnoreCase("fly")) {
+                int flyers = 16;
+                double speed = 35.0;
+                int duration = 60;
+                try {
+                    if (args.length >= 3) flyers = Integer.parseInt(args[2]);
+                    if (args.length >= 4) speed = Double.parseDouble(args[3]);
+                    if (args.length >= 5) duration = Integer.parseInt(args[4]);
+                } catch (NumberFormatException e) {
+                    sender.sendMessage(Component.text("Invalid numbers. Usage: /oxide stress fly [flyers=16] [speed=35] [duration=60]", NamedTextColor.RED));
+                    return true;
+                }
+
+                org.bukkit.Location loc = (sender instanceof Player p) ? p.getLocation() :
+                        sender.getServer().getWorlds().get(0).getSpawnLocation();
+                pacsideManager.getStressSimulator().start(loc.getWorld(), loc, flyers, speed, duration);
+                return true;
+            }
+            sender.sendMessage(Component.text("Usage: /oxide stress fly [flyers] [speed_mps] [duration_sec] | /oxide stress stop", NamedTextColor.RED));
+            return true;
+        }
+
         if (args.length >= 1 && args[0].equalsIgnoreCase("pacside")) {
             if (!sender.hasPermission("oxide.debug")) {
                 sender.sendMessage(Component.text("You do not have permission to use this command.", NamedTextColor.RED));
