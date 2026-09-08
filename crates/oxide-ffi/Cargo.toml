@@ -13,4 +13,5 @@ oxide-datapack.workspace = true
 oxide-noise.workspace = true
 oxide-biome.workspace = true
 oxide-chunkgen.workspace = true
+pacside = { path = "../pacside" }
 anyhow.workspace = true

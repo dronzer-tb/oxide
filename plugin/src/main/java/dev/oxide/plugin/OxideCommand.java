@@ -47,14 +47,17 @@ public final class OxideCommand implements CommandExecutor, TabCompleter {
     private final ProvenanceLookup provenanceLookup;
     private final LiveProvenance liveProvenance;
     private final GeneratorService generatorService;
+    private final dev.oxide.plugin.pacside.PacsideManager pacsideManager;
 
     public OxideCommand(Plugin plugin, DebugState debugState, ProvenanceLookup provenanceLookup,
-                         LiveProvenance liveProvenance, GeneratorService generatorService) {
+                         LiveProvenance liveProvenance, GeneratorService generatorService,
+                         dev.oxide.plugin.pacside.PacsideManager pacsideManager) {
         this.plugin = plugin;
         this.debugState = debugState;
         this.provenanceLookup = provenanceLookup;
         this.liveProvenance = liveProvenance;
         this.generatorService = generatorService;
+        this.pacsideManager = pacsideManager;
     }
 
     @Override
@@ -72,6 +75,36 @@ public final class OxideCommand implements CommandExecutor, TabCompleter {
                 return true;
             }
             createWorld(sender, args[1], args.length >= 3 ? args[2] : null);
+            return true;
+        }
+
+        if (args.length >= 1 && args[0].equalsIgnoreCase("pacside")) {
+            if (!sender.hasPermission("oxide.debug")) {
+                sender.sendMessage(Component.text("You do not have permission to use this command.", NamedTextColor.RED));
+                return true;
+            }
+            if (args.length == 1 || (args.length == 2 && args[1].equalsIgnoreCase("stats"))) {
+                sender.sendMessage(Component.text("--- Pacside Chunk Streamer ---", NamedTextColor.GOLD));
+                sender.sendMessage(Component.text("Prefetcher: ", NamedTextColor.GRAY)
+                        .append(Component.text(pacsideManager.getPrefetcher().isEnabled() ? "ENABLED" : "DISABLED",
+                                pacsideManager.getPrefetcher().isEnabled() ? NamedTextColor.GREEN : NamedTextColor.RED)));
+                sender.sendMessage(Component.text("Prefetched Chunks: ", NamedTextColor.GRAY)
+                        .append(Component.text(pacsideManager.getPrefetcher().getPrefetchedCount(), NamedTextColor.AQUA)));
+                return true;
+            }
+            if (args.length == 2 && args[1].equalsIgnoreCase("clear")) {
+                dev.oxide.plugin.pacside.PacsideNative.clear();
+                sender.sendMessage(Component.text("Pacside native off-heap cache cleared.", NamedTextColor.GREEN));
+                return true;
+            }
+            if (args.length == 3 && args[1].equalsIgnoreCase("prefetch")) {
+                boolean enable = args[2].equalsIgnoreCase("on");
+                pacsideManager.getPrefetcher().setEnabled(enable);
+                sender.sendMessage(Component.text("Pacside prefetcher: " + (enable ? "ENABLED" : "DISABLED"),
+                        enable ? NamedTextColor.GREEN : NamedTextColor.RED));
+                return true;
+            }
+            sender.sendMessage(Component.text("Usage: /oxide pacside [stats|clear|prefetch on/off]", NamedTextColor.RED));
             return true;
         }
 
@@ -106,7 +139,7 @@ public final class OxideCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        player.sendMessage(Component.text("Usage: /oxide debug <on|off> | /oxide here", NamedTextColor.RED));
+        player.sendMessage(Component.text("Usage: /oxide debug <on|off> | /oxide here | /oxide pacside", NamedTextColor.RED));
         return true;
     }
 

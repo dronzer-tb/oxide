@@ -13,6 +13,7 @@
 //! inherits.
 
 mod handle;
+mod pacside_ffi;
 
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};

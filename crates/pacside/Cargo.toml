@@ -1,0 +1,12 @@
+[package]
+name = "pacside"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+oxide-core = { workspace = true }
+anyhow = { workspace = true }
+flate2 = { workspace = true }
+ahash = { workspace = true }
+parking_lot = "0.12"

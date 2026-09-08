@@ -29,6 +29,7 @@ public final class OxidePlugin extends JavaPlugin {
     private DebugState debugState;
     private LiveProvenance liveProvenance;
     private GeneratorService generatorService;
+    private dev.oxide.plugin.pacside.PacsideManager pacsideManager;
 
     /**
      * Whether the Vertex Engine has already given terrain generation to a module -- this jar's
@@ -54,6 +55,8 @@ public final class OxidePlugin extends JavaPlugin {
         ProvenanceLookup provenanceLookup = new ProvenanceLookup(sidecarCache);
         liveProvenance = new LiveProvenance(this);
         generatorService = new GeneratorService(new BukkitGeneratorHost(this));
+        pacsideManager = new dev.oxide.plugin.pacside.PacsideManager(this);
+        pacsideManager.enable();
 
         getServer().getPluginManager().registerEvents(
                 new ChunkTracker(this, debugState, liveProvenance), this);
@@ -61,7 +64,7 @@ public final class OxidePlugin extends JavaPlugin {
         getServer().getPluginManager().registerEvents(liveProvenance, this);
 
         OxideCommand command = new OxideCommand(
-                this, debugState, provenanceLookup, liveProvenance, generatorService);
+                this, debugState, provenanceLookup, liveProvenance, generatorService, pacsideManager);
 
         // Paper plugins (declared via paper-plugin.yml) do not support the legacy
         // plugin.yml/getCommand() runtime lookup path -- JavaPlugin#getCommand throws
@@ -188,6 +191,9 @@ public final class OxidePlugin extends JavaPlugin {
         // /oxide createworld, plus the native library itself.
         if (generatorService != null) {
             generatorService.closeAll();
+        }
+        if (pacsideManager != null) {
+            pacsideManager.disable();
         }
     }
 }
