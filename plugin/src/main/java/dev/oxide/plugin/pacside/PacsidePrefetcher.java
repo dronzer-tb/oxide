@@ -176,9 +176,9 @@ public final class PacsidePrefetcher implements Listener {
         double dirZ = dz / speed;
 
         World world = player.getWorld();
-        int lookahead = player.isGliding() ? 8 : (player.isSprinting() ? 5 : 3);
+        int lookahead = player.isGliding() ? 16 : (player.isSprinting() ? 10 : 6);
 
-        for (int dist = 2; dist <= lookahead; dist++) {
+        for (int dist = 1; dist <= lookahead; dist++) {
             int targetX = currentChunkX + (int) Math.round(dirX * dist);
             int targetZ = currentChunkZ + (int) Math.round(dirZ * dist);
 
@@ -189,15 +189,18 @@ public final class PacsidePrefetcher implements Listener {
                 }
             });
 
-            // Lateral forward cone
-            int sideX = currentChunkX + (int) Math.round((dirX * dist) - (dirZ * 1.0));
-            int sideZ = currentChunkZ + (int) Math.round((dirZ * dist) + (dirX * 1.0));
-            world.getChunkAtAsync(sideX, sideZ, false).thenAccept(chunk -> {
-                if (chunk != null) {
-                    totalPrefetched.incrementAndGet();
-                    prefetchedChunks.add(chunkKey(sideX, sideZ));
-                }
-            });
+            // Wider lateral forward cone (3 lateral steps)
+            for (int lat = -2; lat <= 2; lat++) {
+                if (lat == 0) continue;
+                int sideX = currentChunkX + (int) Math.round((dirX * dist) - (dirZ * lat));
+                int sideZ = currentChunkZ + (int) Math.round((dirZ * dist) + (dirX * lat));
+                world.getChunkAtAsync(sideX, sideZ, false).thenAccept(chunk -> {
+                    if (chunk != null) {
+                        totalPrefetched.incrementAndGet();
+                        prefetchedChunks.add(chunkKey(sideX, sideZ));
+                    }
+                });
+            }
         }
     }
 
