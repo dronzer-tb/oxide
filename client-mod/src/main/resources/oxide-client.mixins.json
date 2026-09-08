@@ -1,0 +1,12 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "dev.oxide.client.mixin",
+  "compatibilityLevel": "JAVA_22",
+  "client": [
+    "ChunkRenderDispatcherMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

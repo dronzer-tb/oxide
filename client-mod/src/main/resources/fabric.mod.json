@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "oxide-client",
+  "version": "1.0.0",
+  "name": "Oxide Client (Native Rust Renderer)",
+  "description": "Zero-copy Rust SIMD greedy chunk mesher & GPU indirect draw pipeline for ultra-high FPS.",
+  "authors": [
+    "x00f8"
+  ],
+  "contact": {
+    "homepage": "https://oxide.tharax.me",
+    "sources": "https://github.com/dronzer-tb/oxide"
+  },
+  "license": "GPL-3.0-or-later",
+  "icon": "assets/oxide/icon.png",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "dev.oxide.client.OxideClientMod"
+    ]
+  },
+  "mixins": [
+    "oxide-client.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": ">=1.21",
+    "java": ">=22"
+  }
+}
