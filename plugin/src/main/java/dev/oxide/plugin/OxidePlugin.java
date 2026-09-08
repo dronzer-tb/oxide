@@ -62,6 +62,9 @@ public final class OxidePlugin extends JavaPlugin {
                 new ChunkTracker(this, debugState, liveProvenance), this);
         // Stamps the mark onto each chunk Oxide generated, as it loads.
         getServer().getPluginManager().registerEvents(liveProvenance, this);
+        // Auto-equips joining players with Unbreakable Elytra & Infinite Rockets
+        getServer().getPluginManager().registerEvents(
+                new dev.oxide.plugin.flight.ElytraFlightListener(this), this);
 
         OxideCommand command = new OxideCommand(
                 this, debugState, provenanceLookup, liveProvenance, generatorService, pacsideManager);
