@@ -474,12 +474,11 @@ impl<'a> SurfaceSystem<'a> {
                 };
                 let local_x = (cursor.x & 15) as usize;
                 let local_z = (cursor.z & 15) as usize;
-
-                let x_below = heightmap.get(local_x.saturating_sub(1), local_z);
-                let x_above = heightmap.get((local_x + 1).min(15), local_z);
-                let z_below = heightmap.get(local_x, local_z.saturating_sub(1));
-                let z_above = heightmap.get(local_x, (local_z + 1).min(15));
-
+                let center = heightmap.get(local_x, local_z);
+                let x_below = if local_x > 0 { heightmap.get(local_x - 1, local_z) } else { center };
+                let x_above = if local_x < 15 { heightmap.get(local_x + 1, local_z) } else { center };
+                let z_below = if local_z > 0 { heightmap.get(local_x, local_z - 1) } else { center };
+                let z_above = if local_z < 15 { heightmap.get(local_x, local_z + 1) } else { center };
                 (x_above - x_below).abs() >= 4 || (z_above - z_below).abs() >= 4
             }
 

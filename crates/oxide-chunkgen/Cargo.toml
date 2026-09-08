@@ -9,5 +9,6 @@ oxide-core.workspace = true
 oxide-datapack.workspace = true
 oxide-noise.workspace = true
 oxide-biome.workspace = true
+serde_json.workspace = true
 anyhow.workspace = true
 rayon.workspace = true
