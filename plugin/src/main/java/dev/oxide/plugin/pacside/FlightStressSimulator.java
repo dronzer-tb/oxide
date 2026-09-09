@@ -94,8 +94,8 @@ public final class FlightStressSimulator {
                         });
                     }
 
-                    // Trigger Pacside lookahead cone (8 chunks ahead along trajectory)
-                    for (int dist = 1; dist <= 8; dist++) {
+                    // Trigger Pacside lookahead cone (48 chunks ahead along trajectory)
+                    for (int dist = 1; dist <= 48; dist++) {
                         int lookaheadX = cx + (int) Math.round((flyer.vx / speedMps) * dist);
                         int lookaheadZ = cz + (int) Math.round((flyer.vz / speedMps) * dist);
 
