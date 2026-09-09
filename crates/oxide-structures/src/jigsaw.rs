@@ -87,6 +87,17 @@ impl AssembledStructure {
         self.pieces.push(piece);
     }
 
+    /// Whether any of this structure could land in `pos`'s column. Cheap enough to ask before
+    /// paying for [`Self::stamp_into_chunk`], which repeats the same rejection internally.
+    pub fn overall_bbox_intersects_chunk(&self, pos: ChunkPos) -> bool {
+        let min_x = pos.min_block_x();
+        let min_z = pos.min_block_z();
+        self.overall_bbox.max_x >= min_x
+            && self.overall_bbox.min_x <= min_x + 15
+            && self.overall_bbox.max_z >= min_z
+            && self.overall_bbox.min_z <= min_z + 15
+    }
+
     /// Stitches blocks of this structure that fall within `chunk` into the chunk's sections.
     pub fn stamp_into_chunk(&self, chunk: &mut ChunkData, pos: ChunkPos) {
         let chunk_min_x = pos.min_block_x();

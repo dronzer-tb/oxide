@@ -145,5 +145,12 @@ work without a JDK warning (and, on a future JDK, without being blocked outright
   Java run or world save. Those comments are the punch list for wave gates — grep for them before
   declaring a wave done.
 - Structure placement parity is a hard v1 requirement. `random_spread` placement-chunk selection
-  is now verified bit-exact (2026-08-22), but the crate's higher-risk remaining surface —
-  frequency reduction, exclusion zones, and especially jigsaw piece layout — is still unbuilt.
+  is verified bit-exact (2026-08-22) and frequency reduction and exclusion zones have since landed
+  with their own Java-generated vectors. Still unverified or unbuilt: `concentric_rings` (skips
+  vanilla's biome search), and jigsaw piece layout, which is a stub — no rotation, no connector
+  matching, no processors. Cross-chunk start bookkeeping (`starts.rs`) is built and tested for
+  order-independence, but it is plumbing: it is exactly as faithful as the assembler behind it.
+- Native structures cannot ship on the Bukkit plugin path regardless of how good the assembler
+  gets: the API has no way to register a structure start, so `/locate` and structure-gated
+  spawning would stay broken. See `docs/ARCHITECTURE.md` § "Structures: three layers". Next gate
+  is confirming whether the Vertex Engine module path can write `setStartForStructure`.

@@ -104,6 +104,40 @@ computes `Mth.PI * currentStep / distance` while the canyon computes
 `currentStep * Mth.PI / distance`; float multiplication is not associative, so those are
 different numbers. Transcribe the expression, not its meaning.
 
+## Structures: three layers, and the one the API blocks
+
+Structure generation splits into placement (which chunk starts one), assembly (what the pieces
+are), and registration (telling the server a structure exists there). The three have very
+different states, and merging them in a status report is how "structures work" gets claimed for a
+world that has none.
+
+**Placement** is `oxide-structures`' verified core: `random_spread` start chunks and frequency
+reduction are bit-exact against real 26.2. `concentric_rings` is present but skips vanilla's
+`findBiomeHorizontal` search, so stronghold positions are approximate, not parity.
+
+**Start bookkeeping** (`starts.rs`) is the layer that makes per-chunk generation able to emit
+multi-chunk structures. Its one invariant: a start is a pure function of `(world_seed, start
+chunk, structure set)`. Nothing may consult a neighbour, a previous chunk, or the cache's
+contents. That is what lets Folia's region threads generate in any order and in parallel and
+still agree, and it is why the start cache is a pure memoisation — eviction and duplicated work
+under a race are allowed to cost time but cannot change output. `StructureStartCache` therefore
+assembles *outside* its lock rather than serialising region threads behind one mutex.
+
+**Assembly** (`jigsaw.rs`) is a stub, not a port — no rotation, no connector matching, no
+processors, no voxel-shape collision. Nothing calls it.
+
+**Registration is not available on the Bukkit path at all.** Verified against
+`dev.folia:folia-api:26.2.build.5-beta`: `ChunkGenerator` exposes only `generateNoise` /
+`generateSurface` / `generateCaves` / `generateBedrock` plus the `shouldGenerate*` gates;
+`GeneratedStructure` and `Chunk.getStructures()` are read-only getters, and `LimitedRegion` has no
+structure API. There is no method anywhere in the API to attach a `StructureStart` or a structure
+reference to a chunk. So a plugin-path native jigsaw could place the *blocks* of a village and
+still leave `/locate` blind, structure-gated mob spawning dead (outpost pillagers, fortress
+blazes, monument guardians), and structure-conditioned loot and advancements unarmed. Native
+structures therefore require the Vertex Engine module path, which sits below the API — and that
+path's ability to write `setStartForStructure`/`setReferenceForStructure` is itself unverified.
+Until it is, Java owns structures and `shouldGenerateStructures()` stays `true`.
+
 ## Validation harness
 
 Per chunk: Merkle tree of `chunk → section → sub-region → leaf`, leaf granularity configurable.

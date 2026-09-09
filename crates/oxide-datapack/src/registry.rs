@@ -78,6 +78,19 @@ impl<T> Registry<T> {
     }
 }
 
+/// Builds an in-memory registry with no backing files, for tests and for registries assembled
+/// in code rather than loaded from a pack. Later entries overwrite earlier ones; the loader's
+/// duplicate-id error is a property of loading two *files*, which this path does not do.
+impl<T> FromIterator<(ResourceLocation, T)> for Registry<T> {
+    fn from_iter<I: IntoIterator<Item = (ResourceLocation, T)>>(iter: I) -> Self {
+        let mut registry = Self::default();
+        for (id, value) in iter {
+            registry.entries.insert(id, value);
+        }
+        registry
+    }
+}
+
 /// Walk `data/*/worldgen/<registry_dir>/**/*.json` under `pack_root`, parsing
 /// each file as `T` and keying the registry by `<namespace>:<relative path
 /// without .json>`.
