@@ -183,54 +183,65 @@ public final class PacsidePrefetcher implements Listener {
 
         // Only evaluate trajectory prefetching on actual CHUNK crossings
         if (fromChunkX != toChunkX || fromChunkZ != toChunkZ) {
-            Long lastPacked = lastPlayerChunk.put(uuid, chunkKey(toChunkX, toChunkZ));
-            if (lastPacked != null) {
-                int lastX = (int) (lastPacked >> 32);
-                int lastZ = (int) (lastPacked & 0xFFFFFFFFL);
-                int cdx = toChunkX - lastX;
-                int cdz = toChunkZ - lastZ;
+            lastPlayerChunk.put(uuid, chunkKey(toChunkX, toChunkZ));
 
-                if (cdx != 0 || cdz != 0) {
-                    World world = player.getWorld();
-                    int lookahead = getLookahead(player);
+            World world = player.getWorld();
+            int lookahead = getLookahead(player);
 
-                    // Bound cache size to prevent memory bloat over days of uptime
-                    if (prefetchedChunks.size() > 131072) {
-                        prefetchedChunks.clear();
-                    }
+            // Bound cache size to prevent memory bloat over days of uptime
+            if (prefetchedChunks.size() > 131072) {
+                prefetchedChunks.clear();
+            }
 
-                    // Normalize primary step direction (-1, 0, or 1)
-                    int stepX = Integer.compare(cdx, 0);
-                    int stepZ = Integer.compare(cdz, 0);
-
-                    // Perpendicular vector for 5-way lateral cone (-2, -1, 0, 1, 2)
-                    int perpX = -stepZ;
-                    int perpZ = stepX;
-
-                    for (int dist = 1; dist <= lookahead; dist++) {
-                        int baseX = toChunkX + stepX * dist;
-                        int baseZ = toChunkZ + stepZ * dist;
-
-                        for (int lateral = -2; lateral <= 2; lateral++) {
-                            int targetX = baseX + perpX * lateral;
-                            int targetZ = baseZ + perpZ * lateral;
-                            long key = chunkKey(targetX, targetZ);
-
-                            // Test-and-set: only queue if not already prefetched/in-flight
-                            if (prefetchedChunks.add(key)) {
-                                world.getChunkAtAsync(targetX, targetZ, true).thenAccept(chunk -> {
-                                    if (chunk != null) {
-                                        totalPrefetched.incrementAndGet();
-                                    }
-                                });
-                            }
+            // 1. Immediate 360-degree bubble around player (8 chunks radius)
+            for (int rz = -8; rz <= 8; rz++) {
+                for (int rx = -8; rx <= 8; rx++) {
+                    if (rx * rx + rz * rz <= 64) {
+                        int cx = toChunkX + rx;
+                        int cz = toChunkZ + rz;
+                        long key = chunkKey(cx, cz);
+                        if (prefetchedChunks.add(key)) {
+                            world.getChunkAtAsync(cx, cz, true).thenAccept(chunk -> {
+                                if (chunk != null) totalPrefetched.incrementAndGet();
+                            });
                         }
                     }
+                }
+            }
 
-                    if (isChunkPrefetched(toChunkX, toChunkZ)) {
-                        spawnVisualAura(player, 2);
+            // 2. Wide expanding directional trajectory fan (up to 48 chunks ahead)
+            org.bukkit.util.Vector dir = player.getLocation().getDirection();
+            double dx = dir.getX();
+            double dz = dir.getZ();
+            double len = Math.sqrt(dx * dx + dz * dz);
+            if (len > 0.01) {
+                dx /= len;
+                dz /= len;
+                double nx = -dz;
+                double nz = dx;
+
+                for (int dist = 1; dist <= lookahead; dist++) {
+                    double baseX = toChunkX + dx * dist;
+                    double baseZ = toChunkZ + dz * dist;
+                    // Lateral fan width expands with distance (up to +/- 8 chunks wide)
+                    int maxLat = Math.min(8, Math.max(2, (int) Math.round(dist * 0.2)));
+
+                    for (int lat = -maxLat; lat <= maxLat; lat++) {
+                        int targetX = (int) Math.round(baseX + nx * lat);
+                        int targetZ = (int) Math.round(baseZ + nz * lat);
+                        long key = chunkKey(targetX, targetZ);
+
+                        if (prefetchedChunks.add(key)) {
+                            world.getChunkAtAsync(targetX, targetZ, true).thenAccept(chunk -> {
+                                if (chunk != null) totalPrefetched.incrementAndGet();
+                            });
+                        }
                     }
                 }
+            }
+
+            if (isChunkPrefetched(toChunkX, toChunkZ)) {
+                spawnVisualAura(player, 2);
             }
         }
     }
