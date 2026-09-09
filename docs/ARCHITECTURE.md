@@ -134,9 +134,18 @@ structure API. There is no method anywhere in the API to attach a `StructureStar
 reference to a chunk. So a plugin-path native jigsaw could place the *blocks* of a village and
 still leave `/locate` blind, structure-gated mob spawning dead (outpost pillagers, fortress
 blazes, monument guardians), and structure-conditioned loot and advancements unarmed. Native
-structures therefore require the Vertex Engine module path, which sits below the API — and that
-path's ability to write `setStartForStructure`/`setReferenceForStructure` is itself unverified.
-Until it is, Java owns structures and `shouldGenerateStructures()` stays `true`.
+structures therefore require the Vertex Engine module path, which sits below the API. The target
+method exists: 26.2's `ChunkGenerator.tryGenerateStructure` calls
+`StructureManager.setStartForStructure(SectionPos, Structure, StructureStart, StructureAccess)`
+once `StructureStart.isValid()`, so registration is a real internal call rather than a hoped-for
+one. What is still unverified is whether the Vertex module path can reach it. Until that is
+answered, Java owns structures and `shouldGenerateStructures()` stays `true`.
+
+Placement's RNG derivations are checked against the game itself rather than against a
+transcription: `crates/oxide-structures/tests/data/FeatureSeedOracle.java` runs 26.2's own
+`WorldgenRandom` out of a Mojang-mapped jar, and the vectors it prints are what the Rust test
+diffs. That is the standard a `PARITY-CHECK` marker has to be cleared by — a test that recomputes
+the formula it is testing clears nothing.
 
 ## Validation harness
 
@@ -151,6 +160,10 @@ Only pass/fail results and code are committable.
 - Errors: `anyhow` at binary/boundary level, `thiserror` for library error enums. No `unwrap()` in
   library code paths that can be reached from generation.
 - Parallelism: `rayon`. Async is not used — generation is CPU-bound.
-- No `unsafe` outside `oxide-ffi`.
+- `unsafe` lives only in the two crates that own a C ABI: `oxide-ffi` and `pacside`. In both, a
+  `pub extern "C"` function that dereferences a caller's pointer is declared `unsafe fn` with a
+  `# Safety` section stating the contract — the compiler cannot check what Java passes, so the
+  signature has to carry it. `cargo clippy --workspace --all-targets` denies the alternative
+  (`clippy::not_unsafe_ptr_arg_deref`) and is expected to pass clean.
 - Every parity-critical algorithm carries unit tests with recorded expected values.
 - Heavy release builds run in GitHub Actions, not locally.

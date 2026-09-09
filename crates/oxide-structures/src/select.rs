@@ -8,9 +8,10 @@ use oxide_datapack::StructureSetEntry;
 /// subtracting weight until the draw lands inside one. Negative weights (invalid data) are
 /// treated as `0` rather than panicking.
 ///
-/// PARITY-CHECK: which RNG this draw actually consumes in vanilla (a fresh per-chunk RNG vs.
-/// the placement RNG continued) is not reconstructed here — this is a general-purpose weighted
-/// picker; wiring it to the right RNG is the caller's job.
+/// This is a general-purpose picker; wiring it to the right RNG is the caller's job. For
+/// structure-set selection that RNG is a fresh `WorldgenRandom(LegacyRandomSource(0))` seeded
+/// with `setLargeFeatureSeed(levelSeed, chunkX, chunkZ)`, not the placement RNG continued —
+/// confirmed from 26.2 bytecode; `starts::pick_structure` is the caller that does it.
 pub fn pick_weighted<'a>(
     rng: &mut impl RandomSource,
     entries: &'a [StructureSetEntry],

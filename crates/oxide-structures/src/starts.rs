@@ -94,10 +94,10 @@ impl ChunkArea {
 /// Vanilla's `WorldgenRandom.setLargeFeatureSeed` — the RNG a structure start is built from,
 /// distinct from `setLargeFeatureWithSalt` which `placement.rs` uses to pick the start *chunk*.
 ///
-/// PARITY-CHECK: transcribed from `LegacyRandomSource`/`WorldgenRandom` as remembered, not from
-/// a 26.2 decompile, and never run against real Java. Needs the same treatment
-/// `potential_structure_chunk` got (decompile + JDK 25 vector run) before any parity claim —
-/// until then every piece choice downstream of it is unverified.
+/// Verified against real Minecraft 26.2: `javap -c` on the game's own `WorldgenRandom` shows
+/// `setSeed(baseSeed)`, two `nextLong()` draws, then `setSeed(x * first ^ z * second ^ baseSeed)`,
+/// and `tests/feature_seed_parity.rs` diffs this against 72 vectors produced by running that
+/// class itself out of a Mojang-mapped 26.2 jar.
 pub fn large_feature_seed(world_seed: i64, chunk_x: i32, chunk_z: i32) -> LegacyRandom {
     let mut rng = LegacyRandom::new(world_seed);
     let a = rng.next_long();
@@ -193,10 +193,18 @@ pub fn candidate_starts_in_area(
 
 /// Which structure a set places at one of its start chunks.
 ///
-/// PARITY-CHECK: vanilla (`ChunkGenerator.tryGenerateStructure`) draws from the weighted list,
-/// and on a *failed* placement removes that entry and redraws from the remainder. With no biome
-/// gate here nothing can fail, so the retry loop is unreachable and unwritten — adding the gate
-/// means adding the loop, not just a filter.
+/// The RNG matches vanilla: `ChunkGenerator.createStructures` builds
+/// `new WorldgenRandom(new LegacyRandomSource(0L))` and seeds it with
+/// `setLargeFeatureSeed(levelSeed, chunk.x, chunk.z)` before drawing (confirmed from 26.2
+/// bytecode).
+///
+/// Two vanilla behaviours are missing here, both consequences of having no biome gate:
+/// vanilla copies the entry list and, when a pick *fails* to place, removes that entry, re-sums
+/// the remaining weights and redraws until the list empties — with nothing able to fail, that
+/// loop is unreachable, so adding the biome gate means adding the loop, not just a filter. And a
+/// single-entry set skips the RNG entirely (vanilla takes `list.get(0)` without constructing the
+/// random at all); this always draws, which picks the same entry but is worth knowing before
+/// anything downstream starts sharing this RNG.
 fn pick_structure(
     set: &StructureSet,
     world_seed: i64,

@@ -1,40 +1,51 @@
-use oxide_core::{LegacyRandom, RandomSource};
+//! Cross-checks `large_feature_seed` against real Minecraft 26.2 output.
+//!
+//! Vectors come from `tests/data/FeatureSeedOracle.java`, which runs the game's own
+//! `WorldgenRandom.setLargeFeatureSeed` out of a Mojang-mapped 26.2 jar — not a transcription of
+//! it — so a mistake in how the derivation was remembered shows up here as a mismatch. See that
+//! file's header to regenerate.
+//!
+//! The bytecode it exercises (`javap -c net.minecraft.world.level.levelgen.WorldgenRandom`):
+//! `setSeed(baseSeed)`, two `nextLong()` draws, then
+//! `setSeed((long) x * first ^ (long) z * second ^ baseSeed)`.
+//!
+//! This replaces a test that recomputed the same formula inline and compared it to the function —
+//! which could only fail if someone edited one copy and not the other, and would have passed
+//! just as happily on a wrong formula.
+
+use oxide_core::RandomSource;
 use oxide_structures::starts::large_feature_seed;
 
-/// Verifies that `large_feature_seed` matches Minecraft Java's `WorldgenRandom.setLargeFeatureSeed`.
-///
-/// In Java:
-/// ```java
-/// Random r = new Random(worldSeed);
-/// long a = r.nextLong();
-/// long b = r.nextLong();
-/// long featureSeed = (long)chunkX * a ^ (long)chunkZ * b ^ worldSeed;
-/// Random featureRandom = new Random(featureSeed);
-/// ```
 #[test]
-fn test_large_feature_seed_parity() {
-    let test_cases = [
-        // (world_seed, chunk_x, chunk_z)
-        (0i64, 0, 0),
-        (42i64, 10, -5),
-        (1234567890123456789i64, -100, 250),
-        (-987654321098765432i64, 5555, -9999),
-        (4489057056054590644i64, 625, 625), // Server's world seed
-    ];
+fn matches_java_for_every_vector() {
+    let text = include_str!("data/feature_seed_vectors.txt");
+    let mut checked = 0usize;
 
-    for &(seed, cx, cz) in &test_cases {
-        let mut rust_rng = large_feature_seed(seed, cx, cz);
-
-        // Compute step-by-step with raw LegacyRandom to verify formula
-        let mut base_rng = LegacyRandom::new(seed);
-        let a = base_rng.next_long();
-        let b = base_rng.next_long();
-        let expected_seed = (cx as i64).wrapping_mul(a) ^ (cz as i64).wrapping_mul(b) ^ seed;
-        let mut expected_rng = LegacyRandom::new(expected_seed);
-
-        // Verify first 10 random integers match exactly
-        for _ in 0..10 {
-            assert_eq!(rust_rng.next_int(), expected_rng.next_int());
+    for (line_number, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
         }
+        let mut fields = line.split_whitespace();
+        let seed: i64 = fields.next().unwrap().parse().unwrap();
+        let chunk_x: i32 = fields.next().unwrap().parse().unwrap();
+        let chunk_z: i32 = fields.next().unwrap().parse().unwrap();
+
+        let mut rng = large_feature_seed(seed, chunk_x, chunk_z);
+        let mut draws = 0usize;
+        for expected in fields {
+            let expected: i32 = expected.parse().unwrap();
+            assert_eq!(
+                rng.next_int(),
+                expected,
+                "line {}: seed {seed} chunk ({chunk_x}, {chunk_z}), draw {draws}",
+                line_number + 1
+            );
+            draws += 1;
+        }
+        assert_eq!(draws, 8, "line {}: expected 8 draws", line_number + 1);
+        checked += 1;
     }
+
+    assert_eq!(checked, 72, "vector file is not the one this test was written for");
 }
