@@ -1,5 +1,7 @@
 [workspace]
 resolver = "2"
+# `crates/*` already globs in every crate directory, including crates/oxide-render (native
+# chunk meshing / frustum culling over Panama FFI) -- no literal member entry needed for it.
 members = ["crates/*"]
 
 [workspace.package]
@@ -24,6 +26,7 @@ serde_json = "1"
 fastnbt = "2"
 fastanvil = "0.31"
 rayon = "1"
+bytemuck = { version = "1", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }

@@ -579,24 +579,6 @@ impl<'a> SurfaceSystem<'a> {
         Some(((y - self.min_y) / 16) as usize)
     }
 
-    fn get_block(
-        &self,
-        chunk: &ChunkData,
-        local_x: usize,
-        y: i32,
-        local_z: usize,
-    ) -> Option<BlockState> {
-        let index = self.section_of(y)?;
-        let section = chunk.sections.get(index)?;
-        let local_y = (y - self.min_y).rem_euclid(16) as usize;
-        Some(
-            section
-                .block_states
-                .get(local_index(local_x, local_y, local_z))
-                .clone(),
-        )
-    }
-
     /// What the block at `(local_x, y, local_z)` is, as a three-way tag read off the section's
     /// precomputed palette classification. This is the allocation-free replacement for
     /// `get_block` in the column scan: one `u32` array read plus index compares, against a
