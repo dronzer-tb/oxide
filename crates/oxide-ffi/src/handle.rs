@@ -358,11 +358,22 @@ impl OxideGenerator {
 
     /// Biome at one block position, without generating a chunk -- climate sample plus a search
     /// of the biome tree. This is what backs a Bukkit `BiomeProvider`, which is queried per
-    /// position and outside chunk generation entirely.
+    /// position and outside chunk generation entirely. Reuses thread-local chunk caches.
     pub fn biome_at(&self, x: i32, y: i32, z: i32) -> Result<u16> {
         let idx = match self.biome_tree.as_ref() {
             Some(tree) => {
-                let sample = oxide_biome::ClimateSample::sample(&self.router, x, y, z);
+                let chunk = ChunkPos::new(x.div_euclid(16), z.div_euclid(16));
+                let sample = BASE_HEIGHT_CACHES.with(|slot| {
+                    let mut slot = slot.borrow_mut();
+                    let reusable = slot
+                        .as_ref()
+                        .is_some_and(|(id, pos, _)| *id == self.id && *pos == chunk);
+                    if !reusable {
+                        *slot = Some((self.id, chunk, self.router.chunk_caches(chunk.x, chunk.z)));
+                    }
+                    let (_, _, caches) = slot.as_ref().expect("just populated");
+                    oxide_biome::ClimateSample::sample_in_chunk(&self.router, caches, x, y, z)
+                });
                 match tree.nearest(sample) {
                     Some(biome) => self
                         .biome_indices

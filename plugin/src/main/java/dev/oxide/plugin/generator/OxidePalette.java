@@ -24,30 +24,48 @@ import java.util.List;
 final class OxidePalette {
 
     private final OxideNative.Handle handle;
-    private final List<BlockData> resolved = new ArrayList<>();
+    private volatile BlockData[] resolved = new BlockData[512];
+    private int count = 0;
 
     OxidePalette(OxideNative.Handle handle) {
         this.handle = handle;
     }
 
     /**
-     * {@link BlockData} for a palette index, resolving any entries interned since the last
-     * call. Falls back to air for a state this server has no block for -- a datapack-only
-     * block, say -- rather than failing the whole chunk.
+     * Lock-free read for interned BlockData states.
      */
-    synchronized BlockData get(int index) {
-        if (index >= resolved.size()) {
-            grow();
+    BlockData get(int index) {
+        BlockData[] arr = this.resolved;
+        if (index >= 0 && index < arr.length) {
+            BlockData data = arr[index];
+            if (data != null) {
+                return data;
+            }
         }
-        if (index < 0 || index >= resolved.size()) {
-            return Material.AIR.createBlockData();
+        return getSlow(index);
+    }
+
+    private synchronized BlockData getSlow(int index) {
+        grow();
+        BlockData[] arr = this.resolved;
+        if (index >= 0 && index < arr.length) {
+            BlockData data = arr[index];
+            if (data != null) {
+                return data;
+            }
         }
-        return resolved.get(index);
+        return Material.AIR.createBlockData();
     }
 
     private void grow() {
-        int size = handle.blockPaletteSize();
-        for (int i = resolved.size(); i < size; i++) {
+        int targetSize = handle.blockPaletteSize();
+        if (targetSize <= count && count < resolved.length) {
+            return;
+        }
+        int newCap = Math.max(targetSize + 128, resolved.length * 2);
+        BlockData[] next = new BlockData[newCap];
+        System.arraycopy(resolved, 0, next, 0, count);
+        for (int i = count; i < targetSize; i++) {
             String state = handle.blockPaletteName(i);
             BlockData data;
             try {
@@ -55,7 +73,9 @@ final class OxidePalette {
             } catch (IllegalArgumentException e) {
                 data = Material.AIR.createBlockData();
             }
-            resolved.add(data);
+            next[i] = data;
         }
+        this.count = targetSize;
+        this.resolved = next;
     }
 }
