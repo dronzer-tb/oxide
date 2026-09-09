@@ -183,6 +183,14 @@ impl<'a> SurfaceSystem<'a> {
 
     /// Rewrites `chunk`'s `default_block` positions per the rule tree. Positions holding fluid
     /// or air are never rewritten -- vanilla only offers the rule tree a stone position.
+    ///
+    /// The column scan reads *palette indices*, never `BlockState` values. A chunk is ~98k
+    /// positions and the old scan cloned a `BlockState` -- a `ResourceLocation` plus a
+    /// `BTreeMap<String, String>` -- at every one of them, then answered "is this air?" by
+    /// comparing strings. `perf` put ~15% of total generation time in `malloc`/`free`,
+    /// `BTreeMap::clone_subtree`, `BTreeMap::eq` and `drop_glue<BlockState>` because of it.
+    /// Classifying each section's palette once up front (see [`SectionClass`]) turns the inner
+    /// loop into `u32` compares against three precomputed indices, with zero allocation.
     pub fn apply(
         &mut self,
         chunk: &mut ChunkData,
@@ -192,8 +200,21 @@ impl<'a> SurfaceSystem<'a> {
         self.caches = Some(caches);
         self.ocean_floor = chunk.heightmaps.get(&HeightmapType::OceanFloorWg).cloned();
         let rule = &self.settings.surface_rule;
-        let default_block = &self.settings.default_block;
         let top_y = self.min_y + self.height - 1;
+
+        // One pass over each section's palette (a handful of entries), rather than one
+        // classification per block position.
+        let mut classes: Vec<SectionClass> = chunk
+            .sections
+            .iter()
+            .map(|section| {
+                SectionClass::of(
+                    section.block_states.palette(),
+                    &self.settings.default_block,
+                    &self.settings.default_fluid,
+                )
+            })
+            .collect();
 
         for local_z in 0..16usize {
             let z = pos.min_block_z() + local_z as i32;
@@ -208,16 +229,17 @@ impl<'a> SurfaceSystem<'a> {
                 let mut run_bottom = i32::MAX;
 
                 for y in (self.min_y..=top_y).rev() {
-                    let state = self.get_block(chunk, local_x, y, local_z);
-                    let Some(state) = state else { continue };
+                    let Some(kind) = self.classify(chunk, &classes, local_x, y, local_z) else {
+                        continue;
+                    };
 
-                    if is_air(&state) {
+                    if kind == BlockKind::Air {
                         stone_depth_above = 0;
                         water_height = i32::MIN;
                         run_bottom = i32::MAX;
                         continue;
                     }
-                    if state == self.settings.default_fluid {
+                    if kind == BlockKind::DefaultFluid {
                         // PARITY-CHECK: vanilla records the position *above* the fluid column.
                         water_height = y + 1;
                         stone_depth_above = 0;
@@ -226,12 +248,12 @@ impl<'a> SurfaceSystem<'a> {
                     }
 
                     if run_bottom > y {
-                        run_bottom = self.run_bottom(chunk, local_x, y, local_z);
+                        run_bottom = self.run_bottom(chunk, &classes, local_x, y, local_z);
                     }
                     stone_depth_above += 1;
                     let stone_depth_below = y - run_bottom + 1;
 
-                    if &state != default_block {
+                    if kind != BlockKind::DefaultBlock {
                         continue;
                     }
 
@@ -246,6 +268,20 @@ impl<'a> SurfaceSystem<'a> {
                     };
                     if let Some(result) = self.eval_rule(rule, &cursor, &column) {
                         self.set_block(chunk, local_x, y, local_z, result);
+                        // A write can intern a palette entry this section did not have, which
+                        // would leave its cached classification short an index. Re-derive just
+                        // that section's -- once per actual write, not per position scanned.
+                        if let Some(si) = self.section_of(y) {
+                            if let (Some(section), Some(slot)) =
+                                (chunk.sections.get(si), classes.get_mut(si))
+                            {
+                                *slot = SectionClass::of(
+                                    section.block_states.palette(),
+                                    &self.settings.default_block,
+                                    &self.settings.default_fluid,
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -288,11 +324,18 @@ impl<'a> SurfaceSystem<'a> {
     }
 
     /// Lowest y of the contiguous non-air, non-fluid run containing `y`.
-    fn run_bottom(&self, chunk: &ChunkData, local_x: usize, y: i32, local_z: usize) -> i32 {
+    fn run_bottom(
+        &self,
+        chunk: &ChunkData,
+        classes: &[SectionClass],
+        local_x: usize,
+        y: i32,
+        local_z: usize,
+    ) -> i32 {
         let mut bottom = y;
         while bottom > self.min_y {
-            match self.get_block(chunk, local_x, bottom - 1, local_z) {
-                Some(state) if !is_air(&state) && state != self.settings.default_fluid => {
+            match self.classify(chunk, classes, local_x, bottom - 1, local_z) {
+                Some(kind) if kind != BlockKind::Air && kind != BlockKind::DefaultFluid => {
                     bottom -= 1;
                 }
                 _ => break,
@@ -554,6 +597,27 @@ impl<'a> SurfaceSystem<'a> {
         )
     }
 
+    /// What the block at `(local_x, y, local_z)` is, as a three-way tag read off the section's
+    /// precomputed palette classification. This is the allocation-free replacement for
+    /// `get_block` in the column scan: one `u32` array read plus index compares, against a
+    /// `BlockState` clone (heap `BTreeMap`) plus string comparison before.
+    fn classify(
+        &self,
+        chunk: &ChunkData,
+        classes: &[SectionClass],
+        local_x: usize,
+        y: i32,
+        local_z: usize,
+    ) -> Option<BlockKind> {
+        let index = self.section_of(y)?;
+        let section = chunk.sections.get(index)?;
+        let class = classes.get(index)?;
+        let local_y = (y - self.min_y).rem_euclid(16) as usize;
+        let palette_index =
+            section.block_states.indices()[local_index(local_x, local_y, local_z)];
+        Some(class.kind(palette_index))
+    }
+
     fn set_block(
         &self,
         chunk: &mut ChunkData,
@@ -594,10 +658,68 @@ impl<'a> SurfaceSystem<'a> {
     }
 }
 
-/// Compares by name without building a `ResourceLocation`: this runs once per block the column
-/// scan walks -- ~98k times per chunk -- so allocating two strings to answer it was pure waste.
+/// Compares by name without building a `ResourceLocation`: this runs once per *palette entry*
+/// now (a handful per section), rather than once per block position.
 fn is_air(state: &BlockState) -> bool {
     state.name.path() == "air" && state.name.namespace() == "minecraft"
+}
+
+/// The only three block distinctions the surface column scan makes. Everything the rule tree
+/// needs to know about a position reduces to one of these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlockKind {
+    Air,
+    DefaultFluid,
+    DefaultBlock,
+    /// Anything else -- already-surfaced ground, ore, deepslate. Counts toward stone depth but
+    /// is never offered to the rule tree, matching the old `&state != default_block` guard.
+    Other,
+}
+
+/// A section's palette, pre-classified into [`BlockKind`] per palette index.
+///
+/// The scan asks "is this position air / the default fluid / the default block?" ~98k times per
+/// chunk. Answering that from the `BlockState` itself meant cloning a heap `BTreeMap` and
+/// comparing strings every time. A section's palette holds only a handful of distinct states,
+/// so classifying it once and then indexing this table makes each of those 98k questions a
+/// bounds-checked byte read.
+///
+/// Behaviour is identical by construction: the classification uses the same [`is_air`] helper
+/// and the same `==` on `BlockState` the inline checks used, just evaluated per palette entry
+/// instead of per position.
+struct SectionClass {
+    kinds: Vec<BlockKind>,
+}
+
+impl SectionClass {
+    fn of(palette: &[BlockState], default_block: &BlockState, default_fluid: &BlockState) -> Self {
+        Self {
+            kinds: palette
+                .iter()
+                .map(|state| {
+                    if is_air(state) {
+                        BlockKind::Air
+                    } else if state == default_fluid {
+                        BlockKind::DefaultFluid
+                    } else if state == default_block {
+                        BlockKind::DefaultBlock
+                    } else {
+                        BlockKind::Other
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    /// A palette index this table has no entry for can only come from a write made after it was
+    /// built; `Other` is the conservative answer (counts as ground, never re-offered to the rule
+    /// tree), which is what a freshly written surface block should be anyway.
+    fn kind(&self, palette_index: u32) -> BlockKind {
+        self.kinds
+            .get(palette_index as usize)
+            .copied()
+            .unwrap_or(BlockKind::Other)
+    }
 }
 
 /// Vanilla `Mth.map`: linear remap of `value` from one range onto another, unclamped.
