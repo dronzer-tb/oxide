@@ -205,7 +205,7 @@ pub(crate) struct RunCtx<'a> {
 
 /// Registers held on the stack up to this many instructions. Every program a real datapack
 /// produces is far below it; a larger one spills to a heap allocation rather than failing.
-const INLINE_REGISTERS: usize = 64;
+const INLINE_REGISTERS: usize = 16;
 
 impl Program {
     pub(crate) fn run(&self, ctx: FunctionContext, cx: &RunCtx) -> f64 {
