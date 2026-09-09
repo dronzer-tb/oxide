@@ -15,15 +15,28 @@ fn get_cache() -> &'static PacsideCache {
     GLOBAL_CACHE.get_or_init(|| PacsideCache::new(32768)) // Default 32k chunks (~1 GB)
 }
 
-/// Initializes or resizes the global Pacside packet cache with `capacity_chunks`.
+/// Initializes or resizes the global Pacside packet cache to `capacity_chunks`.
+///
+/// `OnceLock::set` only lands before anything else touches the cache, and any `put`/`get`/stats
+/// call creates it at the default capacity -- so setting alone silently did nothing whenever the
+/// Java side configured the cache after first use, pinning it at ~1 GB. Resizing the live cache
+/// is what makes the documented behaviour true.
 #[no_mangle]
 pub extern "C" fn pacside_init(capacity_chunks: usize) {
-    let _ = GLOBAL_CACHE.set(PacsideCache::new(capacity_chunks));
+    match GLOBAL_CACHE.get() {
+        Some(cache) => cache.resize(capacity_chunks),
+        None => {
+            let _ = GLOBAL_CACHE.set(PacsideCache::new(capacity_chunks));
+        }
+    }
 }
 
 /// Stores a pre-compressed chunk packet payload in the native off-heap cache.
+///
+/// # Safety
+/// `data_ptr` must point to `data_len` initialised bytes that stay valid for the call.
 #[no_mangle]
-pub extern "C" fn pacside_put(
+pub unsafe extern "C" fn pacside_put(
     world_id: i64,
     chunk_x: i32,
     chunk_z: i32,
@@ -42,8 +55,11 @@ pub extern "C" fn pacside_put(
 
 /// Retrieves a cached chunk packet payload into `out_ptr`.
 /// Returns the length written on success, 0 on cache miss, or negative on buffer overflow.
+///
+/// # Safety
+/// `out_ptr` must point to `max_len` writable bytes.
 #[no_mangle]
-pub extern "C" fn pacside_get(
+pub unsafe extern "C" fn pacside_get(
     world_id: i64,
     chunk_x: i32,
     chunk_z: i32,
@@ -83,8 +99,11 @@ pub extern "C" fn pacside_clear() {
 }
 
 /// Writes out cache statistics into the provided pointers.
+///
+/// # Safety
+/// Every non-null pointer must be writable for `u64`. Null pointers are skipped.
 #[no_mangle]
-pub extern "C" fn pacside_stats(
+pub unsafe extern "C" fn pacside_stats(
     out_cached_chunks: *mut u64,
     out_bytes: *mut u64,
     out_hits: *mut u64,

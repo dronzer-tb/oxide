@@ -3,7 +3,7 @@
 //! Avoids re-encoding, re-palettizing, and re-compressing chunks on every player dispatch.
 //! Uses sharded concurrency to eliminate lock contention under multi-threaded Folia region workloads.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use ahash::RandomState;
 use parking_lot::RwLock;
 
@@ -38,7 +38,9 @@ pub struct Shard {
 
 pub struct PacsideCache {
     shards: Vec<RwLock<Shard>>,
-    max_capacity_per_shard: usize,
+    /// Read on every `put`, so it is atomic rather than fixed: `pacside_init` is documented to
+    /// resize a live cache, and the cache is created lazily by whichever call comes first.
+    max_capacity_per_shard: AtomicUsize,
     hits: AtomicU64,
     misses: AtomicU64,
     evictions: AtomicU64,
@@ -47,7 +49,7 @@ pub struct PacsideCache {
 
 impl PacsideCache {
     pub fn new(total_capacity: usize) -> Self {
-        let max_capacity_per_shard = (total_capacity / SHARDS).max(64);
+        let max_capacity_per_shard = AtomicUsize::new(Self::per_shard(total_capacity));
         let mut shards = Vec::with_capacity(SHARDS);
         for _ in 0..SHARDS {
             shards.push(RwLock::new(Shard {
@@ -65,6 +67,17 @@ impl PacsideCache {
         }
     }
 
+    fn per_shard(total_capacity: usize) -> usize {
+        (total_capacity / SHARDS).max(64)
+    }
+
+    /// Changes the capacity of a cache that is already in use. Entries over the new limit are
+    /// not dropped here — `put` evicts down to it as each shard is next written.
+    pub fn resize(&self, total_capacity: usize) {
+        self.max_capacity_per_shard
+            .store(Self::per_shard(total_capacity), Ordering::Relaxed);
+    }
+
     #[inline(always)]
     fn shard_index(&self, key: &ChunkKey) -> usize {
         let hash = (key.world_id as u64)
@@ -78,7 +91,7 @@ impl PacsideCache {
         let mut shard = self.shards[shard_idx].write();
 
         let len = data.len() as u64;
-        if shard.map.len() >= self.max_capacity_per_shard {
+        if shard.map.len() >= self.max_capacity_per_shard.load(Ordering::Relaxed) {
             // Evict arbitrary entry
             if let Some(evicted_key) = shard.map.keys().next().copied() {
                 if let Some(old) = shard.map.remove(&evicted_key) {
