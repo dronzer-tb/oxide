@@ -18,7 +18,7 @@ mod surface;
 
 pub use carver::{apply_carvers, CarverWorld};
 pub use feature_placer::{place_feature, PlacementContext};
-pub use fill::{base_height, fill_chunk};
+pub use fill::{base_height, base_height_in, fill_chunk};
 pub use surface::{BiomeTemperatures, SurfaceSystem};
 
 use oxide_biome::BiomeSearchTree;

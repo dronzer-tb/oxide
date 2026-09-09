@@ -156,12 +156,30 @@ pub fn base_height(
     router: &NoiseRouterEvaluator,
     heightmap_type: HeightmapType,
 ) -> i32 {
+    let caches = router.chunk_caches(x.div_euclid(16), z.div_euclid(16));
+    base_height_in(x, z, settings, router, &caches, heightmap_type)
+}
+
+/// [`base_height`] against caches the caller already holds.
+///
+/// Building a `ChunkCaches` means evaluating every `interpolated` node over the chunk's corner
+/// grid, so a caller asking about many columns of one chunk -- which is exactly what Bukkit does
+/// during structure placement, 256 columns at a time -- must build it once and pass it here.
+/// `caches` must belong to `(x, z)`'s own chunk: cell lookups are relative to its origin and
+/// clamp to the grid, so caches from another chunk do not fail, they quietly return the wrong
+/// column's terrain.
+pub fn base_height_in(
+    x: i32,
+    z: i32,
+    settings: &NoiseGeneratorSettings,
+    router: &NoiseRouterEvaluator,
+    caches: &oxide_noise::ChunkCaches,
+    heightmap_type: HeightmapType,
+) -> i32 {
     let min_y = settings.noise.min_y;
     let height = settings.noise.height;
     let cell_height = (settings.noise.size_vertical * 4).max(1);
     let top_y = min_y + height;
-
-    let caches = router.chunk_caches(x >> 4 << 4, z >> 4 << 4);
 
     let is_solid = |density: f64| density > 0.0;
     let is_fluid = |y: i32| y <= settings.sea_level;
@@ -180,11 +198,11 @@ pub fn base_height(
 
     let mut coarse_y = top_y - cell_height;
     while coarse_y >= min_y {
-        let density = router.sample_in_chunk(&caches, RouterSlot::FinalDensity, x, coarse_y, z);
+        let density = router.sample_in_chunk(caches, RouterSlot::FinalDensity, x, coarse_y, z);
         if stops(coarse_y, density) {
             let scan_top = (coarse_y + cell_height).min(top_y);
             for y in (coarse_y..scan_top).rev() {
-                let d = router.sample_in_chunk(&caches, RouterSlot::FinalDensity, x, y, z);
+                let d = router.sample_in_chunk(caches, RouterSlot::FinalDensity, x, y, z);
                 if stops(y, d) {
                     return y + 1;
                 }

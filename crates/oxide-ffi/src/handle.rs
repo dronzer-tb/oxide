@@ -3,10 +3,12 @@
 //! pointer to it across the FFI boundary — see `NoiseRouterEvaluator`'s doc comment in
 //! `oxide-noise` for why that matters.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
 
 use anyhow::{anyhow, Context, Result};
@@ -18,7 +20,17 @@ use oxide_core::{ChunkPos, ResourceLocation};
 use oxide_datapack::{load_datapack, BiomeSource, NoiseGeneratorSettings};
 use oxide_noise::NoiseRouterEvaluator;
 
+/// Distinguishes generators so a cached `ChunkCaches` cannot be reused across worlds.
+static NEXT_GENERATOR_ID: AtomicU64 = AtomicU64::new(0);
+
+thread_local! {
+    /// The last chunk this thread asked `base_height` about, and its caches.
+    static BASE_HEIGHT_CACHES: RefCell<Option<(u64, ChunkPos, oxide_noise::ChunkCaches)>> =
+        const { RefCell::new(None) };
+}
+
 pub struct OxideGenerator {
+    id: u64,
     settings: NoiseGeneratorSettings,
     default_block_name: CString,
     default_fluid_name: CString,
@@ -155,6 +167,7 @@ impl OxideGenerator {
             .map_err(|e| anyhow!("default_fluid name contains a NUL byte: {e}"))?;
 
         Ok(Self {
+            id: NEXT_GENERATOR_ID.fetch_add(1, Ordering::Relaxed),
             settings,
             default_block_name,
             default_fluid_name,
@@ -318,8 +331,29 @@ impl OxideGenerator {
     /// `ChunkGenerator.getBaseHeight` override answers with. Without it CraftBukkit falls back
     /// to the *vanilla* noise generator, so structures get placed at vanilla's heights on top
     /// of this generator's terrain.
+    /// Answers one column, reusing the chunk's density caches across the whole chunk.
+    ///
+    /// Bukkit asks this per column during structure placement -- 256 calls for one chunk -- and
+    /// each `ChunkCaches` costs a full corner-grid evaluation, so building one per call made a
+    /// chunk's worth of queries cost ~26x generating the chunk outright. The memo holds the last
+    /// chunk asked about, per thread: Folia's region threads each walk their own region, so one
+    /// slot per thread turns 256 builds into 1 without any sharing between threads. `ChunkCaches`
+    /// is `!Sync` (its grids are `RefCell`s), which is also why this cannot be a field.
     pub fn base_height(&self, x: i32, z: i32, ty: HeightmapType) -> i32 {
-        oxide_chunkgen::base_height(x, z, &self.settings, &self.router, ty)
+        let chunk = ChunkPos::new(x.div_euclid(16), z.div_euclid(16));
+        BASE_HEIGHT_CACHES.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            // Keyed by generator too: two worlds open at once have different routers, and a
+            // cache built from one would silently answer with the other's terrain.
+            let reusable = slot
+                .as_ref()
+                .is_some_and(|(id, pos, _)| *id == self.id && *pos == chunk);
+            if !reusable {
+                *slot = Some((self.id, chunk, self.router.chunk_caches(chunk.x, chunk.z)));
+            }
+            let (_, _, caches) = slot.as_ref().expect("just populated");
+            oxide_chunkgen::base_height_in(x, z, &self.settings, &self.router, caches, ty)
+        })
     }
 
     /// Biome at one block position, without generating a chunk -- climate sample plus a search
