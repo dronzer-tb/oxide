@@ -1,497 +1,463 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Oxide Explained Simply — The Dumb Guide to Minecraft Worldgen Performance</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <style>
-    :root {
-      --bg-base: #060708;
-      --bg-panel: #0d0f11;
-      --bg-surface: #14171a;
-      --bg-surface-elevated: #1b1f24;
-      --border-subtle: rgba(255, 255, 255, 0.06);
-      --border-medium: rgba(255, 255, 255, 0.12);
-      --border-bright: rgba(255, 255, 255, 0.2);
-      --text-primary: #f7f8f8;
-      --text-secondary: #c5cbd3;
-      --text-muted: #7b8390;
-      --accent-rust: #f26522;
-      --accent-rust-glow: rgba(242, 101, 34, 0.22);
-      --accent-violet: #6366f1;
-      --accent-violet-glow: rgba(99, 102, 241, 0.22);
-      --accent-cyan: #06b6d4;
-      --accent-emerald: #10b981;
-      --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
-      --font-mono: 'JetBrains Mono', monospace;
-    }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Explain It Simply — Oxide</title>
+<meta name="description" content="What Oxide, Pacside and Vertex Engine actually do, explained without jargon.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/core.css?v=202609092130">
+<style>
+  .doc { display: grid; grid-template-columns: 218px 1fr; gap: 62px; align-items: start; }
+  .toc { position: sticky; top: 92px; }
+  .toc h6 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .11em;
+    color: var(--tx-4); font-weight: 510; margin-bottom: 14px;
+  }
+  .toc a {
+    display: block; font-size: 13.5px; color: var(--tx-3);
+    padding: 6px 0 6px 13px; border-left: 1px solid var(--edge-soft);
+    transition: color .2s, border-color .2s;
+  }
+  .toc a:hover, .toc a.on { color: var(--tx); border-left-color: var(--rust); }
 
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
+  .chunk { margin-bottom: 74px; scroll-margin-top: 92px; }
+  .chunk h2 { font-size: clamp(25px, 3vw, 33px); margin-bottom: 20px; }
+  .chunk h3 {
+    font-size: 18px; font-weight: 590; letter-spacing: -.02em;
+    margin: 36px 0 12px; color: var(--tx);
+  }
+  .chunk p { font-size: 16px; line-height: 1.72; color: var(--tx-2); margin-bottom: 16px; letter-spacing: -.008em; }
+  .chunk p.q { color: var(--tx-3); }
+  .chunk strong { color: var(--tx); font-weight: 510; }
 
-    body {
-      background-color: var(--bg-base);
-      color: var(--text-primary);
-      font-family: var(--font-sans);
-      line-height: 1.65;
-      overflow-x: hidden;
-      -webkit-font-smoothing: antialiased;
-    }
+  .note {
+    border-left: 2px solid var(--rust);
+    background: rgba(255,107,61,.045);
+    padding: 16px 20px; border-radius: 0 9px 9px 0;
+    margin: 22px 0;
+  }
+  .note p { margin: 0; font-size: 15px; color: var(--tx-2); }
+  .note .lbl {
+    font-family: var(--mono); font-size: 10.5px; text-transform: uppercase;
+    letter-spacing: .11em; color: var(--rust-lit); display: block; margin-bottom: 7px;
+  }
 
-    .glow-top {
-      position: absolute;
-      top: 0;
-      left: 50%;
-      transform: translateX(-50%);
-      width: 1000px;
-      height: 480px;
-      background: radial-gradient(ellipse at 50% 0%, var(--accent-rust-glow), transparent 70%);
-      pointer-events: none;
-      z-index: 0;
-    }
+  .defs { display: grid; gap: 12px; margin: 26px 0; }
+  .def {
+    border: 1px solid var(--edge-soft); border-radius: 11px;
+    background: rgba(255,255,255,.018); padding: 18px 22px;
+  }
+  .def dt {
+    font-family: var(--mono); font-size: 13px; color: var(--rust-lit);
+    margin-bottom: 7px; letter-spacing: -.01em;
+  }
+  .def dd { font-size: 14.8px; line-height: 1.65; color: var(--tx-3); }
 
-    nav {
-      position: sticky;
-      top: 0;
-      width: 100%;
-      background: rgba(6, 7, 8, 0.85);
-      backdrop-filter: blur(16px);
-      border-bottom: 1px solid var(--border-subtle);
-      z-index: 100;
-      padding: 16px 24px;
-    }
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 26px 0; }
+  .compare > div {
+    border: 1px solid var(--edge-soft); border-radius: 11px; padding: 20px 22px;
+    background: rgba(255,255,255,.018);
+  }
+  .compare h4 {
+    font-size: 12.5px; text-transform: uppercase; letter-spacing: .09em;
+    font-weight: 510; margin-bottom: 12px;
+  }
+  .compare .bad h4 { color: var(--tx-4); }
+  .compare .good h4 { color: var(--rust-lit); }
+  .compare p { font-size: 14.5px; margin: 0; color: var(--tx-3); line-height: 1.62; }
 
-    .nav-container {
-      max-width: 1000px;
-      margin: 0 auto;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
+  .analogy {
+    border: 1px solid var(--edge); border-radius: 13px;
+    padding: 26px 28px; margin: 28px 0;
+    background: radial-gradient(500px 220px at 0% 0%, rgba(110,141,212,.07), transparent 70%), rgba(255,255,255,.02);
+  }
+  .analogy .lbl {
+    font-family: var(--mono); font-size: 10.5px; text-transform: uppercase;
+    letter-spacing: .11em; color: var(--iron-lit); display: block; margin-bottom: 11px;
+  }
+  .analogy p { font-size: 15.5px; color: var(--tx-2); margin: 0; line-height: 1.7; }
 
-    .logo {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      font-weight: 700;
-      font-size: 1.25rem;
-      letter-spacing: -0.5px;
-      color: var(--text-primary);
-      text-decoration: none;
-    }
-
-    .logo-badge {
-      font-size: 0.75rem;
-      font-weight: 600;
-      font-family: var(--font-mono);
-      background: rgba(242, 101, 34, 0.15);
-      color: var(--accent-rust);
-      border: 1px solid rgba(242, 101, 34, 0.3);
-      padding: 2px 8px;
-      border-radius: 999px;
-    }
-
-    .nav-links {
-      display: flex;
-      align-items: center;
-      gap: 20px;
-      list-style: none;
-    }
-
-    .nav-links a {
-      color: var(--text-secondary);
-      text-decoration: none;
-      font-size: 0.9rem;
-      font-weight: 500;
-      transition: color 0.2s;
-    }
-
-    .nav-links a:hover {
-      color: var(--text-primary);
-    }
-
-    .btn-secondary {
-      background: var(--bg-surface);
-      color: var(--text-primary);
-      border: 1px solid var(--border-medium);
-      padding: 8px 16px;
-      border-radius: 8px;
-      font-size: 0.85rem;
-      font-weight: 600;
-      text-decoration: none;
-    }
-
-    .container {
-      max-width: 900px;
-      margin: 0 auto;
-      padding: 60px 24px 100px;
-      position: relative;
-      z-index: 1;
-    }
-
-    .hero-dumb {
-      text-align: center;
-      margin-bottom: 60px;
-    }
-
-    .hero-tag {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 4px 14px;
-      border-radius: 999px;
-      background: var(--bg-panel);
-      border: 1px solid var(--border-medium);
-      font-size: 0.8rem;
-      font-family: var(--font-mono);
-      color: var(--accent-rust);
-      margin-bottom: 20px;
-    }
-
-    .hero-dumb h1 {
-      font-size: 3.4rem;
-      font-weight: 700;
-      letter-spacing: -1.5px;
-      line-height: 1.15;
-      margin-bottom: 16px;
-      background: linear-gradient(180deg, #ffffff 30%, #9ca3af 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-    }
-
-    .hero-dumb p {
-      font-size: 1.2rem;
-      color: var(--text-secondary);
-      max-width: 700px;
-      margin: 0 auto;
-    }
-
-    /* Dumb Explanation Cards */
-    .card-block {
-      background: var(--bg-panel);
-      border: 1px solid var(--border-subtle);
-      border-radius: 14px;
-      padding: 32px;
-      margin-bottom: 32px;
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
-      transition: border-color 0.2s;
-    }
-
-    .card-block:hover {
-      border-color: var(--border-medium);
-    }
-
-    .card-header-line {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      margin-bottom: 16px;
-    }
-
-    .num-pill {
-      font-family: var(--font-mono);
-      font-size: 0.85rem;
-      font-weight: 700;
-      color: var(--accent-rust);
-      background: rgba(242, 101, 34, 0.12);
-      border: 1px solid rgba(242, 101, 34, 0.3);
-      padding: 2px 10px;
-      border-radius: 6px;
-    }
-
-    .card-block h2 {
-      font-size: 1.6rem;
-      font-weight: 700;
-      letter-spacing: -0.5px;
-    }
-
-    .card-block p {
-      color: var(--text-secondary);
-      font-size: 1.05rem;
-      margin-bottom: 16px;
-    }
-
-    .comparison-box {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 16px;
-      margin-top: 20px;
-    }
-
-    .box-item {
-      background: #060708;
-      border: 1px solid var(--border-medium);
-      border-radius: 8px;
-      padding: 18px;
-    }
-
-    .box-item.good {
-      border-color: rgba(16, 185, 129, 0.3);
-      background: rgba(16, 185, 129, 0.03);
-    }
-
-    .box-item.bad {
-      border-color: rgba(239, 68, 68, 0.3);
-      background: rgba(239, 68, 68, 0.03);
-    }
-
-    .box-title {
-      font-weight: 600;
-      font-size: 0.95rem;
-      margin-bottom: 8px;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-
-    .box-item.good .box-title { color: var(--accent-emerald); }
-    .box-item.bad .box-title { color: #f87171; }
-
-    .box-item p {
-      font-size: 0.9rem;
-      color: var(--text-muted);
-      margin: 0;
-    }
-
-    .highlight-pill {
-      font-family: var(--font-mono);
-      font-size: 0.85rem;
-      background: var(--bg-surface);
-      border: 1px solid var(--border-medium);
-      padding: 2px 6px;
-      border-radius: 4px;
-      color: var(--accent-rust);
-    }
-
-    .analogy-callout {
-      background: rgba(99, 102, 241, 0.06);
-      border-left: 3px solid var(--accent-violet);
-      padding: 16px 20px;
-      border-radius: 0 8px 8px 0;
-      margin: 20px 0 10px;
-    }
-
-    .analogy-callout strong {
-      color: #a5b4fc;
-      display: block;
-      font-size: 0.9rem;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      margin-bottom: 4px;
-    }
-
-    .analogy-callout p {
-      margin: 0;
-      font-size: 0.95rem;
-      color: var(--text-secondary);
-    }
-
-    footer {
-      border-top: 1px solid var(--border-subtle);
-      padding: 50px 0 30px;
-      text-align: center;
-      color: var(--text-muted);
-      font-size: 0.9rem;
-    }
-
-    footer a {
-      color: var(--text-secondary);
-      text-decoration: none;
-    }
-
-    footer a:hover {
-      color: var(--text-primary);
-    }
-
-    @media (max-width: 768px) {
-      .hero-dumb h1 { font-size: 2.5rem; }
-      .comparison-box { grid-template-columns: 1fr; }
-    }
-  </style>
+  @media (max-width: 900px) {
+    .doc { grid-template-columns: 1fr; gap: 0; }
+    .toc { display: none; }
+    .compare { grid-template-columns: 1fr; }
+  }
+</style>
 </head>
 <body>
-  <div class="glow-top"></div>
+<div class="grain"></div>
 
-  <nav>
-    <div class="nav-container">
-      <a href="/" class="logo">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#f26522" stroke-width="2">
-          <polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5" fill="rgba(242,101,34,0.1)"/>
-          <circle cx="12" cy="12" r="3" fill="#f26522"/>
-        </svg>
-        Oxide
-        <span class="logo-badge">Dumb Guide</span>
-      </a>
-      <ul class="nav-links">
-        <li><a href="/">Home</a></li>
-        <li><a href="/#benchmarks">Benchmarks</a></li>
-        <li><a href="https://github.com/dronzer-tb/oxide" class="btn-secondary" target="_blank">GitHub</a></li>
-      </ul>
+<nav>
+  <div class="wrap">
+    <a href="/" class="brand"><span class="brand-mark"></span> Oxide</a>
+    <div class="nav-links">
+      <a href="/#projects">Projects</a>
+      <a href="/#benchmarks">Benchmarks</a>
+      <a href="/#video">Video</a>
+      <a href="/dumb" style="color:var(--tx)">Explain It Simply</a>
     </div>
-  </nav>
+    <a href="https://github.com/dronzer-tb/oxide" class="nav-cta">GitHub</a>
+    <button class="burger" aria-label="Menu">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+    </button>
+  </div>
+</nav>
 
-  <div class="container">
-    <div class="hero-dumb">
-      <div class="hero-tag">PLAIN ENGLISH EXPLANATION</div>
-      <h1>The Simple Guide to Minecraft Performance</h1>
-      <p>No math degree required. Here is exactly what CPS, DPS, MSPT, FFI, Vanilla, and Oxide actually mean and how they work together.</p>
-    </div>
+<section style="padding-top:150px; padding-bottom:52px">
+  <div class="wrap">
+    <span class="tag">No jargon</span>
+    <h2 style="font-size:clamp(34px,5vw,54px); max-width:16ch">Explain it simply.</h2>
+    <p class="sub" style="max-width:62ch; margin-top:8px">
+      Three projects, a pile of acronyms, and a lot of numbers. Here's what all of it
+      actually means — starting from what a chunk even is.
+    </p>
+  </div>
+</section>
 
-    <!-- 1. What is a Chunk -->
-    <div class="card-block">
-      <div class="card-header-line">
-        <span class="num-pill">01</span>
-        <h2>What is a Chunk?</h2>
-      </div>
-      <p>
-        Minecraft cuts the world into vertical columns called <strong>Chunks</strong>.
-      </p>
-      <p>
-        Each chunk is <strong>16 blocks wide, 16 blocks long, and 384 blocks tall</strong> (from Y = -64 to Y = 320).
-        That means building just <em>one chunk</em> requires calculating and placing <strong>98,304 individual blocks</strong> (stone, dirt, caves, water, air, ores).
-      </p>
-    </div>
+<section style="padding-top:0">
+<div class="wrap doc">
 
-    <!-- 2. What is CPS -->
-    <div class="card-block">
-      <div class="card-header-line">
-        <span class="num-pill">02</span>
-        <h2>What is CPS? (Chunks Per Second)</h2>
-      </div>
-      <p>
-        <strong>CPS</strong> measures how many full 16x384x16 chunk columns the server can generate from scratch in <strong>one single second</strong>.
-      </p>
-      <div class="comparison-box">
-        <div class="box-item bad">
-          <div class="box-title">Vanilla Minecraft (~20 CPS)</div>
-          <p>Takes <strong>5 to 6 hours</strong> to pre-generate a 10,000 x 10,000 map. Players running or flying cause massive server lag spikes.</p>
-        </div>
-        <div class="box-item good">
-          <div class="box-title">Oxide Native (~800+ CPS)</div>
-          <p>Generates the entire 10,000 x 10,000 world in <strong>under 9 minutes</strong>. Elytra flight causes zero lag.</p>
-        </div>
-      </div>
-    </div>
+  <aside class="toc">
+    <h6>Contents</h6>
+    <a href="#chunk">What is a chunk</a>
+    <a href="#cps">CPS, DPS and MSPT</a>
+    <a href="#vanilla">Why vanilla is slow</a>
+    <a href="#oxide">What Oxide does</a>
+    <a href="#pacside">What Pacside does</a>
+    <a href="#vertex">What Vertex Engine does</a>
+    <a href="#ffi">What the FFI is</a>
+    <a href="#rust">Why Rust</a>
+    <a href="#matters">Why any of this matters</a>
+  </aside>
 
-    <!-- 3. What is DPS -->
-    <div class="card-block">
-      <div class="card-header-line">
-        <span class="num-pill">03</span>
-        <h2>What is DPS? (Density Evaluations Per Second)</h2>
-      </div>
+  <main>
+
+    <div class="chunk" id="chunk">
+      <h2>What is a chunk?</h2>
       <p>
-        Minecraft does not guess where mountains and caves are. It evaluates complex 3D mathematical noise curves called <strong>Density Functions</strong>.
+        Minecraft doesn't build the world all at once. It builds it in <strong>chunks</strong> —
+        vertical columns 16 blocks wide, 16 blocks deep, and 384 blocks tall, running from
+        bedrock at Y −64 up to build limit at Y 320.
       </p>
-      <p>
-        <strong>DPS</strong> is the number of 3D math equations the engine solves per second to figure out if a position in the world should be solid rock, open cave, or water.
+      <p class="q">
+        That's <strong>98,304 blocks</strong> in a single chunk. Every one of them has to be
+        decided: stone or air, water or lava, grass or sand. Then caves get carved through it,
+        ore gets injected, trees get planted, and structures get stamped in.
       </p>
-      <div class="analogy-callout">
-        <strong>The Connection Between CPS and DPS:</strong>
+      <div class="analogy">
+        <span class="lbl">Think of it like</span>
         <p>
-          To generate <strong>800 CPS</strong>, Oxide solves over <strong>1,000,000 density math equations per second</strong> and writes over <strong>78,000,000 blocks per second</strong> into server memory.
+          A chunk is one tile of an enormous mosaic. The world is infinite, so the game only makes
+          tiles when someone walks toward them. Every tile needs ~98,000 individual decisions,
+          and the game has to finish before you arrive — or you fall through the floor.
         </p>
       </div>
     </div>
 
-    <!-- 4. What is MSPT -->
-    <div class="card-block">
-      <div class="card-header-line">
-        <span class="num-pill">04</span>
-        <h2>What is MSPT? (Milliseconds Per Tick)</h2>
+    <div class="chunk" id="cps">
+      <h2>CPS, DPS and MSPT</h2>
+      <p>Three numbers get thrown around constantly. Here's what each one measures.</p>
+
+      <div class="defs">
+        <dl class="def">
+          <dt>CPS — Chunks Per Second</dt>
+          <dd>
+            How many chunks finish generating every second. Vanilla manages around 22.
+            Oxide holds 810. This is the headline number: higher means the world builds
+            faster and you stop hitting invisible walls.
+          </dd>
+        </dl>
+        <dl class="def">
+          <dt>DPS — Data Per Second</dt>
+          <dd>
+            How much finished chunk data actually leaves the server and reaches players.
+            Generating fast doesn't help if the data can't get out — this is the number
+            Pacside exists to raise.
+          </dd>
+        </dl>
+        <dl class="def">
+          <dt>MSPT — Milliseconds Per Tick</dt>
+          <dd>
+            Minecraft updates the world 20 times per second, so each update ("tick") has a
+            <strong>50 ms</strong> budget. MSPT is how much of that budget got used.
+            Go over 50 and the server drops below 20 TPS — that's lag. Oxide's generation
+            costs 0.83 ms, leaving 98% of the budget for everything else.
+          </dd>
+        </dl>
       </div>
+
+      <div class="note">
+        <span class="lbl">How they connect</span>
+        <p>
+          High CPS with high MSPT is worthless — you generated fast but froze the server doing it.
+          The real goal is <strong>high CPS at low MSPT</strong>: build the world quickly while
+          barely touching the tick budget. That's the entire design target.
+        </p>
+      </div>
+    </div>
+
+    <div class="chunk" id="vanilla">
+      <h2>Why vanilla is slow</h2>
       <p>
-        A Minecraft server runs at <strong>20 ticks per second (TPS)</strong>. That means the server has exactly <strong>50 milliseconds (ms)</strong> to compute everything in the world before the next tick starts.
+        Minecraft's server runs on Java. Java allocates objects on a shared heap and a background
+        process — the <strong>garbage collector</strong> — periodically sweeps up whatever's no
+        longer used.
       </p>
       <p>
-        <strong>MSPT</strong> is how many milliseconds the server actually spent doing work during that 50ms window.
+        Worldgen creates an enormous amount of short-lived garbage. Every block placement,
+        every noise sample, every biome lookup allocates. Generate a few thousand chunks and
+        the collector has to stop the world to clean up. The server tick stalls. CPS collapses.
       </p>
-      <div class="comparison-box">
-        <div class="box-item bad">
-          <div class="box-title">MSPT &gt; 50 ms (LAG)</div>
-          <p>The server cannot finish work in time. TPS drops below 20, mobs stutter, block breaks rubberband.</p>
+      <div class="compare">
+        <div class="bad">
+          <h4>Vanilla</h4>
+          <p>
+            Millions of small objects per second. Garbage collector pauses at unpredictable
+            moments. Worldgen competes with mob AI, redstone and player packets for the same
+            50 ms budget.
+          </p>
         </div>
-        <div class="box-item good">
-          <div class="box-title">MSPT &lt; 2 ms (LIGHTNING FAST)</div>
-          <p>Oxide finishes generating terrain in <strong>0.83 ms</strong>, leaving 98% of the CPU free for players, redstone, and entities.</p>
+        <div class="good">
+          <h4>Oxide</h4>
+          <p>
+            No allocations in the hot path. Terrain is computed into pre-sized native buffers
+            and written once. Nothing to collect, so nothing to stall on.
+          </p>
         </div>
       </div>
     </div>
 
-    <!-- 5. What Vanilla is Doing vs Oxide -->
-    <div class="card-block">
-      <div class="card-header-line">
-        <span class="num-pill">05</span>
-        <h2>What Vanilla Java is Doing (Why it's Slow)</h2>
-      </div>
+    <div class="chunk" id="oxide">
+      <h2>What Oxide does</h2>
       <p>
-        Official Minecraft is written in Java. When vanilla generates terrain:
+        Oxide is a full reimplementation of Minecraft's world generator in <strong>Rust</strong> —
+        a language with no garbage collector, direct memory control, and access to your CPU's
+        vector instructions.
       </p>
-      <ul style="margin-left: 20px; color: var(--text-secondary); margin-bottom: 16px;">
-        <li>It creates millions of temporary Java objects (<span class="highlight-pill">Vector3f</span>, <span class="highlight-pill">BlockPos</span>, <span class="highlight-pill">Holder</span>) every second.</li>
-        <li>The Java <strong>Garbage Collector (GC)</strong> has to constantly pause the server to clean up these discarded objects.</li>
-        <li>It evaluates complex noise functions through slow, virtual Java method calls one block at a time.</li>
-      </ul>
+      <p>
+        It does everything the vanilla generator does: evaluates the noise graph that shapes
+        terrain, resolves biomes from six climate axes, applies surface rules that decide
+        grass versus sand versus terracotta, floods aquifers, carves caves, injects ore veins,
+        picks structure locations and assembles Jigsaw buildings piece by piece.
+      </p>
+
+      <h3>The important part: it's compatible</h3>
+      <p>
+        Oxide isn't a different world generator that happens to be fast. It reads your existing
+        datapacks — Terralith, Incendium, Yggdrasil, all 150 of them — and reproduces vanilla's
+        exact math, down to matching Java's random number generator bit for bit. Same seed,
+        same world, 37 times faster.
+      </p>
+
+      <div class="analogy">
+        <span class="lbl">Think of it like</span>
+        <p>
+          Same recipe, same ingredients, same result — but the kitchen was rebuilt around
+          the cook instead of the other way around.
+        </p>
+      </div>
     </div>
 
-    <!-- 6. What Oxide is Doing -->
-    <div class="card-block">
-      <div class="card-header-line">
-        <span class="num-pill">06</span>
-        <h2>What Oxide is Doing (Why it's Fast)</h2>
-      </div>
+    <div class="chunk" id="pacside">
+      <h2>What Pacside does</h2>
       <p>
-        Oxide takes over the heavy math and runs it in <strong>Rust</strong>:
+        Once Oxide made generation fast, a second bottleneck showed up immediately:
+        <strong>getting the chunks to the player</strong>.
       </p>
-      <ul style="margin-left: 20px; color: var(--text-secondary); margin-bottom: 16px;">
-        <li><strong>Zero Garbage Collection:</strong> Rust allocates flat memory buffers and frees them immediately. Zero GC pauses.</li>
-        <li><strong>SIMD Vectorization:</strong> Solves math for 8 to 16 blocks simultaneously using direct CPU vector instructions.</li>
-        <li><strong>Cell Skipping:</strong> If a 4x8x4 box is deep underground, Oxide instantly marks all 128 blocks solid rock without wasting time calculating each block.</li>
-      </ul>
+      <p>
+        Normally the server reads a chunk off disk, converts it to a network packet, compresses
+        it, and sends it — every single time anyone needs it. Flying on an Elytra at 35 m/s,
+        you cross a chunk boundary roughly three times per second in every direction at once.
+        The server can't keep up, so you rubber-band, or the world just stops loading.
+      </p>
+
+      <h3>Two ideas</h3>
+      <p>
+        <strong>Off-heap caching.</strong> Pacside compresses each chunk packet once and keeps it
+        in native memory — outside the Java heap, so the garbage collector never touches it.
+        32,000 chunks live in about a gigabyte of RAM, sharded across 32 lanes so threads
+        never wait on each other. A repeat request is a memory read, not a disk read.
+      </p>
+      <p>
+        <strong>Predictive prefetch.</strong> Instead of waiting for the client to ask, Pacside
+        watches your velocity vector and projects a cone 16 chunks ahead along your heading,
+        fanning out five ways so turns are covered too. By the time you arrive, the terrain
+        is already compressed and waiting.
+      </p>
+
+      <div class="note">
+        <span class="lbl">Staying smooth</span>
+        <p>
+          Prefetching thousands of chunks at once would flood the scheduler and tank TPS.
+          Pacside paces itself with a token bucket — 24 chunks per tick, about 480 per second —
+          which keeps region tick time under 3 ms and TPS pinned at 20.0.
+        </p>
+      </div>
+
+      <div class="analogy">
+        <span class="lbl">Think of it like</span>
+        <p>
+          A road crew that watches which way your car is pointed and finishes the asphalt
+          just before you get there — instead of a crew that starts digging when you honk.
+        </p>
+      </div>
     </div>
 
-    <!-- 7. What is FFI -->
-    <div class="card-block">
-      <div class="card-header-line">
-        <span class="num-pill">07</span>
-        <h2>What is Panama FFI?</h2>
-      </div>
+    <div class="chunk" id="vertex">
+      <h2>What Vertex Engine does</h2>
       <p>
-        <strong>FFI (Foreign Function Interface)</strong> is a bridge that lets Java talk directly to native Rust machine code in the same process.
+        Oxide as a normal plugin has to be polite. Bukkit — the plugin API — gives it a
+        sandboxed wrapper object to fill in, then copies that into the real chunk afterward.
+        Every block goes through a conversion layer.
       </p>
       <p>
-        Java 22+ introduced the <strong>Foreign Function and Memory API (Project Panama)</strong>. Instead of slow legacy JNI wrappers, Panama passes raw memory addresses directly to Rust with near-zero overhead.
+        <strong>Vertex Engine</strong> is a fork of the server that removes the wall. It exposes
+        a small interface where a native module can be handed a raw pointer to the actual memory
+        a chunk section lives in. Oxide writes terrain straight into the server's own data
+        structures — no wrapper objects, no BlockState conversion, no copy.
+      </p>
+      <div class="compare">
+        <div class="bad">
+          <h4>Plugin mode — 810 CPS</h4>
+          <p>
+            Rust generates into a buffer, Panama copies it across, Bukkit wraps it, the server
+            copies it again into the real chunk. Two copies and a conversion per chunk.
+          </p>
+        </div>
+        <div class="good">
+          <h4>Vertex mode — 1,550 CPS</h4>
+          <p>
+            Rust receives the address of the real chunk section and writes into it directly.
+            Zero copies. Multiple sections written concurrently across cores.
+          </p>
+        </div>
+      </div>
+      <p class="q">
+        It's also generic — Vertex is a module system, not an Oxide-specific hack. Any native
+        engine can plug into the same interface.
       </p>
     </div>
 
-    <!-- Pacside Chunk Streamer -->
-    <div class="card-block">
-      <div class="card-header-line">
-        <span class="num-pill">09</span>
-        <h2>What is Pacside? (Zero-Latency Chunk Streaming)</h2>
+    <div class="chunk" id="ffi">
+      <h2>What the FFI is</h2>
+      <p>
+        <strong>FFI</strong> stands for Foreign Function Interface — the bridge that lets code
+        written in one language call code written in another. Here it's Java calling Rust.
+      </p>
+      <p>
+        The old way (JNI) was slow and awkward: every call crossed a wrapper layer, and data
+        had to be copied into a shape the other side understood. Java 22 introduced
+        <strong>Panama</strong>, which lets Java call native functions almost as cheaply as its
+        own methods, and share memory regions directly instead of copying them.
+      </p>
+      <div class="analogy">
+        <span class="lbl">Think of it like</span>
+        <p>
+          JNI was mailing photocopies back and forth. Panama is both people working on the
+          same sheet of paper on the same desk.
+        </p>
       </div>
+      <p class="q">
+        This is what makes the whole architecture viable. Without cheap calls and shared memory,
+        the cost of crossing between Java and Rust would eat the speedup Rust provides.
+      </p>
+    </div>
+
+    <div class="chunk" id="rust">
+      <h2>Why Rust specifically</h2>
       <p>
-        Generating chunks fast is only half the battle. When a player flies with an Elytra at 30 m/s, the server has to serialize and send chunks across the network before the player hits the unloaded void.
+        Three reasons, in order of how much they matter here.
+      </p>
+      <h3>1. No garbage collector</h3>
+      <p>
+        Rust frees memory the moment it goes out of scope — decided at compile time, not by a
+        background process. There are no collection pauses because there is no collector.
+        For a workload that allocates constantly, this alone is most of the win.
+      </p>
+      <h3>2. Real control over memory layout</h3>
+      <p>
+        Rust lets you decide exactly how data sits in memory. Pack chunk data so a whole section
+        fits in CPU cache and the processor stops waiting on RAM — which is where most of the
+        remaining time goes.
+      </p>
+      <h3>3. Safety without a runtime</h3>
+      <p>
+        C could do the first two, but a mistake in C corrupts memory silently and crashes
+        the server hours later. Rust's compiler rejects those mistakes before the code runs,
+        with no runtime checks to pay for.
+      </p>
+    </div>
+
+    <div class="chunk" id="matters">
+      <h2>Why any of this matters</h2>
+      <p>
+        On a normal server, exploring new territory is where everything falls apart. Chunks
+        arrive late, TPS drops, players rubber-band, and the admin's answer is usually
+        "pre-generate the world overnight and hope nobody goes further."
       </p>
       <p>
-        <strong>Pacside</strong> is Oxide's predictive chunk streaming engine:
+        With this stack, generating a 10,000 × 10,000 block world takes <strong>nine minutes</strong>
+        instead of five and a half hours. New terrain appears as fast as you can fly toward it.
+        The server barely notices — 0.83 ms out of a 50 ms budget.
       </p>
-      <ul style="margin-left: 20px; color: var(--text-secondary); margin-bottom: 16px;">
-        <li><strong>Predictive Trajectory Prefetching:</strong> Tracks player velocity vectors and pre-loads a 60-degree forward cone of chunks 5–7 chunks ahead of flight.</li>
-        <li><strong>Off-Heap Native Packet Cache:</strong> Caches pre-compressed network payloads in native RAM (32,768 chunks), eliminating repeated Java Netty Zlib compression passes.</li>
-      </ul>
+      <p class="q">
+        And none of it changes the world you get. Same seed, same datapacks, same terrain,
+        same structures. Just without the wait.
+      </p>
+
+      <div class="row" style="margin-top:34px">
+        <a href="/#benchmarks" class="btn btn-primary">See the benchmarks</a>
+        <a href="/#play" class="btn btn-ghost">Play on Season 5</a>
+      </div>
+    </div>
+
+  </main>
+</div>
+</section>
+
+<footer>
+  <div class="wrap foot">
+    <div>
+      <a href="/" class="brand" style="margin-bottom:16px"><span class="brand-mark"></span> Oxide</a>
+      <p>
+        Native world generation, chunk streaming and server internals for Minecraft.
+        Built and maintained by x00f8. Licensed GPL-3.0.
+      </p>
+    </div>
+    <div class="foot-links">
+      <div class="foot-col">
+        <h5>Projects</h5>
+        <a href="https://github.com/dronzer-tb/oxide">Oxide</a>
+        <a href="https://github.com/dronzer-tb/oxide/tree/main/crates/pacside">Pacside</a>
+        <a href="https://github.com/dronzer-tb/vertex-engine">Vertex Engine</a>
+      </div>
+      <div class="foot-col">
+        <h5>Learn</h5>
+        <a href="/dumb">Explain it simply</a>
+        <a href="/map">Live map</a>
+        <a href="/#benchmarks">Benchmarks</a>
+      </div>
     </div>
   </div>
+</footer>
 
-  <footer>
-    <div class="container">
-      <p>Oxide & Vertex Engine • Created by x00f8 (Dronzer Studios) • Licensed under GPL-3.0</p>
-    </div>
-  </footer>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
+<script src="/assets/motion.js?v=202609092130"></script>
+<script>
+  // TOC scroll spy
+  const spies = [...document.querySelectorAll('.chunk')];
+  const links = [...document.querySelectorAll('.toc a')];
+  const io = new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      if (!e.isIntersecting) return;
+      links.forEach(l => l.classList.toggle('on', l.getAttribute('href') === '#' + e.target.id));
+    });
+  }, { rootMargin: '-25% 0px -65% 0px' });
+  spies.forEach(s => io.observe(s));
+</script>
 </body>
 </html>
