@@ -249,7 +249,7 @@ public final class OxideChunkGenerator extends ChunkGenerator {
 
     @Override
     public boolean shouldGenerateStructures() {
-        return true;
+        return false;
     }
 
     @Override
