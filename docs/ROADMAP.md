@@ -146,9 +146,12 @@ work without a JDK warning (and, on a future JDK, without being blocked outright
   declaring a wave done.
 - Structure placement parity is a hard v1 requirement. `random_spread` placement-chunk selection
   is verified bit-exact (2026-08-22) and frequency reduction and exclusion zones have since landed
-  with their own Java-generated vectors. Still unverified or unbuilt: `concentric_rings` (skips
-  vanilla's biome search), and jigsaw piece layout, which is a stub — no rotation, no connector
-  matching, no processors. Cross-chunk start bookkeeping (`starts.rs`) is built and tested for
+  with their own Java-generated vectors. Jigsaw piece layout is now ported from the decompiled
+  `JigsawPlacement` and assembles real villages, outposts and ancient cities from vanilla pools;
+  its primitives are bit-exact against the game, but no generated village has been diffed against
+  the real one, so seed-for-seed parity is claimed nowhere. Still unverified or unbuilt:
+  `concentric_rings` (skips vanilla's biome search), structure processors, `list`/`feature` pool
+  elements. Cross-chunk start bookkeeping (`starts.rs`) is built and tested for
   order-independence, but it is plumbing: it is exactly as faithful as the assembler behind it.
 - Native structures cannot ship on the Bukkit plugin path regardless of how good the assembler
   gets: the API has no way to register a structure start, so `/locate` and structure-gated

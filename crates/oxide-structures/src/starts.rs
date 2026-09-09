@@ -397,6 +397,8 @@ mod tests {
                 }
             }
             structure.add_piece(crate::jigsaw::AssembledPiece {
+                template: ctx.structure_id.clone(),
+                rotation: crate::rotation::Rotation::None,
                 origin,
                 bbox: crate::jigsaw::BoundingBox::new(
                     origin.x - self.half_width,

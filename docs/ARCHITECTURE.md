@@ -123,8 +123,22 @@ still agree, and it is why the start cache is a pure memoisation — eviction an
 under a race are allowed to cost time but cannot change output. `StructureStartCache` therefore
 assembles *outside* its lock rather than serialising region threads behind one mutex.
 
-**Assembly** (`jigsaw.rs`) is a stub, not a port — no rotation, no connector matching, no
-processors, no voxel-shape collision. Nothing calls it.
+**Assembly** (`jigsaw.rs`) is a port of `JigsawPlacement`: four rotations, `canAttach` connector
+matching, child-origin offsets, free-space collision, `terrain_matching` projection, the village
+expansion hack, and priority-ordered expansion. It assembles 60-100-piece plains villages,
+pillager outposts and ancient cities from Mojang's own pools and `.nbt` templates. Its primitives
+(`StructureTemplate.transform`, `Util.shuffle`, `Rotation.getShuffled`/`getRandom`) are bit-exact
+against the game; the piece *layout* is not yet diffed against a real generated village, so it is
+correct by construction rather than verified. Processors, `list`/`feature` pool elements, pool
+aliases and dimension padding are not ported.
+
+The free-space region deserves a note, because it is the one place the port deliberately does not
+mirror vanilla's data structure. Vanilla carries a `VoxelShape` and asks
+`Shapes.joinIsNotEmpty(free, box.deflate(0.25), ONLY_SECOND)`. That shape is only ever built as
+one box with boxes subtracted from it, so the question it answers is exactly "inside the limit and
+touching none of the taken boxes" — which `FreeRegion` answers directly with integer box tests, no
+voxel grid. The `deflate(0.25)` is what lets two pieces share a face while rejecting a one-block
+overlap, and that is what an inclusive integer intersection already says.
 
 **Registration is not available on the Bukkit path at all.** Verified against
 `dev.folia:folia-api:26.2.build.5-beta`: `ChunkGenerator` exposes only `generateNoise` /

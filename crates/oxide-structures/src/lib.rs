@@ -14,29 +14,46 @@
 //! 3. **Start bookkeeping (`starts.rs`) — built and tested, order-independent by construction.**
 //!    Which starts can reach a chunk, memoised across chunks and threads, and stamping them.
 //!    Correct as *plumbing*; it is only as faithful as the assembler handed to it.
-//! 4. **Jigsaw assembly (`jigsaw.rs`) — a stub, not a port.** No rotation (the jigsaw block's
-//!    `orientation` is never read), no connector `name`/`target` matching, no child-origin
-//!    offset, no processors, no `VoxelShape` collision, `Single` pool elements only. It produces
-//!    a plausible pile of pieces, not vanilla's pile. Nothing outside this crate calls it, and
-//!    nothing should until those are built.
+//! 4. **Jigsaw assembly (`jigsaw.rs`) — ported, exercised on real data, not yet parity-checked.**
+//!    A transcription of 26.2's `JigsawPlacement.addPieces`/`Placer.tryPlacingChildren`:
+//!    rotations, `canAttach` connector matching, child-origin offsets, the free-space region,
+//!    `terrain_matching` projection, the expansion hack, and priority-ordered expansion. It
+//!    builds 60-100-piece plains villages out of Mojang's own pools and `.nbt` templates
+//!    (`tests/village_assembly.rs`). Its primitives — `transform`, `Util.shuffle`,
+//!    `Rotation.getShuffled`/`getRandom` — are bit-exact against the game
+//!    (`tests/jigsaw_math_parity.rs`). What is *not* established is that a given seed produces
+//!    vanilla's village: that needs a generated world to diff against, and until then the piece
+//!    layout is "correct by construction", not "verified".
+//!
+//! Still not ported, each a divergence rather than a shortcut: structure processors, `list` and
+//! `feature` pool elements, pool aliases, the `start_jigsaw_name` anchor, dimension padding, and
+//! liquid settings. Block-state rotation covers the standard directional properties; a rail's
+//! `shape` and a few similar per-block cases come out unturned.
 
+mod datapack;
 mod frequency;
 pub mod jigsaw;
 mod placement;
 pub mod pool;
+pub mod rotation;
 mod select;
 mod set;
 pub mod starts;
 pub mod template;
 
+pub use datapack::JigsawData;
 pub use frequency::{passes_frequency, should_generate};
-pub use jigsaw::{assemble_jigsaw, AssembledPiece, AssembledStructure, BoundingBox};
+pub use jigsaw::{
+    assemble_jigsaw, AssembledPiece, AssembledStructure, BoundingBox, FreeRegion, JigsawSettings,
+    SurfaceHeights, TemplateSource,
+};
 pub use placement::{is_random_spread_chunk, potential_structure_chunk};
-pub use pool::{PoolElement, PoolElementEntry, TemplatePool};
+pub use pool::{PoolElement, PoolElementEntry, Projection, TemplatePool};
 pub use select::pick_weighted;
 pub use starts::{
     candidate_starts_in_area, ChunkArea, StartAssembler, StartContext, StructureStart,
     StructureStartCache,
 };
 pub use set::{is_structure_chunk, is_structure_chunk_supported, StructureSetLookup};
+pub use rotation::{Direction, Mirror, Rotation};
 pub use template::{JigsawConnector, JigsawJoint, PlacedTemplateBlock, StructureTemplate};
