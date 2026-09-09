@@ -27,6 +27,12 @@ thread_local! {
     /// The last chunk this thread asked `base_height` about, and its caches.
     static BASE_HEIGHT_CACHES: RefCell<Option<(u64, ChunkPos, oxide_noise::ChunkCaches)>> =
         const { RefCell::new(None) };
+    /// Separate slot for `biome_at`. It shares `base_height`'s shape but not its access
+    /// pattern: Bukkit interleaves the two (structure placement asks for heights while the
+    /// biome pass walks quarts), and a single slot made each call evict the other's chunk, so
+    /// every query rebuilt a full corner grid. Two slots make both hit.
+    static BIOME_CACHES: RefCell<Option<(u64, ChunkPos, oxide_noise::ChunkCaches)>> =
+        const { RefCell::new(None) };
 }
 
 pub struct OxideGenerator {
@@ -368,7 +374,7 @@ impl OxideGenerator {
         let idx = match self.biome_tree.as_ref() {
             Some(tree) => {
                 let chunk = ChunkPos::new(x.div_euclid(16), z.div_euclid(16));
-                let sample = BASE_HEIGHT_CACHES.with(|slot| {
+                let sample = BIOME_CACHES.with(|slot| {
                     let mut slot = slot.borrow_mut();
                     let reusable = slot
                         .as_ref()
