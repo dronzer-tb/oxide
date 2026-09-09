@@ -36,6 +36,8 @@ pub struct OxideGenerator {
     /// index to a BlockData exactly once and cache it.
     block_palette: RwLock<Palette>,
     biome_palette: RwLock<Palette>,
+    biome_indices: HashMap<ResourceLocation, u16>,
+    default_biome_index: u16,
 }
 
 /// Append-only string interner behind the u16 indices crossing the FFI boundary.
@@ -138,9 +140,14 @@ impl OxideGenerator {
         // biomes it can return *before* any chunk exists, and this is a superset of what the
         // biome tree can actually emit -- which is what that declaration wants.
         let mut biome_palette = Palette::default();
+        let mut biome_indices = HashMap::new();
         for (id, _) in datapack.biomes.iter() {
-            biome_palette.intern(id.to_string());
+            if let Some(idx) = biome_palette.intern(id.to_string()) {
+                biome_indices.insert(id.clone(), idx);
+            }
         }
+        let plains_loc = ResourceLocation::minecraft("plains");
+        let default_biome_index = biome_indices.get(&plains_loc).copied().unwrap_or(0);
 
         let default_block_name = CString::new(settings.default_block.name.to_string())
             .map_err(|e| anyhow!("default_block name contains a NUL byte: {e}"))?;
@@ -158,6 +165,8 @@ impl OxideGenerator {
             seed,
             block_palette: RwLock::new(Palette::default()),
             biome_palette: RwLock::new(biome_palette),
+            biome_indices,
+            default_biome_index,
         })
     }
 
@@ -317,18 +326,22 @@ impl OxideGenerator {
     /// of the biome tree. This is what backs a Bukkit `BiomeProvider`, which is queried per
     /// position and outside chunk generation entirely.
     pub fn biome_at(&self, x: i32, y: i32, z: i32) -> Result<u16> {
-        let name = match self.biome_tree.as_ref() {
+        let idx = match self.biome_tree.as_ref() {
             Some(tree) => {
                 let sample = oxide_biome::ClimateSample::sample(&self.router, x, y, z);
                 match tree.nearest(sample) {
-                    Some(biome) => biome.to_string(),
-                    None => "minecraft:plains".to_string(),
+                    Some(biome) => self
+                        .biome_indices
+                        .get(biome)
+                        .copied()
+                        .unwrap_or(self.default_biome_index),
+                    None => self.default_biome_index,
                 }
             }
             // Unresolvable Preset biome source -- same fallback fill_chunk uses.
-            None => "minecraft:plains".to_string(),
+            None => self.default_biome_index,
         };
-        self.intern(&self.biome_palette, name)
+        Ok(idx)
     }
 
     fn intern(&self, palette: &RwLock<Palette>, name: String) -> Result<u16> {
