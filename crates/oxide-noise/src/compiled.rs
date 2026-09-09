@@ -184,6 +184,14 @@ pub(crate) struct Program {
     ops: Vec<Op>,
 }
 
+impl Program {
+    /// Number of instructions, i.e. how many `f64` registers [`Program::run`] needs. Exposed so
+    /// the register budget can be checked against what real datapacks actually compile to.
+    pub(crate) fn len(&self) -> usize {
+        self.ops.len()
+    }
+}
+
 /// Everything running a program needs beyond the program itself.
 pub(crate) struct RunCtx<'a> {
     /// Indexed by the noise indices the compiler assigned.

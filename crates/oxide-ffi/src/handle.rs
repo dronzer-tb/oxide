@@ -183,6 +183,11 @@ impl OxideGenerator {
         })
     }
 
+    /// Instruction count per router program -- diagnostics for the register budget.
+    pub fn program_sizes(&self) -> Vec<(&'static str, usize)> {
+        self.router.program_sizes()
+    }
+
     pub fn min_y(&self) -> i32 {
         self.settings.noise.min_y
     }
