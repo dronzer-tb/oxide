@@ -72,6 +72,11 @@ public final class OxideChunkGenerator extends ChunkGenerator {
     /** Chunk key -> palette indices generated in shouldGenerateNoise, consumed by generateNoise. */
     private final Map<Long, short[]> pending = new ConcurrentHashMap<>();
     private final AtomicLong failures = new AtomicLong();
+    /**
+     * The biome grid Rust already produced per chunk, handed to {@link OxideBiomeProvider} so
+     * CraftBukkit's per-quart biome queries do not re-derive it over the FFI boundary.
+     */
+    private final BiomeGridCache biomeGridCache = new BiomeGridCache();
 
     /** The generator handle plus its palette cache, opened together on first use. */
     private record Backing(OxideNative.Handle handle, OxidePalette palette) {}
@@ -260,7 +265,8 @@ public final class OxideChunkGenerator extends ChunkGenerator {
     /** Biomes come from the same handle that generated the terrain. */
     @Override
     public @NotNull BiomeProvider getDefaultBiomeProvider(@NotNull WorldInfo worldInfo) {
-        return new OxideBiomeProvider(backing(worldInfo).handle());
+        OxideNative.Handle handle = backing(worldInfo).handle();
+        return new OxideBiomeProvider(handle, biomeGridCache);
     }
 
     @Override
@@ -304,11 +310,16 @@ public final class OxideChunkGenerator extends ChunkGenerator {
 
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment blocks = arena.allocate((long) blockCount * Short.BYTES);
-            // Biomes cross the boundary in the same call but are consumed by
-            // OxideBiomeProvider's per-position lookups, not here -- Bukkit gives a
-            // ChunkGenerator no way to write the biome grid directly.
+            // The biome grid crosses the boundary in the same call. Bukkit gives a
+            // ChunkGenerator no way to write it directly, but CraftBukkit does then ask the
+            // BiomeProvider for every quart of this same chunk -- so handing the grid to the
+            // provider turns each of those queries into an array read instead of a fresh
+            // climate sample over the FFI boundary (measured at ~2.7us per call).
             MemorySegment biomes = arena.allocate((long) biomeCount * Short.BYTES);
             handle.generateChunk(chunkX, chunkZ, blocks, biomes);
+            if (biomeGridCache != null) {
+                biomeGridCache.put(chunkX, chunkZ, biomes.toArray(ValueLayout.JAVA_SHORT));
+            }
             return blocks.toArray(ValueLayout.JAVA_SHORT);
         }
     }
