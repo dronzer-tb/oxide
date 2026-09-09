@@ -1,7 +1,9 @@
 package dev.oxide.plugin;
 
+import dev.oxide.plugin.pacside.PacsideManager;
 import dev.oxide.plugin.provenance.ChunkProvenance;
 import dev.oxide.plugin.provenance.LiveProvenance;
+import net.kyori.adventure.text.Component;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
@@ -15,45 +17,23 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Tracks each online player's current chunk and pushes an action-bar update
- * on chunk change, when that player has the debug overlay toggled on.
- *
- * Threading (deliberate, read this before touching this class):
- * In Folia, entity-bound events such as PlayerMoveEvent are dispatched on
- * the region thread that currently owns that entity — the event handlers
- * below already run on the correct thread for the player that moved, with
- * no scheduling needed to reach that point safely.
- *
- * The one Player-touching call we make anyway — sendActionBar — is still
- * routed through {@code player.getScheduler()} (the Folia per-entity
- * scheduler), not called inline, because:
- *   1. it's the sanctioned way to guarantee an entity-touching task runs on
- *      that entity's *current* owning thread, independent of exactly which
- *      thread today's event dispatch happens to hand us into;
- *   2. its "retired" callback is a clean no-op if the player disconnects or
- *      is removed in the same tick, instead of risking a send against a
- *      dead/reparented entity from a now-stale thread reference.
- * We never use Bukkit.getScheduler() in this plugin: the global/async
- * scheduler has no concept of "the thread that currently owns this
- * player", and using it for entity-touching work is exactly the class of
- * Folia bug that produces intermittent, hard-to-reproduce region-thread
- * crashes instead of a clean, obvious failure.
+ * Tracks each online player's current chunk and pushes unified action-bar updates
+ * on chunk crossings, when that player has the debug/pacside HUD toggled on.
  */
 public final class ChunkTracker implements Listener {
 
     private final Plugin plugin;
     private final DebugState debugState;
     private final LiveProvenance liveProvenance;
+    private final PacsideManager pacsideManager;
 
-    // Last chunk key (packed x,z) seen per player. ConcurrentHashMap
-    // because different players are very likely owned by different region
-    // threads at the same instant, all reading/writing this map.
     private final Map<UUID, Long> lastChunk = new ConcurrentHashMap<>();
 
-    public ChunkTracker(Plugin plugin, DebugState debugState, LiveProvenance liveProvenance) {
+    public ChunkTracker(Plugin plugin, DebugState debugState, LiveProvenance liveProvenance, PacsideManager pacsideManager) {
         this.plugin = plugin;
         this.debugState = debugState;
         this.liveProvenance = liveProvenance;
+        this.pacsideManager = pacsideManager;
     }
 
     private static long chunkKey(int chunkX, int chunkZ) {
@@ -72,6 +52,9 @@ public final class ChunkTracker implements Listener {
         UUID id = event.getPlayer().getUniqueId();
         lastChunk.remove(id);
         debugState.clear(id);
+        if (pacsideManager != null && pacsideManager.getPrefetcher() != null) {
+            pacsideManager.getPrefetcher().toggleVisualHud(id, false);
+        }
     }
 
     @EventHandler(ignoreCancelled = true)
@@ -87,20 +70,25 @@ public final class ChunkTracker implements Listener {
         if (previous != null && previous == key) {
             return; // same chunk, nothing to do
         }
-        if (!debugState.isEnabled(player.getUniqueId())) {
+        
+        boolean enabled = debugState.isEnabled(player.getUniqueId()) ||
+                (pacsideManager != null && pacsideManager.getPrefetcher() != null && pacsideManager.getPrefetcher().hasVisualHud(player.getUniqueId()));
+
+        if (!enabled) {
             return;
         }
         pushUpdate(player, chunkX, chunkZ);
     }
 
-    private void pushUpdate(Player player, int chunkX, int chunkZ) {
-        // Reads the mark this server wrote when it generated the chunk (see LiveProvenance) --
-        // an in-memory persistent-data read on the chunk the player is standing in, which is
-        // loaded by definition. No file I/O, and unlike the sidecar lookup it reflects what
-        // actually generated this chunk on this server.
+    public void pushUpdate(Player player, int chunkX, int chunkZ) {
         ChunkProvenance provenance = liveProvenance.of(player.getChunk());
+        boolean isPrefetched = pacsideManager != null && pacsideManager.getPrefetcher() != null &&
+                pacsideManager.getPrefetcher().isChunkPrefetched(chunkX, chunkZ);
+        int lookahead = player.isGliding() ? 24 : (player.isSprinting() ? 12 : 6);
+        int cachedCount = pacsideManager != null && pacsideManager.getPrefetcher() != null ?
+                pacsideManager.getPrefetcher().getCachedSetSize() : 0;
 
-        player.getScheduler().run(plugin, task -> player.sendActionBar(ActionBarPresenter.render(provenance)),
-                null /* retired: player already gone, nothing to do */);
+        Component bar = ActionBarPresenter.renderUnified(chunkX, chunkZ, provenance, isPrefetched, lookahead, cachedCount);
+        player.getScheduler().run(plugin, task -> player.sendActionBar(bar), null);
     }
 }
