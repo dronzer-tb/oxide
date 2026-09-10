@@ -51,6 +51,7 @@ pub(crate) enum CacheKind {
 ///
 /// The hot arithmetic nodes get their own variants rather than a shared `Binary { op, a, b }`,
 /// so dispatch is one jump table rather than two.
+#[derive(Debug)]
 pub(crate) enum Op {
     Const(f64),
 
@@ -215,6 +216,11 @@ impl Program {
     /// this is how a caller finds the corner grid that already holds that slot's cell corners
     /// -- see [`ChunkCaches::cell_bounds`]. `None` means the program is something else and no
     /// cell-bounds shortcut is valid for it.
+    /// One line per instruction, for diagnosing why a shortcut does or does not apply.
+    pub(crate) fn dump(&self) -> Vec<String> {
+        self.ops.iter().map(|op| format!("{op:?}")).collect()
+    }
+
     pub(crate) fn interpolated_result_slot(&self) -> Option<u32> {
         match self.ops.last()? {
             Op::Cache {

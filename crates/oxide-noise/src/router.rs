@@ -233,6 +233,11 @@ impl NoiseRouterEvaluator {
     /// exactly one such cache node -- which `final_density` is in every vanilla-shaped router.
     /// Lets a caller read that slot's cell-corner bounds via [`ChunkCaches::cell_bounds`] and
     /// skip per-block evaluation for cells that are uniformly solid or uniformly empty.
+    /// Instruction listing for one slot's program, for diagnostics.
+    pub fn dump_program(&self, slot: RouterSlot) -> Vec<String> {
+        self.programs[slot.index()].dump()
+    }
+
     pub fn interpolated_slot_of(&self, slot: RouterSlot) -> Option<u32> {
         self.programs[slot.index()].interpolated_result_slot()
     }

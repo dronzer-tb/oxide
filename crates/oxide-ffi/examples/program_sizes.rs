@@ -16,7 +16,10 @@ fn main() {
             .expect("open failed");
 
     for (name, len) in handle.program_sizes() {
-        let spills = if len > 64 { "  <-- SPILLS TO HEAP (>64)" } else { "" };
-        println!("{len:6}  {name}{spills}");
+        println!("{len:6}  {name}");
+    }
+    println!("\n--- final_density op listing ---");
+    for line in handle.dump_program("final_density") {
+        println!("  {line}");
     }
 }

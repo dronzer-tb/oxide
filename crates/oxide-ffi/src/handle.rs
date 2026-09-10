@@ -194,6 +194,17 @@ impl OxideGenerator {
         self.router.program_sizes()
     }
 
+    /// Instruction listing for the named router slot.
+    pub fn dump_program(&self, name: &str) -> Vec<String> {
+        use oxide_noise::RouterSlot;
+        let slot = match name {
+            "final_density" => RouterSlot::FinalDensity,
+            "initial_density_without_jaggedness" => RouterSlot::InitialDensityWithoutJaggedness,
+            _ => return vec![format!("unknown slot {name}")],
+        };
+        self.router.dump_program(slot)
+    }
+
     pub fn min_y(&self) -> i32 {
         self.settings.noise.min_y
     }
