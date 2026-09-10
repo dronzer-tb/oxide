@@ -60,7 +60,24 @@ pub fn fill_chunk_with(
     router: &NoiseRouterEvaluator,
     biomes: Option<&oxide_biome::BiomeSearchTree>,
     caches: &oxide_noise::ChunkCaches,
+    aquifer: Option<&mut crate::aquifer::Aquifer>,
+) -> ChunkData {
+    fill_chunk_culling(pos, settings, router, biomes, caches, aquifer, true)
+}
+
+/// [`fill_chunk_with`] with cell culling switchable.
+///
+/// `cull = false` evaluates density at every position, which is what this did before culling
+/// existed. Exposed so a test can assert the two produce byte-identical chunks -- a shortcut
+/// that silently changed terrain would be far worse than a slow one.
+pub fn fill_chunk_culling(
+    pos: ChunkPos,
+    settings: &NoiseGeneratorSettings,
+    router: &NoiseRouterEvaluator,
+    biomes: Option<&oxide_biome::BiomeSearchTree>,
+    caches: &oxide_noise::ChunkCaches,
     mut aquifer: Option<&mut crate::aquifer::Aquifer>,
+    cull: bool,
 ) -> ChunkData {
     let min_y = settings.noise.min_y;
     let height = settings.noise.height;
@@ -82,7 +99,11 @@ pub fn fill_chunk_with(
     // The grid is built lazily on first sample, so take one now to force it; without this the
     // bounds are unavailable and every cell falls through to the exact path (still correct,
     // just not faster).
-    let density_slot = router.interpolated_slot_of(RouterSlot::FinalDensity);
+    let density_slot = if cull {
+        router.interpolated_slot_of(RouterSlot::FinalDensity)
+    } else {
+        None
+    };
     if density_slot.is_some() {
         let _ = router.sample_in_chunk(
             caches,

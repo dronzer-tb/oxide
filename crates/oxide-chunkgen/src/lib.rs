@@ -6,7 +6,7 @@
 //! large vanilla subsystem and are not built yet — see `fill.rs`'s module doc. Surface rules
 //! (grass/dirt/sand/bedrock) *are* evaluated now, with two named gaps — see `surface.rs`.
 
-mod aquifer;
+pub mod aquifer;
 mod biome_grid;
 mod carver;
 pub mod decoration_seed;
@@ -16,9 +16,10 @@ mod fill;
 mod ore_veins;
 mod surface;
 
+pub use aquifer::for_settings as aquifer_for_settings;
 pub use carver::{apply_carvers, CarverWorld};
 pub use feature_placer::{place_feature, PlacementContext};
-pub use fill::{base_height, base_height_in, fill_chunk};
+pub use fill::{base_height, base_height_in, fill_chunk, fill_chunk_culling};
 pub use surface::{BiomeTemperatures, SurfaceSystem};
 
 use oxide_biome::BiomeSearchTree;
