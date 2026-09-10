@@ -226,6 +226,18 @@ impl Program {
                     Op::Clamp(_) => "Clamp",
                     Op::Spline(_) => "Spline",
                     Op::RangeChoice(_) => "RangeChoice",
+                    Op::Shift { .. } => "Shift",
+                    Op::OldBlendedNoise(_) => "OldBlendedNoise",
+                    Op::WeirdScaledSampler(_) => "WeirdScaledSampler",
+                    Op::YClampedGradient(_) => "YClampedGradient",
+                    Op::Abs(_) => "Abs",
+                    Op::Square(_) => "Square",
+                    Op::Cube(_) => "Cube",
+                    Op::HalfNegative(_) => "HalfNegative",
+                    Op::QuarterNegative(_) => "QuarterNegative",
+                    Op::Invert(_) => "Invert",
+                    Op::IntervalSelect(_) => "IntervalSelect",
+                    Op::FindTopSurface(_) => "FindTopSurface",
                     Op::Cache { kind, slot, .. } => {
                         return format!("{i:3}: Cache(kind={kind:?}, slot={slot})")
                     }
