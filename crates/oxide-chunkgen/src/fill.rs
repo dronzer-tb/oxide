@@ -130,6 +130,19 @@ pub fn fill_chunk_culling(
                     // positive lower bound on the interpolated part would NOT prove the cell is
                     // solid. An upper bound of <= 0 is safe in spite of the `min`, because `min`
                     // only ever lowers the value further.
+                    #[cfg(feature = "cull-stats")]
+                    {
+                        crate::CULL_CONSIDERED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if cull {
+                            if let Some((_, hi)) = router.cell_bounds(
+                                caches, RouterSlot::FinalDensity, cell_x, cell_y, cell_z) {
+                                crate::CULL_BOUNDED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                if hi <= 0.0 {
+                                    crate::CULL_HI_NEG.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                }
+                            }
+                        }
+                    }
                     let all_air = cull
                         && y > settings.sea_level
                         && aquifer.is_none()

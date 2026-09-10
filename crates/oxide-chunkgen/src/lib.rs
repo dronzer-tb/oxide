@@ -7,6 +7,13 @@
 //! (grass/dirt/sand/bedrock) *are* evaluated now, with two named gaps — see `surface.rs`.
 
 pub mod aquifer;
+
+#[cfg(feature = "cull-stats")]
+pub static CULL_CONSIDERED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(feature = "cull-stats")]
+pub static CULL_BOUNDED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(feature = "cull-stats")]
+pub static CULL_HI_NEG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 mod biome_grid;
 mod carver;
 pub mod decoration_seed;
