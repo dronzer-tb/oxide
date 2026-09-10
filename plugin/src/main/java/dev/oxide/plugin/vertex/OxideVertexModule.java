@@ -38,10 +38,17 @@ public final class OxideVertexModule implements VertexModule {
         // so a server that never generates a chunk in an Oxide world never pays for it, and a
         // missing .so surfaces as chunks falling back rather than as a boot failure.
         this.service = new GeneratorService(new PropertiesGeneratorHost(context.dataDirectory(), logger));
-        // The same three stages the Bukkit half turns off through shouldGenerateSurface() and
-        // shouldGenerateCaves(): oxide_generate_chunk returns terrain that is already surfaced
-        // and carved, so vanilla running its own on top would apply both twice.
+        // SURFACE and CARVERS for the same reason the Bukkit half turns them off through
+        // shouldGenerateSurface()/shouldGenerateCaves(): oxide_generate_chunk returns terrain
+        // that is already surfaced and carved, so vanilla running its own on top applies both
+        // twice.
+        //
+        // BIOMES because the Rust generator resolves the whole biome grid in that same pass and
+        // the hook writes it through ChunkTarget.setBiomes. Without claiming it the server still
+        // runs createBiomes and recomputes every climate sample -- 37% of generation time on a
+        // heavy datapack, and unavoidable on the Bukkit path because CraftBukkit's
+        // CustomWorldChunkManager samples the vanilla router before consulting any provider.
         context.registerChunkGeneration(new OxideChunkHook(this.service, logger),
-                EnumSet.of(ChunkStage.SURFACE, ChunkStage.CARVERS));
+                EnumSet.of(ChunkStage.BIOMES, ChunkStage.SURFACE, ChunkStage.CARVERS));
     }
 }
