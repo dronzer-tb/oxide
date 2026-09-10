@@ -113,9 +113,30 @@ fn culled_and_exact_fills_agree_block_for_block() {
             "chunk {cx},{cz}: only {compared} blocks compared, expected a full column"
         );
 
-        assert_eq!(
-            culled.heightmaps, exact.heightmaps,
-            "chunk {cx},{cz}: heightmaps differ, so the culled fill produced different terrain"
-        );
+        // `Heightmap` has no `PartialEq`, so compare the surface heights it reports.
+        for ty in [
+            oxide_core::HeightmapType::WorldSurfaceWg,
+            oxide_core::HeightmapType::OceanFloorWg,
+            oxide_core::HeightmapType::MotionBlocking,
+        ] {
+            let a = culled.heightmaps.get(&ty);
+            let b = exact.heightmaps.get(&ty);
+            match (a, b) {
+                (Some(a), Some(b)) => {
+                    for z in 0..16usize {
+                        for x in 0..16usize {
+                            assert_eq!(
+                                a.get(x, z),
+                                b.get(x, z),
+                                "chunk {cx},{cz} heightmap {ty:?} at {x},{z}: culled fill \
+                                 produced different terrain"
+                            );
+                        }
+                    }
+                }
+                (None, None) => {}
+                _ => panic!("chunk {cx},{cz}: heightmap {ty:?} present on only one side"),
+            }
+        }
     }
 }
