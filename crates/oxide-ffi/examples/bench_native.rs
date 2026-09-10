@@ -82,6 +82,17 @@ fn main() {
     println!("THROUGHPUT           : {:.1} CPS", n as f64 / elapsed);
     println!("--------------------------------------------------");
 
+    #[cfg(feature = "cull-stats")]
+    {
+        use std::sync::atomic::Ordering;
+        let c = oxide_chunkgen::CULL_CONSIDERED.load(Ordering::Relaxed);
+        let b = oxide_chunkgen::CULL_BOUNDED.load(Ordering::Relaxed);
+        let h = oxide_chunkgen::CULL_HI_NEG.load(Ordering::Relaxed);
+        println!("cull: considered={c} bounded={b} ({:.1}%) hi<=0={h} ({:.1}%)",
+                 100.0 * b as f64 / c.max(1) as f64,
+                 100.0 * h as f64 / c.max(1) as f64);
+    }
+
     // ---- biome_at cost: what Bukkit's BiomeProvider hammers per quart ----
     let t = Instant::now();
     let mut acc = 0u64;
