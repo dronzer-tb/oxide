@@ -311,15 +311,37 @@ impl Program {
                     let (bl, bh) = get(&lo, &hi, &known, *b)?;
                     Some((al + bl, ah + bh))
                 }
+                // `min` only ever lowers its result, so an upper bound on EITHER side is an
+                // upper bound on the whole -- even if the other side cannot be bounded at all.
+                // This is the case that matters: a real `final_density` is
+                // `min(squeeze(interpolated(..)), noodle_caves)`, and the cave term is a lazy
+                // `RangeChoice` this cannot bound. Without this asymmetry the whole shortcut
+                // would never fire on any real overworld router.
+                //
+                // The lower bound is only known when both sides are, and is unused by the
+                // caller (which claims "all air", never "all solid"); f64::NEG_INFINITY is the
+                // honest value when one side is unknown.
                 Op::Min(a, b) => {
-                    let (al, ah) = get(&lo, &hi, &known, *a)?;
-                    let (bl, bh) = get(&lo, &hi, &known, *b)?;
-                    Some((al.min(bl), ah.min(bh)))
+                    let ba = get(&lo, &hi, &known, *a);
+                    let bb = get(&lo, &hi, &known, *b);
+                    match (ba, bb) {
+                        (Some((al, ah)), Some((bl, bh))) => Some((al.min(bl), ah.min(bh))),
+                        (Some((_, ah)), None) => Some((f64::NEG_INFINITY, ah)),
+                        (None, Some((_, bh))) => Some((f64::NEG_INFINITY, bh)),
+                        (None, None) => None,
+                    }
                 }
+                // Mirror of `min`: `max` only ever raises, so a lower bound on either side
+                // bounds the whole from below. The upper bound needs both.
                 Op::Max(a, b) => {
-                    let (al, ah) = get(&lo, &hi, &known, *a)?;
-                    let (bl, bh) = get(&lo, &hi, &known, *b)?;
-                    Some((al.max(bl), ah.max(bh)))
+                    let ba = get(&lo, &hi, &known, *a);
+                    let bb = get(&lo, &hi, &known, *b);
+                    match (ba, bb) {
+                        (Some((al, ah)), Some((bl, bh))) => Some((al.max(bl), ah.max(bh))),
+                        (Some((al, _)), None) => Some((al, f64::INFINITY)),
+                        (None, Some((bl, _))) => Some((bl, f64::INFINITY)),
+                        (None, None) => None,
+                    }
                 }
                 Op::Mul(a, b) => {
                     let (al, ah) = get(&lo, &hi, &known, *a)?;
