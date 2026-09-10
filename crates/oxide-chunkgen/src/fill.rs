@@ -151,7 +151,6 @@ pub fn fill_chunk_culling(
                     if cell_x != cached_cell_x {
                         cached_cell_x = cell_x;
                         cached_all_air = cull
-                            && aquifer.is_none()
                             && router
                                 .cell_bounds(
                                     caches,
@@ -162,9 +161,18 @@ pub fn fill_chunk_culling(
                                 )
                                 .is_some_and(|(_, hi)| hi <= 0.0);
                     }
-                    // The sea-level test stays per block: a cell spans several y, and only the
-                    // part above sea level is air rather than fluid.
-                    let all_air = cached_all_air && y > settings.sea_level;
+                    // Per block, because a cell spans several y and the answer changes with it.
+                    //
+                    // With aquifers off: above sea level a non-solid position is air.
+                    // With aquifers on: above `skip_sampling_above_y` the aquifer answers from
+                    // its global fluid alone -- no grid sampling and no mutation of its memo
+                    // state -- so the result is predictable here and skipping the call cannot
+                    // change what any later call returns.
+                    let all_air = cached_all_air
+                        && match aquifer.as_deref() {
+                            None => y > settings.sea_level,
+                            Some(aq) => aq.air_above_skip(y),
+                        };
 
                     let block = if all_air {
                         // Above sea level with aquifers off, a non-solid position is air, which
