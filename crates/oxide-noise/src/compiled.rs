@@ -51,7 +51,6 @@ pub(crate) enum CacheKind {
 ///
 /// The hot arithmetic nodes get their own variants rather than a shared `Binary { op, a, b }`,
 /// so dispatch is one jump table rather than two.
-#[derive(Debug)]
 pub(crate) enum Op {
     Const(f64),
 
@@ -218,7 +217,28 @@ impl Program {
     /// cell-bounds shortcut is valid for it.
     /// One line per instruction, for diagnosing why a shortcut does or does not apply.
     pub(crate) fn dump(&self) -> Vec<String> {
-        self.ops.iter().map(|op| format!("{op:?}")).collect()
+        self.ops
+            .iter()
+            .enumerate()
+            .map(|(i, op)| {
+                let name = match op {
+                    Op::Const(v) => return format!("{i:3}: Const({v})"),
+                    Op::Noise(_) => "Noise",
+                    Op::ShiftedNoise(_) => "ShiftedNoise",
+                    Op::Shift { .. } => "Shift",
+                    Op::Add(..) => "Add",
+                    Op::Mul(..) => "Mul",
+                    Op::Clamp(_) => "Clamp",
+                    Op::Spline(_) => "Spline",
+                    Op::RangeChoice(_) => "RangeChoice",
+                    Op::Cache { kind, slot, .. } => {
+                        return format!("{i:3}: Cache(kind={kind:?}, slot={slot})")
+                    }
+                    _ => "Other",
+                };
+                format!("{i:3}: {name}")
+            })
+            .collect()
     }
 
     pub(crate) fn interpolated_result_slot(&self) -> Option<u32> {
