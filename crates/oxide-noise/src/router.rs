@@ -238,8 +238,17 @@ impl NoiseRouterEvaluator {
         self.programs[slot.index()].dump()
     }
 
-    pub fn interpolated_slot_of(&self, slot: RouterSlot) -> Option<u32> {
-        self.programs[slot.index()].interpolated_result_slot()
+    /// Conservative bounds on `slot`'s value across one whole cell of `caches`, or `None` when
+    /// none can be proven. See `Program::cell_bounds`.
+    pub fn cell_bounds(
+        &self,
+        caches: &ChunkCaches,
+        slot: RouterSlot,
+        cell_x: i32,
+        cell_y: i32,
+        cell_z: i32,
+    ) -> Option<(f64, f64)> {
+        self.programs[slot.index()].cell_bounds(caches, cell_x, cell_y, cell_z)
     }
 
     /// A `ChunkCaches` sized for this router's settings, for the chunk at `(chunk_x, chunk_z)`.

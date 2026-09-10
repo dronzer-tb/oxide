@@ -26,15 +26,6 @@ pub(crate) fn local_index(x: usize, y: usize, z: usize) -> usize {
     (y * 16 + z) * 16 + x
 }
 
-/// What a cell's corner bounds prove about every block inside it, when they prove anything.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CellVerdict {
-    /// Every position is solid: the default block, no aquifer query needed.
-    AllSolid,
-    /// Every position is air: nothing to write, air is the palette default.
-    AllAir,
-}
-
 /// Fills one chunk column purely from the noise router's `final_density` slot — no aquifers,
 /// no ore veins, no carvers, no surface rules (see module doc). `biomes` is `None` when the
 /// dimension's biome source is an unresolvable `Preset` (see
@@ -99,12 +90,9 @@ pub fn fill_chunk_culling(
     // The grid is built lazily on first sample, so take one now to force it; without this the
     // bounds are unavailable and every cell falls through to the exact path (still correct,
     // just not faster).
-    let density_slot = if cull {
-        router.interpolated_slot_of(RouterSlot::FinalDensity)
-    } else {
-        None
-    };
-    if density_slot.is_some() {
+    if cull {
+        // The corner grids are built lazily on first sample; take one so the bounds below have
+        // something to read. Without it every cell falls through to the exact path.
         let _ = router.sample_in_chunk(
             caches,
             RouterSlot::FinalDensity,
@@ -135,36 +123,26 @@ pub fn fill_chunk_culling(
                     let cell_x = (local_x as i32).div_euclid(cell_width);
 
                     // Uniform-cell shortcut, taken before any density evaluation.
-                    let uniform = density_slot.and_then(|slot| {
-                        caches
-                            .cell_bounds(slot as usize, cell_x, cell_y, cell_z)
-                            .and_then(|(lo, hi)| {
-                                if lo > 0.0 {
-                                    // Every position in this cell is solid rock. Provably the
-                                    // same as the exact path: `compute_substance` returns
-                                    // `None` on `density > 0.0` before touching any of its own
-                                    // state, so skipping the call changes neither this block
-                                    // nor any later one.
-                                    Some(CellVerdict::AllSolid)
-                                } else if hi <= 0.0 && aquifer.is_none() && y > settings.sea_level
-                                {
-                                    // Every position is non-solid. Only safe to shortcut when
-                                    // aquifers are disabled: with an aquifer, a non-solid
-                                    // position goes through `compute_substance`, which is
-                                    // `&mut self` and may decide water or lava here, so it must
-                                    // still be asked. Above sea level with no aquifer the
-                                    // exact path yields air, which is the palette default.
-                                    Some(CellVerdict::AllAir)
-                                } else {
-                                    None
-                                }
-                            })
-                    });
+                    //
+                    // Only the "all air" direction is claimed. `final_density` is
+                    // `min(squeeze(interpolated(..)), noodle_caves)` in a real overworld router:
+                    // the `min` means an unbounded cave term can pull any position down, so a
+                    // positive lower bound on the interpolated part would NOT prove the cell is
+                    // solid. An upper bound of <= 0 is safe in spite of the `min`, because `min`
+                    // only ever lowers the value further.
+                    let all_air = cull
+                        && y > settings.sea_level
+                        && aquifer.is_none()
+                        && router
+                            .cell_bounds(caches, RouterSlot::FinalDensity, cell_x, cell_y, cell_z)
+                            .is_some_and(|(_, hi)| hi <= 0.0);
 
-                    let block = match uniform {
-                        Some(CellVerdict::AllAir) => continue,
-                        Some(CellVerdict::AllSolid) => None,
-                        None => {
+                    let block = if all_air {
+                        // Above sea level with aquifers off, a non-solid position is air, which
+                        // is already the section's palette default -- nothing to write.
+                        continue;
+                    } else {
+                        {
                             let density = router.sample_in_chunk(
                                 caches,
                                 RouterSlot::FinalDensity,
