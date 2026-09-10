@@ -26,6 +26,15 @@ pub(crate) fn local_index(x: usize, y: usize, z: usize) -> usize {
     (y * 16 + z) * 16 + x
 }
 
+/// What a cell's corner bounds prove about every block inside it, when they prove anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CellVerdict {
+    /// Every position is solid: the default block, no aquifer query needed.
+    AllSolid,
+    /// Every position is air: nothing to write, air is the palette default.
+    AllAir,
+}
+
 /// Fills one chunk column purely from the noise router's `final_density` slot — no aquifers,
 /// no ore veins, no carvers, no surface rules (see module doc). `biomes` is `None` when the
 /// dimension's biome source is an unresolvable `Preset` (see
@@ -63,6 +72,29 @@ pub fn fill_chunk_with(
     let mut chunk = ChunkData::new(pos, min_y, height);
     let section_count = chunk.section_count();
 
+    // Cell-level culling setup. `final_density` resolves through an `interpolated` cache node,
+    // whose corner grid this asks for the min/max of per cell. A trilinear blend never leaves
+    // the range of its eight corners, so `min > 0` proves a whole cell is solid and `max < 0`
+    // proves none of it is -- either way the cell's interior needs no per-block density
+    // evaluation at all. In real terrain most cells are one or the other, which is what takes
+    // the ~98k `Program::run` calls per chunk down to the boundary cells only.
+    //
+    // The grid is built lazily on first sample, so take one now to force it; without this the
+    // bounds are unavailable and every cell falls through to the exact path (still correct,
+    // just not faster).
+    let density_slot = router.interpolated_slot_of(RouterSlot::FinalDensity);
+    if density_slot.is_some() {
+        let _ = router.sample_in_chunk(
+            caches,
+            RouterSlot::FinalDensity,
+            pos.min_block_x(),
+            min_y,
+            pos.min_block_z(),
+        );
+    }
+    let cell_width = caches.cell_width();
+    let cell_height = caches.cell_height();
+
     for i in 0..section_count {
         let section_y = min_y / 16 + i as i32;
         let mut section = ChunkSection::new(section_y as i8, air.clone(), default_biome.clone());
@@ -71,39 +103,78 @@ pub fn fill_chunk_with(
 
         for local_y in 0..16i32 {
             let y = section_min_y + local_y;
+            // Which cell this row of blocks sits in, and what the density is known to do
+            // across it. `None` = no shortcut available, evaluate exactly.
+            let cell_y = (y - min_y).div_euclid(cell_height);
             for local_z in 0..16usize {
                 let block_z = pos.min_block_z() + local_z as i32;
+                let cell_z = (local_z as i32).div_euclid(cell_width);
                 for local_x in 0..16usize {
                     let block_x = pos.min_block_x() + local_x as i32;
-                    let density = router.sample_in_chunk(
-                        caches,
-                        RouterSlot::FinalDensity,
-                        block_x,
-                        y,
-                        block_z,
-                    );
-                    // The aquifer decides what a non-solid position holds -- air, water or
-                    // lava, at a level that varies per underground body. `None` means solid, so
-                    // the default block goes in. Vanilla runs exactly this as the first filler
-                    // in its noise fill.
-                    let block = match aquifer.as_deref_mut() {
-                        Some(aquifer) => {
-                            match aquifer.compute_substance(block_x, y, block_z, density) {
-                                None => None,
-                                // Air is already the section's default palette entry.
-                                Some(state) if state == air => continue,
-                                Some(state) => Some(state),
-                            }
-                        }
-                        // Aquifers disabled by the settings: solid below the surface, the
-                        // dimension's fluid up to sea level, air above.
+                    let cell_x = (local_x as i32).div_euclid(cell_width);
+
+                    // Uniform-cell shortcut, taken before any density evaluation.
+                    let uniform = density_slot.and_then(|slot| {
+                        caches
+                            .cell_bounds(slot as usize, cell_x, cell_y, cell_z)
+                            .and_then(|(lo, hi)| {
+                                if lo > 0.0 {
+                                    // Every position in this cell is solid rock. Provably the
+                                    // same as the exact path: `compute_substance` returns
+                                    // `None` on `density > 0.0` before touching any of its own
+                                    // state, so skipping the call changes neither this block
+                                    // nor any later one.
+                                    Some(CellVerdict::AllSolid)
+                                } else if hi <= 0.0 && aquifer.is_none() && y > settings.sea_level
+                                {
+                                    // Every position is non-solid. Only safe to shortcut when
+                                    // aquifers are disabled: with an aquifer, a non-solid
+                                    // position goes through `compute_substance`, which is
+                                    // `&mut self` and may decide water or lava here, so it must
+                                    // still be asked. Above sea level with no aquifer the
+                                    // exact path yields air, which is the palette default.
+                                    Some(CellVerdict::AllAir)
+                                } else {
+                                    None
+                                }
+                            })
+                    });
+
+                    let block = match uniform {
+                        Some(CellVerdict::AllAir) => continue,
+                        Some(CellVerdict::AllSolid) => None,
                         None => {
-                            if density > 0.0 {
-                                None
-                            } else if y <= settings.sea_level {
-                                Some(settings.default_fluid.clone())
-                            } else {
-                                continue;
+                            let density = router.sample_in_chunk(
+                                caches,
+                                RouterSlot::FinalDensity,
+                                block_x,
+                                y,
+                                block_z,
+                            );
+                            // The aquifer decides what a non-solid position holds -- air, water
+                            // or lava, at a level that varies per underground body. `None` means
+                            // solid, so the default block goes in. Vanilla runs exactly this as
+                            // the first filler in its noise fill.
+                            match aquifer.as_deref_mut() {
+                                Some(aquifer) => {
+                                    match aquifer.compute_substance(block_x, y, block_z, density) {
+                                        None => None,
+                                        // Air is already the section's default palette entry.
+                                        Some(state) if state == air => continue,
+                                        Some(state) => Some(state),
+                                    }
+                                }
+                                // Aquifers disabled by the settings: solid below the surface,
+                                // the dimension's fluid up to sea level, air above.
+                                None => {
+                                    if density > 0.0 {
+                                        None
+                                    } else if y <= settings.sea_level {
+                                        Some(settings.default_fluid.clone())
+                                    } else {
+                                        continue;
+                                    }
+                                }
                             }
                         }
                     };

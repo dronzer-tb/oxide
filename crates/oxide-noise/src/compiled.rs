@@ -208,6 +208,24 @@ pub(crate) struct RunCtx<'a> {
 const INLINE_REGISTERS: usize = 16;
 
 impl Program {
+    /// The `interpolated` cache slot this program's result comes straight out of, if the whole
+    /// program is exactly one such cache node.
+    ///
+    /// `final_density` in every vanilla-shaped noise router is an `interpolated` wrapper, so
+    /// this is how a caller finds the corner grid that already holds that slot's cell corners
+    /// -- see [`ChunkCaches::cell_bounds`]. `None` means the program is something else and no
+    /// cell-bounds shortcut is valid for it.
+    pub(crate) fn interpolated_result_slot(&self) -> Option<u32> {
+        match self.ops.last()? {
+            Op::Cache {
+                kind: CacheKind::Interpolated,
+                slot,
+                ..
+            } => Some(*slot),
+            _ => None,
+        }
+    }
+
     pub(crate) fn run(&self, ctx: FunctionContext, cx: &RunCtx) -> f64 {
         let n = self.ops.len();
         debug_assert!(n > 0, "a compiled program always ends in its result");
