@@ -208,6 +208,34 @@ pub(crate) struct RunCtx<'a> {
 const INLINE_REGISTERS: usize = 16;
 
 impl Program {
+    /// One line per instruction, for diagnosing why a shortcut does or does not apply.
+    pub(crate) fn dump(&self) -> Vec<String> {
+        self.ops
+            .iter()
+            .enumerate()
+            .map(|(i, op)| {
+                let name = match op {
+                    Op::Const(v) => return format!("{i:3}: Const({v})"),
+                    Op::Noise(_) => "Noise",
+                    Op::ShiftedNoise(_) => "ShiftedNoise",
+                    Op::Add(..) => "Add",
+                    Op::Mul(..) => "Mul",
+                    Op::Min(..) => "Min",
+                    Op::Max(..) => "Max",
+                    Op::Squeeze(_) => "Squeeze",
+                    Op::Clamp(_) => "Clamp",
+                    Op::Spline(_) => "Spline",
+                    Op::RangeChoice(_) => "RangeChoice",
+                    Op::Cache { kind, slot, .. } => {
+                        return format!("{i:3}: Cache(kind={kind:?}, slot={slot})")
+                    }
+                    _ => "Other",
+                };
+                format!("{i:3}: {name}")
+            })
+            .collect()
+    }
+
     /// A conservative bound on this program's value across one whole cell, computed from the
     /// `interpolated` corner grids it reads, or `None` when no such bound can be proven.
     ///
