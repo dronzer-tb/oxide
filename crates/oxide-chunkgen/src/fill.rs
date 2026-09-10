@@ -118,6 +118,11 @@ pub fn fill_chunk_culling(
             for local_z in 0..16usize {
                 let block_z = pos.min_block_z() + local_z as i32;
                 let cell_z = (local_z as i32).div_euclid(cell_width);
+                // Bounds are a property of the CELL, so they are resolved once per cell here
+                // rather than once per block. Computing them per position cost a 5-op interval
+                // walk 98k times a chunk and ate the entire saving.
+                let mut cached_cell_x = i32::MIN;
+                let mut cached_all_air = false;
                 for local_x in 0..16usize {
                     let block_x = pos.min_block_x() + local_x as i32;
                     let cell_x = (local_x as i32).div_euclid(cell_width);
@@ -143,12 +148,23 @@ pub fn fill_chunk_culling(
                             }
                         }
                     }
-                    let all_air = cull
-                        && y > settings.sea_level
-                        && aquifer.is_none()
-                        && router
-                            .cell_bounds(caches, RouterSlot::FinalDensity, cell_x, cell_y, cell_z)
-                            .is_some_and(|(_, hi)| hi <= 0.0);
+                    if cell_x != cached_cell_x {
+                        cached_cell_x = cell_x;
+                        cached_all_air = cull
+                            && aquifer.is_none()
+                            && router
+                                .cell_bounds(
+                                    caches,
+                                    RouterSlot::FinalDensity,
+                                    cell_x,
+                                    cell_y,
+                                    cell_z,
+                                )
+                                .is_some_and(|(_, hi)| hi <= 0.0);
+                    }
+                    // The sea-level test stays per block: a cell spans several y, and only the
+                    // part above sea level is air rather than fluid.
+                    let all_air = cached_all_air && y > settings.sea_level;
 
                     let block = if all_air {
                         // Above sea level with aquifers off, a non-solid position is air, which
