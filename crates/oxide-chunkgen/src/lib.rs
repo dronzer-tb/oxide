@@ -9,14 +9,18 @@
 mod aquifer;
 mod biome_grid;
 mod carver;
+pub mod decorate;
 pub mod decoration_seed;
 pub mod feature_order;
 pub mod feature_placer;
 mod fill;
 mod ore_veins;
+pub mod region;
 mod surface;
 
 pub use carver::{apply_carvers, CarverWorld};
+pub use decorate::{decorated_chunk, DecorationCache, Decorator};
+pub use region::{BlockWrite, DecorationRegion};
 pub use feature_placer::{place_feature, PlacementContext};
 pub use fill::{base_height, base_height_in, fill_chunk};
 pub use surface::{BiomeTemperatures, SurfaceSystem};
