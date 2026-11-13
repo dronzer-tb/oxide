@@ -242,7 +242,7 @@ fn next_or_min(random: &mut impl RandomSource, min: i32, max: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxide_core::Xoroshiro128PlusPlus;
+    use oxide_core::WorldgenRandom;
 
     const BOUNDS: WorldBounds = WorldBounds { min_y: -64, height: 384 };
 
@@ -268,8 +268,8 @@ mod tests {
 
     #[test]
     fn constants_draw_nothing() {
-        let mut random = Xoroshiro128PlusPlus::new(7);
-        let mut untouched = Xoroshiro128PlusPlus::new(7);
+        let mut random = WorldgenRandom::new(7);
+        let mut untouched = WorldgenRandom::new(7);
         assert_eq!(sample_int(&int("5"), &mut random), 5);
         assert_eq!(sample_int(&int(r#"{"type":"minecraft:constant","value":9}"#), &mut random), 9);
         assert_eq!(random.next_long(), untouched.next_long());
@@ -278,8 +278,8 @@ mod tests {
     #[test]
     fn uniform_is_one_bounded_draw_in_range() {
         let provider = int(r#"{"type":"minecraft:uniform","min_inclusive":3,"max_inclusive":6}"#);
-        let mut random = Xoroshiro128PlusPlus::new(11);
-        let mut mirror = Xoroshiro128PlusPlus::new(11);
+        let mut random = WorldgenRandom::new(11);
+        let mut mirror = WorldgenRandom::new(11);
         for _ in 0..200 {
             let value = sample_int(&provider, &mut random);
             assert_eq!(value, 3 + mirror.next_int_bounded(4));
@@ -291,8 +291,8 @@ mod tests {
     fn symmetric_trapezoid_is_the_difference_of_two_draws() {
         let provider =
             int(r#"{"type":"minecraft:trapezoid","min":-7,"max":7,"plateau":0}"#);
-        let mut random = Xoroshiro128PlusPlus::new(5);
-        let mut mirror = Xoroshiro128PlusPlus::new(5);
+        let mut random = WorldgenRandom::new(5);
+        let mut mirror = WorldgenRandom::new(5);
         for _ in 0..200 {
             let value = sample_int(&provider, &mut random);
             assert_eq!(value, mirror.next_int_bounded(8) - mirror.next_int_bounded(8));
@@ -303,8 +303,8 @@ mod tests {
     #[test]
     fn general_trapezoid_adds_two_ramps_to_the_minimum() {
         let provider = int(r#"{"type":"minecraft:trapezoid","min":2,"max":12,"plateau":4}"#);
-        let mut random = Xoroshiro128PlusPlus::new(21);
-        let mut mirror = Xoroshiro128PlusPlus::new(21);
+        let mut random = WorldgenRandom::new(21);
+        let mut mirror = WorldgenRandom::new(21);
         // range 10, slope (10 - 4) / 2 = 3, middle 7.
         let value = sample_int(&provider, &mut random);
         assert_eq!(value, 2 + mirror.next_int_bounded(8) + mirror.next_int_bounded(4));
@@ -316,7 +316,7 @@ mod tests {
             r#"{"type":"minecraft:clamped","min_inclusive":4,"max_inclusive":5,
                 "source":{"type":"minecraft:uniform","min_inclusive":0,"max_inclusive":20}}"#,
         );
-        let mut random = Xoroshiro128PlusPlus::new(3);
+        let mut random = WorldgenRandom::new(3);
         for _ in 0..100 {
             assert!((4..=5).contains(&sample_int(&provider, &mut random)));
         }
@@ -328,8 +328,8 @@ mod tests {
             r#"{"type":"minecraft:weighted_list","distribution":[
                 {"data":1,"weight":1},{"data":2,"weight":3}]}"#,
         );
-        let mut random = Xoroshiro128PlusPlus::new(13);
-        let mut mirror = Xoroshiro128PlusPlus::new(13);
+        let mut random = WorldgenRandom::new(13);
+        let mut mirror = WorldgenRandom::new(13);
         for _ in 0..100 {
             let expected = if mirror.next_int_bounded(4) < 1 { 1 } else { 2 };
             assert_eq!(sample_int(&provider, &mut random), expected);
@@ -342,13 +342,13 @@ mod tests {
             r#"{"type":"minecraft:uniform","min_inclusive":{"above_bottom":0},
                 "max_inclusive":{"absolute":10}}"#,
         );
-        let mut random = Xoroshiro128PlusPlus::new(1);
+        let mut random = WorldgenRandom::new(1);
         for _ in 0..100 {
             assert!((-64..=10).contains(&sample_height(&uniform, &mut random, BOUNDS)));
         }
         // A bare anchor is a constant that draws nothing.
-        let mut untouched = Xoroshiro128PlusPlus::new(1);
-        let mut random = Xoroshiro128PlusPlus::new(1);
+        let mut untouched = WorldgenRandom::new(1);
+        let mut random = WorldgenRandom::new(1);
         assert_eq!(sample_height(&height(r#"{"absolute": 40}"#), &mut random, BOUNDS), 40);
         assert_eq!(random.next_long(), untouched.next_long());
     }
@@ -359,8 +359,8 @@ mod tests {
             r#"{"type":"minecraft:biased_to_bottom","min_inclusive":{"absolute":0},
                 "max_inclusive":{"absolute":20},"inner":4}"#,
         );
-        let mut random = Xoroshiro128PlusPlus::new(17);
-        let mut mirror = Xoroshiro128PlusPlus::new(17);
+        let mut random = WorldgenRandom::new(17);
+        let mut mirror = WorldgenRandom::new(17);
         // range = 20 - 0 - 4 + 1 = 17.
         let first = mirror.next_int_bounded(17);
         assert_eq!(sample_height(&provider, &mut random, BOUNDS), mirror.next_int_bounded(first + 4));
@@ -372,8 +372,8 @@ mod tests {
             r#"{"type":"minecraft:trapezoid","min_inclusive":{"absolute":0},
                 "max_inclusive":{"absolute":10},"plateau":10}"#,
         );
-        let mut random = Xoroshiro128PlusPlus::new(2);
-        let mut mirror = Xoroshiro128PlusPlus::new(2);
+        let mut random = WorldgenRandom::new(2);
+        let mut mirror = WorldgenRandom::new(2);
         assert_eq!(sample_height(&provider, &mut random, BOUNDS), mirror.next_int_bounded(11));
     }
 }

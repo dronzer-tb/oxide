@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use oxide_core::rotation::Rotation;
-use oxide_core::{BlockPos, BlockState, ChunkPos, RandomSource, ResourceLocation, Xoroshiro128PlusPlus};
+use oxide_core::{BlockPos, BlockState, ChunkPos, RandomSource, ResourceLocation, WorldgenRandom};
 use oxide_datapack::structure_template::{RawBlockEntry, RawBlockState, RawStructureNbt};
 use oxide_datapack::{load_tags, BlockFacts, TagSet};
 
@@ -140,7 +140,7 @@ fn with_context(
     for (pos, state) in &before {
         region.set_block(*pos, state.clone());
     }
-    let mut random = Xoroshiro128PlusPlus::new(seed);
+    let mut random = WorldgenRandom::new(seed);
     let mut tally = UnsupportedTally::default();
     let placed = {
         let mut cx = FeatureContext {
@@ -236,7 +236,7 @@ fn block_rot_draws_one_float_per_block_after_the_palette_draw() {
     let seed = 99;
     let outcome = place(&env, &built, at, PlaceSettings { processors: &processors, ..plain(Rotation::None) }, seed, |_| {});
 
-    let mut replay = Xoroshiro128PlusPlus::new(seed);
+    let mut replay = WorldgenRandom::new(seed);
     replay.next_int_bounded(1);
     let expected: Vec<i32> = (0..12).filter(|_| replay.next_float() <= 0.5).collect();
     let kept: Vec<i32> = outcome.writes.iter().map(|(pos, _)| pos.x).collect();
@@ -362,7 +362,7 @@ fn a_fossil_sinks_below_the_surface_and_places_base_then_overlay() {
     let outcome = with_context(&env, seed, origin, |_| {}, |cx| feature.place(cx));
     assert!(outcome.placed);
 
-    let mut replay = Xoroshiro128PlusPlus::new(seed);
+    let mut replay = WorldgenRandom::new(seed);
     let rotation = Rotation::get_random(&mut replay);
     replay.next_int_bounded(1);
     let y = SURFACE - 15 - replay.next_int_bounded(10);

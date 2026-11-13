@@ -837,22 +837,3 @@ mod tests {
         }
     }
 }
-
-#[cfg(test)]
-mod rng_probe {
-    #[test]
-    fn decoration_seed_probe() {
-        use oxide_core::{RandomSource, Xoroshiro128PlusPlus};
-        let mut r = Xoroshiro128PlusPlus::new(0);
-        let ds = oxide_chunkgen::decoration_seed::set_decoration_seed(&mut r, 12345, -320, 320);
-        oxide_chunkgen::decoration_seed::set_feature_seed(&mut r, ds, 0, 6);
-        println!("deco {ds} {} {} {}", r.next_int_bounded(16), r.next_int_bounded(16), r.next_long());
-        // WorldgenRandom over Xoroshiro: every draw is next(bits) = nextLong >>> (64 - bits).
-        let wg_long = |r: &mut Xoroshiro128PlusPlus| ((r.next_bits(32) as i64) << 32).wrapping_add(r.next_bits(32) as i64);
-        r.set_seed(12345);
-        let xs = wg_long(&mut r) | 1;
-        let zs = wg_long(&mut r) | 1;
-        let ds = (-320i64).wrapping_mul(xs).wrapping_add(320i64.wrapping_mul(zs)) ^ 12345;
-        println!("worldgen-random deco {ds}");
-    }
-}

@@ -22,7 +22,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail, Context, Result};
-use oxide_core::{BiomeId, BlockPos, Xoroshiro128PlusPlus};
+use oxide_core::{BiomeId, BlockPos, WorldgenRandom};
 use oxide_datapack::Datapack;
 
 use super::context::{BlockBehaviours, Environment, FeatureContext, UnsupportedTally};
@@ -191,7 +191,7 @@ impl Decorator for BiomeDecorator {
         // The position every chain starts from: the chunk's corner at the bottom of the world.
         let origin = BlockPos::new(min_x, region.min_y(), min_z);
 
-        let mut random = Xoroshiro128PlusPlus::new(0);
+        let mut random = WorldgenRandom::new(0);
         let decoration_seed = set_decoration_seed(&mut random, self.env.seed, min_x, min_z);
 
         let present: Vec<BiomeId> = region

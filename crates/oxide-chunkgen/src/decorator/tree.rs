@@ -35,7 +35,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::Result;
-use oxide_core::{BlockPos, BlockState, RandomSource, ResourceLocation, Xoroshiro128PlusPlus};
+use oxide_core::{BlockPos, BlockState, RandomSource, ResourceLocation, WorldgenRandom};
 use oxide_datapack::tree::{FeatureSize, TreeConfig, TrunkKind};
 use oxide_datapack::{BlockFact, BlockFacts};
 
@@ -157,7 +157,7 @@ pub(super) fn dist_manhattan(a: BlockPos, b: BlockPos) -> i32 {
 }
 
 /// `Util.shuffle`: Fisher-Yates from the end with `nextInt(i)`.
-pub(super) fn shuffle<T>(values: &mut [T], random: &mut Xoroshiro128PlusPlus) {
+pub(super) fn shuffle<T>(values: &mut [T], random: &mut WorldgenRandom) {
     for i in (2..=values.len()).rev() {
         let swap = next_bounded(random, i as i32) as usize;
         values.swap(i - 1, swap);

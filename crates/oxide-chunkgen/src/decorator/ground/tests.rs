@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use oxide_core::{BlockPos, BlockState, ChunkPos, RandomSource, ResourceLocation, Xoroshiro128PlusPlus};
+use oxide_core::{BlockPos, BlockState, ChunkPos, RandomSource, ResourceLocation, WorldgenRandom};
 use oxide_datapack::placement::PlacedFeature as PlacedFeatureIr;
 use oxide_datapack::{load_tags, Biome, BlockFacts, Registry, TagSet};
 
@@ -132,7 +132,7 @@ fn place(
     let chunks = flat_ring(ChunkPos::new(0, 0), 64);
     let mut region = DecorationRegion::new(ChunkPos::new(0, 0), refs(&chunks), &env.facts);
     prepare(&mut region);
-    let mut random = Xoroshiro128PlusPlus::new(seed);
+    let mut random = WorldgenRandom::new(seed);
     let mut tally = UnsupportedTally::default();
     let did_place = {
         let mut cx = FeatureContext {
@@ -665,7 +665,7 @@ fn selector(weights: [i32; 2]) -> String {
 fn a_weighted_selector_draws_once_and_walks_the_weights() {
     let env = env(&[], Box::new(AlwaysSurvives), HashMap::new());
     for seed in 0..12 {
-        let draw = Xoroshiro128PlusPlus::new(seed).next_int_bounded(4);
+        let draw = WorldgenRandom::new(seed).next_int_bounded(4);
         let expected = if draw < 1 { "oak_log" } else { "pumpkin" };
         let outcome = place(&env, &selector([1, 3]), seed, BlockPos::new(8, 64, 8), |_| {});
         assert!(outcome.placed);

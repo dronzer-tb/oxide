@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use oxide_core::{BlockPos, BlockState, ChunkPos, ResourceLocation, Xoroshiro128PlusPlus};
+use oxide_core::{BlockPos, BlockState, ChunkPos, ResourceLocation, WorldgenRandom};
 use oxide_datapack::feature::ConfiguredFeature;
 use oxide_datapack::{load_tags, BlockFacts, Registry, TagSet};
 
@@ -95,7 +95,7 @@ fn run_on_flat(
 ) -> Placed {
     let chunks = flat_ring(ChunkPos::new(0, 0), 64);
     let mut region = DecorationRegion::new(ChunkPos::new(0, 0), refs(&chunks), &env.facts);
-    let mut random = Xoroshiro128PlusPlus::new(seed);
+    let mut random = WorldgenRandom::new(seed);
     let mut tally = UnsupportedTally::default();
     let placed = {
         let mut cx = FeatureContext {
@@ -307,7 +307,7 @@ fn the_real_oak_and_spruce_place_on_flat_ground() {
     let env = environment(datapack.block_facts.clone(), datapack.block_tags.clone());
     let mut compiler =
         Compiler::new(&datapack.block_facts, &datapack.placed_features, &datapack.configured_features);
-    for (name, min_logs, max_logs) in [("oak", 4, 6), ("spruce", 6, 9)] {
+    for (name, min_logs, max_logs) in [("oak", 4, 6), ("spruce", 5, 8)] {
         let feature = compiler
             .configured_by_id(&ResourceLocation::minecraft(name))
             .expect("compiles")

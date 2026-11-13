@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use oxide_core::{BlockPos, ChunkPos, RandomSource, Xoroshiro128PlusPlus};
+use oxide_core::{BlockPos, ChunkPos, RandomSource, WorldgenRandom};
 use oxide_datapack::placement::PlacedFeature as PlacedFeatureIr;
 use oxide_datapack::{BlockFacts, Registry, TagSet};
 
@@ -101,7 +101,7 @@ fn place(
     let chunks = flat_ring(ChunkPos::new(0, 0), 64);
     let mut region = DecorationRegion::new(ChunkPos::new(0, 0), refs(&chunks), &env.facts);
     prepare(&mut region);
-    let mut random = Xoroshiro128PlusPlus::new(seed);
+    let mut random = WorldgenRandom::new(seed);
     let mut tally = UnsupportedTally::default();
     let did_place = {
         let mut cx = FeatureContext {
@@ -146,7 +146,7 @@ const DELTA: &str = r#"{"type":"minecraft:delta_feature","config":{"contents":{"
 
 /// The delta's draw that decides whether the rim is rolled.
 fn rim_rolled(seed: i64) -> bool {
-    Xoroshiro128PlusPlus::new(seed).next_double() < 0.9
+    WorldgenRandom::new(seed).next_double() < 0.9
 }
 
 #[test]

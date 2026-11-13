@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use oxide_core::{BlockPos, BlockState, ChunkPos, ResourceLocation, Xoroshiro128PlusPlus};
+use oxide_core::{BlockPos, BlockState, ChunkPos, ResourceLocation, WorldgenRandom};
 use oxide_datapack::placement::PlacedFeature as PlacedFeatureIr;
 use oxide_datapack::{load_tags, BlockFacts, Registry, TagSet};
 
@@ -126,7 +126,7 @@ fn place(
     let chunks = flat_ring(ChunkPos::new(0, 0), FLOOR_TOP);
     let mut region = DecorationRegion::new(ChunkPos::new(0, 0), refs(&chunks), &env.facts);
     prepare(&mut region);
-    let mut random = Xoroshiro128PlusPlus::new(seed);
+    let mut random = WorldgenRandom::new(seed);
     let mut tally = UnsupportedTally::default();
     let did_place = {
         let mut cx = FeatureContext {

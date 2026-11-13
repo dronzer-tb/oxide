@@ -14,7 +14,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, LazyLock};
 
-use oxide_core::{BiomeId, BlockPos, BlockState, ResourceLocation, Xoroshiro128PlusPlus};
+use oxide_core::{BiomeId, BlockPos, BlockState, ResourceLocation, WorldgenRandom};
 use oxide_datapack::{BlockFacts, TagSet};
 
 use super::feature::Placed;
@@ -113,7 +113,7 @@ impl Environment {
 pub struct FeatureContext<'e, 'a, 'r> {
     pub env: &'e Environment,
     pub region: &'a mut DecorationRegion<'r>,
-    pub random: &'a mut Xoroshiro128PlusPlus,
+    pub random: &'a mut WorldgenRandom,
     pub origin: BlockPos,
     pub unsupported: &'a mut UnsupportedTally,
     /// The registered placed feature whose chain is running, for the `biome` modifier. `None`

@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use oxide_core::{BlockPos, BlockState, ChunkPos, RandomSource, ResourceLocation, Xoroshiro128PlusPlus};
+use oxide_core::{BlockPos, BlockState, ChunkPos, RandomSource, ResourceLocation, WorldgenRandom};
 use oxide_datapack::placement::PlacedFeature as PlacedFeatureIr;
 use oxide_datapack::{load_tags, BlockFacts, Registry, TagSet};
 
@@ -75,7 +75,7 @@ fn place_in_flat(
     let chunks = flat_ring(ChunkPos::new(0, 0), 64);
     let mut region = DecorationRegion::new(ChunkPos::new(0, 0), refs(&chunks), &env.facts);
     prepare(&mut region);
-    let mut random = Xoroshiro128PlusPlus::new(seed);
+    let mut random = WorldgenRandom::new(seed);
     let mut tally = UnsupportedTally::default();
     let placed_any = {
         let mut cx = FeatureContext {
@@ -112,7 +112,7 @@ fn the_chain_runs_depth_first_drawing_in_vanillas_order() {
     let outcome = place_in_flat(&env, &json, 42, BlockPos::new(0, -64, 0), |_| {});
 
     // Three copies, each drawing x then z before the next copy draws anything.
-    let mut mirror = Xoroshiro128PlusPlus::new(42);
+    let mut mirror = WorldgenRandom::new(42);
     let mut expected = Vec::new();
     for _ in 0..3 {
         let x = mirror.next_int_bounded(16);
@@ -136,7 +136,7 @@ fn random_offset_draws_x_then_y_then_z() {
             "y_spread":{"type":"minecraft:uniform","min_inclusive":0,"max_inclusive":4}}"#,
     );
     let outcome = place_in_flat(&env, &json, 8, BlockPos::new(2, 70, 3), |_| {});
-    let mut mirror = Xoroshiro128PlusPlus::new(8);
+    let mut mirror = WorldgenRandom::new(8);
     let x = 2 + mirror.next_int_bounded(10);
     let y = 70 + mirror.next_int_bounded(5);
     let z = 3 + mirror.next_int_bounded(10);
@@ -149,7 +149,7 @@ fn rarity_filter_passes_when_the_float_is_under_one_over_chance() {
     let json = with_chain(r#"{"type":"minecraft:rarity_filter","chance":4}"#);
     for seed in 0..40 {
         let outcome = place_in_flat(&env, &json, seed, BlockPos::new(5, 70, 5), |_| {});
-        let passes = Xoroshiro128PlusPlus::new(seed).next_float() < 0.25;
+        let passes = WorldgenRandom::new(seed).next_float() < 0.25;
         assert_eq!(outcome.writes.len(), usize::from(passes), "seed {seed}");
     }
 }
@@ -287,7 +287,7 @@ fn weighted_provider_draws_one_bounded_value() {
     );
     for seed in 0..30 {
         let outcome = place_in_flat(&env, &json, seed, BlockPos::new(2, 70, 2), |_| {});
-        let expected = if Xoroshiro128PlusPlus::new(seed).next_int_bounded(4) < 1 {
+        let expected = if WorldgenRandom::new(seed).next_int_bounded(4) < 1 {
             block("stone")
         } else {
             block("oak_log")
@@ -493,13 +493,13 @@ fn selectors_choose_with_vanillas_draws() {
         let at = BlockPos::new(2, 70, 2);
         let wrote = |json: &str| place_in_flat(&env, json, seed, at, |_| {}).writes[0].1.clone();
 
-        let want = if Xoroshiro128PlusPlus::new(seed).next_boolean() { block("oak_log") } else { block("stone") };
+        let want = if WorldgenRandom::new(seed).next_boolean() { block("oak_log") } else { block("stone") };
         assert_eq!(wrote(&boolean), want, "boolean, seed {seed}");
 
-        let want = if Xoroshiro128PlusPlus::new(seed).next_int_bounded(2) == 0 { block("oak_log") } else { block("stone") };
+        let want = if WorldgenRandom::new(seed).next_int_bounded(2) == 0 { block("oak_log") } else { block("stone") };
         assert_eq!(wrote(&simple), want, "simple, seed {seed}");
 
-        let want = if Xoroshiro128PlusPlus::new(seed).next_float() < 0.5 { block("oak_log") } else { block("stone") };
+        let want = if WorldgenRandom::new(seed).next_float() < 0.5 { block("oak_log") } else { block("stone") };
         assert_eq!(wrote(&chance), want, "chance, seed {seed}");
     }
 }

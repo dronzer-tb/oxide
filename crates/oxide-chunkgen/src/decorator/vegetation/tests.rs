@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use oxide_core::{BlockPos, BlockState, ChunkPos, RandomSource, Xoroshiro128PlusPlus};
+use oxide_core::{BlockPos, BlockState, ChunkPos, RandomSource, WorldgenRandom};
 use oxide_datapack::placement::PlacedFeature as PlacedFeatureIr;
 use oxide_datapack::{load_tags, BlockFacts, Registry, TagSet};
 
@@ -167,7 +167,7 @@ fn place(
     let mut prep = Prep { region: &mut region, edits: HashMap::new() };
     prepare(&mut prep);
     let edits = prep.edits;
-    let mut random = Xoroshiro128PlusPlus::new(seed);
+    let mut random = WorldgenRandom::new(seed);
     let mut tally = UnsupportedTally::default();
     let placed_any = {
         let mut cx = FeatureContext {
@@ -227,7 +227,7 @@ fn vines_need_air_and_something_to_hold() {
 fn bamboo_builds_a_stalk_with_a_three_block_crown() {
     let env = env(&[], Box::new(AlwaysSurvives));
     let outcome = place(&env, BAMBOO_PLAIN, 77, BlockPos::new(2, 64, 3), 64, |_| {});
-    let mut mirror = Xoroshiro128PlusPlus::new(77);
+    let mut mirror = WorldgenRandom::new(77);
     let height = mirror.next_int_bounded(12) + 5;
     let top = 64 + height;
     assert!(outcome.placed);
@@ -247,7 +247,7 @@ fn bamboo_builds_a_stalk_with_a_three_block_crown() {
 fn bamboo_lays_a_podzol_disc_where_the_tag_allows() {
     let env = env(&[("beneath_bamboo_podzol_replaceable", &["stone"])], Box::new(AlwaysSurvives));
     let outcome = place(&env, BAMBOO_PODZOL, 5, BlockPos::new(0, 64, 0), 64, |_| {});
-    let mut mirror = Xoroshiro128PlusPlus::new(5);
+    let mut mirror = WorldgenRandom::new(5);
     mirror.next_int_bounded(12);
     mirror.next_float();
     let radius = mirror.next_int_bounded(4) + 1;
@@ -283,7 +283,7 @@ fn mushroom(kind: &str, radius: Option<i32>) -> String {
 }
 
 fn mushroom_height(seed: i64) -> i32 {
-    let mut mirror = Xoroshiro128PlusPlus::new(seed);
+    let mut mirror = WorldgenRandom::new(seed);
     let mut height = mirror.next_int_bounded(3) + 4;
     if mirror.next_int_bounded(12) == 0 {
         height *= 2;
@@ -417,7 +417,7 @@ fn a_floor_patch_lays_ground_and_plants_above_it() {
     let json = patch("vegetation_patch", "moss_block", "floor", "1", 0.8, GRASS_PLACED);
     let seed = 21;
     let outcome = place(&env, &json, seed, BlockPos::new(0, 64, 0), 64, |_| {});
-    let mut mirror = Xoroshiro128PlusPlus::new(seed);
+    let mut mirror = WorldgenRandom::new(seed);
     let x_radius = mirror.next_int_bounded(4) + 4 + 1;
     let z_radius = mirror.next_int_bounded(4) + 4 + 1;
     assert!(outcome.placed);
