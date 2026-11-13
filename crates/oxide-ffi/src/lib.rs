@@ -101,6 +101,34 @@ pub unsafe extern "C" fn oxide_close(handle: *mut OxideGenerator) {
     }));
 }
 
+/// Turns native decoration (features: ores, plants, trees as they are ported) on or off.
+/// Returns `1` when decoration is now on, `0` when off, `-1` on error (check
+/// `oxide_last_error`) -- notably when asked to turn it on for a datapack that lacks the
+/// block facts or tags decoration needs. Off is the default, and with it off a caller must
+/// leave the server's own decoration pass on; with it on, off, or both apply.
+///
+/// # Safety
+/// `handle` must be a live pointer from `oxide_open`. Call before generating chunks: chunks
+/// generated on either side of a switch do not match each other.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_set_decoration(handle: *const OxideGenerator, enabled: i32) -> i32 {
+    if handle.is_null() {
+        set_last_error("oxide_set_decoration: handle must not be null");
+        return -1;
+    }
+    match catch_unwind(AssertUnwindSafe(|| (*handle).set_decoration(enabled != 0))) {
+        Ok(Ok(on)) => i32::from(on),
+        Ok(Err(e)) => {
+            set_last_error(format!("{e:#}"));
+            -1
+        }
+        Err(_) => {
+            set_last_error("oxide_set_decoration panicked");
+            -1
+        }
+    }
+}
+
 /// # Safety
 /// `handle` must be a live pointer from `oxide_open`.
 #[no_mangle]
@@ -186,7 +214,7 @@ pub unsafe extern "C" fn oxide_default_fluid_name(handle: *const OxideGenerator)
 /// ore veins, then the surface rules, then the carvers -- vanilla's own order. A caller must
 /// therefore suppress the server's surface and carver passes, or both apply twice.
 ///
-/// Still absent (see this crate's module doc): structures and features.
+/// With `oxide_set_decoration` on, features run too. Still absent: structures.
 ///
 /// Returns the number of blocks written, or a negative value on error (check
 /// `oxide_last_error`): `-1` null/misused handle, `-2` buffer too small or generation failed,

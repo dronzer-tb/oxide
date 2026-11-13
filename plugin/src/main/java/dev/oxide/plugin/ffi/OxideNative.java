@@ -57,6 +57,7 @@ public final class OxideNative implements AutoCloseable {
     private final MethodHandle hBiomePaletteName;
     private final MethodHandle hBiomeAt;
     private final MethodHandle hBaseHeight;
+    private final MethodHandle hSetDecoration;
     private final MethodHandle hLastError;
 
     public OxideNative(Path libraryPath) {
@@ -94,6 +95,8 @@ public final class OxideNative implements AutoCloseable {
         this.hBaseHeight = downcall(lookup, "oxide_base_height", FunctionDescriptor.of(
                 ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
                 ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
+        this.hSetDecoration = downcall(lookup, "oxide_set_decoration", FunctionDescriptor.of(
+                ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
         this.hLastError = downcall(lookup, "oxide_last_error", FunctionDescriptor.of(ValueLayout.ADDRESS));
     }
 
@@ -209,6 +212,24 @@ public final class OxideNative implements AutoCloseable {
                 return (int) hBaseHeight.invokeExact(ptr, x, z, heightMapOrdinal);
             } catch (Throwable t) {
                 throw new RuntimeException("oxide_base_height threw across the FFI boundary", t);
+            }
+        }
+
+        /**
+         * Turns native decoration (features: ores, trees, plants) on or off for this handle.
+         * Must be called before the first chunk is generated. Throws when asked to turn it on
+         * and the datapack lacks what decoration needs -- silently generating a world with no
+         * decoration at all would be worse than refusing to start.
+         */
+        public void setDecoration(boolean enabled) {
+            int result;
+            try {
+                result = (int) hSetDecoration.invokeExact(ptr, enabled ? 1 : 0);
+            } catch (Throwable t) {
+                throw new RuntimeException("oxide_set_decoration threw across the FFI boundary", t);
+            }
+            if (result < 0) {
+                throw new IllegalStateException("oxide_set_decoration failed: " + lastError());
             }
         }
 

@@ -61,6 +61,14 @@ public final class GeneratorService {
      * @throws IllegalStateException if the native library or datapack fails to load/open --
      *         see {@link OxideNative#open} for what that wraps.
      */
+    /**
+     * Whether Oxide decorates chunks itself ({@code native-decoration} in config). When true the
+     * server's own decoration pass must be off, or every ore and tree is placed twice.
+     */
+    public boolean nativeDecoration() {
+        return Boolean.parseBoolean(host.setting("native-decoration", "false"));
+    }
+
     public synchronized OxideNative.Handle openHandle(long seed, String dimensionId) {
         String key = dimensionId + "@" + seed;
         OxideNative.Handle existing = openHandles.get(key);
@@ -72,6 +80,9 @@ public final class GeneratorService {
         }
         Path datapack = resolveDatapackPath();
         OxideNative.Handle handle = nativeLib.open(datapack.toString(), dimensionId, seed);
+        if (nativeDecoration()) {
+            handle.setDecoration(true);
+        }
         openHandles.put(key, handle);
         return handle;
     }
