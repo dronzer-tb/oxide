@@ -86,7 +86,7 @@ pub enum ConfiguredFeature {
     #[serde(rename = "minecraft:coral_tree")]
     CoralTree(serde_json::Value),
     #[serde(rename = "minecraft:speleothem")]
-    Speleothem(serde_json::Value),
+    Speleothem(crate::cave_feature::SpeleothemConfig),
     #[serde(rename = "minecraft:template")]
     Template(serde_json::Value),
     #[serde(rename = "minecraft:bamboo")]
@@ -108,17 +108,17 @@ pub enum ConfiguredFeature {
     #[serde(rename = "minecraft:chorus_plant")]
     ChorusPlant(serde_json::Value),
     #[serde(rename = "minecraft:delta_feature")]
-    DeltaFeature(serde_json::Value),
+    DeltaFeature(crate::nether_feature::DeltaConfig),
     #[serde(rename = "minecraft:desert_well")]
     DesertWell(serde_json::Value),
     #[serde(rename = "minecraft:end_gateway")]
-    EndGateway(serde_json::Value),
+    EndGateway(crate::end_feature::EndGatewayConfig),
     #[serde(rename = "minecraft:end_island")]
     EndIsland(serde_json::Value),
     #[serde(rename = "minecraft:end_platform")]
     EndPlatform(serde_json::Value),
     #[serde(rename = "minecraft:end_spike")]
-    EndSpike(serde_json::Value),
+    EndSpike(crate::end_feature::EndSpikeConfig),
     #[serde(rename = "minecraft:fallen_tree")]
     FallenTree(crate::tree::FallenTreeConfig),
     #[serde(rename = "minecraft:fossil")]
@@ -126,13 +126,13 @@ pub enum ConfiguredFeature {
     #[serde(rename = "minecraft:freeze_top_layer")]
     FreezeTopLayer(serde_json::Value),
     #[serde(rename = "minecraft:geode")]
-    Geode(serde_json::Value),
+    Geode(crate::cave_feature::GeodeConfig),
     #[serde(rename = "minecraft:glowstone_blob")]
     GlowstoneBlob(serde_json::Value),
     #[serde(rename = "minecraft:huge_brown_mushroom")]
     HugeBrownMushroom(crate::vegetation_feature::HugeMushroomConfig),
     #[serde(rename = "minecraft:huge_fungus")]
-    HugeFungus(serde_json::Value),
+    HugeFungus(crate::nether_feature::HugeFungusConfig),
     #[serde(rename = "minecraft:huge_red_mushroom")]
     HugeRedMushroom(crate::vegetation_feature::HugeMushroomConfig),
     #[serde(rename = "minecraft:iceberg")]
@@ -142,7 +142,7 @@ pub enum ConfiguredFeature {
     #[serde(rename = "minecraft:lake")]
     Lake(crate::ground_feature::LakeConfig),
     #[serde(rename = "minecraft:large_dripstone")]
-    LargeDripstone(serde_json::Value),
+    LargeDripstone(crate::cave_feature::LargeDripstoneConfig),
     #[serde(rename = "minecraft:monster_room")]
     MonsterRoom(serde_json::Value),
     #[serde(rename = "minecraft:multiface_growth")]
@@ -150,17 +150,17 @@ pub enum ConfiguredFeature {
     #[serde(rename = "minecraft:nether_forest_vegetation")]
     NetherForestVegetation(serde_json::Value),
     #[serde(rename = "minecraft:netherrack_replace_blobs")]
-    NetherrackReplaceBlobs(serde_json::Value),
+    NetherrackReplaceBlobs(crate::nether_feature::ReplaceBlobsConfig),
     #[serde(rename = "minecraft:root_system")]
     RootSystem(crate::vegetation_feature::RootSystemConfig),
     #[serde(rename = "minecraft:sculk_patch")]
-    SculkPatch(serde_json::Value),
+    SculkPatch(crate::cave_feature::SculkPatchConfig),
     #[serde(rename = "minecraft:sea_pickle")]
     SeaPickle(serde_json::Value),
     #[serde(rename = "minecraft:seagrass")]
     Seagrass(serde_json::Value),
     #[serde(rename = "minecraft:speleothem_cluster")]
-    SpeleothemCluster(serde_json::Value),
+    SpeleothemCluster(crate::cave_feature::SpeleothemClusterConfig),
     #[serde(rename = "minecraft:spike")]
     Spike(crate::ground_feature::SpikeConfig),
     #[serde(rename = "minecraft:tree")]

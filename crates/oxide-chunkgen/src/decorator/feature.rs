@@ -27,8 +27,11 @@ use oxide_datapack::feature::Holder;
 use oxide_datapack::placement::PlacedFeature as PlacedFeatureIr;
 use oxide_datapack::{BlockFact, BlockFacts, Registry};
 
+use super::cave::CaveFeature;
 use super::context::{block_in, FeatureContext};
+use super::end::EndFeature;
 use super::ground::GroundFeature;
+use super::nether::NetherFeature;
 use super::ore::OreFeature;
 use super::placement::{run, Modifier};
 use super::spring::SpringFeature;
@@ -62,6 +65,12 @@ pub enum Feature {
     Vegetation(VegetationFeature),
     /// Disks, piles, blobs, columns, lakes, snow and ice, spikes, icebergs, magma, monster rooms.
     Ground(GroundFeature),
+    /// Dripstone and sulfur spikes, large dripstone, geodes and sculk patches.
+    Cave(CaveFeature),
+    /// Chorus plants, end islands and spikes, gateways, platforms and the bonus chest.
+    End(EndFeature),
+    /// Delta patches, netherrack blobs and huge fungi.
+    Nether(NetherFeature),
     NoOp,
     Tree(TreeFeature),
     FallenTree(FallenTreeFeature),
@@ -234,6 +243,30 @@ impl<'d> Compiler<'d> {
                 let facts = self.facts;
                 Feature::FallenTree(FallenTreeFeature::compile(config, facts, &mut |id| self.configured_by_id(id))?)
             }
+            other @ (ConfiguredFeature::DeltaFeature(_)
+            | ConfiguredFeature::NetherrackReplaceBlobs(_)
+            | ConfiguredFeature::HugeFungus(_)) => match NetherFeature::compile(other, self.facts)? {
+                Some(feature) => Feature::Nether(feature),
+                None => Feature::Unsupported(type_id(other)),
+            },
+            other @ (ConfiguredFeature::ChorusPlant(_)
+            | ConfiguredFeature::EndIsland(_)
+            | ConfiguredFeature::EndSpike(_)
+            | ConfiguredFeature::EndGateway(_)
+            | ConfiguredFeature::EndPlatform(_)
+            | ConfiguredFeature::VoidStartPlatform(_)
+            | ConfiguredFeature::BonusChest(_)) => match EndFeature::compile(other, self.facts)? {
+                Some(feature) => Feature::End(feature),
+                None => Feature::Unsupported(type_id(other)),
+            },
+            other @ (ConfiguredFeature::Speleothem(_)
+            | ConfiguredFeature::SpeleothemCluster(_)
+            | ConfiguredFeature::LargeDripstone(_)
+            | ConfiguredFeature::Geode(_)
+            | ConfiguredFeature::SculkPatch(_)) => match CaveFeature::compile(other, self.facts)? {
+                Some(feature) => Feature::Cave(feature),
+                None => Feature::Unsupported(type_id(other)),
+            },
             other => match GroundFeature::compile(other, self.facts)? {
                 Some(feature) => Feature::Ground(feature),
                 None => Feature::Unsupported(type_id(other)),
@@ -310,6 +343,9 @@ pub fn place_configured_feature(feature: &Feature, cx: &mut FeatureContext<'_, '
             false
         }
         Feature::Ground(feature) => feature.place(cx),
+        Feature::Cave(feature) => feature.place(cx),
+        Feature::End(feature) => feature.place(cx),
+        Feature::Nether(feature) => feature.place(cx),
         Feature::RandomBooleanSelector { when_true, when_false } => {
             let chosen = if cx.random.next_boolean() { when_true } else { when_false };
             place_placed(chosen, cx, origin, None)

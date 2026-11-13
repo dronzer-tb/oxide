@@ -18,9 +18,12 @@
 //! unknown. See [`BiomeDecorator::unsupported`].
 
 mod biome_decorator;
+mod cave;
 mod context;
+mod end;
 mod feature;
 mod ground;
+mod nether;
 mod ore;
 mod placement;
 mod predicate;
@@ -40,7 +43,10 @@ pub use context::{
     block_in, BlockBehaviours, Environment, FeatureContext, NoBlockBehaviours, UnsupportedTally,
 };
 pub use feature::{place_configured_feature, place_placed, Compiler, Feature, Placed};
+pub use end::EndFeature;
+pub use cave::CaveFeature;
 pub use ground::{BiomeClimate, GroundFeature};
+pub use nether::NetherFeature;
 pub use ore::{OreFeature, RuleTest};
 pub use placement::{run as run_placement, Modifier};
 pub use predicate::{IdSet, Predicate};
