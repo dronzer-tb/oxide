@@ -45,6 +45,7 @@ fn env(tags: &[(&str, &str)], behaviours: Box<dyn BlockBehaviours>) -> Environme
         sea_level: 63,
         behaviours,
         placed: HashMap::new(),
+        biome_climate: HashMap::new(),
         biome_features: HashMap::new(),
     }
 }
@@ -506,11 +507,11 @@ fn selectors_choose_with_vanillas_draws() {
 #[test]
 fn a_feature_type_without_a_family_places_nothing_and_is_tallied() {
     let env = env(&[], Box::new(AlwaysSurvives));
-    let json = r#"{"feature":{"type":"minecraft:tree","config":{}},
+    let json = r#"{"feature":{"type":"minecraft:fossil","config":{}},
         "placement":[{"type":"minecraft:count","count":3}]}"#;
     let outcome = place_in_flat(&env, json, 1, BlockPos::new(4, 64, 4), |_| {});
     assert!(!outcome.placed && outcome.writes.is_empty());
-    assert_eq!(outcome.tally.get("feature:minecraft:tree"), 3);
+    assert_eq!(outcome.tally.get("feature:minecraft:fossil"), 3);
 }
 
 #[test]
@@ -569,6 +570,115 @@ fn a_decorator_built_from_the_reference_tree_writes_ores_deterministically() {
     assert_ne!(first, writes_for(&other));
 
     let tally = decorator.unsupported();
-    assert!(!tally.is_empty(), "plains lists vegetation whose survival rules are unknown");
     eprintln!("{} writes, unsupported: {:?}", first.len(), tally.entries().collect::<Vec<_>>());
+}
+
+/// Facts for the two-block plants the tests below place, in the exporter's own format.
+fn plant_facts() -> BlockFacts {
+    let dir = std::env::temp_dir().join(format!("oxide-plant-facts-{}-{:?}", std::process::id(), std::thread::current().id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("block_facts.tsv"),
+        "minecraft:air\tDarc\n\
+         minecraft:stone\tDsmoudf1234\n\
+         minecraft:water[level=0]\tDlrcWS134\n\
+         minecraft:tall_grass[half=lower]\tDrc1\n\
+         minecraft:tall_grass[half=upper]\trc1\n\
+         minecraft:small_dripleaf[facing=north,half=lower,waterlogged=false]\tDrc1\n\
+         minecraft:small_dripleaf[facing=north,half=lower,waterlogged=true]\trcWS1\n\
+         minecraft:small_dripleaf[facing=north,half=upper,waterlogged=false]\trc1\n\
+         minecraft:small_dripleaf[facing=north,half=upper,waterlogged=true]\trcWS1\n",
+    )
+    .unwrap();
+    let facts = BlockFacts::load(&dir).unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+    facts
+}
+
+fn two_block_env() -> Environment {
+    let mut env = env(&[], Box::new(AlwaysSurvives));
+    env.facts = plant_facts();
+    env
+}
+
+fn plant_json(state: &str) -> String {
+    feature_json(&format!(r#"{{"type":"minecraft:simple_state_provider","state":{state}}}"#))
+}
+
+#[test]
+fn a_two_block_plant_is_placed_as_both_halves() {
+    let env = two_block_env();
+    let json = plant_json(r#"{"Name":"minecraft:tall_grass","Properties":{"half":"lower"}}"#);
+    let outcome = place_in_flat(&env, &json, 1, BlockPos::new(4, 64, 4), |_| {});
+    assert!(outcome.placed);
+    assert_eq!(
+        outcome.writes,
+        vec![
+            (BlockPos::new(4, 64, 4), block("tall_grass").with_property("half", "lower")),
+            (BlockPos::new(4, 65, 4), block("tall_grass").with_property("half", "upper")),
+        ]
+    );
+}
+
+#[test]
+fn a_two_block_plant_needs_the_cell_above_empty() {
+    let env = two_block_env();
+    let json = plant_json(r#"{"Name":"minecraft:tall_grass","Properties":{"half":"lower"}}"#);
+    let outcome = place_in_flat(&env, &json, 1, BlockPos::new(4, 64, 4), |region| {
+        region.set_block(BlockPos::new(4, 65, 4), block("stone"));
+    });
+    assert!(!outcome.placed);
+    assert_eq!(outcome.writes, vec![(BlockPos::new(4, 65, 4), block("stone"))], "only the test's own block");
+}
+
+#[test]
+fn each_half_copies_its_waterlogging_from_the_water_already_there() {
+    let env = two_block_env();
+    let json = plant_json(
+        r#"{"Name":"minecraft:small_dripleaf","Properties":{"half":"lower","facing":"north","waterlogged":"false"}}"#,
+    );
+    let outcome = place_in_flat(&env, &json, 1, BlockPos::new(4, 64, 4), |region| {
+        region.set_block(BlockPos::new(4, 64, 4), block("water").with_property("level", "0"));
+    });
+    assert!(outcome.placed);
+    let dripleaf = |half: &str, waterlogged: &str| {
+        block("small_dripleaf")
+            .with_property("facing", "north")
+            .with_property("half", half)
+            .with_property("waterlogged", waterlogged)
+    };
+    let written: HashMap<_, _> = outcome.writes.into_iter().collect();
+    assert_eq!(written[&BlockPos::new(4, 64, 4)], dripleaf("lower", "true"));
+    assert_eq!(written[&BlockPos::new(4, 65, 4)], dripleaf("upper", "false"));
+}
+
+/// A decorator built from the real 26.2 export, on grass, no longer stops at "survival unknown"
+/// for plants whose rule is ported.
+#[test]
+fn reference_decoration_on_grass_places_short_grass() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../reference");
+    if !root.join("data/minecraft/worldgen/placed_feature").is_dir() || !root.join("block_facts.tsv").is_file() {
+        eprintln!("skipping: no extracted vanilla export at {}", root.display());
+        return;
+    }
+    let datapack = oxide_datapack::load_datapack(&root).expect("reference datapack loads");
+    let decorator = BiomeDecorator::new(&datapack, &overworld_biomes(), 4242, 63).expect("decorator builds");
+    let center = ChunkPos::new(3, -2);
+    let mut chunks = flat_ring(center, 64);
+    for chunk in &mut chunks {
+        let top = &mut chunk.sections[(63 - chunk.min_y) as usize >> 4];
+        for z in 0..16 {
+            for x in 0..16 {
+                let slot = crate::fill::local_index(x, ((63 - chunk.min_y) & 15) as usize, z);
+                top.block_states.set(slot, block("grass_block").with_property("snowy", "false"));
+            }
+        }
+    }
+    let mut region = DecorationRegion::new(center, refs(&chunks), decorator.facts());
+    decorator.decorate(&mut region);
+    let writes = region.into_writes();
+    let grass = writes.iter().filter(|(_, state)| state.name.path() == "short_grass").count();
+    let tally = decorator.unsupported();
+    assert_eq!(tally.get("survival:minecraft:short_grass"), 0, "{:?}", tally.entries().collect::<Vec<_>>());
+    assert!(grass > 0, "no short_grass among {} writes", writes.len());
 }

@@ -14,6 +14,7 @@ pub mod density_function;
 pub mod dimension;
 pub mod error;
 pub mod feature;
+pub mod ground_feature;
 pub mod ident_serde;
 pub mod loader;
 pub mod multi_noise;
@@ -26,6 +27,8 @@ pub mod resolve;
 pub mod structure;
 pub mod surface_rule;
 pub mod tags;
+pub mod tree;
+pub mod vegetation_feature;
 pub mod version;
 
 pub use biome::{Biome, BiomeEffects, SpawnerData};

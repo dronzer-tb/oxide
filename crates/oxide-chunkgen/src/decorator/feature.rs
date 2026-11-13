@@ -21,17 +21,20 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
-use oxide_core::{BlockPos, RandomSource, ResourceLocation};
+use oxide_core::{BlockPos, BlockState, RandomSource, ResourceLocation};
 use oxide_datapack::feature::{ConfiguredFeature, HolderList};
 use oxide_datapack::feature::Holder;
 use oxide_datapack::placement::PlacedFeature as PlacedFeatureIr;
-use oxide_datapack::{BlockFacts, Registry};
+use oxide_datapack::{BlockFact, BlockFacts, Registry};
 
-use super::context::FeatureContext;
+use super::context::{block_in, FeatureContext};
+use super::ground::GroundFeature;
 use super::ore::OreFeature;
 use super::placement::{run, Modifier};
 use super::spring::SpringFeature;
 use super::state_provider::{StateProvider, Unsupported};
+use super::tree::{FallenTreeFeature, TreeFeature};
+use super::vegetation::VegetationFeature;
 
 /// A placed feature: a modifier chain and the feature it leads to.
 #[derive(Debug)]
@@ -50,10 +53,18 @@ pub enum Feature {
     /// Rolls each entry's `chance` in order and places the first that passes, else `default`.
     RandomSelector { features: Vec<(f32, Arc<Placed>)>, default: Arc<Placed> },
     SimpleRandomSelector(Vec<Arc<Placed>>),
+    /// Places one entry picked by weight; a zero total weight places nothing.
+    WeightedRandomSelector(Vec<(Arc<Placed>, i32)>),
     RandomBooleanSelector { when_true: Arc<Placed>, when_false: Arc<Placed> },
     /// Places every entry in order, stopping at the first that fails.
     Sequence(Vec<Arc<Placed>>),
+    /// Patches, root systems, multiface growth, vines, bamboo and huge mushrooms.
+    Vegetation(VegetationFeature),
+    /// Disks, piles, blobs, columns, lakes, snow and ice, spikes, icebergs, magma, monster rooms.
+    Ground(GroundFeature),
     NoOp,
+    Tree(TreeFeature),
+    FallenTree(FallenTreeFeature),
     /// A feature type no family implements yet; the string is its `minecraft:` type id.
     Unsupported(String),
 }
@@ -102,6 +113,20 @@ impl<'d> Compiler<'d> {
         let compiled = Arc::new(self.compile_placed(ir).with_context(|| format!("placed feature {id}"))?);
         self.placed_memo.insert(id.clone(), compiled.clone());
         Ok(compiled)
+    }
+
+    /// The compiled `configured_feature` registered as `id`, or `None` when the registry has no
+    /// such entry. For features that place another registered feature (the pale-moss patch).
+    pub fn configured_by_id(&mut self, id: &ResourceLocation) -> Result<Option<Arc<Feature>>> {
+        if let Some(found) = self.configured_memo.get(id) {
+            return Ok(Some(found.clone()));
+        }
+        let Some(config) = self.configured.get(id) else {
+            return Ok(None);
+        };
+        let compiled = Arc::new(self.feature(config).with_context(|| format!("configured feature {id}"))?);
+        self.configured_memo.insert(id.clone(), compiled.clone());
+        Ok(Some(compiled))
     }
 
     fn placed_holder(&mut self, holder: &Holder<PlacedFeatureIr>) -> Result<Arc<Placed>> {
@@ -181,7 +206,38 @@ impl<'d> Compiler<'d> {
                 config.features.iter().map(|holder| self.placed_holder(holder)).collect::<Result<_>>()?,
             ),
             ConfiguredFeature::NoOp(_) => Feature::NoOp,
-            other => Feature::Unsupported(type_id(other)),
+            ConfiguredFeature::WeightedRandomSelector(config) => Feature::WeightedRandomSelector(
+                config
+                    .features
+                    .iter()
+                    .map(|entry| Ok((self.placed_holder(&entry.data)?, entry.weight)))
+                    .collect::<Result<_>>()?,
+            ),
+            other @ (ConfiguredFeature::VegetationPatch(_)
+            | ConfiguredFeature::WaterloggedVegetationPatch(_)
+            | ConfiguredFeature::RootSystem(_)
+            | ConfiguredFeature::MultifaceGrowth(_)
+            | ConfiguredFeature::Vines(_)
+            | ConfiguredFeature::Bamboo(_)
+            | ConfiguredFeature::HugeRedMushroom(_)
+            | ConfiguredFeature::HugeBrownMushroom(_)) => {
+                match VegetationFeature::compile(other, self.facts, &mut |holder| self.placed_holder(holder))? {
+                    Some(feature) => Feature::Vegetation(feature),
+                    None => Feature::Unsupported(type_id(other)),
+                }
+            }
+            ConfiguredFeature::Tree(config) => {
+                let facts = self.facts;
+                Feature::Tree(TreeFeature::compile(config, facts, &mut |id| self.configured_by_id(id))?)
+            }
+            ConfiguredFeature::FallenTree(config) => {
+                let facts = self.facts;
+                Feature::FallenTree(FallenTreeFeature::compile(config, facts, &mut |id| self.configured_by_id(id))?)
+            }
+            other => match GroundFeature::compile(other, self.facts)? {
+                Some(feature) => Feature::Ground(feature),
+                None => Feature::Unsupported(type_id(other)),
+            },
         })
     }
 }
@@ -238,6 +294,22 @@ pub fn place_configured_feature(feature: &Feature, cx: &mut FeatureContext<'_, '
             let index = cx.random.next_int_bounded(features.len() as i32) as usize;
             place_placed(&features[index], cx, origin, None)
         }
+        Feature::WeightedRandomSelector(features) => {
+            let total = features.iter().fold(0i32, |sum, (_, weight)| sum.wrapping_add(*weight));
+            if total <= 0 {
+                return false;
+            }
+            // One bounded draw, then the first entry whose cumulative weight passes it.
+            let mut remaining = cx.random.next_int_bounded(total);
+            for (placed, weight) in features {
+                remaining -= weight;
+                if remaining < 0 {
+                    return place_placed(placed, cx, origin, None);
+                }
+            }
+            false
+        }
+        Feature::Ground(feature) => feature.place(cx),
         Feature::RandomBooleanSelector { when_true, when_false } => {
             let chosen = if cx.random.next_boolean() { when_true } else { when_false };
             place_placed(chosen, cx, origin, None)
@@ -250,6 +322,9 @@ pub fn place_configured_feature(feature: &Feature, cx: &mut FeatureContext<'_, '
             }
             true
         }
+        Feature::Vegetation(feature) => feature.place(cx),
+        Feature::Tree(tree) => tree.place(cx),
+        Feature::FallenTree(tree) => tree.place(cx),
         Feature::NoOp => true,
         Feature::Unsupported(type_id) => {
             cx.unsupported.record("feature", type_id);
@@ -259,12 +334,12 @@ pub fn place_configured_feature(feature: &Feature, cx: &mut FeatureContext<'_, '
 }
 
 /// `SimpleBlockFeature.place`: the provider's state, if it can survive here, written at the
-/// origin.
+/// origin. A two-block plant (a state with `half=lower`) needs the cell above it empty and has
+/// both halves written, each taking its waterlogging from the water already there
+/// (`DoublePlantBlock.placeAt`).
 ///
-/// Two things stop it short of vanilla, and both are tallied rather than guessed. Survival is
-/// per-block Java (`BlockBehaviours`); with no implementation every state is unknown. And a
-/// two-block plant (a state with `half=lower`) needs both halves written with the waterlogging
-/// copied from the level, which is not ported. Vanilla's scheduled tick is not recorded.
+/// Survival is per-block Java (`BlockBehaviours`); a block whose rule is unknown is tallied and
+/// not placed rather than guessed. Vanilla's scheduled tick is not recorded.
 fn place_simple_block(provider: &StateProvider, cx: &mut FeatureContext<'_, '_, '_>) -> bool {
     let pos = cx.origin;
     let state = match provider.state(cx, pos) {
@@ -284,8 +359,24 @@ fn place_simple_block(provider: &StateProvider, cx: &mut FeatureContext<'_, '_, 
         }
     }
     if state.properties.get("half").is_some_and(|half| half == "lower") {
-        cx.unsupported.record("feature", "minecraft:simple_block (two-block plant)");
-        return false;
+        return place_two_block_plant(cx, state, pos);
     }
     cx.region.set_block(pos, state)
+}
+
+/// `DoublePlantBlock.placeAt`, behind `SimpleBlockFeature`'s check that the cell above is empty.
+fn place_two_block_plant(cx: &mut FeatureContext<'_, '_, '_>, state: BlockState, pos: BlockPos) -> bool {
+    let above = BlockPos::new(pos.x, pos.y + 1, pos.z);
+    if !cx.env.facts.is(block_in(cx.region, above), BlockFact::Air) {
+        return false;
+    }
+    for (at, half) in [(pos, "lower"), (above, "upper")] {
+        let mut half_state = state.clone().with_property("half", half);
+        if half_state.properties.contains_key("waterlogged") {
+            let in_water = cx.env.facts.is(block_in(cx.region, at), BlockFact::Water);
+            half_state = half_state.with_property("waterlogged", in_water.to_string());
+        }
+        cx.region.set_block(at, half_state);
+    }
+    true
 }

@@ -25,8 +25,10 @@ use anyhow::{anyhow, bail, Context, Result};
 use oxide_core::{BiomeId, BlockPos, Xoroshiro128PlusPlus};
 use oxide_datapack::Datapack;
 
-use super::context::{BlockBehaviours, Environment, FeatureContext, NoBlockBehaviours, UnsupportedTally};
+use super::context::{BlockBehaviours, Environment, FeatureContext, UnsupportedTally};
+use super::survival::SurvivalRules;
 use super::feature::{place_placed, Compiler, Placed};
+use super::ground::BiomeClimate;
 use crate::decorate::Decorator;
 use crate::decoration_seed::{set_decoration_seed, set_feature_seed};
 use crate::feature_order::build_features_per_step;
@@ -151,8 +153,13 @@ impl BiomeDecorator {
             facts: datapack.block_facts.clone(),
             seed: world_seed,
             sea_level,
-            behaviours: Box::new(NoBlockBehaviours),
+            behaviours: Box::new(SurvivalRules::new(&datapack.block_tags)),
             placed: compiler.into_placed(),
+            biome_climate: datapack
+                .biomes
+                .iter()
+                .map(|(id, biome)| Ok((id.clone(), BiomeClimate::from_biome(biome).with_context(|| format!("biome {id}"))?)))
+                .collect::<Result<_>>()?,
             biome_features,
         };
         Ok(Self { env, steps, placed, biome_steps, unsupported: Mutex::new(UnsupportedTally::default()) })

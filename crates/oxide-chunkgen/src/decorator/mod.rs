@@ -20,6 +20,7 @@
 mod biome_decorator;
 mod context;
 mod feature;
+mod ground;
 mod ore;
 mod placement;
 mod predicate;
@@ -27,6 +28,9 @@ mod provider;
 mod simplex;
 mod spring;
 mod state_provider;
+mod survival;
+mod tree;
+mod vegetation;
 
 #[cfg(test)]
 mod tests;
@@ -36,6 +40,7 @@ pub use context::{
     block_in, BlockBehaviours, Environment, FeatureContext, NoBlockBehaviours, UnsupportedTally,
 };
 pub use feature::{place_configured_feature, place_placed, Compiler, Feature, Placed};
+pub use ground::{BiomeClimate, GroundFeature};
 pub use ore::{OreFeature, RuleTest};
 pub use placement::{run as run_placement, Modifier};
 pub use predicate::{IdSet, Predicate};
@@ -44,3 +49,6 @@ pub use provider::{
 };
 pub use spring::SpringFeature;
 pub use state_provider::{state_from_spec, StateProvider, Unsupported};
+pub use survival::SurvivalRules;
+pub use tree::{FallenTreeFeature, TreeFeature};
+pub use vegetation::VegetationFeature;

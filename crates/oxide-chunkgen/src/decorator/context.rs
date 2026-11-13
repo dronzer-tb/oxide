@@ -18,6 +18,7 @@ use oxide_core::{BiomeId, BlockPos, BlockState, ResourceLocation, Xoroshiro128Pl
 use oxide_datapack::{BlockFacts, TagSet};
 
 use super::feature::Placed;
+use super::ground::BiomeClimate;
 use super::provider::WorldBounds;
 use crate::region::DecorationRegion;
 
@@ -88,6 +89,8 @@ pub struct Environment {
     /// Every placed feature a biome lists, compiled, by registry id. Feature families that
     /// reference another placed feature by id (rather than inline) look it up here.
     pub placed: HashMap<ResourceLocation, Arc<Placed>>,
+    /// Each biome's temperature and precipitation settings, for snow and ice.
+    pub biome_climate: HashMap<BiomeId, BiomeClimate>,
     /// The placed features each biome lists, by the content key that identifies them: what the
     /// `minecraft:biome` placement modifier checks against.
     pub(super) biome_features: HashMap<BiomeId, HashSet<u32>>,

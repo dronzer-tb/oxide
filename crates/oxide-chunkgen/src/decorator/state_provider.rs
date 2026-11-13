@@ -101,7 +101,7 @@ pub enum StateProvider {
         values: IntProvider,
     },
     RuleBased {
-        fallback: Box<StateProvider>,
+        fallback: Option<Box<StateProvider>>,
         rules: Vec<(Predicate, StateProvider)>,
     },
     Noise {
@@ -149,7 +149,7 @@ impl StateProvider {
                 values: values.clone(),
             },
             BlockStateProvider::RuleBased { fallback, rules } => Self::RuleBased {
-                fallback: Box::new(Self::compile(fallback, facts)?),
+                fallback: fallback.as_ref().map(|fallback| Self::compile(fallback, facts).map(Box::new)).transpose()?,
                 rules: rules
                     .iter()
                     .map(|rule| {
@@ -247,7 +247,10 @@ impl StateProvider {
                         }
                     }
                 }
-                fallback.state(cx, pos)?
+                match fallback {
+                    Some(fallback) => fallback.state(cx, pos)?,
+                    None => None,
+                }
             }
             Self::Noise { source, states } => {
                 if states.is_empty() {
