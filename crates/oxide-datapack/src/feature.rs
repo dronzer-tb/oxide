@@ -88,7 +88,7 @@ pub enum ConfiguredFeature {
     #[serde(rename = "minecraft:speleothem")]
     Speleothem(crate::cave_feature::SpeleothemConfig),
     #[serde(rename = "minecraft:template")]
-    Template(serde_json::Value),
+    Template(crate::template_feature::TemplateConfig),
     #[serde(rename = "minecraft:bamboo")]
     Bamboo(crate::vegetation_feature::BambooConfig),
     #[serde(rename = "minecraft:basalt_columns")]
@@ -122,7 +122,7 @@ pub enum ConfiguredFeature {
     #[serde(rename = "minecraft:fallen_tree")]
     FallenTree(crate::tree::FallenTreeConfig),
     #[serde(rename = "minecraft:fossil")]
-    Fossil(serde_json::Value),
+    Fossil(crate::template_feature::FossilConfig),
     #[serde(rename = "minecraft:freeze_top_layer")]
     FreezeTopLayer(serde_json::Value),
     #[serde(rename = "minecraft:geode")]

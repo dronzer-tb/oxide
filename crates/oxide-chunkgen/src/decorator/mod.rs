@@ -32,6 +32,7 @@ mod simplex;
 mod spring;
 mod state_provider;
 mod survival;
+mod templated;
 mod tree;
 mod vegetation;
 mod water;
@@ -57,6 +58,10 @@ pub use provider::{
 pub use spring::SpringFeature;
 pub use state_provider::{state_from_spec, StateProvider, Unsupported};
 pub use survival::SurvivalRules;
+pub use templated::{
+    place_in_world, BlockInfo, BoundingBox, FossilFeature, PlaceSettings, Processor, Template,
+    TemplateFeature, TemplateLibrary, TemplatedFeature,
+};
 pub use tree::{FallenTreeFeature, TreeFeature};
 pub use vegetation::VegetationFeature;
 pub use water::WaterFeature;

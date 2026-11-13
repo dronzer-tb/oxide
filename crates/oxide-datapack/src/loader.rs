@@ -15,7 +15,7 @@ use crate::resolve::{
 };
 use crate::structure::{ProcessorList, Structure, StructureSet, TemplatePool};
 use crate::version::{load_data_version, load_pack_meta, DataVersion, PackMeta};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
 pub struct Datapack {
@@ -42,6 +42,9 @@ pub struct Datapack {
     pub biome_tags: crate::tags::TagSet,
     /// Per-state block facts exported from the game. Empty when the tree has no export.
     pub block_facts: crate::block_facts::BlockFacts,
+    /// The pack roots, base first, for files read on demand rather than at load: structure
+    /// templates (see [`Datapack::structure_template`]).
+    pub pack_roots: Vec<PathBuf>,
 }
 
 /// Load and fully validate a datapack-shaped directory tree rooted at
@@ -227,5 +230,6 @@ pub fn load_datapack_stack(pack_roots: &[&Path]) -> Result<Datapack> {
         fluid_tags,
         biome_tags,
         block_facts,
+        pack_roots: pack_roots.iter().map(|root| root.to_path_buf()).collect(),
     })
 }

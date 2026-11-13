@@ -11,7 +11,7 @@ use std::str::FromStr;
 use anyhow::{anyhow, Context, Result};
 use oxide_core::{BlockPos, BlockState, ResourceLocation};
 use oxide_datapack::placement::{BlockList, BlockPredicate};
-use oxide_datapack::{BlockFact, BlockFacts};
+use oxide_datapack::{BlockFact, BlockFacts, TagSet};
 
 use super::context::{block_in, Environment, FeatureContext};
 use super::state_provider::state_from_spec;
@@ -43,9 +43,15 @@ impl IdSet {
 
     /// Whether the block named `name` is in the set; a tag is looked up in the block tags.
     pub fn contains_block(&self, env: &Environment, name: &ResourceLocation) -> bool {
+        self.contains_in(&env.block_tags, name)
+    }
+
+    /// [`IdSet::contains_block`] against an explicit tag set, for callers outside a decorator's
+    /// [`Environment`] (structure processors).
+    pub fn contains_in(&self, tags: &TagSet, name: &ResourceLocation) -> bool {
         match self {
             Self::Ids(ids) => ids.contains(name),
-            Self::Tag(tag) => env.block_tags.contains(tag, name),
+            Self::Tag(tag) => tags.contains(tag, name),
         }
     }
 }

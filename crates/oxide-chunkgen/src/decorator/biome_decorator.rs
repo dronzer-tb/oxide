@@ -67,7 +67,8 @@ impl BiomeDecorator {
             &datapack.block_facts,
             &datapack.placed_features,
             &datapack.configured_features,
-        );
+        )
+        .with_templates(datapack);
 
         // Placed features are the same feature when their content is, whatever registry ids they
         // sit under (vanilla's record equality), so each distinct content gets one key.

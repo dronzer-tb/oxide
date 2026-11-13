@@ -549,7 +549,7 @@ fn carve_ellipsoid(
     let max_z = ((z + horizontal_radius).floor() as i32 - chunk_min_z).min(15);
 
     let lava_level = world.resolve_anchor(&config.lava_level);
-    let lava = BlockState::new(ResourceLocation::minecraft("lava"));
+    let lava = BlockState::new(ResourceLocation::minecraft("lava")).with_property("level", "0");
     let air = BlockState::new(ResourceLocation::minecraft("air"));
 
     for local_x in min_x..=max_x {

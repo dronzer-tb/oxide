@@ -401,18 +401,6 @@ fn a_sculk_patch_is_deterministic_and_needs_a_surface() {
     assert!(!buried.placed);
 }
 
-#[test]
-fn fossils_stay_unsupported_and_are_tallied() {
-    let env = env();
-    let config = r#"{"type":"minecraft:fossil","config":{"fossil_processors":"minecraft:fossil_rot",
-        "fossil_structures":["minecraft:fossil/spine_1"],"max_empty_corners_allowed":4,
-        "overlay_processors":"minecraft:fossil_coal","overlay_structures":["minecraft:fossil/spine_1_coal"]}}"#;
-    let outcome = place(&env, config, 1, BlockPos::new(8, 40, 8), |_| {});
-    assert!(!outcome.placed);
-    assert_eq!(outcome.tally.get("feature:minecraft:fossil"), 1);
-    assert!(outcome.writes.is_empty());
-}
-
 /// Every 26.2 configured feature of the cave types compiles, and each type but the fossil
 /// compiles to something that places.
 #[test]

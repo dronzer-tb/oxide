@@ -1,4 +1,4 @@
-//! `net.minecraft.util.Mth`'s trigonometry table.
+//! `net.minecraft.util.Mth`'s trigonometry table, and its per-position seed.
 //!
 //! Worldgen does not use real trigonometry. `Mth.sin`/`Mth.cos` index a 65536-entry table of
 //! `f32`, and carvers, structure placement and several features are shaped by the values that
@@ -6,7 +6,7 @@
 //! platform `sin()` instead produces a visibly different cave, not a last-ulp difference: the
 //! table has 65536 steps across a full turn and stores the result as `f32`.
 //!
-//! Ported from the decompiled 26.1.2 `Mth`.
+//! Ported from the decompiled 26.1.2 `Mth`. [`get_seed`] is from the 26.2 bytecode.
 
 use std::sync::LazyLock;
 
@@ -40,9 +40,26 @@ pub fn cos(radians: f64) -> f32 {
     SIN_TABLE[((radians * RADIANS_TO_INDEX + 16384.0) as i64 & 65535) as usize]
 }
 
+/// `Mth.getSeed(x, y, z)`: the per-position seed vanilla hands `RandomSource.create` where it
+/// wants a random stream fixed by a block position (structure processors among others). The
+/// first product is `int` arithmetic widened afterwards; the rest is `long`, all wrapping.
+pub fn get_seed(x: i32, y: i32, z: i32) -> i64 {
+    let seed = (x.wrapping_mul(3_129_871) as i64) ^ (z as i64).wrapping_mul(116_129_781) ^ y as i64;
+    let seed = seed.wrapping_mul(seed).wrapping_mul(42_317_861).wrapping_add(seed.wrapping_mul(11));
+    seed >> 16
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Values printed by the real 26.2 `Mth.getSeed`, including coordinates that overflow the
+    /// first `int` product.
+    #[test]
+    fn get_seed_matches_the_game() {
+        assert_eq!(get_seed(123, -45, 6789), 88_694_589_230_987);
+        assert_eq!(get_seed(-30_000_000, 320, 29_999_999), 52_871_691_179_874);
+    }
 
     /// The table is a quantisation, so it is measurably *not* the real sine -- which is the whole
     /// reason it has to be ported rather than substituted with `f64::sin`.

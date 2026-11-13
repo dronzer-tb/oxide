@@ -17,7 +17,12 @@
 //   d sturdy bottom face             c no collision     f full-cube collision
 //   W water fluid   L lava fluid     S fluid is a source
 //   1 WORLD_SURFACE(_WG)   2 OCEAN_FLOOR(_WG)   3 MOTION_BLOCKING   4 MOTION_BLOCKING_NO_LEAVES
+//   y hasDynamicShape      e hasBlockEntity
+//   k updateShape never changes the state: the block's class inherits BlockBehaviour.updateShape,
+//     or overrides it only to schedule ticks (LiquidBlock, FallingBlock,
+//     WaterloggedTransparentBlock -- each read in the 26.2 decompile and returning super's state)
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import net.minecraft.SharedConstants;
 import net.minecraft.core.BlockPos;
@@ -79,10 +84,28 @@ public class BlockFactsExporter {
                 if (Heightmap.Types.OCEAN_FLOOR.isOpaque().test(state)) out.append('2');
                 if (Heightmap.Types.MOTION_BLOCKING.isOpaque().test(state)) out.append('3');
                 if (Heightmap.Types.MOTION_BLOCKING_NO_LEAVES.isOpaque().test(state)) out.append('4');
+                if (block.hasDynamicShape()) out.append('y');
+                if (state.hasBlockEntity()) out.append('e');
+                if (SHAPE_INERT_CLASSES.contains(updateShapeDeclarer(block))) out.append('k');
                 out.append('\n');
             }
         }
         System.out.print(out);
+    }
+
+    private static final Set<String> SHAPE_INERT_CLASSES =
+            Set.of("BlockBehaviour", "LiquidBlock", "FallingBlock", "WaterloggedTransparentBlock");
+
+    /** The simple name of the nearest class up from the block's that declares updateShape. */
+    private static String updateShapeDeclarer(Block block) {
+        for (Class<?> c = block.getClass(); c != null; c = c.getSuperclass()) {
+            for (java.lang.reflect.Method m : c.getDeclaredMethods()) {
+                if (m.getName().equals("updateShape") && m.getParameterCount() == 8) {
+                    return c.getSimpleName();
+                }
+            }
+        }
+        return "";
     }
 
     private static <T extends Comparable<T>> String name(Property<T> property, BlockState state) {

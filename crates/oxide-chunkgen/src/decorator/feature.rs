@@ -25,7 +25,7 @@ use oxide_core::{BlockPos, BlockState, RandomSource, ResourceLocation};
 use oxide_datapack::feature::{ConfiguredFeature, HolderList};
 use oxide_datapack::feature::Holder;
 use oxide_datapack::placement::PlacedFeature as PlacedFeatureIr;
-use oxide_datapack::{BlockFact, BlockFacts, Registry};
+use oxide_datapack::{BlockFact, BlockFacts, Datapack, Registry};
 
 use super::cave::CaveFeature;
 use super::context::{block_in, FeatureContext};
@@ -35,6 +35,7 @@ use super::nether::NetherFeature;
 use super::ore::OreFeature;
 use super::placement::{run, Modifier};
 use super::spring::SpringFeature;
+use super::templated::{TemplateLibrary, TemplatedFeature};
 use super::state_provider::{StateProvider, Unsupported};
 use super::tree::{FallenTreeFeature, TreeFeature};
 use super::vegetation::VegetationFeature;
@@ -70,6 +71,8 @@ pub enum Feature {
     Cave(CaveFeature),
     /// Kelp, seagrass, sea pickles, coral reefs and the desert well.
     Water(WaterFeature),
+    /// Fossils and template features: structure templates placed through processors.
+    Templated(TemplatedFeature),
     /// Chorus plants, end islands and spikes, gateways, platforms and the bonus chest.
     End(EndFeature),
     /// Delta patches, netherrack blobs, huge fungi, basalt, glowstone, vines and nylium plants.
@@ -88,6 +91,8 @@ pub struct Compiler<'d> {
     configured: &'d Registry<ConfiguredFeature>,
     placed_memo: HashMap<ResourceLocation, Arc<Placed>>,
     configured_memo: HashMap<ResourceLocation, Arc<Feature>>,
+    /// Where `fossil` and `template` read their templates; without it they are unsupported.
+    templates: Option<TemplateLibrary<'d>>,
     depth: u32,
 }
 
@@ -107,8 +112,16 @@ impl<'d> Compiler<'d> {
             configured,
             placed_memo: HashMap::new(),
             configured_memo: HashMap::new(),
+            templates: None,
             depth: 0,
         }
+    }
+
+    /// Lets `fossil` and `template` features read structure templates and processor lists
+    /// from `datapack`'s tree.
+    pub fn with_templates(mut self, datapack: &'d Datapack) -> Self {
+        self.templates = Some(TemplateLibrary::new(datapack));
+        self
     }
 
     /// Every placed feature compiled so far, by registry id.
@@ -286,6 +299,14 @@ impl<'d> Compiler<'d> {
                 Some(feature) => Feature::Water(feature),
                 None => Feature::Unsupported(type_id(other)),
             },
+            other @ (ConfiguredFeature::Fossil(_) | ConfiguredFeature::Template(_)) => match self.templates.as_mut() {
+                Some(library) => match TemplatedFeature::compile(other, self.facts, library)? {
+                    Some(Ok(feature)) => Feature::Templated(feature),
+                    Some(Err(detail)) => Feature::Unsupported(detail),
+                    None => Feature::Unsupported(type_id(other)),
+                },
+                None => Feature::Unsupported(format!("{} (no datapack tree)", type_id(other))),
+            },
             other => match GroundFeature::compile(other, self.facts)? {
                 Some(feature) => Feature::Ground(feature),
                 None => Feature::Unsupported(type_id(other)),
@@ -364,6 +385,7 @@ pub fn place_configured_feature(feature: &Feature, cx: &mut FeatureContext<'_, '
         Feature::Ground(feature) => feature.place(cx),
         Feature::Cave(feature) => feature.place(cx),
         Feature::Water(feature) => feature.place(cx),
+        Feature::Templated(feature) => feature.place(cx),
         Feature::End(feature) => feature.place(cx),
         Feature::Nether(feature) => feature.place(cx),
         Feature::RandomBooleanSelector { when_true, when_false } => {

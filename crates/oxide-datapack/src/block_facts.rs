@@ -34,6 +34,13 @@ pub enum BlockFact {
     HeightOceanFloor = 1 << 14,
     HeightMotionBlocking = 1 << 15,
     HeightMotionBlockingNoLeaves = 1 << 16,
+    /// `Block.hasDynamicShape`: excluded from a structure template's full-block list.
+    DynamicShape = 1 << 17,
+    /// `BlockState.hasBlockEntity`.
+    BlockEntity = 1 << 18,
+    /// `updateShape` never changes this block's state (it is inherited, or overridden only to
+    /// schedule ticks), so a neighbour changing cannot reshape it.
+    ShapeInert = 1 << 19,
 }
 
 impl BlockFact {
@@ -56,6 +63,9 @@ impl BlockFact {
             '2' => Self::HeightOceanFloor,
             '3' => Self::HeightMotionBlocking,
             '4' => Self::HeightMotionBlockingNoLeaves,
+            'y' => Self::DynamicShape,
+            'e' => Self::BlockEntity,
+            'k' => Self::ShapeInert,
             _ => return None,
         })
     }

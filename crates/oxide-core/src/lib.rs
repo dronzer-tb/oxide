@@ -11,6 +11,7 @@ mod rng;
 mod storage;
 
 pub mod mth;
+pub mod rotation;
 
 pub use ident::{BiomeId, BlockState, ResourceLocation, ResourceLocationParseError};
 pub use pos::{BlockPos, ChunkPos, SectionPos};

@@ -35,7 +35,7 @@ mod frequency;
 pub mod jigsaw;
 mod placement;
 pub mod pool;
-pub mod rotation;
+pub use oxide_core::rotation;
 mod select;
 mod set;
 pub mod starts;

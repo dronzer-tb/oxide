@@ -18,7 +18,7 @@ use std::str::FromStr;
 use anyhow::{anyhow, Context, Result};
 use oxide_core::{BlockPos, BlockState, HeightmapType, RandomSource, ResourceLocation};
 use oxide_datapack::feature::{OreConfig, RuleTest as RuleTestIr};
-use oxide_datapack::{BlockFact, BlockFacts};
+use oxide_datapack::{BlockFact, BlockFacts, TagSet};
 
 use super::context::{block_in, Environment, FeatureContext};
 use super::provider::next_bounded;
@@ -37,7 +37,7 @@ pub enum RuleTest {
 }
 
 impl RuleTest {
-    fn compile(ir: &RuleTestIr, facts: &BlockFacts) -> Result<Self> {
+    pub(crate) fn compile(ir: &RuleTestIr, facts: &BlockFacts) -> Result<Self> {
         let block = |text: &str| {
             ResourceLocation::from_str(text).map_err(|_| anyhow!("invalid block id {text:?}"))
         };
@@ -59,12 +59,12 @@ impl RuleTest {
 
     /// The random variants draw a float only when the block already matches, as vanilla's
     /// short-circuiting `&&` does.
-    fn test(&self, state: &BlockState, random: &mut impl RandomSource, env: &Environment) -> bool {
+    pub(crate) fn test(&self, state: &BlockState, random: &mut impl RandomSource, tags: &TagSet) -> bool {
         match self {
             Self::AlwaysTrue => true,
             Self::BlockMatch(name) => state.name == *name,
             Self::BlockStateMatch(expected) => state == expected,
-            Self::TagMatch(tag) => env.block_tags.contains(tag, &state.name),
+            Self::TagMatch(tag) => tags.contains(tag, &state.name),
             Self::RandomBlockMatch(name, probability) => {
                 state.name == *name && random.next_float() < *probability
             }
@@ -118,7 +118,7 @@ impl OreFeature {
         env: &Environment,
         pos: BlockPos,
     ) -> bool {
-        if !target.rule.test(state, random, env) {
+        if !target.rule.test(state, random, &env.block_tags) {
             return false;
         }
         if skip_air_check(random, self.discard_chance_on_air_exposure) {

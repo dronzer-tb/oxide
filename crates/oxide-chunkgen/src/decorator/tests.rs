@@ -505,13 +505,16 @@ fn selectors_choose_with_vanillas_draws() {
 }
 
 #[test]
-fn a_feature_type_without_a_family_places_nothing_and_is_tallied() {
+fn an_unsupported_feature_places_nothing_and_is_tallied() {
     let env = env(&[], Box::new(AlwaysSurvives));
-    let json = r#"{"feature":{"type":"minecraft:fossil","config":{}},
+    // A fossil compiled without a datapack tree to read its templates from.
+    let json = r#"{"feature":{"type":"minecraft:fossil","config":{"fossil_processors":"minecraft:fossil_rot",
+        "fossil_structures":["minecraft:fossil/spine_1"],"max_empty_corners_allowed":4,
+        "overlay_processors":"minecraft:fossil_coal","overlay_structures":["minecraft:fossil/spine_1_coal"]}},
         "placement":[{"type":"minecraft:count","count":3}]}"#;
     let outcome = place_in_flat(&env, json, 1, BlockPos::new(4, 64, 4), |_| {});
     assert!(!outcome.placed && outcome.writes.is_empty());
-    assert_eq!(outcome.tally.get("feature:minecraft:fossil"), 3);
+    assert_eq!(outcome.tally.get("feature:minecraft:fossil (no datapack tree)"), 3);
 }
 
 #[test]
