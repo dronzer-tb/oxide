@@ -33,6 +33,7 @@ pub mod tags;
 pub mod tree;
 pub mod vegetation_feature;
 pub mod version;
+pub mod water_feature;
 
 pub use biome::{Biome, BiomeEffects, SpawnerData};
 pub use carver::{

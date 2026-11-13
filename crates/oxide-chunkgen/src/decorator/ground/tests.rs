@@ -675,16 +675,7 @@ fn a_weighted_selector_draws_once_and_walks_the_weights() {
     assert!(!none.placed && none.writes.is_empty());
 }
 
-#[test]
-fn a_desert_well_stays_unsupported_and_is_tallied() {
-    let env = plain_env(&[]);
-    let outcome = place(&env, r#"{"type":"minecraft:desert_well","config":{}}"#, 1, BlockPos::new(8, 64, 8), |_| {});
-    assert!(!outcome.placed && outcome.writes.is_empty());
-    assert_eq!(outcome.tally.get("feature:minecraft:desert_well"), 1);
-}
-
-/// Every 26.2 configured feature of the ground types compiles, and each type but the desert well
-/// compiles to something that places.
+/// Every 26.2 configured feature of the ground types compiles to something that places.
 #[test]
 fn every_reference_ground_feature_compiles() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../reference");
@@ -693,9 +684,9 @@ fn every_reference_ground_feature_compiles() {
         return;
     }
     let datapack = oxide_datapack::load_datapack(&root).expect("reference datapack loads");
-    const TYPES: [&str; 13] = [
+    const TYPES: [&str; 12] = [
         "disk", "block_pile", "block_blob", "block_column", "lake", "freeze_top_layer", "spike", "iceberg",
-        "blue_ice", "desert_well", "weighted_random_selector", "underwater_magma", "monster_room",
+        "blue_ice", "weighted_random_selector", "underwater_magma", "monster_room",
     ];
     let mut compiled = 0;
     for (id, ir) in datapack.configured_features.iter() {
@@ -708,12 +699,10 @@ fn every_reference_ground_feature_compiles() {
         let placed = Compiler::new(&datapack.block_facts, &datapack.placed_features, &datapack.configured_features)
             .compile_placed(&wrapper)
             .unwrap_or_else(|error| panic!("{id}: {error:#}"));
-        match (&*placed.feature, kind) {
-            (Feature::Unsupported(_), "desert_well") => {}
-            (Feature::Unsupported(why), _) => panic!("{id} ({kind}) compiled to unsupported: {why}"),
-            _ => {}
+        if let Feature::Unsupported(why) = &*placed.feature {
+            panic!("{id} ({kind}) compiled to unsupported: {why}");
         }
         compiled += 1;
     }
-    assert!(compiled >= 25, "only {compiled} ground features found");
+    assert!(compiled >= 24, "only {compiled} ground features found");
 }

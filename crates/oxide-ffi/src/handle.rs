@@ -543,7 +543,6 @@ mod tests {
         second.set_decoration(true).unwrap();
         assert_eq!(generate(&second, 3, -2), decorated);
         assert_eq!(generate(&second, 4, -2), neighbour);
-        assert!(!first.decoration_gaps().is_empty(), "unported features are counted, not hidden");
     }
 
     /// Answering `getBaseHeight` for a chunk's 256 columns must not cost more than generating

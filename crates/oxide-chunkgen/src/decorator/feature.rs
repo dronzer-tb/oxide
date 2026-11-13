@@ -38,6 +38,7 @@ use super::spring::SpringFeature;
 use super::state_provider::{StateProvider, Unsupported};
 use super::tree::{FallenTreeFeature, TreeFeature};
 use super::vegetation::VegetationFeature;
+use super::water::WaterFeature;
 
 /// A placed feature: a modifier chain and the feature it leads to.
 #[derive(Debug)]
@@ -67,9 +68,11 @@ pub enum Feature {
     Ground(GroundFeature),
     /// Dripstone and sulfur spikes, large dripstone, geodes and sculk patches.
     Cave(CaveFeature),
+    /// Kelp, seagrass, sea pickles, coral reefs and the desert well.
+    Water(WaterFeature),
     /// Chorus plants, end islands and spikes, gateways, platforms and the bonus chest.
     End(EndFeature),
-    /// Delta patches, netherrack blobs and huge fungi.
+    /// Delta patches, netherrack blobs, huge fungi, basalt, glowstone, vines and nylium plants.
     Nether(NetherFeature),
     NoOp,
     Tree(TreeFeature),
@@ -245,7 +248,13 @@ impl<'d> Compiler<'d> {
             }
             other @ (ConfiguredFeature::DeltaFeature(_)
             | ConfiguredFeature::NetherrackReplaceBlobs(_)
-            | ConfiguredFeature::HugeFungus(_)) => match NetherFeature::compile(other, self.facts)? {
+            | ConfiguredFeature::HugeFungus(_)
+            | ConfiguredFeature::BasaltColumns(_)
+            | ConfiguredFeature::BasaltPillar(_)
+            | ConfiguredFeature::GlowstoneBlob(_)
+            | ConfiguredFeature::TwistingVines(_)
+            | ConfiguredFeature::WeepingVines(_)
+            | ConfiguredFeature::NetherForestVegetation(_)) => match NetherFeature::compile(other, self.facts)? {
                 Some(feature) => Feature::Nether(feature),
                 None => Feature::Unsupported(type_id(other)),
             },
@@ -265,6 +274,16 @@ impl<'d> Compiler<'d> {
             | ConfiguredFeature::Geode(_)
             | ConfiguredFeature::SculkPatch(_)) => match CaveFeature::compile(other, self.facts)? {
                 Some(feature) => Feature::Cave(feature),
+                None => Feature::Unsupported(type_id(other)),
+            },
+            other @ (ConfiguredFeature::Kelp(_)
+            | ConfiguredFeature::Seagrass(_)
+            | ConfiguredFeature::SeaPickle(_)
+            | ConfiguredFeature::CoralTree(_)
+            | ConfiguredFeature::CoralClaw(_)
+            | ConfiguredFeature::CoralMushroom(_)
+            | ConfiguredFeature::DesertWell(_)) => match WaterFeature::compile(other, self.facts)? {
+                Some(feature) => Feature::Water(feature),
                 None => Feature::Unsupported(type_id(other)),
             },
             other => match GroundFeature::compile(other, self.facts)? {
@@ -344,6 +363,7 @@ pub fn place_configured_feature(feature: &Feature, cx: &mut FeatureContext<'_, '
         }
         Feature::Ground(feature) => feature.place(cx),
         Feature::Cave(feature) => feature.place(cx),
+        Feature::Water(feature) => feature.place(cx),
         Feature::End(feature) => feature.place(cx),
         Feature::Nether(feature) => feature.place(cx),
         Feature::RandomBooleanSelector { when_true, when_false } => {

@@ -12,13 +12,8 @@
 //! `entity:minecraft:end_crystal` (the crystal on every spike). The blocks themselves are
 //! placed, as `ground/monster_room.rs` places its chest.
 //!
-//! Not here, because no reference code exists for 26.2's forms of them: `desert_well`, `kelp`,
-//! `seagrass`, `sea_pickle`, `coral_tree`, `coral_claw` and `coral_mushroom`. The reference
-//! implementation only knows their blocks' survival rules (`block_survival.rs`), not the
-//! features. A port needs, per type, vanilla's block layout or growth loop and its random draw
-//! order (`DesertWellFeature`'s sand and slab pattern; `KelpFeature`'s column loop;
-//! `SeagrassFeature` and `SeaPickleFeature`'s scatter; the three `Coral*Feature` shape builders),
-//! none of which is reconstructed from memory.
+//! `desert_well`, `kelp`, `seagrass`, `sea_pickle` and the three coral shapes are the water
+//! family's (`water.rs`), ported from the decompiled 26.2 classes.
 
 mod bonus_chest;
 mod chorus_plant;

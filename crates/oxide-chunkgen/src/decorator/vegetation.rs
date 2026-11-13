@@ -4,14 +4,8 @@
 //! Each family is its own module; [`VegetationFeature`] is the one value [`super::Feature`]
 //! carries for all of them and dispatches to the right one.
 //!
-//! Not here, and tallied as `feature:<type>` rather than approximated:
-//!
-//! - `kelp`, `seagrass`, `sea_pickle`: the reference implementation has no code for them, so
-//!   there is nothing to port from.
-//! - `coral_tree`, `coral_claw`, `coral_mushroom`: the reference ports the 26.3 shape, which
-//!   takes a nested placed feature. In 26.2 these configs are empty (`{}`) and the features
-//!   choose and place coral blocks and fans themselves, a draw order the reference does not
-//!   contain.
+//! Kelp, seagrass, sea pickles and the coral shapes are not here: they are the water family's
+//! (`water.rs`), ported from the decompiled 26.2 classes.
 //!
 //! Two answers vanilla gets from per-block Java are routed through seams instead of guessed: see
 //! [`support`] for survival and face-sturdiness.

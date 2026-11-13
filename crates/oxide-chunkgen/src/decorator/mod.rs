@@ -34,6 +34,7 @@ mod state_provider;
 mod survival;
 mod tree;
 mod vegetation;
+mod water;
 
 #[cfg(test)]
 mod tests;
@@ -58,3 +59,4 @@ pub use state_provider::{state_from_spec, StateProvider, Unsupported};
 pub use survival::SurvivalRules;
 pub use tree::{FallenTreeFeature, TreeFeature};
 pub use vegetation::VegetationFeature;
+pub use water::WaterFeature;

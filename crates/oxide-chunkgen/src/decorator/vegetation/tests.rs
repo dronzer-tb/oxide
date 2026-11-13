@@ -495,23 +495,6 @@ fn a_root_system_plants_a_tree_on_the_surface_and_roots_the_column() {
 }
 
 #[test]
-fn types_without_a_faithful_port_stay_unsupported_and_tallied() {
-    let env = env(&[], Box::new(AlwaysSurvives));
-    for (config, tallied) in [
-        (r#"{"type":"minecraft:kelp","config":{}}"#, "feature:minecraft:kelp"),
-        (r#"{"type":"minecraft:seagrass","config":{"probability":0.3}}"#, "feature:minecraft:seagrass"),
-        (r#"{"type":"minecraft:sea_pickle","config":{"count":20}}"#, "feature:minecraft:sea_pickle"),
-        (r#"{"type":"minecraft:coral_tree","config":{}}"#, "feature:minecraft:coral_tree"),
-        (r#"{"type":"minecraft:coral_claw","config":{}}"#, "feature:minecraft:coral_claw"),
-        (r#"{"type":"minecraft:coral_mushroom","config":{}}"#, "feature:minecraft:coral_mushroom"),
-    ] {
-        let outcome = place(&env, config, 1, BlockPos::new(0, 64, 0), 64, |_| {});
-        assert!(!outcome.placed && outcome.writes.is_empty());
-        assert_eq!(outcome.tally.get(tallied), 1, "{tallied}");
-    }
-}
-
-#[test]
 fn every_vegetation_configured_feature_in_the_26_2_data_compiles() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../reference");
     if !root.join("data/minecraft/worldgen/configured_feature").is_dir() || !root.join("block_facts.tsv").is_file() {

@@ -48,9 +48,15 @@ impl TagEntry {
 }
 
 /// Every tag of one kind (`block`, `fluid`, `worldgen/biome`), flattened to the ids it holds.
+///
+/// Each tag is kept twice: as a set for membership, and as a list in vanilla's order for the
+/// features that draw a random member (`Registry.getRandomElementOf` indexes the tag's list).
+/// That order is `TagLoader`'s: entries in file and pack order, a nested tag expanded in place,
+/// each id kept at its first appearance.
 #[derive(Debug, Default, Clone)]
 pub struct TagSet {
     tags: HashMap<ResourceLocation, HashSet<ResourceLocation>>,
+    ordered: HashMap<ResourceLocation, Vec<ResourceLocation>>,
 }
 
 impl TagSet {
@@ -61,6 +67,11 @@ impl TagSet {
 
     pub fn get(&self, tag: &ResourceLocation) -> Option<&HashSet<ResourceLocation>> {
         self.tags.get(tag)
+    }
+
+    /// The members of `tag` in vanilla's order; `None` for a tag the data does not define.
+    pub fn ordered(&self, tag: &ResourceLocation) -> Option<&[ResourceLocation]> {
+        self.ordered.get(tag).map(Vec::as_slice)
     }
 
     pub fn len(&self) -> usize {
@@ -105,13 +116,18 @@ pub fn load_tags(pack_roots: &[&Path], kind: &str) -> Result<TagSet> {
         let mut stack = Vec::new();
         resolve(id, &raw, &mut resolved, &mut stack)?;
     }
-    Ok(TagSet { tags: resolved })
+    let tags = resolved
+        .iter()
+        .map(|(id, members)| (id.clone(), members.iter().cloned().collect()))
+        .collect();
+    Ok(TagSet { tags, ordered: resolved })
 }
 
+/// Resolves `tag` into `resolved` as an ordered, duplicate-free list (see [`TagSet`]).
 fn resolve(
     tag: &ResourceLocation,
     raw: &HashMap<ResourceLocation, Vec<(String, bool)>>,
-    resolved: &mut HashMap<ResourceLocation, HashSet<ResourceLocation>>,
+    resolved: &mut HashMap<ResourceLocation, Vec<ResourceLocation>>,
     stack: &mut Vec<ResourceLocation>,
 ) -> Result<()> {
     if resolved.contains_key(tag) {
@@ -126,7 +142,8 @@ fn resolve(
         });
     }
     stack.push(tag.clone());
-    let mut members = HashSet::new();
+    let mut seen = HashSet::new();
+    let mut members = Vec::new();
     for (entry, required) in &raw[tag] {
         if let Some(reference) = entry.strip_prefix('#') {
             let target = parse_id(reference)?;
@@ -142,9 +159,16 @@ fn resolve(
                 continue;
             }
             resolve(&target, raw, resolved, stack)?;
-            members.extend(resolved[&target].iter().cloned());
+            for id in &resolved[&target] {
+                if seen.insert(id.clone()) {
+                    members.push(id.clone());
+                }
+            }
         } else {
-            members.insert(parse_id(entry)?);
+            let id = parse_id(entry)?;
+            if seen.insert(id.clone()) {
+                members.push(id);
+            }
         }
     }
     stack.pop();
@@ -199,6 +223,18 @@ mod tests {
 
         fs::remove_dir_all(base).unwrap();
         fs::remove_dir_all(over).unwrap();
+    }
+
+    #[test]
+    fn ordered_members_follow_the_tag_loader() {
+        let root = temp("order");
+        write(&root, "plants.json", r#"{"values":["minecraft:b","minecraft:a"]}"#);
+        write(&root, "all.json", r##"{"values":["minecraft:c","#minecraft:plants","minecraft:b","minecraft:d"]}"##);
+        let tags = load_tags(&[&root], "block").unwrap();
+        let ids: Vec<&str> = tags.ordered(&rl("all")).unwrap().iter().map(|id| id.path()).collect();
+        assert_eq!(ids, ["c", "b", "a", "d"], "nested tags expand in place, first appearance wins");
+        assert!(tags.ordered(&rl("absent")).is_none());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

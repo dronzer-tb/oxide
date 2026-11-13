@@ -8,8 +8,7 @@
 //! [`GroundFeature::place`], so the shared dispatch gains one variant instead of eleven.
 //!
 //! A type that cannot be ported faithfully compiles to `None` and the caller records it as
-//! unsupported. `minecraft:desert_well` is in that state: its block layout is not in the
-//! reference implementation and is not reconstructed from memory.
+//! unsupported. `minecraft:desert_well` is placed by the water family (`water/desert_well.rs`).
 //!
 //! Vanilla's post-processing marks (`markAboveForPostProcessing`) and scheduled block ticks are
 //! not recorded: the region produces block writes only. They affect when a block updates after

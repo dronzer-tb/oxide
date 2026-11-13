@@ -92,9 +92,9 @@ pub enum ConfiguredFeature {
     #[serde(rename = "minecraft:bamboo")]
     Bamboo(crate::vegetation_feature::BambooConfig),
     #[serde(rename = "minecraft:basalt_columns")]
-    BasaltColumns(serde_json::Value),
+    BasaltColumns(crate::nether_feature::ColumnConfig),
     #[serde(rename = "minecraft:basalt_pillar")]
-    BasaltPillar(serde_json::Value),
+    BasaltPillar(crate::nether_feature::NoneConfig),
     #[serde(rename = "minecraft:block_blob")]
     BlockBlob(crate::ground_feature::BlockBlobConfig),
     #[serde(rename = "minecraft:block_column")]
@@ -128,7 +128,7 @@ pub enum ConfiguredFeature {
     #[serde(rename = "minecraft:geode")]
     Geode(crate::cave_feature::GeodeConfig),
     #[serde(rename = "minecraft:glowstone_blob")]
-    GlowstoneBlob(serde_json::Value),
+    GlowstoneBlob(crate::nether_feature::NoneConfig),
     #[serde(rename = "minecraft:huge_brown_mushroom")]
     HugeBrownMushroom(crate::vegetation_feature::HugeMushroomConfig),
     #[serde(rename = "minecraft:huge_fungus")]
@@ -148,7 +148,7 @@ pub enum ConfiguredFeature {
     #[serde(rename = "minecraft:multiface_growth")]
     MultifaceGrowth(crate::vegetation_feature::MultifaceGrowthConfig),
     #[serde(rename = "minecraft:nether_forest_vegetation")]
-    NetherForestVegetation(serde_json::Value),
+    NetherForestVegetation(crate::nether_feature::NetherForestVegetationConfig),
     #[serde(rename = "minecraft:netherrack_replace_blobs")]
     NetherrackReplaceBlobs(crate::nether_feature::ReplaceBlobsConfig),
     #[serde(rename = "minecraft:root_system")]
@@ -156,9 +156,9 @@ pub enum ConfiguredFeature {
     #[serde(rename = "minecraft:sculk_patch")]
     SculkPatch(crate::cave_feature::SculkPatchConfig),
     #[serde(rename = "minecraft:sea_pickle")]
-    SeaPickle(serde_json::Value),
+    SeaPickle(crate::water_feature::SeaPickleConfig),
     #[serde(rename = "minecraft:seagrass")]
-    Seagrass(serde_json::Value),
+    Seagrass(crate::water_feature::SeagrassConfig),
     #[serde(rename = "minecraft:speleothem_cluster")]
     SpeleothemCluster(crate::cave_feature::SpeleothemClusterConfig),
     #[serde(rename = "minecraft:spike")]
@@ -166,7 +166,7 @@ pub enum ConfiguredFeature {
     #[serde(rename = "minecraft:tree")]
     Tree(crate::tree::TreeConfig),
     #[serde(rename = "minecraft:twisting_vines")]
-    TwistingVines(serde_json::Value),
+    TwistingVines(crate::nether_feature::TwistingVinesConfig),
     #[serde(rename = "minecraft:underwater_magma")]
     UnderwaterMagma(crate::ground_feature::UnderwaterMagmaConfig),
     #[serde(rename = "minecraft:vegetation_patch")]
@@ -178,7 +178,7 @@ pub enum ConfiguredFeature {
     #[serde(rename = "minecraft:waterlogged_vegetation_patch")]
     WaterloggedVegetationPatch(crate::vegetation_feature::VegetationPatchConfig),
     #[serde(rename = "minecraft:weeping_vines")]
-    WeepingVines(serde_json::Value),
+    WeepingVines(crate::nether_feature::NoneConfig),
     #[serde(rename = "minecraft:weighted_random_selector")]
     WeightedRandomSelector(crate::ground_feature::WeightedRandomSelectorConfig),
 }
