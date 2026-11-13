@@ -12,6 +12,7 @@
 mod compare;
 mod invariants;
 mod merkle;
+mod oracle;
 mod reference;
 
 use std::path::PathBuf;
@@ -81,11 +82,27 @@ struct Args {
     #[cfg(feature = "profile")]
     #[arg(long)]
     profile_out: Option<PathBuf>,
+    /// Root of `scripts/ChunkOracle.java` dumps (e.g. `reference/oracle`). Compares every dump
+    /// under `<root>/<seed>/<dimension path>/` against Oxide and exits; see docs/PARITY.md.
+    #[arg(long)]
+    oracle: Option<PathBuf>,
+    /// With `--oracle`: also write the per-chunk report as JSON to this path.
+    #[arg(long)]
+    oracle_json: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
+
+    if let Some(root) = args.oracle.as_deref() {
+        let report = oracle::run(&args.datapack, root, &args.dimension, args.seed)?;
+        print!("{}", report.render());
+        if let Some(path) = args.oracle_json.as_deref() {
+            std::fs::write(path, serde_json::to_string_pretty(&report)?)?;
+        }
+        return Ok(());
+    }
 
     #[cfg(feature = "profile")]
     let guard = args.profile_out.as_ref().map(|_| {
