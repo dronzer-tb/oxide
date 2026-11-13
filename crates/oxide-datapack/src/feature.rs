@@ -70,6 +70,10 @@ pub enum ConfiguredFeature {
     #[serde(rename = "minecraft:sequence")]
     Sequence(SequenceConfig),
 
+    /// Does nothing and reports success. Vanilla defines it; no 26.2 file uses it.
+    #[serde(rename = "minecraft:no_op")]
+    NoOp(serde_json::Value),
+
     // ---- not yet placed by the generator: config held verbatim ----
     // The five coral/speleothem/template entries below never appear as a file in
     // worldgen/configured_feature -- they exist only inline, inside a sequence or a

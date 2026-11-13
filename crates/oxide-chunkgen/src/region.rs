@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use oxide_core::{BlockPos, BlockState, ChunkData, ChunkPos, HeightmapType};
+use oxide_core::{BiomeId, BlockPos, BlockState, ChunkData, ChunkPos, HeightmapType};
 use oxide_datapack::{BlockFact, BlockFacts};
 
 use crate::fill::local_index;
@@ -148,6 +148,45 @@ impl<'a> DecorationRegion<'a> {
         Some(self.min_y)
     }
 
+    /// The biome at `pos`, read from the nearest stored 4x4x4 quart, or `None` outside the
+    /// window horizontally.
+    ///
+    /// Vertically the quart row is clamped into the world, as vanilla's
+    /// `ChunkAccess.getNoiseBiome` does, so a position above or below the world reads the
+    /// topmost or bottommost row instead of failing.
+    pub fn biome(&self, pos: BlockPos) -> Option<&BiomeId> {
+        let chunk = self.chunk_at(pos.x, pos.z)?;
+        let min_quart = self.min_y >> 2;
+        let max_quart = min_quart + (self.height >> 2) - 1;
+        let quart_y = (pos.y >> 2).clamp(min_quart, max_quart) - min_quart;
+        let section = chunk.sections.get((quart_y >> 2) as usize)?;
+        let slot = (((quart_y & 3) * 4 + ((pos.z >> 2) & 3)) * 4 + ((pos.x >> 2) & 3)) as usize;
+        Some(section.biomes.get(slot))
+    }
+
+    /// Every distinct biome actually stored in the nine chunks, in first-seen order.
+    ///
+    /// Reads the quarts in use rather than each section's palette: a palette can keep an entry
+    /// nothing references any more, and vanilla collects the biomes the storage holds.
+    pub fn biomes_present(&self) -> Vec<&BiomeId> {
+        let mut found: Vec<&BiomeId> = Vec::new();
+        for chunk in self.chunks {
+            for section in &chunk.sections {
+                let palette = section.biomes.palette();
+                let mut used = vec![false; palette.len()];
+                for &index in section.biomes.indices() {
+                    used[index as usize] = true;
+                }
+                for (entry, in_use) in palette.iter().zip(used) {
+                    if in_use && !found.contains(&entry) {
+                        found.push(entry);
+                    }
+                }
+            }
+        }
+        found
+    }
+
     /// Every write, in the order positions were first written, each with its final state.
     pub fn into_writes(mut self) -> Vec<BlockWrite> {
         let mut writes = Vec::with_capacity(self.order.len());
@@ -194,7 +233,12 @@ pub(crate) mod testutil {
              minecraft:stone\tDsmoudf1234\n\
              minecraft:oak_log\tDsmoudf1234\n\
              minecraft:oak_leaves\tDsmf123\n\
-             minecraft:short_grass\tDrc1\n",
+             minecraft:short_grass\tDrc1\n\
+             minecraft:void_air\tDarc\n\
+             minecraft:deepslate\tDsmoudf1234\n\
+             minecraft:coal_ore\tDsmoudf1234\n\
+             minecraft:water[level=0]\tDlWS\n\
+             minecraft:water[level=8]\tlWS\n",
         )
         .unwrap();
         let facts = BlockFacts::load(Path::new(&dir)).unwrap();
