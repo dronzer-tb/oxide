@@ -7,6 +7,7 @@
 //! anything else — that belongs to the downstream crates.
 
 pub mod biome;
+pub mod block_facts;
 pub mod carver;
 pub mod climate;
 pub mod density_function;
@@ -24,6 +25,7 @@ pub mod registry;
 pub mod resolve;
 pub mod structure;
 pub mod surface_rule;
+pub mod tags;
 pub mod version;
 
 pub use biome::{Biome, BiomeEffects, SpawnerData};
@@ -52,6 +54,8 @@ pub use structure::{
     StructurePlacement, StructureSet, StructureSetEntry, TemplatePool,
 };
 pub use surface_rule::{SurfaceCondition, SurfaceRule, SurfaceType, VerticalAnchor};
+pub use tags::{load_tags, TagSet};
+pub use block_facts::{BlockFact, BlockFacts};
 pub use version::{DataVersion, PackMeta, PackMetaInner, VersionJson};
 
 pub use oxide_core::{BiomeId, BlockState, ResourceLocation};

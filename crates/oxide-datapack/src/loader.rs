@@ -36,6 +36,12 @@ pub struct Datapack {
     pub processor_lists: Registry<ProcessorList>,
     pub placed_features: Registry<crate::placement::PlacedFeature>,
     pub configured_features: Registry<crate::feature::ConfiguredFeature>,
+    /// Block, fluid and biome tags, flattened. Empty when the pack tree carries no `tags/`.
+    pub block_tags: crate::tags::TagSet,
+    pub fluid_tags: crate::tags::TagSet,
+    pub biome_tags: crate::tags::TagSet,
+    /// Per-state block facts exported from the game. Empty when the tree has no export.
+    pub block_facts: crate::block_facts::BlockFacts,
 }
 
 /// Load and fully validate a datapack-shaped directory tree rooted at
@@ -195,6 +201,11 @@ pub fn load_datapack_stack(pack_roots: &[&Path]) -> Result<Datapack> {
 
     report.into_result()?;
 
+    let block_tags = crate::tags::load_tags(pack_roots, "block")?;
+    let fluid_tags = crate::tags::load_tags(pack_roots, "fluid")?;
+    let biome_tags = crate::tags::load_tags(pack_roots, "worldgen/biome")?;
+    let block_facts = crate::block_facts::BlockFacts::load(base_root)?;
+
     Ok(Datapack {
         data_version,
         pack_meta,
@@ -212,5 +223,9 @@ pub fn load_datapack_stack(pack_roots: &[&Path]) -> Result<Datapack> {
         processor_lists,
         placed_features,
         configured_features,
+        block_tags,
+        fluid_tags,
+        biome_tags,
+        block_facts,
     })
 }
