@@ -248,12 +248,29 @@ fn main() -> Result<()> {
     if args.time_only {
         // No parity pass here on purpose: --time-only exists to measure generation and nothing
         // else, and reading region files off disk mid-run would be measured along with it.
+        let started = std::time::Instant::now();
         let chunks = generate_all(&positions);
+        let secs = started.elapsed().as_secs_f64();
         std::hint::black_box(&chunks);
         println!(
             "generated {} chunks on {} thread(s)",
             chunks.len(),
             args.threads
+        );
+        // One line for scripts/bench-vps.sh. The digest, taken outside the timed part, covers
+        // every block of every chunk: a speed-up that changes it changed the world.
+        let mut digest = blake3::Hasher::new();
+        for chunk in &chunks {
+            digest.update(build_merkle(chunk, args.leaf_size).chunk_hash.as_bytes());
+        }
+        println!(
+            "BENCH chunks={} threads={} secs={:.3} cps={:.1} ms_per_chunk_core={:.2} digest={}",
+            chunks.len(),
+            args.threads,
+            secs,
+            chunks.len() as f64 / secs,
+            secs * 1000.0 * args.threads as f64 / chunks.len() as f64,
+            &digest.finalize().to_hex()[..16]
         );
         #[cfg(feature = "profile")]
         write_profile(guard, args.profile_out.as_deref())?;
