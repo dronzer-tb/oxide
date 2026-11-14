@@ -1,0 +1,600 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Oxide Lab</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  /* Ground: magnetite, lifting a few points per layer. */
+  --magnetite: #131211; --slate: #191817; --shale: #201e1c; --pit: #0c0b0a;
+  /* Seams: the lines between strata. */
+  --seam: rgba(232, 222, 205, .09); --seam-soft: rgba(232, 222, 205, .05); --seam-strong: rgba(232, 222, 205, .2);
+  /* Ink, from bone down to silt. */
+  --bone: #ebe5d9; --ash: #b3ab9d; --dust: #857e72; --silt: #5b564e;
+  /* Minerals. Hematite and azurite are the two difference classes; the rest are states. */
+  --hematite: #e0703a; --azurite: #4f9bd9; --verdigris: #58b09a; --cinnabar: #e5534b;
+  --label: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --data: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  --u: 4px;
+}
+* { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: var(--silt) transparent; }
+html { scroll-behavior: smooth; scroll-padding-top: 16px; }
+body { margin: 0; background: var(--magnetite); color: var(--bone); font: 13px/1.5 var(--data); }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; text-align: left; }
+:focus-visible { outline: 1px solid var(--hematite); outline-offset: 2px; }
+.shell { display: grid; grid-template-columns: 248px minmax(0, 1fr); min-height: 100vh; }
+
+/* Rail: the specimen drawer. Same ground as the page, one seam between. */
+.rail { border-right: 1px solid var(--seam); padding: calc(var(--u) * 6) calc(var(--u) * 5); position: sticky; top: 0; height: 100vh; overflow-y: auto; }
+.mark { font: 600 20px/1 var(--label); letter-spacing: .14em; text-transform: uppercase; }
+.mark b { color: var(--hematite); font-weight: 600; }
+.stamp { color: var(--dust); font-size: 11.5px; margin: calc(var(--u) * 3) 0 calc(var(--u) * 8); white-space: pre-line; }
+.eyebrow { font: 500 11px/1 var(--label); letter-spacing: .16em; text-transform: uppercase; color: var(--dust); margin: 0 0 calc(var(--u) * 3); }
+.specimen { display: grid; grid-template-columns: 10px 1fr; gap: calc(var(--u) * 3); width: calc(100% + var(--u) * 4); padding: calc(var(--u) * 2.5) calc(var(--u) * 2); margin: 0 calc(var(--u) * -2); border-left: 2px solid transparent; align-items: center; }
+.specimen:hover { background: var(--slate); }
+.specimen.on { background: var(--shale); border-left-color: var(--hematite); }
+.specimen .name { font: 500 14px/1.2 var(--label); letter-spacing: .04em; }
+.specimen .sub { color: var(--dust); font-size: 11.5px; }
+.rail nav { margin-top: calc(var(--u) * 8); display: grid; gap: 2px; }
+.rail nav a { color: var(--ash); text-decoration: none; font: 400 14px/1.9 var(--label); letter-spacing: .04em; }
+.rail nav a:hover { color: var(--bone); }
+
+main { padding: calc(var(--u) * 6) calc(var(--u) * 8) calc(var(--u) * 24); min-width: 0; max-width: 1180px; }
+section { margin-top: calc(var(--u) * 14); }
+h1 { margin: 0; font: 600 30px/1.1 var(--label); letter-spacing: .02em; }
+h1 span { color: var(--dust); font-weight: 400; }
+h2 { margin: 0 0 var(--u); font: 600 13px/1.2 var(--label); letter-spacing: .16em; text-transform: uppercase; }
+.lede { color: var(--ash); max-width: 74ch; margin: 0 0 calc(var(--u) * 4); font: 400 15px/1.5 var(--label); }
+.box { border: 1px solid var(--seam); background: var(--slate); }
+.pad { padding: calc(var(--u) * 4); }
+.scroll { overflow-x: auto; overflow-y: hidden; }
+.state { display: inline-flex; align-items: center; gap: 6px; }
+.state::before { content: ""; width: 7px; height: 7px; background: var(--verdigris); }
+.state.bad::before { background: var(--cinnabar); transform: rotate(45deg); }
+.fault { border: 1px solid rgba(229, 83, 75, .4); background: rgba(229, 83, 75, .06); padding: calc(var(--u) * 4); white-space: pre-wrap; margin-top: calc(var(--u) * 4); }
+
+/* Readings: one strip, one shared scale for the gap to exact. */
+.readings { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); margin-top: calc(var(--u) * 5); }
+.reading { padding: calc(var(--u) * 4); border-left: 1px solid var(--seam-soft); }
+.reading:first-child { border-left: 0; }
+.reading .v { font: 500 24px/1.2 var(--data); margin: calc(var(--u) * 2) 0 var(--u); font-variant-numeric: tabular-nums; }
+.reading .d { color: var(--dust); font-size: 11.5px; }
+.gap { height: 4px; background: var(--pit); margin: calc(var(--u) * 3) 0 var(--u); position: relative; }
+.gap i { position: absolute; inset: 0 auto 0 0; background: var(--hematite); min-width: 2px; }
+.scale { display: flex; justify-content: space-between; color: var(--silt); font-size: 10.5px; }
+
+/* Core: mismatch by depth, darkest where the worlds agree. */
+.core { display: inline-grid; background: var(--pit); gap: 1px; vertical-align: middle; }
+.core.v { grid-auto-flow: row; width: 10px; }
+.core.v i { height: 3px; }
+.core.h { grid-auto-flow: column; height: 12px; }
+.core.h i { width: 9px; }
+.core.void { background: repeating-linear-gradient(135deg, var(--pit) 0 3px, var(--shale) 3px 4px); height: 47px; }
+
+table { border-collapse: collapse; width: 100%; }
+th { font: 500 11px/1.2 var(--label); letter-spacing: .12em; text-transform: uppercase; color: var(--dust); text-align: left; padding: calc(var(--u) * 2) calc(var(--u) * 3); border-bottom: 1px solid var(--seam); white-space: nowrap; }
+td { padding: 7px calc(var(--u) * 3); border-bottom: 1px solid var(--seam-soft); white-space: nowrap; font-variant-numeric: tabular-nums; }
+tr:last-child td { border-bottom: 0; }
+.n { text-align: right; }
+.wrap { white-space: normal; word-break: break-word; }
+.q { color: var(--dust); } .z { color: var(--silt); }
+tr.pick { cursor: pointer; }
+tr.pick:hover td { background: var(--shale); }
+tr.on td { background: var(--shale); }
+tr.on td:first-child { box-shadow: inset 2px 0 var(--hematite); }
+
+.survey { display: grid; grid-template-columns: minmax(0, 1fr) 232px; }
+.survey aside { border-left: 1px solid var(--seam); padding: calc(var(--u) * 4); display: flex; flex-direction: column; gap: calc(var(--u) * 5); }
+canvas { image-rendering: pixelated; display: block; background: var(--pit); }
+#map { width: 100%; height: auto; cursor: crosshair; }
+#iso { width: 100%; aspect-ratio: 1; border: 0; display: none; background: var(--pit); }
+.seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; background: var(--pit); border: 1px solid var(--seam); }
+.seg button { padding: 5px 0; text-align: center; color: var(--dust); font: 500 12px/1.4 var(--label); letter-spacing: .1em; text-transform: uppercase; }
+.seg button:hover { color: var(--bone); }
+.seg button.on { background: var(--shale); color: var(--bone); box-shadow: inset 0 -2px var(--hematite); }
+.readout { color: var(--ash); min-height: 5.6em; white-space: pre-line; font-size: 12px; }
+.key { display: grid; gap: 5px; font-size: 12px; color: var(--ash); }
+.key span { display: flex; align-items: center; gap: 8px; }
+.key i { width: 10px; height: 10px; flex: none; }
+.fine { color: var(--dust); font-size: 11.5px; }
+
+.plates { display: flex; flex-wrap: wrap; gap: calc(var(--u) * 5); align-items: flex-start; }
+figure { margin: 0; }
+figcaption { font: 500 11px/1 var(--label); letter-spacing: .14em; text-transform: uppercase; color: var(--dust); margin-bottom: calc(var(--u) * 2); }
+canvas.top { width: 240px; height: 240px; cursor: crosshair; }
+.rule { border-top: 1px solid var(--seam-soft); margin: calc(var(--u) * 5) 0; }
+.depth { position: relative; width: 132px; flex: none; }
+.depth .band { position: absolute; left: 44px; width: 18px; }
+.depth .tick { position: absolute; left: 0; width: 38px; text-align: right; color: var(--silt); font-size: 10.5px; line-height: 1; transform: translateY(-50%); }
+.depth .count { position: absolute; left: 70px; font-size: 11.5px; line-height: 1; transform: translateY(-50%); }
+.trio { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: calc(var(--u) * 4); }
+.box > h3 { margin: 0; padding: calc(var(--u) * 3); font: 500 11px/1.2 var(--label); letter-spacing: .14em; text-transform: uppercase; color: var(--ash); border-bottom: 1px solid var(--seam); }
+.tally { display: flex; flex-wrap: wrap; gap: 1px; max-width: 420px; }
+.tally i { width: 5px; height: 9px; background: var(--verdigris); opacity: .55; }
+.tally i.f { background: var(--cinnabar); opacity: 1; }
+.tally i.i { background: none; box-shadow: inset 0 0 0 1px var(--silt); opacity: 1; }
+.empty { padding: calc(var(--u) * 8); color: var(--dust); text-align: center; border: 1px dashed var(--seam-strong); }
+
+@media (max-width: 920px) {
+  .shell { grid-template-columns: 1fr; }
+  .rail { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--seam); }
+  .rail nav { display: none; }
+  .stamp { margin-bottom: calc(var(--u) * 5); }
+  main { padding: calc(var(--u) * 5) calc(var(--u) * 4) calc(var(--u) * 16); }
+  .survey { grid-template-columns: 1fr; }
+  .survey aside { border-left: 0; border-top: 1px solid var(--seam); }
+  .reading { border-left: 0; border-top: 1px solid var(--seam-soft); }
+  .reading:first-child { border-top: 0; }
+}
+</style>
+</head>
+<body>
+<div class="shell">
+<div class="rail">
+  <div class="mark"><b>Oxide</b> Lab</div>
+  <div class="stamp" id="stamp">reading samples…</div>
+  <div id="railbody" hidden>
+    <p class="eyebrow">Runs</p>
+    <div id="specimens"></div>
+    <nav>
+      <p class="eyebrow">This run</p>
+      <a href="#readings">Readings</a><a href="#survey">Survey</a><a href="#chunks">Compared chunks</a>
+      <a href="#chunk">Chunk under the lens</a><a href="#assay">Assay</a><a href="#tests">Tests</a><a href="#bench">Benchmarks</a>
+    </nav>
+  </div>
+</div>
+<main>
+<div id="fatal"></div>
+<div id="app" hidden>
+
+<div id="readings">
+  <h1 id="runtitle"></h1>
+  <p class="lede" id="runnote" style="margin-top:8px"></p>
+  <div id="runerr"></div>
+  <div class="box readings" id="readingstrip"></div>
+</div>
+
+<section id="survey">
+  <h2>Survey</h2>
+  <p class="lede">What Oxide generates by itself around the origin, terrain and decoration, seen from above. Outlined squares are the areas dumped from the real game; click one to put it under the lens.</p>
+  <div class="box survey">
+    <canvas id="map"></canvas><iframe id="iso" title="Isometric map of Oxide's world"></iframe>
+    <aside>
+      <div class="seg" id="mapmode"><button data-m="block" class="on">Blocks</button><button data-m="biome">Biomes</button><button data-m="height">Height</button><button data-m="iso" id="isobtn" hidden>Iso</button></div>
+      <div class="readout" id="mapread"></div>
+      <div class="key" id="mapkey"></div>
+      <div class="fine" id="maptime"></div>
+    </aside>
+  </div>
+</section>
+
+<div id="parity">
+<section id="chunks">
+  <h2>Compared chunks</h2>
+  <p class="lede">Each row is one chunk dumped from the game with its eight neighbours, worst terrain first. The core shows where in the column the terrain differs, bedrock on the left, sky on the right; brighter is worse.</p>
+  <div class="box scroll"><table id="chunktable"></table></div>
+</section>
+
+<section id="chunk">
+  <h2 id="chunktitle"></h2>
+  <p class="lede" id="publicnote" hidden>This copy leaves out the pictures of the game's own world, which are not ours to publish. Oxide's world and the differences are complete.</p>
+  <div class="box pad">
+    <div class="plates" id="tops"></div>
+    <div class="key" style="grid-auto-flow:column;justify-content:start;gap:20px;margin-top:12px"><span><i style="background:var(--hematite)"></i>terrain differs in the column</span><span><i style="background:var(--azurite)"></i>a feature write differs</span></div>
+    <div class="readout" id="topread" style="margin-top:12px;min-height:6em"></div>
+    <div class="rule"></div>
+    <p class="eyebrow">Cut through the centre chunk, with terrain mismatches by depth</p>
+    <div class="scroll"><div class="plates" id="cuts" style="flex-wrap:nowrap;padding-bottom:8px"></div></div>
+  </div>
+  <div class="box scroll" style="margin-top:16px"><h3>Heightmaps of the centre chunk</h3><table id="hm"></table></div>
+</section>
+
+<section id="assay">
+  <h2>Assay</h2>
+  <p class="lede">What the differences are made of, summed over every compared chunk in this run. Pairs read game → Oxide.</p>
+  <div class="trio">
+    <div class="box"><h3>Terrain blocks</h3><table id="tpairs"></table></div>
+    <div class="box"><h3>Features, both wrote, differently</h3><table id="fdiff"></table></div>
+    <div class="box"><h3>Features, only the game wrote</h3><table id="fvan"></table></div>
+    <div class="box"><h3>Features, only Oxide wrote</h3><table id="fox"></table></div>
+    <div class="box"><h3>Biome cells</h3><table id="bpairs"></table></div>
+    <div class="box"><h3>Not implemented, times hit</h3><table id="unsup"></table></div>
+  </div>
+</section>
+</div>
+
+<section id="tests">
+  <h2>Tests</h2>
+  <p class="lede" id="testnote"></p>
+  <div class="box scroll"><table id="testtable"></table></div>
+</section>
+
+<section id="bench">
+  <h2>Benchmarks</h2>
+  <div class="empty">Nothing recorded yet. The only timing on this page is the survey map, made on the machine that built the data.</div>
+</section>
+</div>
+</main>
+</div>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const short = s => String(s).replace(/minecraft:/g, "");
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const num = n => n.toLocaleString("en-US");
+const ratio = (a, b) => (b ? a / b : null);
+const pct = (r, d = 2) => (r == null ? "–" : (100 * r).toFixed(d) + "%");
+const HEMATITE = [224, 112, 58], AZURITE = [79, 155, 217];
+
+const BLOCK = {
+  air: "#0c0b0a", grass_block: "#6f9a41", dirt: "#7a5a3c", coarse_dirt: "#6b4f35", podzol: "#5d4426", stone: "#7d7d7d",
+  andesite: "#86888a", diorite: "#bdbdbd", granite: "#9a6b59", deepslate: "#4c4c50", tuff: "#6b6d66", bedrock: "#2b2b2b",
+  gravel: "#827f7e", sand: "#dccf9b", sandstone: "#d5c68b", red_sand: "#b5622a", clay: "#9fa4b0", water: "#2f5fc4",
+  lava: "#e2681b", ice: "#8fb4f0", packed_ice: "#7ea3e4", blue_ice: "#6f9df0", snow: "#f2f6f6", snow_block: "#f2f6f6",
+  powder_snow: "#e7eeee", oak_leaves: "#3f7a22", birch_leaves: "#63933f", spruce_leaves: "#2f5a35", dark_oak_leaves: "#2b5a16",
+  acacia_leaves: "#5f8a25", jungle_leaves: "#2f8a18", azalea: "#5c7f2c", flowering_azalea: "#8a6fa0", oak_log: "#6a5232",
+  dark_oak_log: "#3c2a16", short_grass: "#7aa84a", tall_grass: "#7aa84a", fern: "#5f8f45", leaf_litter: "#8a6a3a",
+  moss_block: "#586f2b", moss_carpet: "#63792f", seagrass: "#2f7f6a", tall_seagrass: "#2f7f6a", kelp: "#3f7a3a",
+  sugar_cane: "#8fc06a", dead_bush: "#8a6a2f", poppy: "#d12f2f", wildflowers: "#e6c7e0", pumpkin: "#d0791a",
+  brown_mushroom: "#8a6a50", red_mushroom: "#c8322c", brown_mushroom_block: "#8f6b52", red_mushroom_block: "#b82a25",
+  vine: "#3f6a22", glow_lichen: "#6f8f7f", big_dripleaf: "#5f8a2f", small_dripleaf: "#6a8f3a", sculk: "#0f2a33",
+  terracotta: "#96593f", white_terracotta: "#d1b1a1", orange_terracotta: "#a05325", red_terracotta: "#8e3c2e",
+  yellow_terracotta: "#b98423", brown_terracotta: "#4d3323", light_gray_terracotta: "#876a61", coal_ore: "#5a5a5a",
+  iron_ore: "#a08f80", copper_ore: "#8a7a5f", gold_ore: "#b0a060", emerald_ore: "#5fa873", lapis_ore: "#4f6fa8",
+  netherrack: "#6f2f2f", blackstone: "#2a252b", basalt: "#4a4a50", magma_block: "#a5521c", soul_sand: "#51402f",
+  soul_soil: "#4b3a2c", glowstone: "#d6a85a", shroomlight: "#f09a45", nether_quartz_ore: "#8a5f58", nether_gold_ore: "#8f5a35",
+  crimson_nylium: "#8f1f1f", warped_nylium: "#1f7868", nether_wart_block: "#730707", warped_wart_block: "#167a7a",
+  crimson_stem: "#5c2a3f", warped_stem: "#2a6a66", crimson_fungus: "#a5281f", warped_fungus: "#1f9a8a",
+  crimson_roots: "#8a1f2f", warped_roots: "#148a7a", nether_sprouts: "#14a88a", twisting_vines: "#148f7a",
+  weeping_vines: "#7a0f0f", fire: "#f0a020", soul_fire: "#4fd0e0",
+};
+const BIOME = {
+  ocean: "#2a4fb0", deep_ocean: "#1f3a8a", cold_ocean: "#3a5fb8", deep_cold_ocean: "#2a4590", frozen_ocean: "#8fa8e0",
+  deep_frozen_ocean: "#7088c8", lukewarm_ocean: "#2a70b8", deep_lukewarm_ocean: "#205a98", warm_ocean: "#2a90c0",
+  river: "#3a6fd0", frozen_river: "#9ab0e8", beach: "#e0d59a", snowy_beach: "#ece8d0", stony_shore: "#8a8a8a",
+  plains: "#8db360", sunflower_plains: "#a5c860", forest: "#3f7a2a", flower_forest: "#5a9a50", birch_forest: "#5f8f4a",
+  old_growth_birch_forest: "#4f8a45", dark_forest: "#2f4a1a", taiga: "#2f6a55", snowy_taiga: "#5a8a80",
+  old_growth_pine_taiga: "#4f6a3a", old_growth_spruce_taiga: "#3f6045", jungle: "#4f9a10", sparse_jungle: "#6aa020",
+  bamboo_jungle: "#6a9a10", savanna: "#b0a850", savanna_plateau: "#a09a55", windswept_savanna: "#c0b060",
+  desert: "#e8c860", badlands: "#c8602a", wooded_badlands: "#a8703a", eroded_badlands: "#e07030", swamp: "#4a6a45",
+  mangrove_swamp: "#4a7a55", meadow: "#7ab87a", cherry_grove: "#e8a0c0", grove: "#a8c8c0", snowy_slopes: "#d0e0e8",
+  frozen_peaks: "#b8d0f0", jagged_peaks: "#e0e8f0", stony_peaks: "#a0a0a8", snowy_plains: "#e8f0f0", ice_spikes: "#b0d8e8",
+  windswept_hills: "#6a7a6a", windswept_forest: "#4a6a4a", windswept_gravelly_hills: "#8a8a80", mushroom_fields: "#a878a8",
+  lush_caves: "#b0e030", dripstone_caves: "#8a6a4a", deep_dark: "#0f2a33", pale_garden: "#b8b8b0",
+  nether_wastes: "#8a2f2f", crimson_forest: "#c0202a", warped_forest: "#1f9a8a", soul_sand_valley: "#6a5340", basalt_deltas: "#55555f",
+};
+const rgbCache = new Map();
+function rgb(table, name) {
+  const key = (table === BIOME ? "b:" : "") + short(name);
+  let c = rgbCache.get(key);
+  if (c) return c;
+  const hex = table[short(name)];
+  if (hex) c = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16));
+  else {
+    let h = 0;
+    for (const ch of key) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    c = [90 + (h & 63), 80 + ((h >> 6) & 63), 90 + ((h >> 12) & 63)];
+  }
+  rgbCache.set(key, c);
+  return c;
+}
+const css = c => `rgb(${c.map(Math.round).join(",")})`;
+const dimmed = c => c.map(v => v * 0.26);
+function unrle(runs, n) {
+  const out = new Uint32Array(n);
+  let at = 0;
+  for (let i = 0; i < runs.length; i += 2) { out.fill(runs[i], at, at + runs[i + 1]); at += runs[i + 1]; }
+  return out;
+}
+function paint(canvas, w, h, pixel) {
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  const img = ctx.createImageData(w, h);
+  for (let i = 0; i < w * h; i++) {
+    const c = pixel(i);
+    img.data[i * 4] = c[0]; img.data[i * 4 + 1] = c[1]; img.data[i * 4 + 2] = c[2]; img.data[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  return ctx;
+}
+// Top-down colour with the slope lit from the north-west, so relief reads without a legend.
+function lit(side, ys, i, c) {
+  const nw = i >= side + 1 && i % side ? ys[i - side - 1] : ys[i];
+  const k = Math.max(0.6, Math.min(1.25, 1 + (ys[i] - nw) * 0.09));
+  return [Math.min(255, c[0] * k), Math.min(255, c[1] * k), Math.min(255, c[2] * k)];
+}
+// One hue, dark to bright: the share of a band's blocks that differ, on a log scale because
+// the interesting range runs from one block in a hundred thousand to a third of the band.
+function heat(wrong, total) {
+  if (!wrong) return "rgb(32,30,28)";
+  const t = 0.16 + 0.84 * Math.min(1, Math.log10(1 + (wrong / total) * 2000) / 3);
+  return css(HEMATITE.map(v => 40 + (v - 40) * t));
+}
+function core(bands, dir) {
+  const list = Object.entries(bands).map(([y, [total, wrong]]) => ({ y: +y, total, wrong })).sort((a, b) => (dir === "v" ? b.y - a.y : a.y - b.y));
+  return `<span class="core ${dir}">` + list.map(b => `<i style="background:${heat(b.wrong, b.total)}" title="y ${b.y} to ${b.y + 31}: ${num(b.wrong)} of ${num(b.total)} differ"></i>`).join("") + "</span>";
+}
+function rows(el, head, body) {
+  el.innerHTML = "<thead><tr>" + head.map(h => `<th${h[0] === "#" ? ' class="n"' : ""}>${esc(h.replace(/^#/, ""))}</th>`).join("") + "</tr></thead><tbody>" +
+    (body.length ? body.join("") : `<tr><td class="z" colspan="${head.length}">none</td></tr>`) + "</tbody>";
+}
+function pairTable(el, map, label) {
+  const top = Object.entries(map).sort((a, b) => b[1] - a[1]), max = top.length ? top[0][1] : 1;
+  rows(el, [label, "#blocks"], top.slice(0, 10).map(([k, v]) =>
+    `<tr><td class="wrap" style="background:linear-gradient(90deg,rgba(224,112,58,.16) ${v / max * 100}%,transparent 0)">${esc(short(k))}</td><td class="n">${num(v)}</td></tr>`));
+  if (top.length > 10) el.tBodies[0].insertAdjacentHTML("beforeend", `<tr><td class="z" colspan="2">and ${top.length - 10} more</td></tr>`);
+}
+function addInto(dst, src) { for (const [k, v] of Object.entries(src)) dst[k] = (dst[k] || 0) + v; }
+
+function totals(report) {
+  const t = { total: 0, wrong: 0, pairs: {}, bands: {}, biome: 0, biomeWrong: 0, biomePairs: {}, cols: 0, colsWrong: 0,
+    matched: 0, vw: 0, ow: 0, diff: {}, van: {}, ox: {} };
+  for (const c of report.chunks) {
+    t.total += c.terrain.total; t.wrong += c.terrain.mismatched; addInto(t.pairs, c.terrain.pairs);
+    for (const [y, [total, wrong]] of Object.entries(c.terrain.bands)) { const b = t.bands[y] || (t.bands[y] = [0, 0]); b[0] += total; b[1] += wrong; }
+    t.biome += c.biome_cells; t.biomeWrong += c.biome_mismatched; addInto(t.biomePairs, c.biome_pairs);
+    for (const v of Object.values(c.heightmaps)) { t.cols += v[0]; t.colsWrong += v[1]; }
+    t.matched += c.features.matched; t.vw += c.features.vanilla_writes; t.ow += c.features.oxide_writes;
+    addInto(t.diff, c.features.different); addInto(t.van, c.features.vanilla_only); addInto(t.ox, c.features.oxide_only);
+  }
+  t.terrain = ratio(t.total - t.wrong, t.total);
+  t.features = ratio(t.matched, Math.max(t.vw, t.ow));
+  t.biomes = ratio(t.biome - t.biomeWrong, t.biome);
+  t.heights = ratio(t.cols - t.colsWrong, t.cols);
+  return t;
+}
+
+let runs = [], run = null, chunk = null, order = [], mapMode = "block", mapData = null;
+
+function drawRail() {
+  $("specimens").innerHTML = runs.map((r, i) =>
+    `<button class="specimen${r === run ? " on" : ""}" data-i="${i}">${r.totals ? core(r.totals.bands, "v") : '<span class="core v void"></span>'}` +
+    `<span><span class="name">${esc(short(r.dimension))} · ${r.seed}</span><br><span class="sub">${r.totals ? pct(r.totals.terrain) + " terrain" : "comparison failed"}</span></span></button>`).join("");
+}
+$("specimens").onclick = e => {
+  const b = e.target.closest(".specimen");
+  if (!b) return;
+  run = runs[+b.dataset.i];
+  drawRun();
+};
+
+const GAP_SCALE = 0.05;
+function reading(label, r, detail) {
+  const gap = 1 - r;
+  return `<div class="reading"><p class="eyebrow" style="margin:0">${label}</p><div class="v">${pct(r, r > 0.999 ? 3 : 2)}</div>` +
+    `<div class="gap" title="${pct(gap, 3)} short of exact"><i style="width:${Math.min(1, gap / GAP_SCALE) * 100}%"></i></div>` +
+    `<div class="scale"><span>exact</span><span>${GAP_SCALE * 100}% off</span></div><div class="d" style="margin-top:8px">${detail}</div></div>`;
+}
+
+function drawRun() {
+  drawRail();
+  const t = run.totals;
+  $("runtitle").innerHTML = `${esc(short(run.dimension))} <span>seed ${run.seed}</span>`;
+  $("runerr").innerHTML = run.error ? `<div class="fault"><span class="state bad">The comparison did not run</span>\n\n${esc(run.error)}</div>` : "";
+  $("parity").hidden = !run.report;
+  $("readingstrip").hidden = !t;
+  $("publicnote").hidden = !run.public;
+  if (t) {
+    $("runnote").textContent = `${run.report.chunks.length} chunks dumped from the real game, compared block for block. Each bar is the distance left to exact, all four on one scale.`;
+    const fo = run.report.feature_order;
+    $("readingstrip").innerHTML =
+      reading("Terrain", t.terrain, `${num(t.wrong)} of ${num(t.total)} blocks differ`) +
+      reading("Feature writes", t.features, `${num(t.matched)} agree<br>game ${num(t.vw)} · Oxide ${num(t.ow)}`) +
+      reading("Biome cells", t.biomes, `${num(t.biomeWrong)} of ${num(t.biome)} cells differ`) +
+      reading("Heightmap columns", t.heights, `${num(t.colsWrong)} of ${num(t.cols)} columns differ`) +
+      (fo ? `<div class="reading"><p class="eyebrow" style="margin:0">Feature order</p><div class="v">${fo.oxide_entries}<span class="q"> / ${fo.vanilla_entries}</span></div>` +
+        `<div class="d" style="margin-top:20px"><span class="state${fo.mismatches.length ? " bad" : ""}">${fo.mismatches.length ? fo.mismatches.length + " slots out of place" : "every slot in the game's order"}</span></div></div>` : "");
+  } else {
+    $("runnote").textContent = "No parity figures for this dimension yet, only Oxide's own map.";
+  }
+  // The isometric map exists only where Overforge was run for this seed and dimension.
+  const asked = run;
+  $("isobtn").hidden = true;
+  fetch(isoUrl()).then(r => r.ok, () => false).then(ok => { if (asked === run) $("isobtn").hidden = !ok; });
+  setMapMode(mapMode === "iso" ? "block" : mapMode);
+  if (!run.report) return;
+  order = [...run.report.chunks].sort((a, b) => b.terrain.mismatched - a.terrain.mismatched);
+  chunk = order[0];
+  drawChunkTable();
+  drawChunk();
+  pairTable($("tpairs"), t.pairs, "game → Oxide");
+  pairTable($("fdiff"), t.diff, "game → Oxide");
+  pairTable($("fvan"), t.van, "block");
+  pairTable($("fox"), t.ox, "block");
+  pairTable($("bpairs"), t.biomePairs, "game → Oxide");
+  rows($("unsup"), ["feature", "#times"], run.report.unsupported.map(([k, v]) => `<tr><td class="wrap">${esc(short(k))}</td><td class="n">${num(v)}</td></tr>`));
+}
+
+function drawChunkTable() {
+  rows($("chunktable"), ["Chunk", "Biome", "Core, y −64 → 319", "#Terrain differs", "#Features agree", "#Writes, game / Oxide", "#Biome cells off"],
+    order.map(c => {
+      const f = c.features, fr = ratio(f.matched, Math.max(f.vanilla_writes, f.oxide_writes));
+      return `<tr class="pick${c === chunk ? " on" : ""}" data-f="${esc(c.file)}" tabindex="0"><td>${c.center[0]}, ${c.center[1]}</td><td>${esc(short(c.surface_biome))}</td>` +
+        `<td>${core(c.terrain.bands, "h")}</td><td class="n">${num(c.terrain.mismatched)}</td><td class="n">${pct(fr, 1)}</td>` +
+        `<td class="n q">${num(f.vanilla_writes)} / ${num(f.oxide_writes)}</td><td class="n${c.biome_mismatched ? "" : " z"}">${c.biome_mismatched}</td></tr>`;
+    }));
+}
+function pickChunk(c, scroll) {
+  chunk = c;
+  drawChunkTable();
+  drawChunk();
+  if (scroll) $("chunk").scrollIntoView();
+}
+$("chunktable").onclick = e => {
+  const tr = e.target.closest("tr.pick");
+  if (tr) pickChunk(run.report.chunks.find(c => c.file === tr.dataset.f), true);
+};
+$("chunktable").onkeydown = e => { if (e.key === "Enter") e.target.click(); };
+
+function plate(parent, caption, cls) {
+  const f = document.createElement("figure");
+  f.innerHTML = `<figcaption>${caption}</figcaption>`;
+  const c = document.createElement("canvas");
+  c.className = cls;
+  f.appendChild(c); parent.appendChild(f);
+  return c;
+}
+
+function drawChunk() {
+  const v = chunk.views, pal = v.palette, x0 = (chunk.center[0] - 1) * 16, z0 = (chunk.center[1] - 1) * 16;
+  const game = v.top_vanilla.length > 0;
+  $("chunktitle").textContent = `Under the lens: chunk ${chunk.center[0]}, ${chunk.center[1]}, ${short(chunk.surface_biome)}`;
+  const tops = $("tops");
+  tops.innerHTML = "";
+  if (game) paint(plate(tops, "The game, from above", "top"), 48, 48, i => lit(48, v.y_vanilla, i, rgb(BLOCK, pal[v.top_vanilla[i]])));
+  paint(plate(tops, "Oxide, from above", "top"), 48, 48, i => lit(48, v.y_oxide, i, rgb(BLOCK, pal[v.top_oxide[i]])));
+  paint(plate(tops, "Where they differ", "top"), 48, 48, i =>
+    v.terrain_wrong[i] ? HEMATITE : v.feature_wrong[i] ? AZURITE : dimmed(rgb(BLOCK, pal[v.top_oxide[i]])));
+  tops.onmousemove = e => {
+    if (e.target.tagName !== "CANVAS") return;
+    const b = e.target.getBoundingClientRect();
+    const x = Math.min(47, Math.floor((e.clientX - b.left) / b.width * 48)), z = Math.min(47, Math.floor((e.clientY - b.top) / b.height * 48)), i = z * 48 + x;
+    $("topread").textContent = `x ${x0 + x}  z ${z0 + z}\n` + (game ? `game   ${short(pal[v.top_vanilla[i]])}, y ${v.y_vanilla[i]}\n` : "") +
+      `oxide  ${short(pal[v.top_oxide[i]])}, y ${v.y_oxide[i]}\nthis column: ${v.terrain_wrong[i]} terrain blocks and ${v.feature_wrong[i]} feature writes differ`;
+  };
+  $("topread").textContent = "Move over a plate to read a column.";
+
+  // Cut: from just above the highest surface down to the floor, 3 px per block, with the
+  // depth column on the same scale beside it.
+  const S = 3, n = 48 * v.height, sv = game && unrle(v.slice_vanilla, n), so = unrle(v.slice_oxide, n), sw = unrle(v.slice_wrong, n);
+  const peak = Math.max(...v.y_vanilla, ...v.y_oxide) - v.min_y;
+  const skip = Math.max(0, v.height - 1 - peak - 8), h = v.height - skip, off = skip * 48, topY = v.min_y + h;
+  const cuts = $("cuts");
+  cuts.innerHTML = "";
+  let depth = "";
+  for (const [key, [total, wrong]] of Object.entries(chunk.terrain.bands)) {
+    const y = +key;
+    if (y >= topY) continue;
+    const top = Math.max(0, (topY - (y + 32)) * S), bottom = (topY - y) * S;
+    depth += `<div class="band" style="top:${top}px;height:${bottom - top - 1}px;background:${heat(wrong, total)}" title="y ${y} to ${y + 31}: ${num(wrong)} of ${num(total)} blocks differ"></div>` +
+      `<div class="tick" style="top:${bottom}px">${y}</div><div class="count${wrong ? "" : " z"}" style="top:${(top + bottom) / 2}px">${num(wrong)}</div>`;
+  }
+  cuts.insertAdjacentHTML("beforeend", `<figure><figcaption>y · blocks differing</figcaption><div class="depth" style="height:${h * S}px">${depth}</div></figure>`);
+  const cut = (name, pixel) => {
+    const c = plate(cuts, name, "");
+    paint(c, 48, h, pixel);
+    c.style.width = 48 * S + "px"; c.style.height = h * S + "px";
+    c.parentNode.style.flex = "none";
+  };
+  if (game) cut("The game", i => rgb(BLOCK, pal[sv[off + i]]));
+  cut("Oxide", i => rgb(BLOCK, pal[so[off + i]]));
+  cut("Where they differ", i => (sw[off + i] ? HEMATITE : dimmed(rgb(BLOCK, pal[so[off + i]]))));
+
+  rows($("hm"), ["Stage", "Heightmap", "#Columns off, of 256", "#Summed error, blocks"], Object.entries(chunk.heightmaps).map(([k, [, wrong, err]]) => {
+    const [stage, kind] = k.split(" ");
+    return `<tr><td>${stage === "carvers" ? "terrain" : "decorated"}</td><td>${esc(kind)}</td><td class="n${wrong ? "" : " z"}">${wrong}</td><td class="n${err ? "" : " z"}">${err}</td></tr>`;
+  }));
+}
+
+const isoUrl = () => `iso/${run.seed}_${short(run.dimension)}/index.html`;
+function setMapMode(mode) {
+  mapMode = mode;
+  for (const b of $("mapmode").children) b.classList.toggle("on", b.dataset.m === mode);
+  drawMap();
+}
+function drawMap() {
+  const iso = mapMode === "iso";
+  $("map").style.display = iso ? "none" : "";
+  $("iso").style.display = iso ? "block" : "";
+  if (iso) {
+    if ($("iso").getAttribute("src") !== isoUrl()) $("iso").src = isoUrl();
+    $("mapkey").innerHTML = "";
+    $("mapread").textContent = "Drag to pan, scroll to zoom.\n\nDrawn by Overforge from the region files Oxide wrote. The sides are the edge of the generated area, cut open.";
+    return;
+  }
+  const m = run.map, n = m.side * m.side, q = m.side / 4;
+  mapData = { top: unrle(m.top, n), biome: unrle(m.biome, q * q), q, boxes: [] };
+  const { top, biome } = mapData;
+  const ctx = paint($("map"), m.side, m.side, i => {
+    const x = i % m.side, z = (i - x) / m.side;
+    if (mapMode === "height") { const k = 24 + 216 * (m.y[i] - m.min_y) / m.height; return [k, k * 0.95, k * 0.88]; }
+    if (mapMode === "biome") return lit(m.side, m.y, i, rgb(BIOME, m.biomes[biome[(z >> 2) * q + (x >> 2)]]));
+    return lit(m.side, m.y, i, rgb(BLOCK, m.palette[top[i]]));
+  });
+  for (const c of run.report ? run.report.chunks : []) {
+    const x = (c.center[0] - 1 + m.radius) * 16, z = (c.center[1] - 1 + m.radius) * 16;
+    if (x < 0 || z < 0 || x + 48 > m.side || z + 48 > m.side) continue;
+    ctx.strokeStyle = "#131211"; ctx.strokeRect(x - 0.5, z - 0.5, 49, 49);
+    ctx.strokeStyle = "#ebe5d9"; ctx.strokeRect(x + 0.5, z + 0.5, 47, 47);
+    mapData.boxes.push({ x, z, c });
+  }
+  $("mapkey").innerHTML = mapMode === "biome" ? m.biomes.map(b => `<span><i style="background:${css(rgb(BIOME, b))}"></i>${esc(short(b))}</span>`).join("")
+    : mapMode === "height" ? `<span><i style="background:linear-gradient(90deg,#181716,#f0e4d3);width:72px"></i>y ${m.min_y} → ${m.min_y + m.height - 1}</span>` : "";
+  const inner = (m.side / 16) ** 2;
+  $("maptime").innerHTML = `${m.side / 16} × ${m.side / 16} chunks, ${m.side} blocks a side.<br><br>Terrain ${(m.terrain_ms / m.terrain_chunks).toFixed(1)} ms a chunk, decoration ${(m.decoration_ms / inner).toFixed(1)} ms a chunk: wall time over ${m.threads} threads on the build machine. Not a benchmark.`;
+  $("mapread").textContent = "Move over the map to read a column.";
+}
+const mapAt = e => {
+  const m = run.map, b = e.target.getBoundingClientRect();
+  return [(e.clientX - b.left) / b.width * m.side, (e.clientY - b.top) / b.height * m.side];
+};
+$("map").onmousemove = e => {
+  const m = run.map, [fx, fz] = mapAt(e);
+  const x = Math.min(m.side - 1, Math.floor(fx)), z = Math.min(m.side - 1, Math.floor(fz)), i = z * m.side + x;
+  $("mapread").textContent = `x ${x - m.radius * 16}  z ${z - m.radius * 16}  y ${m.y[i]}\n${short(m.palette[mapData.top[i]])}\n${short(m.biomes[mapData.biome[(z >> 2) * mapData.q + (x >> 2)]])}\nchunk ${(x >> 4) - m.radius}, ${(z >> 4) - m.radius}`;
+};
+$("map").onclick = e => {
+  const [x, z] = mapAt(e);
+  const hit = mapData.boxes.find(o => x >= o.x && x < o.x + 48 && z >= o.z && z < o.z + 48);
+  if (hit) pickChunk(hit.c, true);
+};
+$("mapmode").onclick = e => {
+  if (!e.target.dataset.m) return;
+  setMapMode(e.target.dataset.m);
+};
+
+function drawTests(text) {
+  const suites = [];
+  let commit = "", cur = null;
+  for (const line of text.split("\n")) {
+    let m;
+    if ((m = line.match(/^commit (.+)/))) commit = m[1];
+    else if ((m = line.match(/^\s+Running (\S+) (\S+) \(.*\/([a-z_0-9]+)-[0-9a-f]+\)/))) suites.push(cur = { name: m[3], kind: m[2], marks: [], failed: [] });
+    else if ((m = line.match(/^\s+Doc-tests (\S+)/))) suites.push(cur = { name: m[1], kind: "doc", marks: [], failed: [] });
+    else if (cur && (m = line.match(/^test (.+) \.\.\. (ok|FAILED|ignored)/))) {
+      cur.marks.push(m[2] === "ok" ? "" : m[2] === "ignored" ? "i" : "f");
+      if (m[2] === "FAILED") cur.failed.push(m[1]);
+    }
+  }
+  const ran = suites.filter(s => s.marks.length);
+  if (!ran.length) { $("testnote").textContent = "No test results were recorded with this data."; $("testtable").innerHTML = ""; return; }
+  const count = k => ran.reduce((a, s) => a + s.marks.filter(x => x === k).length, 0), failed = count("f");
+  $("testnote").innerHTML = `<span class="state${failed ? " bad" : ""}">${num(count(""))} passed, ${failed} failed</span>, ${count("i")} ignored, across ${ran.length} suites at ${esc(commit)}. These hold Oxide to itself and to values recorded from Java; agreement with the game is everything above.`;
+  rows($("testtable"), ["Crate", "Suite", "One mark per test", "#Passed", "#Failed"], ran.map(s =>
+    `<tr><td>${esc(s.name)}</td><td class="q">${esc(s.kind)}</td><td><span class="tally">${s.marks.map(k => `<i class="${k}"></i>`).join("")}</span>` +
+    s.failed.map(f => `<div style="color:var(--cinnabar);white-space:normal">${esc(f)}</div>`).join("") +
+    `</td><td class="n">${s.marks.filter(x => x === "").length}</td><td class="n${s.failed.length ? "" : " z"}">${s.failed.length}</td></tr>`));
+}
+
+(async () => {
+  try {
+    // The full set exists only on the machine that made it; a hosted copy has the public one.
+    const local = await fetch("data-local/manifest.json", { cache: "no-store" }).then(r => r.ok, () => false);
+    const base = local ? "data-local/" : "data/";
+    const get = async (path, kind) => {
+      const r = await fetch(base + path, { cache: "no-store" });
+      if (!r.ok) throw new Error(`${base}${path}: HTTP ${r.status}`);
+      return r[kind]();
+    };
+    runs = await Promise.all((await get("manifest.json", "json")).map(f => get(f, "json")));
+    if (!runs.length) throw new Error(base + "manifest.json lists no runs");
+    for (const r of runs) r.totals = r.report ? totals(r.report) : null;
+    run = runs.find(r => r.report) || runs[0];
+    const when = new Date(Math.max(...runs.map(r => r.generated_unix)) * 1000);
+    $("stamp").textContent = `Minecraft 26.2\ncommit ${run.commit || "unknown"}\n${when.toISOString().slice(0, 16).replace("T", " ")} UTC`;
+    $("app").hidden = false;
+    $("railbody").hidden = false;
+    drawRun();
+    drawTests(await get("tests.txt", "text").catch(() => ""));
+  } catch (e) {
+    $("stamp").textContent = "no data";
+    $("fatal").innerHTML = `<div class="fault"><span class="state bad">The lab data did not load</span>\n\n${esc(e.message)}\n\nGenerate it with scripts/site-data.sh and open this page through a web server, not as a file.</div>`;
+  }
+})();
+</script>
+</body>
+</html>
