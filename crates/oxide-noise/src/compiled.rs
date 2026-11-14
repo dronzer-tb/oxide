@@ -184,6 +184,14 @@ pub(crate) struct Program {
     ops: Vec<Op>,
 }
 
+impl Program {
+    /// Number of instructions, i.e. how many `f64` registers [`Program::run`] needs. Exposed so
+    /// the register budget can be checked against what real datapacks actually compile to.
+    pub(crate) fn len(&self) -> usize {
+        self.ops.len()
+    }
+}
+
 /// Everything running a program needs beyond the program itself.
 pub(crate) struct RunCtx<'a> {
     /// Indexed by the noise indices the compiler assigned.
@@ -197,9 +205,184 @@ pub(crate) struct RunCtx<'a> {
 
 /// Registers held on the stack up to this many instructions. Every program a real datapack
 /// produces is far below it; a larger one spills to a heap allocation rather than failing.
-const INLINE_REGISTERS: usize = 64;
+const INLINE_REGISTERS: usize = 16;
 
 impl Program {
+    /// One line per instruction, for diagnosing why a shortcut does or does not apply.
+    pub(crate) fn dump(&self) -> Vec<String> {
+        self.ops
+            .iter()
+            .enumerate()
+            .map(|(i, op)| {
+                let name = match op {
+                    Op::Const(v) => return format!("{i:3}: Const({v})"),
+                    Op::Noise(_) => "Noise",
+                    Op::ShiftedNoise(_) => "ShiftedNoise",
+                    Op::Add(..) => "Add",
+                    Op::Mul(..) => "Mul",
+                    Op::Min(..) => "Min",
+                    Op::Max(..) => "Max",
+                    Op::Squeeze(_) => "Squeeze",
+                    Op::Clamp(_) => "Clamp",
+                    Op::Spline(_) => "Spline",
+                    Op::RangeChoice(_) => "RangeChoice",
+                    Op::Shift { .. } => "Shift",
+                    Op::OldBlendedNoise(_) => "OldBlendedNoise",
+                    Op::WeirdScaledSampler(_) => "WeirdScaledSampler",
+                    Op::YClampedGradient(_) => "YClampedGradient",
+                    Op::Abs(_) => "Abs",
+                    Op::Square(_) => "Square",
+                    Op::Cube(_) => "Cube",
+                    Op::HalfNegative(_) => "HalfNegative",
+                    Op::QuarterNegative(_) => "QuarterNegative",
+                    Op::Invert(_) => "Invert",
+                    Op::IntervalSelect(_) => "IntervalSelect",
+                    Op::FindTopSurface(_) => "FindTopSurface",
+                    Op::Cache { kind, slot, .. } => {
+                        return format!("{i:3}: Cache(kind={kind:?}, slot={slot})")
+                    }
+                    _ => "Other",
+                };
+                format!("{i:3}: {name}")
+            })
+            .collect()
+    }
+
+    /// A conservative bound on this program's value across one whole cell, computed from the
+    /// `interpolated` corner grids it reads, or `None` when no such bound can be proven.
+    ///
+    /// Why this is not simply "is the result an interpolated node": in a real overworld router
+    /// `final_density` is `min(squeeze(interpolated(...)), noodle_caves)`, so the interpolated
+    /// node is two monotonic wrappers deep and then combined with a second term. Interval
+    /// arithmetic handles that: each op maps an input range to an output range, and anything
+    /// this cannot bound returns `None` and simply gives up the shortcut.
+    ///
+    /// The bound is only ever *widened*, never narrowed, so a caller may trust `hi <= 0` to mean
+    /// "no position in this cell is solid". It deliberately does not try to prove the opposite:
+    /// `min` with an unbounded term (noodle caves) can pull any position down, so `lo > 0` for
+    /// the interpolated term alone would NOT prove the cell is solid.
+    pub(crate) fn cell_bounds(
+        &self,
+        caches: &ChunkCaches,
+        cell_x: i32,
+        cell_y: i32,
+        cell_z: i32,
+    ) -> Option<(f64, f64)> {
+        let n = self.ops.len();
+        let mut lo = vec![0.0f64; n];
+        let mut hi = vec![0.0f64; n];
+        let mut known = vec![false; n];
+
+        for i in 0..n {
+            let bounds: Option<(f64, f64)> = match &self.ops[i] {
+                Op::Const(v) => Some((*v, *v)),
+
+                // The whole point: a cell's corner grid bounds this node exactly.
+                Op::Cache {
+                    kind: CacheKind::Interpolated,
+                    slot,
+                    ..
+                } => caches.cell_bounds(*slot as usize, cell_x, cell_y, cell_z),
+
+                // Monotonic non-decreasing unary ops: bounds map straight through.
+                Op::Squeeze(a) => {
+                    let (l, h) = get(&lo, &hi, &known, *a)?;
+                    Some((squeeze(l), squeeze(h)))
+                }
+                Op::HalfNegative(a) => {
+                    let (l, h) = get(&lo, &hi, &known, *a)?;
+                    Some((half_negative(l), half_negative(h)))
+                }
+                Op::QuarterNegative(a) => {
+                    let (l, h) = get(&lo, &hi, &known, *a)?;
+                    Some((quarter_negative(l), quarter_negative(h)))
+                }
+                Op::Cube(a) => {
+                    let (l, h) = get(&lo, &hi, &known, *a)?;
+                    Some((l * l * l, h * h * h))
+                }
+                Op::Clamp(c) => {
+                    let (l, h) = get(&lo, &hi, &known, c.input)?;
+                    Some((l.clamp(c.min, c.max), h.clamp(c.min, c.max)))
+                }
+
+                Op::Add(a, b) => {
+                    let (al, ah) = get(&lo, &hi, &known, *a)?;
+                    let (bl, bh) = get(&lo, &hi, &known, *b)?;
+                    Some((al + bl, ah + bh))
+                }
+                // `min` only ever lowers its result, so an upper bound on EITHER side is an
+                // upper bound on the whole -- even if the other side cannot be bounded at all.
+                // This is the case that matters: a real `final_density` is
+                // `min(squeeze(interpolated(..)), noodle_caves)`, and the cave term is a lazy
+                // `RangeChoice` this cannot bound. Without this asymmetry the whole shortcut
+                // would never fire on any real overworld router.
+                //
+                // The lower bound is only known when both sides are, and is unused by the
+                // caller (which claims "all air", never "all solid"); f64::NEG_INFINITY is the
+                // honest value when one side is unknown.
+                Op::Min(a, b) => {
+                    let ba = get(&lo, &hi, &known, *a);
+                    let bb = get(&lo, &hi, &known, *b);
+                    match (ba, bb) {
+                        (Some((al, ah)), Some((bl, bh))) => Some((al.min(bl), ah.min(bh))),
+                        (Some((_, ah)), None) => Some((f64::NEG_INFINITY, ah)),
+                        (None, Some((_, bh))) => Some((f64::NEG_INFINITY, bh)),
+                        (None, None) => None,
+                    }
+                }
+                // Mirror of `min`: `max` only ever raises, so a lower bound on either side
+                // bounds the whole from below. The upper bound needs both.
+                Op::Max(a, b) => {
+                    let ba = get(&lo, &hi, &known, *a);
+                    let bb = get(&lo, &hi, &known, *b);
+                    match (ba, bb) {
+                        (Some((al, ah)), Some((bl, bh))) => Some((al.max(bl), ah.max(bh))),
+                        (Some((al, _)), None) => Some((al, f64::INFINITY)),
+                        (None, Some((bl, _))) => Some((bl, f64::INFINITY)),
+                        (None, None) => None,
+                    }
+                }
+                Op::Mul(a, b) => {
+                    let (al, ah) = get(&lo, &hi, &known, *a)?;
+                    let (bl, bh) = get(&lo, &hi, &known, *b)?;
+                    // Sign-agnostic: the extremes of a product are among the corner products.
+                    let c = [al * bl, al * bh, ah * bl, ah * bh];
+                    let mut mn = c[0];
+                    let mut mx = c[0];
+                    for v in c.iter().copied().skip(1) {
+                        if v < mn {
+                            mn = v;
+                        }
+                        if v > mx {
+                            mx = v;
+                        }
+                    }
+                    Some((mn, mx))
+                }
+
+                // Anything else -- raw noise, splines, lazy branches, other cache kinds --
+                // is not bounded here. Giving up costs only the shortcut.
+                _ => None,
+            };
+
+            match bounds {
+                Some((l, h)) => {
+                    lo[i] = l;
+                    hi[i] = h;
+                    known[i] = true;
+                }
+                None => known[i] = false,
+            }
+        }
+
+        if known[n - 1] {
+            Some((lo[n - 1], hi[n - 1]))
+        } else {
+            None
+        }
+    }
+
     pub(crate) fn run(&self, ctx: FunctionContext, cx: &RunCtx) -> f64 {
         let n = self.ops.len();
         debug_assert!(n > 0, "a compiled program always ends in its result");
@@ -217,6 +400,41 @@ impl Program {
             regs[i] = value;
         }
         regs[n - 1]
+    }
+}
+
+/// `squeeze`, exactly as `eval_op` computes it. Monotonic non-decreasing on [-1, 1]:
+/// d/dv (v/2 - v^3/24) = 1/2 - v^2/8, which is positive for |v| <= 1, so bounds map end to end.
+fn squeeze(v: f64) -> f64 {
+    let v = v.clamp(-1.0, 1.0);
+    v / 2.0 - v * v * v / 24.0
+}
+
+/// `half_negative`, exactly as `eval_op` computes it. Monotonic non-decreasing.
+fn half_negative(v: f64) -> f64 {
+    if v > 0.0 {
+        v
+    } else {
+        v * 0.5
+    }
+}
+
+/// `quarter_negative`, exactly as `eval_op` computes it. Monotonic non-decreasing.
+fn quarter_negative(v: f64) -> f64 {
+    if v > 0.0 {
+        v
+    } else {
+        v * 0.25
+    }
+}
+
+/// A register's proven bounds, or `None` if that register was not bounded.
+fn get(lo: &[f64], hi: &[f64], known: &[bool], i: u32) -> Option<(f64, f64)> {
+    let i = i as usize;
+    if *known.get(i)? {
+        Some((lo[i], hi[i]))
+    } else {
+        None
     }
 }
 

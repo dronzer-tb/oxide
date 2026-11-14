@@ -51,7 +51,24 @@ pub fn fill_chunk_with(
     router: &NoiseRouterEvaluator,
     biomes: Option<&oxide_biome::BiomeSearchTree>,
     caches: &oxide_noise::ChunkCaches,
+    aquifer: Option<&mut crate::aquifer::Aquifer>,
+) -> ChunkData {
+    fill_chunk_culling(pos, settings, router, biomes, caches, aquifer, true)
+}
+
+/// [`fill_chunk_with`] with cell culling switchable.
+///
+/// `cull = false` evaluates density at every position, which is what this did before culling
+/// existed. Exposed so a test can assert the two produce byte-identical chunks -- a shortcut
+/// that silently changed terrain would be far worse than a slow one.
+pub fn fill_chunk_culling(
+    pos: ChunkPos,
+    settings: &NoiseGeneratorSettings,
+    router: &NoiseRouterEvaluator,
+    biomes: Option<&oxide_biome::BiomeSearchTree>,
+    caches: &oxide_noise::ChunkCaches,
     mut aquifer: Option<&mut crate::aquifer::Aquifer>,
+    cull: bool,
 ) -> ChunkData {
     let min_y = settings.noise.min_y;
     let height = settings.noise.height;
@@ -63,6 +80,30 @@ pub fn fill_chunk_with(
     let mut chunk = ChunkData::new(pos, min_y, height);
     let section_count = chunk.section_count();
 
+    // Cell-level culling setup. `final_density` resolves through an `interpolated` cache node,
+    // whose corner grid this asks for the min/max of per cell. A trilinear blend never leaves
+    // the range of its eight corners, so `min > 0` proves a whole cell is solid and `max < 0`
+    // proves none of it is -- either way the cell's interior needs no per-block density
+    // evaluation at all. In real terrain most cells are one or the other, which is what takes
+    // the ~98k `Program::run` calls per chunk down to the boundary cells only.
+    //
+    // The grid is built lazily on first sample, so take one now to force it; without this the
+    // bounds are unavailable and every cell falls through to the exact path (still correct,
+    // just not faster).
+    if cull {
+        // The corner grids are built lazily on first sample; take one so the bounds below have
+        // something to read. Without it every cell falls through to the exact path.
+        let _ = router.sample_in_chunk(
+            caches,
+            RouterSlot::FinalDensity,
+            pos.min_block_x(),
+            min_y,
+            pos.min_block_z(),
+        );
+    }
+    let cell_width = caches.cell_width();
+    let cell_height = caches.cell_height();
+
     for i in 0..section_count {
         let section_y = min_y / 16 + i as i32;
         let mut section = ChunkSection::new(section_y as i8, air.clone(), default_biome.clone());
@@ -71,39 +112,105 @@ pub fn fill_chunk_with(
 
         for local_y in 0..16i32 {
             let y = section_min_y + local_y;
+            // Which cell this row of blocks sits in, and what the density is known to do
+            // across it. `None` = no shortcut available, evaluate exactly.
+            let cell_y = (y - min_y).div_euclid(cell_height);
             for local_z in 0..16usize {
                 let block_z = pos.min_block_z() + local_z as i32;
+                let cell_z = (local_z as i32).div_euclid(cell_width);
+                // Bounds are a property of the CELL, so they are resolved once per cell here
+                // rather than once per block. Computing them per position cost a 5-op interval
+                // walk 98k times a chunk and ate the entire saving.
+                let mut cached_cell_x = i32::MIN;
+                let mut cached_all_air = false;
                 for local_x in 0..16usize {
                     let block_x = pos.min_block_x() + local_x as i32;
-                    let density = router.sample_in_chunk(
-                        caches,
-                        RouterSlot::FinalDensity,
-                        block_x,
-                        y,
-                        block_z,
-                    );
-                    // The aquifer decides what a non-solid position holds -- air, water or
-                    // lava, at a level that varies per underground body. `None` means solid, so
-                    // the default block goes in. Vanilla runs exactly this as the first filler
-                    // in its noise fill.
-                    let block = match aquifer.as_deref_mut() {
-                        Some(aquifer) => {
-                            match aquifer.compute_substance(block_x, y, block_z, density) {
-                                None => None,
-                                // Air is already the section's default palette entry.
-                                Some(state) if state == air => continue,
-                                Some(state) => Some(state),
+                    let cell_x = (local_x as i32).div_euclid(cell_width);
+
+                    // Uniform-cell shortcut, taken before any density evaluation.
+                    //
+                    // Only the "all air" direction is claimed. `final_density` is
+                    // `min(squeeze(interpolated(..)), noodle_caves)` in a real overworld router:
+                    // the `min` means an unbounded cave term can pull any position down, so a
+                    // positive lower bound on the interpolated part would NOT prove the cell is
+                    // solid. An upper bound of <= 0 is safe in spite of the `min`, because `min`
+                    // only ever lowers the value further.
+                    #[cfg(feature = "cull-stats")]
+                    {
+                        crate::CULL_CONSIDERED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if cull {
+                            if let Some((_, hi)) = router.cell_bounds(
+                                caches, RouterSlot::FinalDensity, cell_x, cell_y, cell_z) {
+                                crate::CULL_BOUNDED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                if hi <= 0.0 {
+                                    crate::CULL_HI_NEG.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                }
                             }
                         }
-                        // Aquifers disabled by the settings: solid below the surface, the
-                        // dimension's fluid up to sea level, air above.
-                        None => {
-                            if density > 0.0 {
-                                None
-                            } else if y <= settings.sea_level {
-                                Some(settings.default_fluid.clone())
-                            } else {
-                                continue;
+                    }
+                    if cell_x != cached_cell_x {
+                        cached_cell_x = cell_x;
+                        cached_all_air = cull
+                            && router
+                                .cell_bounds(
+                                    caches,
+                                    RouterSlot::FinalDensity,
+                                    cell_x,
+                                    cell_y,
+                                    cell_z,
+                                )
+                                .is_some_and(|(_, hi)| hi <= 0.0);
+                    }
+                    // Per block, because a cell spans several y and the answer changes with it.
+                    //
+                    // With aquifers off: above sea level a non-solid position is air.
+                    // With aquifers on: above `skip_sampling_above_y` the aquifer answers from
+                    // its global fluid alone -- no grid sampling and no mutation of its memo
+                    // state -- so the result is predictable here and skipping the call cannot
+                    // change what any later call returns.
+                    let all_air = cached_all_air
+                        && match aquifer.as_deref() {
+                            None => y > settings.sea_level,
+                            Some(aq) => aq.air_above_skip(y),
+                        };
+
+                    let block = if all_air {
+                        // Above sea level with aquifers off, a non-solid position is air, which
+                        // is already the section's palette default -- nothing to write.
+                        continue;
+                    } else {
+                        {
+                            let density = router.sample_in_chunk(
+                                caches,
+                                RouterSlot::FinalDensity,
+                                block_x,
+                                y,
+                                block_z,
+                            );
+                            // The aquifer decides what a non-solid position holds -- air, water
+                            // or lava, at a level that varies per underground body. `None` means
+                            // solid, so the default block goes in. Vanilla runs exactly this as
+                            // the first filler in its noise fill.
+                            match aquifer.as_deref_mut() {
+                                Some(aquifer) => {
+                                    match aquifer.compute_substance(block_x, y, block_z, density) {
+                                        None => None,
+                                        // Air is already the section's default palette entry.
+                                        Some(state) if state == air => continue,
+                                        Some(state) => Some(state),
+                                    }
+                                }
+                                // Aquifers disabled by the settings: solid below the surface,
+                                // the dimension's fluid up to sea level, air above.
+                                None => {
+                                    if density > 0.0 {
+                                        None
+                                    } else if y <= settings.sea_level {
+                                        Some(settings.default_fluid.clone())
+                                    } else {
+                                        continue;
+                                    }
+                                }
                             }
                         }
                     };

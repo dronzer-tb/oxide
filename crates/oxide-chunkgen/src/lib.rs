@@ -6,7 +6,14 @@
 //! large vanilla subsystem and are not built yet — see `fill.rs`'s module doc. Surface rules
 //! (grass/dirt/sand/bedrock) *are* evaluated now, with two named gaps — see `surface.rs`.
 
-mod aquifer;
+pub mod aquifer;
+
+#[cfg(feature = "cull-stats")]
+pub static CULL_CONSIDERED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(feature = "cull-stats")]
+pub static CULL_BOUNDED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(feature = "cull-stats")]
+pub static CULL_HI_NEG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 mod biome_grid;
 mod carver;
 pub mod decorate;
@@ -18,11 +25,12 @@ mod ore_veins;
 pub mod region;
 mod surface;
 
+pub use aquifer::for_settings as aquifer_for_settings;
 pub use carver::{apply_carvers, CarverWorld};
 pub use decorate::{decorated_chunk, DecorationCache, Decorator};
 pub use decorator::{BiomeDecorator, BlockBehaviours, FeatureContext, UnsupportedTally};
 pub use region::{BlockWrite, DecorationRegion};
-pub use fill::{base_height, base_height_in, fill_chunk};
+pub use fill::{base_height, base_height_in, fill_chunk, fill_chunk_culling};
 pub use surface::{BiomeTemperatures, SurfaceSystem};
 
 use oxide_biome::BiomeSearchTree;

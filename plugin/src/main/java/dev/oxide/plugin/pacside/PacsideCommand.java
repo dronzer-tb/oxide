@@ -38,7 +38,7 @@ public final class PacsideCommand implements CommandExecutor, TabCompleter {
         if (args.length == 0 || (args.length == 1 && args[0].equalsIgnoreCase("stats"))) {
             sender.sendMessage(Component.text("=== Pacside Off-Heap Chunk Streamer ===", NamedTextColor.GOLD));
             sender.sendMessage(Component.text("Prefetcher: ", NamedTextColor.GRAY)
-                    .append(Component.text(pacsideManager.getPrefetcher().isEnabled() ? "ENABLED (24c Lookahead)" : "DISABLED",
+                    .append(Component.text(pacsideManager.getPrefetcher().isEnabled() ? "ENABLED (48c Lookahead)" : "DISABLED",
                             pacsideManager.getPrefetcher().isEnabled() ? NamedTextColor.GREEN : NamedTextColor.RED)));
             sender.sendMessage(Component.text("Total Prefetched: ", NamedTextColor.GRAY)
                     .append(Component.text(pacsideManager.getPrefetcher().getPrefetchedCount(), NamedTextColor.AQUA)));

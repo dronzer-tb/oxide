@@ -15,6 +15,10 @@
 mod handle;
 mod pacside_ffi;
 
+/// Exposed for the `bench_native` example: lets a pure-Rust harness measure generator
+/// throughput with no JVM, Bukkit or Folia scheduler in the way.
+pub use handle::OxideGenerator as OxideGeneratorHandle;
+
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;

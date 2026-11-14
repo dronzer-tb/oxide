@@ -15,3 +15,6 @@ oxide-biome.workspace = true
 oxide-chunkgen.workspace = true
 pacside = { path = "../pacside" }
 anyhow.workspace = true
+
+[features]
+cull-stats = ["oxide-chunkgen/cull-stats"]

@@ -60,6 +60,68 @@ pub struct ChunkCaches {
 }
 
 impl ChunkCaches {
+    /// Horizontal cell size in blocks, so a caller can iterate this chunk cell by cell.
+    pub fn cell_width(&self) -> i32 {
+        self.cell_width
+    }
+
+    /// Vertical cell size in blocks.
+    pub fn cell_height(&self) -> i32 {
+        self.cell_height
+    }
+
+    /// The min and max of a cell's eight corner values for one `interpolated` slot, or `None`
+    /// if that slot's corner grid has not been built yet (nothing has sampled it this chunk).
+    ///
+    /// Interpolation inside a cell is `lerp3` of exactly these eight corners, and a trilinear
+    /// blend never leaves the range of its inputs. So `min > 0` proves every block in the cell
+    /// is solid and `max < 0` proves none of them is, without evaluating a single interior
+    /// position -- which is what lets the fill skip ~75% of a chunk's density evaluations.
+    ///
+    /// `(cell_x, cell_y, cell_z)` are cell indices within this chunk, not block coordinates.
+    pub fn cell_bounds(&self, slot: usize, cell_x: i32, cell_y: i32, cell_z: i32) -> Option<(f64, f64)> {
+        let grids = self.interpolated.borrow();
+        let grid = grids.get(slot)?.as_ref()?;
+
+        if cell_x < 0
+            || cell_y < 0
+            || cell_z < 0
+            || cell_x >= self.cells_x as i32
+            || cell_y >= self.cells_y as i32
+            || cell_z >= self.cells_z as i32
+        {
+            return None;
+        }
+
+        let x_stride = 1usize;
+        let z_stride = self.cells_x + 1;
+        let y_stride = z_stride * (self.cells_z + 1);
+        let base = cell_y as usize * y_stride + cell_z as usize * z_stride + cell_x as usize;
+
+        let corners = [
+            grid[base],
+            grid[base + x_stride],
+            grid[base + z_stride],
+            grid[base + z_stride + x_stride],
+            grid[base + y_stride],
+            grid[base + y_stride + x_stride],
+            grid[base + y_stride + z_stride],
+            grid[base + y_stride + z_stride + x_stride],
+        ];
+
+        let mut lo = corners[0];
+        let mut hi = corners[0];
+        for c in corners.iter().copied().skip(1) {
+            if c < lo {
+                lo = c;
+            }
+            if c > hi {
+                hi = c;
+            }
+        }
+        Some((lo, hi))
+    }
+
     /// `chunk_min_x`/`chunk_min_z` are the chunk's lowest block coordinates. `slots` comes from
     /// the compiler, and fixes how many entries of each kind this chunk can be asked for.
     pub fn new(

@@ -20,9 +20,20 @@ public final class OxideBiomeProvider extends BiomeProvider {
     private final OxideNative.Handle handle;
     private final Biome[] paletteBiomes;
     private final List<Biome> allBiomes;
+    /** Grids Rust already produced, or null to always take the per-position native path. */
+    private final BiomeGridCache gridCache;
+    private final int minY;
+    private final int height;
 
     public OxideBiomeProvider(OxideNative.Handle handle) {
+        this(handle, null);
+    }
+
+    OxideBiomeProvider(OxideNative.Handle handle, BiomeGridCache gridCache) {
         this.handle = handle;
+        this.gridCache = gridCache;
+        this.minY = handle.minY();
+        this.height = handle.height();
         int size = handle.biomePaletteSize();
         this.paletteBiomes = new Biome[Math.max(size, 512)];
         this.allBiomes = new ArrayList<>();
@@ -40,9 +51,22 @@ public final class OxideBiomeProvider extends BiomeProvider {
         }
     }
 
+    /**
+     * CraftBukkit calls this once per 4x4x4 quart of every generated chunk (1,536 times for a
+     * 384-tall chunk). When the chunk was generated here, Rust already computed its biome grid
+     * in the same pass that built the terrain, so the answer is an array read; only a chunk this
+     * generator did not produce -- or whose grid has been evicted -- pays for a native climate
+     * sample.
+     */
     @Override
     public @NotNull Biome getBiome(@NotNull WorldInfo worldInfo, int x, int y, int z) {
-        int index = handle.biomeAt(x, y, z);
+        int index = -1;
+        if (gridCache != null) {
+            index = gridCache.biomeIndexAt(x, y, z, minY, height);
+        }
+        if (index < 0) {
+            index = handle.biomeAt(x, y, z);
+        }
         if (index >= 0 && index < paletteBiomes.length) {
             Biome b = paletteBiomes[index];
             if (b != null) return b;

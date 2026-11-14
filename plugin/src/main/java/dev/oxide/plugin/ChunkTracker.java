@@ -84,7 +84,9 @@ public final class ChunkTracker implements Listener {
         ChunkProvenance provenance = liveProvenance.of(player.getChunk());
         boolean isPrefetched = pacsideManager != null && pacsideManager.getPrefetcher() != null &&
                 pacsideManager.getPrefetcher().isChunkPrefetched(chunkX, chunkZ);
-        int lookahead = player.isGliding() ? 24 : (player.isSprinting() ? 12 : 6);
+        int lookahead = (pacsideManager != null && pacsideManager.getPrefetcher() != null) ?
+                pacsideManager.getPrefetcher().getLookahead(player) :
+                (player.isGliding() || player.isFlying() ? 48 : (player.isSprinting() ? 32 : 16));
         int cachedCount = pacsideManager != null && pacsideManager.getPrefetcher() != null ?
                 pacsideManager.getPrefetcher().getCachedSetSize() : 0;
 

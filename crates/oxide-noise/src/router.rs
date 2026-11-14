@@ -65,6 +65,28 @@ impl RouterSlot {
             .position(|slot| *slot == self)
             .expect("RouterSlot::ALL lists every variant")
     }
+
+    /// Stable display name, for diagnostics that report per-slot figures.
+    pub fn name(self) -> &'static str {
+        match self {
+            RouterSlot::Barrier => "barrier",
+            RouterSlot::FluidLevelFloodedness => "fluid_level_floodedness",
+            RouterSlot::FluidLevelSpread => "fluid_level_spread",
+            RouterSlot::Lava => "lava",
+            RouterSlot::Temperature => "temperature",
+            RouterSlot::Vegetation => "vegetation",
+            RouterSlot::Continents => "continents",
+            RouterSlot::Erosion => "erosion",
+            RouterSlot::Depth => "depth",
+            RouterSlot::Ridges => "ridges",
+            RouterSlot::InitialDensityWithoutJaggedness => "initial_density_without_jaggedness",
+            RouterSlot::PreliminarySurfaceLevel => "preliminary_surface_level",
+            RouterSlot::FinalDensity => "final_density",
+            RouterSlot::VeinToggle => "vein_toggle",
+            RouterSlot::VeinRidged => "vein_ridged",
+            RouterSlot::VeinGap => "vein_gap",
+        }
+    }
 }
 
 /// Owns its inputs (clones `df_registry` and `settings.noise_router` once at construction)
@@ -95,6 +117,17 @@ pub struct NoiseRouterEvaluator {
 }
 
 impl NoiseRouterEvaluator {
+    /// Instruction count of each router slot's compiled program, in `RouterSlot::ALL` order.
+    /// Used to size the register budget in `Program::run` against real datapacks rather than
+    /// against a guess.
+    pub fn program_sizes(&self) -> Vec<(&'static str, usize)> {
+        RouterSlot::ALL
+            .iter()
+            .zip(self.programs.iter())
+            .map(|(slot, program)| (slot.name(), program.len()))
+            .collect()
+    }
+
     /// Builds every `NormalNoise` in `noise_param_registry` up front, each seeded via
     /// `positional_factory.from_hash_of(id)` off a `RandomSource` seeded directly from `seed`
     /// — matches vanilla's `RandomState` construction. `settings.legacy_random_source` picks
@@ -194,6 +227,28 @@ impl NoiseRouterEvaluator {
             caches: Some(caches),
         };
         self.programs[slot.index()].run(FunctionContext { x, y, z }, &cx)
+    }
+
+    /// The `interpolated` cache slot that `slot`'s program resolves through, when its result is
+    /// exactly one such cache node -- which `final_density` is in every vanilla-shaped router.
+    /// Lets a caller read that slot's cell-corner bounds via [`ChunkCaches::cell_bounds`] and
+    /// skip per-block evaluation for cells that are uniformly solid or uniformly empty.
+    /// Instruction listing for one slot's program, for diagnostics.
+    pub fn dump_program(&self, slot: RouterSlot) -> Vec<String> {
+        self.programs[slot.index()].dump()
+    }
+
+    /// Conservative bounds on `slot`'s value across one whole cell of `caches`, or `None` when
+    /// none can be proven. See `Program::cell_bounds`.
+    pub fn cell_bounds(
+        &self,
+        caches: &ChunkCaches,
+        slot: RouterSlot,
+        cell_x: i32,
+        cell_y: i32,
+        cell_z: i32,
+    ) -> Option<(f64, f64)> {
+        self.programs[slot.index()].cell_bounds(caches, cell_x, cell_y, cell_z)
     }
 
     /// A `ChunkCaches` sized for this router's settings, for the chunk at `(chunk_x, chunk_z)`.

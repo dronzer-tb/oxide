@@ -30,6 +30,12 @@ thread_local! {
     /// The last chunk this thread asked `base_height` about, and its caches.
     static BASE_HEIGHT_CACHES: RefCell<Option<(u64, ChunkPos, oxide_noise::ChunkCaches)>> =
         const { RefCell::new(None) };
+    /// Separate slot for `biome_at`. It shares `base_height`'s shape but not its access
+    /// pattern: Bukkit interleaves the two (structure placement asks for heights while the
+    /// biome pass walks quarts), and a single slot made each call evict the other's chunk, so
+    /// every query rebuilt a full corner grid. Two slots make both hit.
+    static BIOME_CACHES: RefCell<Option<(u64, ChunkPos, oxide_noise::ChunkCaches)>> =
+        const { RefCell::new(None) };
 }
 
 pub struct OxideGenerator {
@@ -231,6 +237,22 @@ impl OxideGenerator {
             decoration,
             decorate: AtomicBool::new(false),
         })
+    }
+
+    /// Instruction count per router program -- diagnostics for the register budget.
+    pub fn program_sizes(&self) -> Vec<(&'static str, usize)> {
+        self.router.program_sizes()
+    }
+
+    /// Instruction listing for the named router slot.
+    pub fn dump_program(&self, name: &str) -> Vec<String> {
+        use oxide_noise::RouterSlot;
+        let slot = match name {
+            "final_density" => RouterSlot::FinalDensity,
+            "initial_density_without_jaggedness" => RouterSlot::InitialDensityWithoutJaggedness,
+            _ => return vec![format!("unknown slot {name}")],
+        };
+        self.router.dump_program(slot)
     }
 
     pub fn min_y(&self) -> i32 {
@@ -460,11 +482,22 @@ impl OxideGenerator {
 
     /// Biome at one block position, without generating a chunk -- climate sample plus a search
     /// of the biome tree. This is what backs a Bukkit `BiomeProvider`, which is queried per
-    /// position and outside chunk generation entirely.
+    /// position and outside chunk generation entirely. Reuses thread-local chunk caches.
     pub fn biome_at(&self, x: i32, y: i32, z: i32) -> Result<u16> {
         let idx = match self.biome_tree.as_ref() {
             Some(tree) => {
-                let sample = oxide_biome::ClimateSample::sample(&self.router, x, y, z);
+                let chunk = ChunkPos::new(x.div_euclid(16), z.div_euclid(16));
+                let sample = BIOME_CACHES.with(|slot| {
+                    let mut slot = slot.borrow_mut();
+                    let reusable = slot
+                        .as_ref()
+                        .is_some_and(|(id, pos, _)| *id == self.id && *pos == chunk);
+                    if !reusable {
+                        *slot = Some((self.id, chunk, self.router.chunk_caches(chunk.x, chunk.z)));
+                    }
+                    let (_, _, caches) = slot.as_ref().expect("just populated");
+                    oxide_biome::ClimateSample::sample_in_chunk(&self.router, caches, x, y, z)
+                });
                 match tree.nearest(sample) {
                     Some(biome) => self
                         .biome_indices

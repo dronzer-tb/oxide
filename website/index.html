@@ -1,787 +1,424 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Oxide — Native Rust Chunk Generation for Folia & Minecraft</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <style>
-    :root {
-      --bg-base: #060708;
-      --bg-panel: #0d0f11;
-      --bg-surface: #14171a;
-      --bg-surface-elevated: #1b1f24;
-      --border-subtle: rgba(255, 255, 255, 0.06);
-      --border-medium: rgba(255, 255, 255, 0.12);
-      --border-bright: rgba(255, 255, 255, 0.2);
-      --text-primary: #f7f8f8;
-      --text-secondary: #c5cbd3;
-      --text-muted: #7b8390;
-      --accent-rust: #f26522;
-      --accent-rust-glow: rgba(242, 101, 34, 0.22);
-      --accent-violet: #6366f1;
-      --accent-violet-glow: rgba(99, 102, 241, 0.22);
-      --accent-cyan: #06b6d4;
-      --accent-emerald: #10b981;
-      --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
-      --font-mono: 'JetBrains Mono', monospace;
-    }
-
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
-
-    body {
-      background-color: var(--bg-base);
-      color: var(--text-primary);
-      font-family: var(--font-sans);
-      line-height: 1.6;
-      overflow-x: hidden;
-      -webkit-font-smoothing: antialiased;
-    }
-
-    .glow-top {
-      position: absolute;
-      top: 0;
-      left: 50%;
-      transform: translateX(-50%);
-      width: 1000px;
-      height: 480px;
-      background: radial-gradient(ellipse at 50% 0%, var(--accent-rust-glow), transparent 70%);
-      pointer-events: none;
-      z-index: 0;
-    }
-
-    .glow-secondary {
-      position: absolute;
-      top: 850px;
-      right: 5%;
-      width: 600px;
-      height: 600px;
-      background: radial-gradient(circle, var(--accent-violet-glow), transparent 60%);
-      pointer-events: none;
-      z-index: 0;
-    }
-
-    nav {
-      position: sticky;
-      top: 0;
-      width: 100%;
-      background: rgba(6, 7, 8, 0.85);
-      backdrop-filter: blur(16px);
-      border-bottom: 1px solid var(--border-subtle);
-      z-index: 100;
-      padding: 16px 24px;
-    }
-
-    .nav-container {
-      max-width: 1200px;
-      margin: 0 auto;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-
-    .logo {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      font-weight: 700;
-      font-size: 1.25rem;
-      letter-spacing: -0.5px;
-      color: var(--text-primary);
-      text-decoration: none;
-    }
-
-    .logo-badge {
-      font-size: 0.75rem;
-      font-weight: 600;
-      font-family: var(--font-mono);
-      background: rgba(242, 101, 34, 0.15);
-      color: var(--accent-rust);
-      border: 1px solid rgba(242, 101, 34, 0.3);
-      padding: 2px 8px;
-      border-radius: 999px;
-    }
-
-    .nav-links {
-      display: flex;
-      align-items: center;
-      gap: 28px;
-      list-style: none;
-    }
-
-    .nav-links a {
-      color: var(--text-secondary);
-      text-decoration: none;
-      font-size: 0.9rem;
-      font-weight: 500;
-      transition: color 0.2s;
-    }
-
-    .nav-links a:hover {
-      color: var(--text-primary);
-    }
-
-    .btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 10px 20px;
-      border-radius: 8px;
-      font-size: 0.9rem;
-      font-weight: 600;
-      text-decoration: none;
-      cursor: pointer;
-      transition: all 0.2s;
-    }
-
-    .btn-rust {
-      background: linear-gradient(180deg, #f37335, #e05310);
-      color: #ffffff;
-      border: 1px solid rgba(255, 255, 255, 0.2);
-      box-shadow: 0 4px 15px rgba(242, 101, 34, 0.3);
-    }
-
-    .btn-rust:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 6px 25px rgba(242, 101, 34, 0.45);
-    }
-
-    .btn-secondary {
-      background: var(--bg-surface);
-      color: var(--text-primary);
-      border: 1px solid var(--border-medium);
-    }
-
-    .btn-secondary:hover {
-      background: var(--bg-surface-elevated);
-      border-color: var(--border-bright);
-    }
-
-    .container {
-      max-width: 1200px;
-      margin: 0 auto;
-      padding: 0 24px;
-      position: relative;
-      z-index: 1;
-    }
-
-    .hero {
-      padding: 100px 0 80px;
-      text-align: center;
-    }
-
-    .tag-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 6px 16px;
-      border-radius: 999px;
-      background: var(--bg-panel);
-      border: 1px solid var(--border-medium);
-      font-size: 0.85rem;
-      color: var(--text-secondary);
-      margin-bottom: 28px;
-    }
-
-    .tag-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: var(--accent-emerald);
-      box-shadow: 0 0 10px var(--accent-emerald);
-    }
-
-    .hero h1 {
-      font-size: 4.2rem;
-      line-height: 1.08;
-      font-weight: 700;
-      letter-spacing: -2px;
-      margin-bottom: 24px;
-      background: linear-gradient(180deg, #ffffff 40%, #9ca3af 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-    }
-
-    .hero p {
-      font-size: 1.25rem;
-      color: var(--text-secondary);
-      max-width: 760px;
-      margin: 0 auto 40px;
-      font-weight: 400;
-      letter-spacing: -0.3px;
-    }
-
-    .hero-buttons {
-      display: flex;
-      justify-content: center;
-      gap: 16px;
-      margin-bottom: 60px;
-    }
-
-    .stats-bar {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 1px;
-      background: var(--border-subtle);
-      border: 1px solid var(--border-medium);
-      border-radius: 12px;
-      overflow: hidden;
-      margin-bottom: 100px;
-    }
-
-    .stat-item {
-      background: var(--bg-panel);
-      padding: 28px 20px;
-      text-align: center;
-    }
-
-    .stat-value {
-      font-family: var(--font-mono);
-      font-size: 2.2rem;
-      font-weight: 700;
-      color: var(--text-primary);
-      margin-bottom: 4px;
-      letter-spacing: -1px;
-    }
-
-    .stat-value.highlight-rust {
-      color: var(--accent-rust);
-    }
-
-    .stat-value.highlight-emerald {
-      color: var(--accent-emerald);
-    }
-
-    .stat-label {
-      font-size: 0.85rem;
-      color: var(--text-muted);
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      font-weight: 500;
-    }
-
-    .section-header {
-      text-align: center;
-      margin-bottom: 60px;
-    }
-
-    .section-header .subtitle {
-      font-family: var(--font-mono);
-      font-size: 0.85rem;
-      color: var(--accent-rust);
-      text-transform: uppercase;
-      letter-spacing: 1.5px;
-      margin-bottom: 12px;
-      display: block;
-    }
-
-    .section-header h2 {
-      font-size: 2.5rem;
-      font-weight: 700;
-      letter-spacing: -1px;
-      margin-bottom: 16px;
-    }
-
-    .section-header p {
-      color: var(--text-muted);
-      max-width: 600px;
-      margin: 0 auto;
-      font-size: 1.1rem;
-    }
-
-    .benchmark-card {
-      background: var(--bg-panel);
-      border: 1px solid var(--border-medium);
-      border-radius: 16px;
-      padding: 36px;
-      margin-bottom: 120px;
-      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
-    }
-
-    .benchmark-table {
-      width: 100%;
-      border-collapse: collapse;
-      text-align: left;
-    }
-
-    .benchmark-table th {
-      padding: 16px 20px;
-      font-size: 0.85rem;
-      color: var(--text-muted);
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      border-bottom: 1px solid var(--border-medium);
-      font-weight: 600;
-    }
-
-    .benchmark-table td {
-      padding: 20px;
-      border-bottom: 1px solid var(--border-subtle);
-      font-size: 0.95rem;
-    }
-
-    .benchmark-table tr.highlight-row {
-      background: rgba(242, 101, 34, 0.04);
-      border-left: 3px solid var(--accent-rust);
-    }
-
-    .benchmark-table tr.highlight-vertex {
-      background: rgba(99, 102, 241, 0.05);
-      border-left: 3px solid var(--accent-violet);
-    }
-
-    .engine-name {
-      font-weight: 600;
-      color: var(--text-primary);
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .engine-tag {
-      font-family: var(--font-mono);
-      font-size: 0.75rem;
-      padding: 2px 6px;
-      border-radius: 4px;
-      background: var(--bg-surface);
-      border: 1px solid var(--border-subtle);
-    }
-
-    .rate-bar-container {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      width: 100%;
-    }
-
-    .rate-bar {
-      height: 8px;
-      border-radius: 4px;
-      background: var(--border-medium);
-      flex-grow: 1;
-      overflow: hidden;
-    }
-
-    .rate-fill {
-      height: 100%;
-      border-radius: 4px;
-    }
-
-    .rate-val {
-      font-family: var(--font-mono);
-      font-weight: 600;
-      width: 100px;
-      text-align: right;
-    }
-
-    .grid-3 {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 24px;
-      margin-bottom: 120px;
-    }
-
-    .feature-card {
-      background: var(--bg-panel);
-      border: 1px solid var(--border-subtle);
-      border-radius: 14px;
-      padding: 32px 28px;
-      transition: all 0.25s;
-    }
-
-    .feature-card:hover {
-      border-color: var(--border-bright);
-      transform: translateY(-2px);
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-    }
-
-    .feature-icon-svg {
-      width: 44px;
-      height: 44px;
-      border-radius: 10px;
-      background: var(--bg-surface);
-      border: 1px solid var(--border-medium);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      margin-bottom: 20px;
-      color: var(--accent-rust);
-    }
-
-    .feature-card h3 {
-      font-size: 1.25rem;
-      font-weight: 600;
-      letter-spacing: -0.5px;
-      margin-bottom: 10px;
-    }
-
-    .feature-card p {
-      color: var(--text-muted);
-      font-size: 0.95rem;
-      line-height: 1.55;
-    }
-
-    .arch-section {
-      background: var(--bg-panel);
-      border: 1px solid var(--border-medium);
-      border-radius: 16px;
-      padding: 48px;
-      margin-bottom: 120px;
-    }
-
-    .arch-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 48px;
-      align-items: center;
-    }
-
-    .arch-code {
-      background: #020304;
-      border: 1px solid var(--border-medium);
-      border-radius: 10px;
-      padding: 24px;
-      font-family: var(--font-mono);
-      font-size: 0.85rem;
-      color: var(--text-secondary);
-      line-height: 1.6;
-      overflow-x: auto;
-    }
-
-    .code-hl { color: var(--accent-rust); }
-    .code-comment { color: #525965; }
-    .code-kw { color: #c084fc; }
-    .code-fn { color: #60a5fa; }
-
-    footer {
-      border-top: 1px solid var(--border-subtle);
-      padding: 60px 0 40px;
-      text-align: center;
-      color: var(--text-muted);
-      font-size: 0.9rem;
-    }
-
-    .footer-links {
-      display: flex;
-      justify-content: center;
-      gap: 24px;
-      margin-bottom: 20px;
-      list-style: none;
-    }
-
-    .footer-links a {
-      color: var(--text-secondary);
-      text-decoration: none;
-      transition: color 0.2s;
-    }
-
-    .footer-links a:hover {
-      color: var(--text-primary);
-    }
-
-    @media (max-width: 900px) {
-      .hero h1 { font-size: 3rem; }
-      .stats-bar { grid-template-columns: repeat(2, 1fr); }
-      .grid-3 { grid-template-columns: 1fr; }
-      .arch-grid { grid-template-columns: 1fr; }
-    }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Oxide — Native Minecraft World Generation</title>
+<meta name="description" content="Oxide generates Minecraft terrain in Rust at 810 chunks per second. Pacside streams it off-heap. Vertex Engine writes it straight into memory. Built for Season 5.">
+<meta property="og:title" content="Oxide — Native Minecraft World Generation">
+<meta property="og:description" content="810 CPS terrain generation in Rust. 37x faster than vanilla. Running live on Folia.">
+<meta property="og:type" content="website">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/core.css?v=202609092130">
 </head>
 <body>
-  <div class="glow-top"></div>
-  <div class="glow-secondary"></div>
+<div class="grain"></div>
 
-  <nav>
-    <div class="nav-container">
-      <a href="#" class="logo">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#f26522" stroke-width="2">
-          <polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5" fill="rgba(242,101,34,0.1)"/>
-          <circle cx="12" cy="12" r="3" fill="#f26522"/>
-        </svg>
-        Oxide
-        <span class="logo-badge">v0.1.0 • MC 26.2</span>
-      </a>
-      <ul class="nav-links">
-        <li><a href="/map">Live Map</a></li>
-        <li><a href="/dumb">Dumb</a></li>
-        <li><a href="#benchmarks">Benchmarks</a></li>
-        <li><a href="#architecture">Architecture</a></li>
-        <li><a href="#vertex">Vertex Engine</a></li>
-        <li><a href="#datapacks">Datapacks</a></li>
-        <li><a href="https://github.com/dronzer-tb/oxide" class="btn btn-secondary" target="_blank">GitHub</a></li>
-      </ul>
+<nav>
+  <div class="wrap">
+    <a href="/" class="brand"><span class="brand-mark"></span> Oxide</a>
+    <div class="nav-links">
+      <a href="#projects">Projects</a>
+      <a href="#benchmarks">Benchmarks</a>
+      <a href="#video">Video</a>
+      <a href="#pipeline">Pipeline</a>
+      <a href="/dumb">Explain It Simply</a>
     </div>
-  </nav>
-
-  <div class="container">
-    <section class="hero">
-      <div class="tag-pill">
-        <span class="tag-dot"></span>
-        <span>Empirically measured on dedicated 8-core AMD EPYC server</span>
-      </div>
-      <h1>Native Rust Chunk Generation<br>for Minecraft & Folia</h1>
-      <p>
-        Byte-exact vanilla parity. 40x faster chunk generation throughput.
-        Zero region-thread stalls. Built to handle 150+ custom worldgen datapacks without dropping server TPS.
-      </p>
-      <div class="hero-buttons">
-        <a href="#benchmarks" class="btn btn-rust">View Live Benchmarks</a>
-        <a href="https://github.com/dronzer-tb/oxide" class="btn btn-secondary" target="_blank">Explore Code on GitHub</a>
-      </div>
-
-      <div class="stats-bar">
-        <div class="stat-item">
-          <div class="stat-value highlight-rust">810 CPS</div>
-          <div class="stat-label">Peak Chunks / Second</div>
-        </div>
-        <div class="stat-item">
-          <div class="stat-value highlight-emerald">0.83 ms</div>
-          <div class="stat-label">Median MSPT Impact</div>
-        </div>
-        <div class="stat-item">
-          <div class="stat-value">9 min 11s</div>
-          <div class="stat-label">10,000 x 10,000 World Pregen</div>
-        </div>
-        <div class="stat-item">
-          <div class="stat-value">150+</div>
-          <div class="stat-label">Datapack Stack Support</div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Benchmarks -->
-    <section id="benchmarks">
-      <div class="section-header">
-        <span class="subtitle">Empirical Results</span>
-        <h2>Real-World Server Benchmarks</h2>
-        <p>Measured during full-radius 10,000 x 10,000 block world pre-generation on dedicated 8-core AMD EPYC hardware with Chunky.</p>
-      </div>
-
-      <div class="benchmark-card">
-        <table class="benchmark-table">
-          <thead>
-            <tr>
-              <th>Engine / Architecture</th>
-              <th>Throughput</th>
-              <th>393k Chunk Map Time</th>
-              <th>MSPT / CPU Overhead</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>
-                <div class="engine-name">
-                  Vanilla Mojang Server
-                  <span class="engine-tag">Java 25</span>
-                </div>
-              </td>
-              <td>
-                <div class="rate-bar-container">
-                  <div class="rate-bar"><div class="rate-fill" style="width: 3%; background: #6b7280;"></div></div>
-                  <span class="rate-val">21.8 CPS</span>
-                </div>
-              </td>
-              <td>5 hours 32 min</td>
-              <td>High GC Churn / Single-Threaded</td>
-            </tr>
-            <tr>
-              <td>
-                <div class="engine-name">
-                  Stock Folia Server
-                  <span class="engine-tag">Regionised Java</span>
-                </div>
-              </td>
-              <td>
-                <div class="rate-bar-container">
-                  <div class="rate-bar"><div class="rate-fill" style="width: 8%; background: #9ca3af;"></div></div>
-                  <span class="rate-val">65.0 CPS</span>
-                </div>
-              </td>
-              <td>1 hour 42 min</td>
-              <td>Region Lock Stalls</td>
-            </tr>
-            <tr class="highlight-row">
-              <td>
-                <div class="engine-name">
-                  Oxide (Bukkit Plugin Mode)
-                  <span class="engine-tag" style="color: var(--accent-rust); border-color: var(--accent-rust);">Panama FFI</span>
-                </div>
-              </td>
-              <td>
-                <div class="rate-bar-container">
-                  <div class="rate-bar"><div class="rate-fill" style="width: 50%; background: var(--accent-rust);"></div></div>
-                  <span class="rate-val" style="color: var(--accent-rust);">810.7 CPS</span>
-                </div>
-              </td>
-              <td style="font-weight: 600;">9 min 11 sec</td>
-              <td>0.83 ms MSPT / 6.2% CPU</td>
-            </tr>
-            <tr class="highlight-vertex">
-              <td>
-                <div class="engine-name">
-                  Oxide + Vertex Engine
-                  <span class="engine-tag" style="color: var(--accent-violet); border-color: var(--accent-violet);">Zero-Copy Native SPI</span>
-                </div>
-              </td>
-              <td>
-                <div class="rate-bar-container">
-                  <div class="rate-bar"><div class="rate-fill" style="width: 100%; background: var(--accent-violet);"></div></div>
-                  <span class="rate-val" style="color: var(--accent-violet);">1,550+ CPS</span>
-                </div>
-              </td>
-              <td style="font-weight: 700; color: var(--accent-violet);">4 min 45 sec</td>
-              <td>Sub-0.5 ms / Direct Memory Pointer</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-
-    <!-- Architecture Core -->
-    <section id="architecture">
-      <div class="section-header">
-        <span class="subtitle">Deep Engineering</span>
-        <h2>How Oxide Works Under the Hood</h2>
-        <p>Oxide is not an approximation. It is an exact mathematical reconstruction of vanilla 26.2 algorithms compiled to native SIMD machine code.</p>
-      </div>
-
-      <div class="grid-3">
-        <div class="feature-card">
-          <div class="feature-icon-svg">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
-          </div>
-          <h3>SIMD 3D Noise Terrain</h3>
-          <p>
-            Evaluates continuous density function graphs, 3D cheese/noodle caves, and 4x8x4 trilinear cell interpolation with zero JVM object allocations.
-          </p>
-        </div>
-
-        <div class="feature-card">
-          <div class="feature-icon-svg">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-          </div>
-          <h3>6-Axis Climate Biome Grid</h3>
-          <p>
-            Multi-noise KD search tree mapping temperature, humidity, continentalness, erosion, weirdness, and depth into exact 3D biome quart arrays.
-          </p>
-        </div>
-
-        <div class="feature-card">
-          <div class="feature-icon-svg">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
-          </div>
-          <h3>15 Surface Rule Conditions</h3>
-          <p>
-            Full rule tree evaluation: bedrock floors, deepslate transitions, ocean floors, height-adjusted temperature snow line, and 64-layer procedural Badlands terracotta banding.
-          </p>
-        </div>
-
-        <div class="feature-card">
-          <div class="feature-icon-svg">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-          </div>
-          <h3>Noise-Based Aquifers</h3>
-          <p>
-            Computes underground fluid bodies over a 16x12x16 grid with barrier-noise pressure walls, preventing flooded caves from spilling into dry chambers.
-          </p>
-        </div>
-
-        <div class="feature-card">
-          <div class="feature-icon-svg">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
-          </div>
-          <h3>Cave & Canyon Carvers</h3>
-          <p>
-            Step-by-step tunnel walking with room forks, pitch/yaw variations, and ravine width factors. Directly integrates with aquifers to fill submerged caves with fluid.
-          </p>
-        </div>
-
-        <div class="feature-card">
-          <div class="feature-icon-svg">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
-          </div>
-          <h3>Stronghold & Structure Placement</h3>
-          <p>
-            Bit-exact random_spread candidate selection and concentric rings stronghold math radiating from (0, 0) matching vanilla seed calculations.
-          </p>
-        </div>
-      </div>
-    </section>
-
-    <!-- Vertex Engine -->
-    <section id="vertex" class="arch-section">
-      <div class="arch-grid">
-        <div>
-          <span class="subtitle" style="font-family: var(--font-mono); font-size: 0.85rem; color: var(--accent-violet); text-transform: uppercase;">Next-Gen Pipeline</span>
-          <h2 style="font-size: 2.2rem; margin: 12px 0 16px; font-weight: 700; letter-spacing: -1px;">The Vertex Engine Advantage</h2>
-          <p style="color: var(--text-secondary); margin-bottom: 20px; font-size: 1rem;">
-            Bukkit's ChunkGenerator API was built for Java plugins, forcing intermediate wrapper buffers and per-position FFI downcalls.
-          </p>
-          <p style="color: var(--text-muted); font-size: 0.95rem; margin-bottom: 24px;">
-            <strong>Vertex Engine</strong> is a minimal Folia fork that exposes a direct native module SPI (ChunkTarget). Oxide writes blocks and 3D biomes directly into Folia's internal LevelChunkSection palette buffer in a single atomic memory write — unlocking <strong>1,550+ CPS</strong>.
-          </p>
-          <div style="display: flex; gap: 12px;">
-            <span class="engine-tag" style="background: rgba(99, 102, 241, 0.1); border-color: rgba(99, 102, 241, 0.3); color: #818cf8;">Single JAR Dual-Mode</span>
-            <span class="engine-tag" style="background: rgba(16, 185, 129, 0.1); border-color: rgba(16, 185, 129, 0.3); color: #34d399;">Zero GC Pauses</span>
-          </div>
-        </div>
-        <div class="arch-code">
-<span class="code-comment">// Java Panama FFI Bridge (Oxide Native)</span>
-<span class="code-kw">public final class</span> <span class="code-fn">OxideChunkHook</span> <span class="code-kw">implements</span> ChunkGenerationHook {
-    <span class="code-kw">@Override</span>
-    <span class="code-kw">public</span> HookResult <span class="code-fn">generateChunk</span>(ChunkRequest request, ChunkTarget target) {
-        <span class="code-comment">// Direct zero-copy write into LevelChunkSection memory</span>
-        <span class="code-kw">long</span> status = OxideNative.generateChunkDirect(
-            handle,
-            request.chunkX(),
-            request.chunkZ(),
-            target.blockBufferAddress(),
-            target.biomeBufferAddress()
-        );
-        <span class="code-kw">return</span> status == <span class="code-hl">0</span> ? HookResult.SUCCESS : HookResult.FALLBACK;
-    }
-}
-        </div>
-      </div>
-    </section>
-
-    <!-- 150+ Datapack Stack -->
-    <section id="datapacks" style="margin-bottom: 100px;">
-      <div class="section-header">
-        <span class="subtitle">Extensibility</span>
-        <h2>Support for 150+ Custom Datapacks</h2>
-        <p>Oxide is 100% data-driven. It never hardcodes noise parameters into binaries — it interprets your worldgen datapacks directly.</p>
-      </div>
-
-      <div class="feature-card" style="max-width: 800px; margin: 0 auto; text-align: left;">
-        <h3 style="margin-bottom: 12px;">Multi-Datapack Layering (load_datapack_stack)</h3>
-        <p style="margin-bottom: 20px;">
-          Install Terralith, Incendium, Nullscape, Structory, and custom server datapacks together. Oxide merges all namespaces and registry overlays (worldgen/density_function, noise_settings, biome, configured_carver) into a unified graph before resolving dependencies.
-        </p>
-        <div class="arch-code" style="background: #060708;">
-<span class="code-comment"># In plugins/OxideDebug/config.yml</span>
-<span class="code-kw">datapack-path:</span> <span class="code-hl">"datapack"</span>
-<span class="code-comment"># Stacks vanilla 26.2 + all installed datapacks dynamically</span>
-<span class="code-kw">dimension-override:</span> <span class="code-hl">"minecraft:overworld"</span>
-        </div>
-      </div>
-    </section>
+    <a href="https://github.com/dronzer-tb/oxide" class="nav-cta">GitHub</a>
+    <button class="burger" aria-label="Menu">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+    </button>
   </div>
+</nav>
 
-  <footer>
-    <div class="container">
-      <ul class="footer-links">
-        <li><a href="https://github.com/dronzer-tb/oxide" target="_blank">Oxide GitHub</a></li>
-        <li><a href="https://github.com/dronzer-tb/vertex-engine" target="_blank">Vertex Engine</a></li>
-      </ul>
-      <p>Oxide Chunk Generator & Vertex Engine • Built by x00f8 (Dronzer Studios) • Licensed under GPL-3.0</p>
+<!-- ============================================================= HERO -->
+<header class="hero">
+  <canvas id="terrain"></canvas>
+  <div class="hero-veil"></div>
+  <div class="wrap">
+    <span class="eyebrow"><span class="pulse"></span> Live on Season 5 · Folia 26.2</span>
+
+    <h1 class="display">Minecraft terrain, <em>generated in Rust.</em></h1>
+
+    <p class="lede">
+      Vanilla Minecraft generates roughly <strong>22 chunks per second</strong> before the garbage
+      collector starts eating the tick. Oxide replaces that pipeline with native code and sustains
+      <strong>810</strong> — bit-for-bit compatible with your datapacks, running on a live server
+      right now.
+    </p>
+
+    <div class="row">
+      <a href="#benchmarks" class="btn btn-primary">
+        See the numbers
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </a>
+      <a href="https://github.com/dronzer-tb/oxide" class="btn btn-ghost">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12c0 4.42 2.87 8.17 6.84 9.5.5.09.68-.22.68-.48v-1.7C6.73 19.91 6.14 18 6.14 18c-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.89 1.53 2.34 1.09 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02A9.6 9.6 0 0112 6.8c.85 0 1.71.11 2.51.34 1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.4.1 2.65.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.69-4.57 4.94.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10 10 0 0022 12c0-5.52-4.48-10-10-10z"/></svg>
+        Read the source
+      </a>
     </div>
-  </footer>
+
+    <div class="strip">
+      <div><div class="k"><span data-count="810.7" data-dec="1">0</span></div><div class="v">Chunks / second</div></div>
+      <div><div class="k"><span data-count="37" data-dec="0">0</span><span>×</span></div><div class="v">Faster than vanilla</div></div>
+      <div><div class="k"><span data-count="0.83" data-dec="2">0</span> ms</div><div class="v">Server tick cost</div></div>
+      <div><div class="k"><span data-count="393129" data-dec="0">0</span></div><div class="v">Chunks in 9 min</div></div>
+    </div>
+  </div>
+</header>
+
+<!-- ========================================================= PROJECTS -->
+<section id="projects">
+  <div class="wrap">
+    <div class="section-head rise">
+      <span class="tag">The stack</span>
+      <h2>Three pieces, one problem.</h2>
+      <p class="sub">
+        Getting a chunk from noise math onto a player's screen has three separate bottlenecks.
+        Each project kills one of them.
+      </p>
+    </div>
+
+    <div class="proj-grid" data-stagger>
+
+      <article class="card">
+        <div class="card-icon">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#ff6b3d" stroke-width="1.7"><path d="M12 2l9 5v10l-9 5-9-5V7z"/><path d="M12 12l9-5M12 12v10M12 12L3 7"/></svg>
+        </div>
+        <h3 class="accent-rust">Oxide</h3>
+        <span class="role">World generation core</span>
+        <p>
+          The whole vanilla worldgen pipeline rewritten in Rust — noise routers, 6-axis biome
+          climate search, surface rules, aquifers, carvers, ore veins, structure placement and
+          native Jigsaw assembly. Reads your existing datapacks unchanged.
+        </p>
+        <ul>
+          <li>Bit-exact Xoroshiro128++ and Java RNG parity</li>
+          <li>150+ datapacks layered (Terralith, Incendium, Yggdrasil)</li>
+          <li>SIMD density interpolation, cell-level culling</li>
+          <li>Panama FFI — no JNI, no copies</li>
+        </ul>
+      </article>
+
+      <article class="card">
+        <div class="card-icon">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#8aa6e8" stroke-width="1.7"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>
+        </div>
+        <h3 class="accent-iron">Pacside</h3>
+        <span class="role">Off-heap chunk streaming</span>
+        <p>
+          Generating fast is useless if the server can't ship the chunks out. Pacside keeps
+          pre-compressed chunk packets in native memory and predicts where you're flying,
+          warming the terrain ahead of you before the client ever asks.
+        </p>
+        <ul>
+          <li>32-way sharded LRU cache, 32k chunks off-heap</li>
+          <li>Velocity-cone prefetch, 16 chunks of lookahead</li>
+          <li>Tick-paced token bucket — flat 20.0 TPS under load</li>
+          <li>Zero GC pressure, zero network round trips</li>
+        </ul>
+      </article>
+
+      <article class="card">
+        <div class="card-icon">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#3fbf7f" stroke-width="1.7"><path d="M13 2L3 14h8l-1 8 10-12h-8z"/></svg>
+        </div>
+        <h3 class="accent-acid">Vertex Engine</h3>
+        <span class="role">Server fork &amp; module SPI</span>
+        <p>
+          A Paper/Folia fork that hands native code raw pointers to chunk section memory.
+          No Bukkit wrapper objects, no BlockState conversion, no per-block calls across the
+          boundary. Oxide writes terrain directly where the server already wanted it.
+        </p>
+        <ul>
+          <li>Zero-copy writes into LevelChunkSection</li>
+          <li>Concurrent section writes across cores</li>
+          <li>Doubles throughput to 1,550+ CPS</li>
+          <li>Drop-in module SPI for other native engines</li>
+        </ul>
+      </article>
+
+    </div>
+  </div>
+</section>
+
+<div class="wrap"><div class="rule"></div></div>
+
+<!-- ======================================================= BENCHMARKS -->
+<section id="benchmarks">
+  <div class="wrap">
+    <div class="section-head rise">
+      <span class="tag">Measured, not estimated</span>
+      <h2>810 chunks per second.</h2>
+      <p class="sub">
+        Same machine, same seed, same 150-datapack stack. An 8-core AMD EPYC generating a
+        10,000 × 10,000 block world — 393,129 chunks. The only variable is whether Oxide is loaded.
+      </p>
+    </div>
+
+    <div class="bench rise">
+      <div class="bar-row">
+        <div class="bar-label">Vanilla Folia<small>Stock Mojang worldgen</small></div>
+        <div class="bar-track"><div class="bar-fill dim" data-w="2.7"></div></div>
+        <div class="bar-val">21.8 <small>CPS</small></div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label">Vanilla, best case<small>Warm cache, no GC stall</small></div>
+        <div class="bar-track"><div class="bar-fill dim" data-w="8"></div></div>
+        <div class="bar-val">65.0 <small>CPS</small></div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label">Oxide — plugin<small>Standard Bukkit generator</small></div>
+        <div class="bar-track"><div class="bar-fill" data-w="52"></div></div>
+        <div class="bar-val">810.7 <small>CPS</small></div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label">Oxide — Vertex<small>Zero-copy module mode</small></div>
+        <div class="bar-track"><div class="bar-fill iron" data-w="100"></div></div>
+        <div class="bar-val">1,550 <small>CPS</small></div>
+      </div>
+    </div>
+
+    <div style="margin-top:52px; overflow-x:auto" class="rise">
+      <table class="tbl">
+        <thead>
+          <tr><th>Mode</th><th>Throughput</th><th>10k × 10k world</th><th>Tick cost</th><th>Where it runs</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Vanilla Folia</td>
+            <td class="num">21.8 – 65 CPS</td>
+            <td class="num">≈ 5 h 30 m</td>
+            <td class="num">GC stalls</td>
+            <td>Java heap</td>
+          </tr>
+          <tr>
+            <td>Oxide plugin</td>
+            <td class="num">780 – 810 CPS</td>
+            <td class="num">9 m 11 s</td>
+            <td class="num">0.83 ms</td>
+            <td>Rust via Panama</td>
+          </tr>
+          <tr>
+            <td>Oxide + Vertex</td>
+            <td class="num">1,550+ CPS</td>
+            <td class="num">≈ 4 m 30 s</td>
+            <td class="num">0.61 ms</td>
+            <td>Direct memory</td>
+          </tr>
+          <tr>
+            <td>Native pregen</td>
+            <td class="num">4,000 – 6,500 CPS</td>
+            <td class="num">≈ 1 m 40 s</td>
+            <td class="num">offline</td>
+            <td>All cores, no server</td>
+          </tr>
+        </tbody>
+      </table>
+      <p style="font-size:12.5px; color:var(--tx-4); margin-top:18px; line-height:1.6">
+        Benchmark hardware: 8-core AMD EPYC, 32 GB RAM, NVMe. Measured with Chunky on Folia 26.2,
+        Minecraft 1.21.x, seed 4489057056054590644, 150 worldgen datapacks loaded.
+        Vanilla control run performed by unloading Oxide and regenerating the same region.
+      </p>
+    </div>
+  </div>
+</section>
+
+<div class="wrap"><div class="rule"></div></div>
+
+<!-- ============================================================ VIDEO -->
+<section id="video">
+  <div class="wrap">
+    <div class="section-head rise">
+      <span class="tag">Recordings</span>
+      <h2>Watch it run.</h2>
+      <p class="sub">
+        Terrain generation, Elytra flight across un-generated world, and side-by-side TPS
+        comparisons — recorded live on the Season 5 server.
+      </p>
+    </div>
+
+    <div class="reel" data-stagger>
+      <div class="vframe" data-video="feature">
+        <div class="vplaceholder">
+          <div class="play">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="#f7f8f8"><path d="M8 5v14l11-7z"/></svg>
+          </div>
+          <div class="t">Oxide vs Vanilla — full world generation</div>
+          <div class="s">Recording soon</div>
+        </div>
+      </div>
+
+      <div class="vside">
+        <div class="vframe" data-video="pacside">
+          <div class="vplaceholder">
+            <div class="play">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="#f7f8f8"><path d="M8 5v14l11-7z"/></svg>
+            </div>
+            <div class="t">Pacside — Elytra at 35 m/s</div>
+            <div class="s">Recording soon</div>
+          </div>
+        </div>
+        <div class="vframe" data-video="vertex">
+          <div class="vplaceholder">
+            <div class="play">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="#f7f8f8"><path d="M8 5v14l11-7z"/></svg>
+            </div>
+            <div class="t">Vertex Engine — 1,550 CPS</div>
+            <div class="s">Recording soon</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <p style="font-size:12.5px; color:var(--tx-4); margin-top:22px">
+      Embeds drop straight into these frames — replace the placeholder markup with a YouTube
+      <code style="font-family:var(--mono);color:var(--tx-3)">&lt;iframe&gt;</code> and the layout holds.
+    </p>
+  </div>
+</section>
+
+<div class="wrap"><div class="rule"></div></div>
+
+<!-- ========================================================= PIPELINE -->
+<section id="pipeline">
+  <div class="wrap">
+    <div class="section-head rise">
+      <span class="tag">How a chunk gets made</span>
+      <h2>From noise to your screen.</h2>
+      <p class="sub">
+        Every step below runs in native code. The Java server only finds out a chunk exists
+        once the memory is already written.
+      </p>
+    </div>
+
+    <div class="pipe" data-stagger>
+      <div class="pipe-step">
+        <div class="pipe-n">01</div>
+        <div class="pipe-t">Datapack load
+          <small>150+ packs parsed and merged into one registry — biomes, density functions, surface rules, structure sets.</small>
+        </div>
+        <div class="pipe-tag">oxide-datapack</div>
+      </div>
+      <div class="pipe-step">
+        <div class="pipe-n">02</div>
+        <div class="pipe-t">Noise router
+          <small>Density function graph compiled once, then evaluated with SIMD interpolation across a 4×8×4 cell grid.</small>
+        </div>
+        <div class="pipe-tag">oxide-noise</div>
+      </div>
+      <div class="pipe-step">
+        <div class="pipe-n">03</div>
+        <div class="pipe-t">Biome resolution
+          <small>6-axis climate point searched against a KD-tree. Uniform sections short-circuit on 8-corner coherence.</small>
+        </div>
+        <div class="pipe-tag">oxide-biome</div>
+      </div>
+      <div class="pipe-step">
+        <div class="pipe-n">04</div>
+        <div class="pipe-t">Terrain fill
+          <small>Every voxel from Y −64 to 320 resolved against density and aquifer state. Cell bounds cull ~70% of interpolation.</small>
+        </div>
+        <div class="pipe-tag">oxide-chunkgen</div>
+      </div>
+      <div class="pipe-step">
+        <div class="pipe-n">05</div>
+        <div class="pipe-t">Surface, carvers, ores
+          <small>15 surface rule conditions, badlands banding, cave and canyon carvers, ore vein placement.</small>
+        </div>
+        <div class="pipe-tag">oxide-chunkgen</div>
+      </div>
+      <div class="pipe-step">
+        <div class="pipe-n">06</div>
+        <div class="pipe-t">Structures &amp; Jigsaw
+          <small>Random-spread candidates, stronghold rings, then recursive 3D Jigsaw assembly with AABB collision solving.</small>
+        </div>
+        <div class="pipe-tag">oxide-structures</div>
+      </div>
+      <div class="pipe-step">
+        <div class="pipe-n">07</div>
+        <div class="pipe-t">Handoff
+          <small>Vertex writes sections straight into server memory. Plugin mode copies once through Panama.</small>
+        </div>
+        <div class="pipe-tag">oxide-ffi</div>
+      </div>
+      <div class="pipe-step">
+        <div class="pipe-n">08</div>
+        <div class="pipe-t">Stream out
+          <small>Pacside compresses the packet once, caches it off-heap, and pushes it ahead of the player's flight path.</small>
+        </div>
+        <div class="pipe-tag">pacside</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="wrap"><div class="rule"></div></div>
+
+<!-- ============================================================= PLAY -->
+<section id="play">
+  <div class="wrap">
+    <div class="join rise">
+      <div>
+        <span class="tag">Season 5</span>
+        <h2 style="font-size:clamp(26px,3.2vw,36px)">Play on the server it was built for.</h2>
+        <p class="sub" style="margin-bottom:26px">
+          Every benchmark on this page came off this box. Java and Bedrock both welcome —
+          48-chunk render distance, Pacside streaming, Oxide terrain.
+        </p>
+        <div class="row">
+          <div class="addr" data-copy="play.dronzersmp.in:25574">
+            play.dronzersmp.in:25574 <span class="cp">Java · copy</span>
+          </div>
+          <div class="addr" data-copy="play.dronzersmp.in">
+            play.dronzersmp.in <span class="cp">Bedrock · 25569</span>
+          </div>
+        </div>
+      </div>
+      <div class="row" style="flex-direction:column; align-items:stretch; gap:10px; min-width:190px">
+        <a href="/map" class="btn btn-ghost" style="justify-content:center">Live world map</a>
+        <a href="/dumb" class="btn btn-ghost" style="justify-content:center">Explain it simply</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- =========================================================== FOOTER -->
+<footer>
+  <div class="wrap foot">
+    <div>
+      <a href="/" class="brand" style="margin-bottom:16px"><span class="brand-mark"></span> Oxide</a>
+      <p>
+        Native world generation, chunk streaming and server internals for Minecraft.
+        Built and maintained by x00f8. Licensed GPL-3.0.
+      </p>
+    </div>
+    <div class="foot-links">
+      <div class="foot-col">
+        <h5>Projects</h5>
+        <a href="https://github.com/dronzer-tb/oxide">Oxide</a>
+        <a href="https://github.com/dronzer-tb/oxide/tree/main/crates/pacside">Pacside</a>
+        <a href="https://github.com/dronzer-tb/vertex-engine">Vertex Engine</a>
+      </div>
+      <div class="foot-col">
+        <h5>Learn</h5>
+        <a href="/dumb">Explain it simply</a>
+        <a href="/map">Live map</a>
+        <a href="#benchmarks">Benchmarks</a>
+      </div>
+      <div class="foot-col">
+        <h5>Play</h5>
+        <a href="#play">Java</a>
+        <a href="#play">Bedrock</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
+<script src="/assets/motion.js?v=202609092130"></script>
 </body>
 </html>

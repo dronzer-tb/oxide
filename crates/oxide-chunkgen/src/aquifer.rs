@@ -204,6 +204,20 @@ impl<'a> Aquifer<'a> {
 
     /// The block state a [`FluidKind`] stands for. The only place a `BlockState` is cloned, and
     /// it happens once per returned block rather than once per intermediate comparison.
+    /// Above this y, `compute_substance` answers from `global_fluid` alone: no grid sampling,
+    /// no memo writes, no mutation of any kind. A caller that has already proven a whole cell
+    /// non-solid can therefore predict the answer without calling in -- see `fill_chunk_culling`.
+    pub fn skip_sampling_above_y(&self) -> i32 {
+        self.skip_sampling_above_y
+    }
+
+    /// What `compute_substance` would return for a non-solid position above
+    /// [`Self::skip_sampling_above_y`], without touching `self`. `None` means "plain air", which
+    /// a chunk section already holds as its palette default.
+    pub fn air_above_skip(&self, y: i32) -> bool {
+        y > self.skip_sampling_above_y && self.global_fluid(y).at_kind(y) == FluidKind::Air
+    }
+
     fn block_for(&self, kind: FluidKind) -> BlockState {
         match kind {
             FluidKind::Air => self.air.clone(),
