@@ -13,6 +13,9 @@ on:
 
 permissions:
   contents: write
+  # dev.vertex:vertex-engine-api comes from the vertex-engine repo's GitHub Packages, which
+  # answers 401 without a token even for a public package.
+  packages: read
 
 jobs:
   build:
@@ -35,6 +38,9 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - run: gradle build
         working-directory: plugin
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Fixed asset names: the download URLs below are meant to stay valid across
       # builds, so a server admin can curl the same link every time.

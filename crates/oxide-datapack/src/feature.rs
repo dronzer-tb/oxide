@@ -40,6 +40,9 @@ impl<T> Holder<T> {
 /// One entry of `worldgen/configured_feature`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "config")]
+// Loaded once per datapack and held in a registry, never moved in a hot path: boxing the big
+// configs would touch every feature for no gain.
+#[allow(clippy::large_enum_variant)]
 pub enum ConfiguredFeature {
     // ---- typed: features the generator can place ----
     /// Ore blobs. `scattered_ore` shares the configuration and differs only in how the blob is

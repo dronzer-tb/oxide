@@ -61,6 +61,7 @@ pub struct PackedVertex {
 
 impl PackedVertex {
     #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         x: u8,
         y: u8,
