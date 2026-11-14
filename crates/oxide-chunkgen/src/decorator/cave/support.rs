@@ -26,7 +26,14 @@ pub(super) enum Dir {
 }
 
 impl Dir {
-    pub const ALL: [Dir; 6] = [Dir::Down, Dir::Up, Dir::North, Dir::South, Dir::West, Dir::East];
+    pub const ALL: [Dir; 6] = [
+        Dir::Down,
+        Dir::Up,
+        Dir::North,
+        Dir::South,
+        Dir::West,
+        Dir::East,
+    ];
 
     pub fn step(self) -> (i32, i32, i32) {
         match self {
@@ -74,13 +81,22 @@ impl Dir {
 
 /// `pos.offset(dx, dy, dz)`.
 pub(super) fn offset(pos: BlockPos, dx: i32, dy: i32, dz: i32) -> BlockPos {
-    BlockPos::new(pos.x.wrapping_add(dx), pos.y.wrapping_add(dy), pos.z.wrapping_add(dz))
+    BlockPos::new(
+        pos.x.wrapping_add(dx),
+        pos.y.wrapping_add(dy),
+        pos.z.wrapping_add(dz),
+    )
 }
 
 /// `pos.relative(dir, distance)`.
 pub(super) fn relative(pos: BlockPos, dir: Dir, distance: i32) -> BlockPos {
     let (dx, dy, dz) = dir.step();
-    offset(pos, dx.wrapping_mul(distance), dy.wrapping_mul(distance), dz.wrapping_mul(distance))
+    offset(
+        pos,
+        dx.wrapping_mul(distance),
+        dy.wrapping_mul(distance),
+        dz.wrapping_mul(distance),
+    )
 }
 
 /// `Vec3i.distManhattan`, including the float accumulation vanilla does it in.
@@ -103,7 +119,11 @@ pub(super) fn has(cx: &FeatureContext<'_, '_, '_>, pos: BlockPos, fact: BlockFac
 }
 
 /// Whether `state` has `fact`.
-pub(super) fn state_has(cx: &FeatureContext<'_, '_, '_>, state: &BlockState, fact: BlockFact) -> bool {
+pub(super) fn state_has(
+    cx: &FeatureContext<'_, '_, '_>,
+    state: &BlockState,
+    fact: BlockFact,
+) -> bool {
     cx.env.facts.is(state, fact)
 }
 
@@ -134,12 +154,21 @@ pub(super) fn waterlogged(state: BlockState, value: bool) -> BlockState {
 /// PARITY-CHECK: `FullCollision && SturdyTop` stands in for "full support shape" on side faces and
 /// `FullCollision` for "full collision shape". A block whose support shape is full on the sides
 /// while its top is not sturdy would be misread; none is known.
-pub(super) fn face_full(cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos, face: Dir, collision: bool) -> bool {
+pub(super) fn face_full(
+    cx: &mut FeatureContext<'_, '_, '_>,
+    pos: BlockPos,
+    face: Dir,
+    collision: bool,
+) -> bool {
     let fact = |cx: &FeatureContext<'_, '_, '_>, fact: BlockFact| cx.region.is(pos, fact);
     let full_collision = fact(cx, BlockFact::FullCollision);
     match face {
         Dir::Up | Dir::Down => {
-            let sturdy = if face == Dir::Up { BlockFact::SturdyTop } else { BlockFact::SturdyBottom };
+            let sturdy = if face == Dir::Up {
+                BlockFact::SturdyTop
+            } else {
+                BlockFact::SturdyBottom
+            };
             fact(cx, sturdy) || (collision && full_collision)
         }
         _ => {
@@ -158,7 +187,11 @@ pub(super) fn face_full(cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos, face
 
 /// `MultifaceBlock.canAttachTo` for a block at `pos` looking at `direction`: whether the
 /// neighbour that way presents a full face back.
-pub(super) fn can_attach_to(cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos, direction: Dir) -> bool {
+pub(super) fn can_attach_to(
+    cx: &mut FeatureContext<'_, '_, '_>,
+    pos: BlockPos,
+    direction: Dir,
+) -> bool {
     face_full(cx, relative(pos, direction, 1), direction.opposite(), true)
 }
 
@@ -171,12 +204,24 @@ pub(super) fn int_bounds(provider: &IntProvider) -> Option<(i32, i32)> {
     };
     match tagged {
         TaggedIntProvider::Constant { value } => Some((*value, *value)),
-        TaggedIntProvider::Uniform { min_inclusive, max_inclusive }
-        | TaggedIntProvider::BiasedToBottom { min_inclusive, max_inclusive }
-        | TaggedIntProvider::ClampedNormal { min_inclusive, max_inclusive, .. } => {
-            Some((*min_inclusive, *max_inclusive))
+        TaggedIntProvider::Uniform {
+            min_inclusive,
+            max_inclusive,
         }
-        TaggedIntProvider::Clamped { source, min_inclusive, max_inclusive } => {
+        | TaggedIntProvider::BiasedToBottom {
+            min_inclusive,
+            max_inclusive,
+        }
+        | TaggedIntProvider::ClampedNormal {
+            min_inclusive,
+            max_inclusive,
+            ..
+        } => Some((*min_inclusive, *max_inclusive)),
+        TaggedIntProvider::Clamped {
+            source,
+            min_inclusive,
+            max_inclusive,
+        } => {
             // `ClampedInt.getMinValue` is `max(min, source.min)`, `getMaxValue` `min(max, source.max)`.
             let (low, high) = int_bounds(source)?;
             Some(((*min_inclusive).max(low), (*max_inclusive).min(high)))
@@ -186,7 +231,8 @@ pub(super) fn int_bounds(provider: &IntProvider) -> Option<(i32, i32)> {
             let mut bounds: Option<(i32, i32)> = None;
             for entry in distribution {
                 let (low, high) = int_bounds(&entry.data)?;
-                bounds = Some(bounds.map_or((low, high), |(min, max)| (min.min(low), max.max(high))));
+                bounds =
+                    Some(bounds.map_or((low, high), |(min, max)| (min.min(low), max.max(high))));
             }
             bounds
         }

@@ -184,7 +184,10 @@ fn yes() -> bool {
 }
 
 fn uniform(min_inclusive: i32, max_inclusive: i32) -> IntProvider {
-    IntProvider::Tagged(Box::new(TaggedIntProvider::Uniform { min_inclusive, max_inclusive }))
+    IntProvider::Tagged(Box::new(TaggedIntProvider::Uniform {
+        min_inclusive,
+        max_inclusive,
+    }))
 }
 
 fn outer_wall_distance() -> IntProvider {
@@ -240,7 +243,9 @@ mod tests {
             "crack":{},"layers":{},"invalid_blocks_threshold":1}}"##,
         )
         .unwrap();
-        let ConfiguredFeature::Geode(config) = geode else { panic!("not a geode") };
+        let ConfiguredFeature::Geode(config) = geode else {
+            panic!("not a geode")
+        };
         assert_eq!(config.layers.outer_layer, 4.2);
         assert_eq!(config.crack.crack_point_offset, 2);
         assert_eq!(config.use_potential_placements_chance, 0.35);
@@ -257,7 +262,9 @@ mod tests {
             "stalagmite_bluntness":0.5,"wind_speed":0.1}}"##,
         )
         .unwrap();
-        let ConfiguredFeature::LargeDripstone(config) = feature else { panic!("not a large dripstone") };
+        let ConfiguredFeature::LargeDripstone(config) = feature else {
+            panic!("not a large dripstone")
+        };
         assert_eq!(config.floor_to_ceiling_search_range, 30);
     }
 }

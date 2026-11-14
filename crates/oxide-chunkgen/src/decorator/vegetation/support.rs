@@ -46,7 +46,11 @@ pub(super) fn face_full(
     let full_collision = fact(cx, BlockFact::FullCollision);
     match face {
         Dir::Up | Dir::Down => {
-            let sturdy = if face == Dir::Up { BlockFact::SturdyTop } else { BlockFact::SturdyBottom };
+            let sturdy = if face == Dir::Up {
+                BlockFact::SturdyTop
+            } else {
+                BlockFact::SturdyBottom
+            };
             fact(cx, sturdy) || (shape == Shape::Collision && full_collision)
         }
         _ => {
@@ -65,13 +69,21 @@ pub(super) fn face_full(
 
 /// `MultifaceBlock.canAttachTo` for a block at `pos` looking at `direction`: whether the
 /// neighbour that way presents a full face back.
-pub(super) fn can_attach_to(cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos, direction: Dir) -> bool {
+pub(super) fn can_attach_to(
+    cx: &mut FeatureContext<'_, '_, '_>,
+    pos: BlockPos,
+    direction: Dir,
+) -> bool {
     let neighbour = super::geometry::relative(pos, direction, 1);
     face_full(cx, neighbour, direction.opposite(), Shape::Collision)
 }
 
 /// `BlockState.canSurvive`, with an unanswered question tallied and read as "cannot place".
-pub(super) fn survives(cx: &mut FeatureContext<'_, '_, '_>, state: &BlockState, pos: BlockPos) -> bool {
+pub(super) fn survives(
+    cx: &mut FeatureContext<'_, '_, '_>,
+    state: &BlockState,
+    pos: BlockPos,
+) -> bool {
     match cx.env.behaviours.can_survive(state, cx.region, pos) {
         Some(answer) => answer,
         None => {
@@ -87,7 +99,11 @@ pub(super) fn is_air(cx: &FeatureContext<'_, '_, '_>, pos: BlockPos) -> bool {
 }
 
 /// Places a nested placed feature with the caller's random stream, as `PlacedFeature.place` does.
-pub(super) fn place_nested(cx: &mut FeatureContext<'_, '_, '_>, placed: &Placed, pos: BlockPos) -> bool {
+pub(super) fn place_nested(
+    cx: &mut FeatureContext<'_, '_, '_>,
+    placed: &Placed,
+    pos: BlockPos,
+) -> bool {
     place_placed(placed, cx, pos, None)
 }
 
@@ -109,6 +125,12 @@ pub(super) fn sample_state(
 }
 
 /// Whether the block at `pos` is in the block tag `tag`.
-pub(super) fn in_tag(cx: &FeatureContext<'_, '_, '_>, pos: BlockPos, tag: &ResourceLocation) -> bool {
-    cx.env.block_tags.contains(tag, &block_in(cx.region, pos).name)
+pub(super) fn in_tag(
+    cx: &FeatureContext<'_, '_, '_>,
+    pos: BlockPos,
+    tag: &ResourceLocation,
+) -> bool {
+    cx.env
+        .block_tags
+        .contains(tag, &block_in(cx.region, pos).name)
 }

@@ -16,8 +16,8 @@ use oxide_core::{BlockPos, BlockState, RandomSource};
 use oxide_datapack::BlockFacts;
 
 use super::support::{
-    default_state, in_tag_at, is_water, member_default, offset, random_member, relative, shuffle, Dir,
-    HORIZONTAL,
+    default_state, in_tag_at, is_water, member_default, offset, random_member, relative, shuffle,
+    Dir, HORIZONTAL,
 };
 use crate::decorator::context::FeatureContext;
 
@@ -37,7 +37,10 @@ pub struct CoralFeature {
 
 impl CoralFeature {
     pub(super) fn compile(shape: CoralShape, facts: &BlockFacts) -> Result<Self> {
-        Ok(Self { shape, pickle: default_state(facts, "sea_pickle")? })
+        Ok(Self {
+            shape,
+            pickle: default_state(facts, "sea_pickle")?,
+        })
     }
 
     pub(super) fn place(&self, cx: &mut FeatureContext<'_, '_, '_>) -> bool {
@@ -56,7 +59,12 @@ impl CoralFeature {
     }
 
     /// `placeCoralBlock`.
-    fn place_block(&self, cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos, state: &BlockState) -> bool {
+    fn place_block(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        pos: BlockPos,
+        state: &BlockState,
+    ) -> bool {
         let above = relative(pos, Dir::Up, 1);
         if !((is_water(cx, pos) || in_tag_at(cx, pos, "corals")) && is_water(cx, above)) {
             return false;
@@ -70,7 +78,12 @@ impl CoralFeature {
             }
         } else if cx.random.next_float() < 0.05 {
             let pickles = cx.random.next_int_bounded(4) + 1;
-            cx.region.set_block(above, self.pickle.clone().with_property("pickles", pickles.to_string()));
+            cx.region.set_block(
+                above,
+                self.pickle
+                    .clone()
+                    .with_property("pickles", pickles.to_string()),
+            );
         }
         for direction in HORIZONTAL {
             if cx.random.next_float() < 0.2 {
@@ -93,7 +106,12 @@ impl CoralFeature {
     }
 
     /// `CoralTreeFeature.placeFeature`.
-    fn tree(&self, cx: &mut FeatureContext<'_, '_, '_>, origin: BlockPos, state: &BlockState) -> bool {
+    fn tree(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        origin: BlockPos,
+        state: &BlockState,
+    ) -> bool {
         let mut pos = origin;
         let trunk_height = cx.random.next_int_bounded(3) + 1;
         for _ in 0..trunk_height {
@@ -125,7 +143,12 @@ impl CoralFeature {
     }
 
     /// `CoralClawFeature.placeFeature`.
-    fn claw(&self, cx: &mut FeatureContext<'_, '_, '_>, origin: BlockPos, state: &BlockState) -> bool {
+    fn claw(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        origin: BlockPos,
+        state: &BlockState,
+    ) -> bool {
         if !self.place_block(cx, origin, state) {
             return false;
         }
@@ -167,7 +190,12 @@ impl CoralFeature {
 
     /// `CoralMushroomFeature.placeFeature`: the shell of a box sunk into the floor, missing its
     /// twelve edges, each shell cell skipped with chance 0.1.
-    fn mushroom(&self, cx: &mut FeatureContext<'_, '_, '_>, origin: BlockPos, state: &BlockState) -> bool {
+    fn mushroom(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        origin: BlockPos,
+        state: &BlockState,
+    ) -> bool {
         let height = cx.random.next_int_bounded(3) + 3;
         let width = cx.random.next_int_bounded(3) + 3;
         let length = cx.random.next_int_bounded(3) + 3;
@@ -180,7 +208,10 @@ impl CoralFeature {
                     let y_inner = y != 0 && y != height;
                     let z_inner = z != 0 && z != length;
                     let on_shell = !x_inner || !y_inner || !z_inner;
-                    if (x_inner || y_inner) && (z_inner || y_inner) && (x_inner || z_inner) && on_shell
+                    if (x_inner || y_inner)
+                        && (z_inner || y_inner)
+                        && (x_inner || z_inner)
+                        && on_shell
                         && cx.random.next_float() >= 0.1
                     {
                         self.place_block(cx, pos, state);

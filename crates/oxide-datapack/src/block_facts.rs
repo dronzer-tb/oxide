@@ -120,7 +120,9 @@ impl BlockFacts {
 
     /// Whether `fact` holds for `state`. A state the table does not know has no facts.
     pub fn is(&self, state: &BlockState, fact: BlockFact) -> bool {
-        self.flags.get(state).is_some_and(|bits| bits & fact as u32 != 0)
+        self.flags
+            .get(state)
+            .is_some_and(|bits| bits & fact as u32 != 0)
     }
 
     /// Whether the table lists `state` at all: a guard against writing a state the game lacks.
@@ -207,7 +209,9 @@ mod tests {
         }
         assert!(facts.is(&block("stone"), BlockFact::Solid));
         assert!(facts.is(&block("short_grass"), BlockFact::Replaceable));
-        let leaves = facts.default_state(&ResourceLocation::minecraft("oak_leaves")).unwrap();
+        let leaves = facts
+            .default_state(&ResourceLocation::minecraft("oak_leaves"))
+            .unwrap();
         assert!(facts.is(leaves, BlockFact::HeightMotionBlocking));
         assert!(!facts.is(leaves, BlockFact::HeightMotionBlockingNoLeaves));
     }

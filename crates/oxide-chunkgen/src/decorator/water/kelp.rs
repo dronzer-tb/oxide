@@ -21,7 +21,10 @@ pub struct KelpFeature {
 
 impl KelpFeature {
     pub(super) fn compile(facts: &BlockFacts) -> Result<Self> {
-        Ok(Self { head: default_state(facts, "kelp")?, plant: default_state(facts, "kelp_plant")? })
+        Ok(Self {
+            head: default_state(facts, "kelp")?,
+            plant: default_state(facts, "kelp_plant")?,
+        })
     }
 
     /// The head with vanilla's generated age, `nextInt(4) + 20`.
@@ -32,7 +35,10 @@ impl KelpFeature {
 
     pub(super) fn place(&self, cx: &mut FeatureContext<'_, '_, '_>) -> bool {
         let origin = cx.origin;
-        let Some(y) = cx.region.height(HeightmapType::OceanFloor, origin.x, origin.z) else {
+        let Some(y) = cx
+            .region
+            .height(HeightmapType::OceanFloor, origin.x, origin.z)
+        else {
             return false;
         };
         let mut pos = oxide_core::BlockPos::new(origin.x, y, origin.z);
@@ -40,7 +46,10 @@ impl KelpFeature {
         if is_water(cx, pos) {
             let height = 1 + cx.random.next_int_bounded(10);
             for h in 0..=height {
-                if is_water(cx, pos) && is_water(cx, relative(pos, Dir::Up, 1)) && survives(cx, &self.plant, pos) {
+                if is_water(cx, pos)
+                    && is_water(cx, relative(pos, Dir::Up, 1))
+                    && survives(cx, &self.plant, pos)
+                {
                     if h == height {
                         let head = self.aged_head(cx);
                         cx.region.set_block(pos, head);
@@ -50,7 +59,9 @@ impl KelpFeature {
                     }
                 } else if h > 0 {
                     let below = relative(pos, Dir::Down, 1);
-                    if survives(cx, &self.head, below) && !is_block_at(cx, relative(below, Dir::Down, 1), "kelp") {
+                    if survives(cx, &self.head, below)
+                        && !is_block_at(cx, relative(below, Dir::Down, 1), "kelp")
+                    {
                         let head = self.aged_head(cx);
                         cx.region.set_block(below, head);
                         placed += 1;

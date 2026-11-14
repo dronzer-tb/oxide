@@ -136,7 +136,10 @@ impl TemplatePool {
     }
 
     /// `getShuffledTemplates`: `Util.shuffle` over a copy of the expanded list.
-    pub fn shuffled_templates<'a>(&'a self, random: &mut impl RandomSource) -> Vec<&'a PoolElement> {
+    pub fn shuffled_templates<'a>(
+        &'a self,
+        random: &mut impl RandomSource,
+    ) -> Vec<&'a PoolElement> {
         let mut expanded = self.expanded();
         shuffle(&mut expanded, random);
         expanded
@@ -186,7 +189,10 @@ mod tests {
             .iter()
             .filter(|e| e.template().unwrap().path() == "house")
             .count();
-        assert_eq!(houses, 3, "weight 3 must occupy three slots, not bias a draw");
+        assert_eq!(
+            houses, 3,
+            "weight 3 must occupy three slots, not bias a draw"
+        );
     }
 
     #[test]

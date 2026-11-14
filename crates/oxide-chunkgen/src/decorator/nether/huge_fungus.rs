@@ -43,12 +43,15 @@ impl HugeFungusFeature {
         }
         let hat = state_from_spec(&config.hat_state, facts).context("huge fungus hat")?;
         Ok(Some(Self {
-            valid_base: state_from_spec(&config.valid_base_block, facts).context("huge fungus base")?.name,
+            valid_base: state_from_spec(&config.valid_base_block, facts)
+                .context("huge fungus base")?
+                .name,
             stem: state_from_spec(&config.stem_state, facts).context("huge fungus stem")?,
             vines: hat.name == ResourceLocation::minecraft("nether_wart_block"),
             hat,
             decor: state_from_spec(&config.decor_state, facts).context("huge fungus decor")?,
-            replaceable: Predicate::compile(&config.replaceable_blocks, facts).context("huge fungus replaceable")?,
+            replaceable: Predicate::compile(&config.replaceable_blocks, facts)
+                .context("huge fungus replaceable")?,
             weeping_vines: default_state(facts, "weeping_vines")?,
             weeping_vines_plant: default_state(facts, "weeping_vines_plant")?,
         }))
@@ -69,7 +72,8 @@ impl HugeFungusFeature {
             return false;
         }
         let huge = cx.random.next_float() < 0.06;
-        cx.region.set_block(origin, BlockState::new(ResourceLocation::minecraft("air")));
+        cx.region
+            .set_block(origin, BlockState::new(ResourceLocation::minecraft("air")));
         self.place_stem(cx, origin, height, huge);
         self.place_hat(cx, origin, height, huge);
         true
@@ -77,14 +81,25 @@ impl HugeFungusFeature {
 
     /// `HugeFungusFeature.isReplaceable`: a replaceable block, or (for the stem) one the config
     /// lists.
-    fn is_replaceable(&self, cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos, plants: bool) -> bool {
+    fn is_replaceable(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        pos: BlockPos,
+        plants: bool,
+    ) -> bool {
         if has(cx, pos, BlockFact::Replaceable) {
             return true;
         }
         plants && self.replaceable.test(cx, pos)
     }
 
-    fn place_stem(&self, cx: &mut FeatureContext<'_, '_, '_>, origin: BlockPos, height: i32, huge: bool) {
+    fn place_stem(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        origin: BlockPos,
+        height: i32,
+        huge: bool,
+    ) {
         let radius = i32::from(huge);
         for dx in -radius..=radius {
             for dz in -radius..=radius {
@@ -106,11 +121,21 @@ impl HugeFungusFeature {
         }
     }
 
-    fn place_hat(&self, cx: &mut FeatureContext<'_, '_, '_>, origin: BlockPos, height: i32, huge: bool) {
+    fn place_hat(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        origin: BlockPos,
+        height: i32,
+        huge: bool,
+    ) {
         let hat_height = (cx.random.next_int_bounded(1 + height / 3) + 5).min(height);
         let start = height - hat_height;
         for dy in start..=height {
-            let mut radius = if dy < height - cx.random.next_int_bounded(3) { 2 } else { 1 };
+            let mut radius = if dy < height - cx.random.next_int_bounded(3) {
+                2
+            } else {
+                1
+            };
             if hat_height > 8 && dy < start + 4 {
                 radius = 3;
             }
@@ -135,9 +160,21 @@ impl HugeFungusFeature {
                     } else if inside {
                         self.place_hat_block(cx, pos, 0.1, 0.2, if self.vines { 0.1 } else { 0.0 });
                     } else if corner {
-                        self.place_hat_block(cx, pos, 0.01, 0.7, if self.vines { 0.083 } else { 0.0 });
+                        self.place_hat_block(
+                            cx,
+                            pos,
+                            0.01,
+                            0.7,
+                            if self.vines { 0.083 } else { 0.0 },
+                        );
                     } else {
-                        self.place_hat_block(cx, pos, 5.0e-4, 0.98, if self.vines { 0.07 } else { 0.0 });
+                        self.place_hat_block(
+                            cx,
+                            pos,
+                            5.0e-4,
+                            0.98,
+                            if self.vines { 0.07 } else { 0.0 },
+                        );
                     }
                 }
             }
@@ -145,7 +182,14 @@ impl HugeFungusFeature {
     }
 
     /// `HugeFungusFeature.placeHatBlock`: decor, else hat (and maybe vines).
-    fn place_hat_block(&self, cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos, decor: f32, hat: f32, vines: f32) {
+    fn place_hat_block(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        pos: BlockPos,
+        decor: f32,
+        hat: f32,
+        vines: f32,
+    ) {
         if cx.random.next_float() < decor {
             cx.region.set_block(pos, self.decor.clone());
         } else if cx.random.next_float() < hat {
@@ -183,7 +227,10 @@ impl HugeFungusFeature {
             if has(cx, pos, BlockFact::Air) {
                 if height == goal || !has(cx, offset(pos, 0, -1, 0), BlockFact::Air) {
                     let age = between_inclusive(cx.random, 23, 25);
-                    let tip = self.weeping_vines.clone().with_property("age", age.to_string());
+                    let tip = self
+                        .weeping_vines
+                        .clone()
+                        .with_property("age", age.to_string());
                     cx.region.set_block(pos, tip);
                     break;
                 }

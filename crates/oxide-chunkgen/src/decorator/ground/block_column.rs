@@ -79,7 +79,13 @@ impl BlockColumnFeature {
         if total == 0 {
             return false;
         }
-        let advance = |pos: BlockPos| BlockPos::new(pos.x + self.step[0], pos.y + self.step[1], pos.z + self.step[2]);
+        let advance = |pos: BlockPos| {
+            BlockPos::new(
+                pos.x + self.step[0],
+                pos.y + self.step[1],
+                pos.z + self.step[2],
+            )
+        };
         let mut query = advance(origin);
         for index in 0..total {
             if !self.allowed_placement.test(cx, query) {
@@ -110,7 +116,11 @@ fn truncate(heights: &mut [i32], total: i32, allowed: i32, prioritize_tip: bool)
         if remove <= 0 {
             break;
         }
-        let index = if prioritize_tip { offset } else { heights.len() - 1 - offset };
+        let index = if prioritize_tip {
+            offset
+        } else {
+            heights.len() - 1 - offset
+        };
         let count = heights[index].min(remove);
         remove -= count;
         heights[index] -= count;

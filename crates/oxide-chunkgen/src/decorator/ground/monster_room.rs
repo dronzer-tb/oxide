@@ -21,8 +21,12 @@ use super::super::context::{block_in, FeatureContext};
 use super::{default_state, in_tag, is_air, is_block, is_block_at, offset};
 
 /// `Direction.Plane.HORIZONTAL`: north, east, south, west.
-const HORIZONTAL: [(&str, [i32; 3]); 4] =
-    [("north", [0, 0, -1]), ("east", [1, 0, 0]), ("south", [0, 0, 1]), ("west", [-1, 0, 0])];
+const HORIZONTAL: [(&str, [i32; 3]); 4] = [
+    ("north", [0, 0, -1]),
+    ("east", [1, 0, 0]),
+    ("south", [0, 0, 1]),
+    ("west", [-1, 0, 0]),
+];
 
 #[derive(Debug)]
 pub struct MonsterRoomFeature {
@@ -90,10 +94,18 @@ impl MonsterRoomFeature {
                 for dz in min_z..=max_z {
                     let pos = offset(origin, dx, dy, dz);
                     let wall = block_in(cx.region, pos).clone();
-                    if dx == min_x || dy == -1 || dz == min_z || dx == max_x || dy == 4 || dz == max_z {
+                    if dx == min_x
+                        || dy == -1
+                        || dz == min_z
+                        || dx == max_x
+                        || dy == 4
+                        || dz == max_z
+                    {
                         if pos.y >= min_y && !Self::solid(cx, offset(pos, 0, -1, 0)) {
                             cx.region.set_block(pos, self.cave_air.clone());
-                        } else if cx.env.facts.is(&wall, BlockFact::Solid) && !is_block(&wall, "chest") {
+                        } else if cx.env.facts.is(&wall, BlockFact::Solid)
+                            && !is_block(&wall, "chest")
+                        {
                             let value = if dy == -1 && cx.random.next_int_bounded(4) != 0 {
                                 self.mossy_cobblestone.clone()
                             } else {
@@ -149,7 +161,8 @@ impl MonsterRoomFeature {
         if is_block_at(cx, origin, "spawner") {
             // `Util.getRandom(MOBS, random)` over skeleton, zombie, zombie, spider.
             cx.random.next_int_bounded(4);
-            cx.unsupported.record("block_entity", "minecraft:mob_spawner");
+            cx.unsupported
+                .record("block_entity", "minecraft:mob_spawner");
         }
     }
 
@@ -165,7 +178,9 @@ impl MonsterRoomFeature {
         };
         let facing = |index: usize| {
             let mut state = self.chest.clone();
-            state.properties.insert("facing".to_string(), HORIZONTAL[index].0.to_string());
+            state
+                .properties
+                .insert("facing".to_string(), HORIZONTAL[index].0.to_string());
             state
         };
         let mut solid_side: Option<usize> = None;
@@ -185,7 +200,12 @@ impl MonsterRoomFeature {
         if let Some(index) = solid_side {
             return facing((index + 2) % 4);
         }
-        let mut lock = side(self.chest.properties.get("facing").map_or("north", String::as_str));
+        let mut lock = side(
+            self.chest
+                .properties
+                .get("facing")
+                .map_or("north", String::as_str),
+        );
         if solid_render(neighbour(lock)) {
             lock = (lock + 2) % 4;
         }

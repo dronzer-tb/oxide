@@ -26,7 +26,8 @@ pub enum IdSet {
 impl IdSet {
     pub fn compile(list: &BlockList) -> Result<Self> {
         let parse = |text: &str| {
-            ResourceLocation::from_str(text).map_err(|_| anyhow!("invalid resource location {text:?}"))
+            ResourceLocation::from_str(text)
+                .map_err(|_| anyhow!("invalid resource location {text:?}"))
         };
         match list {
             BlockList::One(text) => match text.strip_prefix('#') {
@@ -76,9 +77,17 @@ fn moved(pos: BlockPos, offset: [i32; 3]) -> BlockPos {
 fn fluid_path(facts: &BlockFacts, state: &BlockState) -> &'static str {
     let source = facts.is(state, BlockFact::FluidSource);
     if facts.is(state, BlockFact::Water) {
-        if source { "water" } else { "flowing_water" }
+        if source {
+            "water"
+        } else {
+            "flowing_water"
+        }
     } else if facts.is(state, BlockFact::Lava) {
-        if source { "lava" } else { "flowing_lava" }
+        if source {
+            "lava"
+        } else {
+            "flowing_lava"
+        }
     } else {
         "empty"
     }
@@ -97,14 +106,35 @@ pub enum Predicate {
     Not(Box<Predicate>),
     AllOf(Vec<Predicate>),
     AnyOf(Vec<Predicate>),
-    MatchingBlocks { blocks: IdSet, offset: [i32; 3] },
-    MatchingBlockTag { tag: ResourceLocation, offset: [i32; 3] },
-    MatchingFluids { fluids: IdSet, offset: [i32; 3] },
-    WouldSurvive { state: BlockState, offset: [i32; 3] },
-    Replaceable { offset: [i32; 3] },
-    Solid { offset: [i32; 3] },
-    InsideWorldBounds { offset: [i32; 3] },
-    HasSturdyFace { direction: Direction, offset: [i32; 3] },
+    MatchingBlocks {
+        blocks: IdSet,
+        offset: [i32; 3],
+    },
+    MatchingBlockTag {
+        tag: ResourceLocation,
+        offset: [i32; 3],
+    },
+    MatchingFluids {
+        fluids: IdSet,
+        offset: [i32; 3],
+    },
+    WouldSurvive {
+        state: BlockState,
+        offset: [i32; 3],
+    },
+    Replaceable {
+        offset: [i32; 3],
+    },
+    Solid {
+        offset: [i32; 3],
+    },
+    InsideWorldBounds {
+        offset: [i32; 3],
+    },
+    HasSturdyFace {
+        direction: Direction,
+        offset: [i32; 3],
+    },
 }
 
 impl Predicate {
@@ -133,11 +163,15 @@ impl Predicate {
                 state: state_from_spec(state, facts).context("would_survive state")?,
                 offset: offset_of(offset),
             },
-            BlockPredicate::Replaceable { offset } => Self::Replaceable { offset: offset_of(offset) },
-            BlockPredicate::Solid { offset } => Self::Solid { offset: offset_of(offset) },
-            BlockPredicate::InsideWorldBounds { offset } => {
-                Self::InsideWorldBounds { offset: offset_of(offset) }
-            }
+            BlockPredicate::Replaceable { offset } => Self::Replaceable {
+                offset: offset_of(offset),
+            },
+            BlockPredicate::Solid { offset } => Self::Solid {
+                offset: offset_of(offset),
+            },
+            BlockPredicate::InsideWorldBounds { offset } => Self::InsideWorldBounds {
+                offset: offset_of(offset),
+            },
             BlockPredicate::HasSturdyFace { offset, direction } => Self::HasSturdyFace {
                 direction: match direction.as_str() {
                     "up" => Direction::Up,
@@ -172,13 +206,18 @@ impl Predicate {
                     IdSet::Ids(ids) => ids
                         .iter()
                         .any(|id| id.namespace() == "minecraft" && id.path() == path),
-                    IdSet::Tag(tag) => {
-                        cx.env.fluid_tags.contains(tag, &ResourceLocation::minecraft(path))
-                    }
+                    IdSet::Tag(tag) => cx
+                        .env
+                        .fluid_tags
+                        .contains(tag, &ResourceLocation::minecraft(path)),
                 }
             }
             Self::WouldSurvive { state, offset } => {
-                match cx.env.behaviours.can_survive(state, cx.region, moved(pos, *offset)) {
+                match cx
+                    .env
+                    .behaviours
+                    .can_survive(state, cx.region, moved(pos, *offset))
+                {
                     Some(survives) => survives,
                     None => {
                         cx.unsupported.record("survival", &state.name.to_string());
@@ -190,16 +229,15 @@ impl Predicate {
                 cx.region.is(moved(pos, *offset), BlockFact::Replaceable)
             }
             Self::Solid { offset } => cx.region.is(moved(pos, *offset), BlockFact::Solid),
-            Self::InsideWorldBounds { offset } => {
-                !cx.outside_build_height(moved(pos, *offset).y)
-            }
+            Self::InsideWorldBounds { offset } => !cx.outside_build_height(moved(pos, *offset).y),
             Self::HasSturdyFace { direction, offset } => {
                 let at = moved(pos, *offset);
                 match direction {
                     Direction::Up => cx.region.is(at, BlockFact::SturdyTop),
                     Direction::Down => cx.region.is(at, BlockFact::SturdyBottom),
                     Direction::Horizontal => {
-                        cx.unsupported.record("predicate", "has_sturdy_face horizontal");
+                        cx.unsupported
+                            .record("predicate", "has_sturdy_face horizontal");
                         false
                     }
                 }

@@ -85,7 +85,8 @@ impl Datapack {
         for root in self.pack_roots.iter().rev() {
             let path = root.join(&relative);
             if path.is_file() {
-                let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+                let bytes =
+                    std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
                 return RawStructureNbt::from_bytes(&bytes)
                     .with_context(|| format!("parsing {}", path.display()))
                     .map(Some);

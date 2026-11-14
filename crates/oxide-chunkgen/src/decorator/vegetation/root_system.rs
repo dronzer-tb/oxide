@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use oxide_core::{RandomSource, BlockPos, HeightmapType};
+use oxide_core::{BlockPos, HeightmapType, RandomSource};
 use oxide_datapack::feature::Holder;
 use oxide_datapack::placement::PlacedFeature;
 use oxide_datapack::vegetation_feature::RootSystemConfig;
@@ -50,15 +50,19 @@ impl RootSystemFeature {
             tree: placed(&config.feature).context("feature")?,
             required_vertical_space_for_tree: config.required_vertical_space_for_tree,
             root_radius: config.root_radius,
-            root_replaceable: IdSet::compile(&config.root_replaceable).context("root_replaceable")?,
+            root_replaceable: IdSet::compile(&config.root_replaceable)
+                .context("root_replaceable")?,
             root_state_provider: StateProvider::compile(&config.root_state_provider, facts)
                 .context("root_state_provider")?,
             root_placement_attempts: config.root_placement_attempts,
             root_column_max_height: config.root_column_max_height,
             hanging_root_radius: config.hanging_root_radius,
             hanging_roots_vertical_span: config.hanging_roots_vertical_span,
-            hanging_root_state_provider: StateProvider::compile(&config.hanging_root_state_provider, facts)
-                .context("hanging_root_state_provider")?,
+            hanging_root_state_provider: StateProvider::compile(
+                &config.hanging_root_state_provider,
+                facts,
+            )
+            .context("hanging_root_state_provider")?,
             hanging_root_placement_attempts: config.hanging_root_placement_attempts,
             allowed_vertical_water_for_tree: config.allowed_vertical_water_for_tree,
             allowed_tree_position: Predicate::compile(&config.allowed_tree_position, facts)
@@ -108,7 +112,10 @@ impl RootSystemFeature {
         let mut working = origin;
         for y in 0..self.root_column_max_height {
             working = offset(working, 0, 1, 0);
-            let Some(surface) = cx.region.height(HeightmapType::WorldSurface, working.x, working.z) else {
+            let Some(surface) = cx
+                .region
+                .height(HeightmapType::WorldSurface, working.x, working.z)
+            else {
                 return false;
             };
             if surface < working.y {
@@ -139,8 +146,13 @@ impl RootSystemFeature {
             let dx = cx.random.next_int_bounded(r) - cx.random.next_int_bounded(r);
             let dz = cx.random.next_int_bounded(r) - cx.random.next_int_bounded(r);
             let pos = offset(column, dx, 0, dz);
-            if self.root_replaceable.contains_block(cx.env, &block_in(cx.region, pos).name) {
-                let Some(state) = sample_state(cx, &self.root_state_provider, pos) else { continue };
+            if self
+                .root_replaceable
+                .contains_block(cx.env, &block_in(cx.region, pos).name)
+            {
+                let Some(state) = sample_state(cx, &self.root_state_provider, pos) else {
+                    continue;
+                };
                 cx.region.set_block(pos, state);
             }
         }
@@ -156,8 +168,12 @@ impl RootSystemFeature {
             if !is_air(cx, pos) {
                 continue;
             }
-            let Some(state) = sample_state(cx, &self.hanging_root_state_provider, pos) else { continue };
-            if survives(cx, &state, pos) && face_full(cx, offset(pos, 0, 1, 0), Dir::Down, Shape::Support) {
+            let Some(state) = sample_state(cx, &self.hanging_root_state_provider, pos) else {
+                continue;
+            };
+            if survives(cx, &state, pos)
+                && face_full(cx, offset(pos, 0, 1, 0), Dir::Down, Shape::Support)
+            {
                 cx.region.set_block(pos, state);
             }
         }

@@ -50,7 +50,10 @@ impl BasaltColumnsFeature {
             height: config.height.clone(),
             basalt: default_state(facts, "basalt")?,
             lava: ResourceLocation::minecraft("lava"),
-            cannot_place_on: CANNOT_PLACE_ON.iter().map(|path| ResourceLocation::minecraft(*path)).collect(),
+            cannot_place_on: CANNOT_PLACE_ON
+                .iter()
+                .map(|path| ResourceLocation::minecraft(*path))
+                .collect(),
         })
     }
 
@@ -83,7 +86,13 @@ impl BasaltColumnsFeature {
     }
 
     /// `BasaltColumnsFeature.placeColumn`: the square of columns around one site.
-    fn place_column(&self, cx: &mut FeatureContext<'_, '_, '_>, site: BlockPos, height: i32, reach: i32) -> bool {
+    fn place_column(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        site: BlockPos,
+        height: i32,
+        reach: i32,
+    ) -> bool {
         let mut placed_any = false;
         // `BlockPos.betweenClosed` on one layer: x fastest, then z.
         for dz in -reach..=reach {
@@ -118,7 +127,12 @@ impl BasaltColumnsFeature {
     }
 
     /// `findSurface`: down to the first cell [`Self::can_place_at`] accepts, at most `limit` steps.
-    fn find_surface(&self, cx: &FeatureContext<'_, '_, '_>, mut cursor: BlockPos, mut limit: i32) -> Option<BlockPos> {
+    fn find_surface(
+        &self,
+        cx: &FeatureContext<'_, '_, '_>,
+        mut cursor: BlockPos,
+        mut limit: i32,
+    ) -> Option<BlockPos> {
         while cursor.y > cx.region.min_y() + 1 && limit > 0 {
             limit -= 1;
             if self.can_place_at(cx, cursor) {
@@ -135,15 +149,26 @@ impl BasaltColumnsFeature {
             return false;
         }
         let below = offset(pos, 0, -1, 0);
-        !is_empty(cx, below) && !self.cannot_place_on.contains(&block_in(cx.region, below).name)
+        !is_empty(cx, below)
+            && !self
+                .cannot_place_on
+                .contains(&block_in(cx.region, below).name)
     }
 
     /// `findAir`: up to the first air, at most `limit` steps, giving up at a blocked block.
-    fn find_air(&self, cx: &FeatureContext<'_, '_, '_>, mut cursor: BlockPos, mut limit: i32) -> Option<BlockPos> {
+    fn find_air(
+        &self,
+        cx: &FeatureContext<'_, '_, '_>,
+        mut cursor: BlockPos,
+        mut limit: i32,
+    ) -> Option<BlockPos> {
         // `Level.getMaxY` is inclusive; the region's `max_y` is one past the top.
         while cursor.y < cx.region.max_y() && limit > 0 {
             limit -= 1;
-            if self.cannot_place_on.contains(&block_in(cx.region, cursor).name) {
+            if self
+                .cannot_place_on
+                .contains(&block_in(cx.region, cursor).name)
+            {
                 return None;
             }
             if is_empty(cx, cursor) {
@@ -156,6 +181,7 @@ impl BasaltColumnsFeature {
 
     /// `isAirOrLavaOcean`.
     fn is_air_or_lava_ocean(&self, cx: &FeatureContext<'_, '_, '_>, pos: BlockPos) -> bool {
-        is_empty(cx, pos) || (block_in(cx.region, pos).name == self.lava && pos.y <= cx.env.sea_level)
+        is_empty(cx, pos)
+            || (block_in(cx.region, pos).name == self.lava && pos.y <= cx.env.sea_level)
     }
 }

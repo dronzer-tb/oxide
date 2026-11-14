@@ -47,7 +47,8 @@ impl DesertWellFeature {
         }
         for ox in -2..=2 {
             for oz in -2..=2 {
-                if is_air(cx, offset(origin, ox, -1, oz)) && is_air(cx, offset(origin, ox, -2, oz)) {
+                if is_air(cx, offset(origin, ox, -1, oz)) && is_air(cx, offset(origin, ox, -2, oz))
+                {
                     return false;
                 }
             }
@@ -81,7 +82,11 @@ impl DesertWellFeature {
         }
         for ox in -1..=1 {
             for oz in -1..=1 {
-                let state = if ox == 0 && oz == 0 { &self.sandstone } else { &self.slab };
+                let state = if ox == 0 && oz == 0 {
+                    &self.sandstone
+                } else {
+                    &self.slab
+                };
                 self.set(cx, offset(origin, ox, 4, oz), state);
             }
         }
@@ -102,7 +107,8 @@ impl DesertWellFeature {
             let cell = water_cells[cx.random.next_int_bounded(water_cells.len() as i32) as usize];
             let pos = relative(cell, Dir::Down, depth);
             if cx.region.set_block(pos, self.suspicious_sand.clone()) {
-                cx.unsupported.record("block_entity", "minecraft:brushable_block");
+                cx.unsupported
+                    .record("block_entity", "minecraft:brushable_block");
             }
         }
         true

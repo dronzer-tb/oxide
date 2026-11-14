@@ -21,7 +21,10 @@ pub struct FreezeTopLayerFeature {
 
 impl FreezeTopLayerFeature {
     pub fn compile(facts: &BlockFacts) -> Result<Self> {
-        Ok(Self { ice: default_state(facts, "ice")?, snow: default_state(facts, "snow")? })
+        Ok(Self {
+            ice: default_state(facts, "ice")?,
+            snow: default_state(facts, "snow")?,
+        })
     }
 
     /// `FreezeTopLayerFeature.place`. A snowy-capable block under new snow (grass, podzol,
@@ -43,7 +46,9 @@ impl FreezeTopLayerFeature {
                     cx.region.set_block(top, self.snow.clone());
                     let mut under = block_in(cx.region, below).clone();
                     if under.properties.contains_key("snowy") {
-                        under.properties.insert("snowy".to_string(), "true".to_string());
+                        under
+                            .properties
+                            .insert("snowy".to_string(), "true".to_string());
                         cx.region.set_block(below, under);
                     }
                 }

@@ -29,8 +29,8 @@ use oxide_datapack::placement::IntProvider;
 use oxide_datapack::{BlockFact, BlockFacts};
 
 use super::support::{
-    any_fluid, can_attach_to, dist_manhattan, face_full, has, is_block, offset, relative, shuffle, state_has,
-    water_source, waterlogged, Dir,
+    any_fluid, can_attach_to, dist_manhattan, face_full, has, is_block, offset, relative, shuffle,
+    state_has, water_source, waterlogged, Dir,
 };
 use crate::decorator::context::{block_in, FeatureContext};
 use crate::decorator::provider::sample_int;
@@ -87,7 +87,10 @@ pub struct SculkPatchFeature {
 
 fn default_of(name: &str, facts: &BlockFacts) -> Result<BlockState> {
     state_from_spec(
-        &oxide_datapack::placement::BlockStateSpec { name: format!("minecraft:{name}"), properties: Default::default() },
+        &oxide_datapack::placement::BlockStateSpec {
+            name: format!("minecraft:{name}"),
+            properties: Default::default(),
+        },
         facts,
     )
 }
@@ -137,7 +140,10 @@ impl SculkPatchFeature {
     }
 
     fn has_face(state: &BlockState, face: Dir) -> bool {
-        state.properties.get(face.name()).is_some_and(|value| value == "true")
+        state
+            .properties
+            .get(face.name())
+            .is_some_and(|value| value == "true")
     }
 
     fn with_face(state: BlockState, face: Dir, value: bool) -> BlockState {
@@ -153,7 +159,9 @@ impl SculkPatchFeature {
     }
 
     fn in_tag(cx: &FeatureContext<'_, '_, '_>, tag: &str, state: &BlockState) -> bool {
-        cx.env.block_tags.contains(&ResourceLocation::minecraft(tag), &state.name)
+        cx.env
+            .block_tags
+            .contains(&ResourceLocation::minecraft(tag), &state.name)
     }
 
     /// `SculkPatchFeature.place`.
@@ -169,7 +177,13 @@ impl SculkPatchFeature {
                 while charge > 0 {
                     let current = charge.min(1000);
                     if cursors.len() < MAX_CURSORS {
-                        cursors.push(Cursor { pos: origin, charge: current, update_delay: 0, decay_delay: 1, facings: None });
+                        cursors.push(Cursor {
+                            pos: origin,
+                            charge: current,
+                            update_delay: 0,
+                            decay_delay: 1,
+                            facings: None,
+                        });
                     }
                     charge -= current;
                 }
@@ -187,7 +201,9 @@ impl SculkPatchFeature {
     /// The tail of `SculkPatchFeature.place`; checked against the 26.2 bytecode (see the module doc).
     fn place_catalyst_and_shriekers(&self, cx: &mut FeatureContext<'_, '_, '_>, origin: BlockPos) {
         let below = offset(origin, 0, -1, 0);
-        if cx.random.next_float() <= self.catalyst_chance && has(cx, below, BlockFact::FullCollision) {
+        if cx.random.next_float() <= self.catalyst_chance
+            && has(cx, below, BlockFact::FullCollision)
+        {
             Self::write(cx, origin, self.catalyst.clone());
         }
         let extra = sample_int(&self.extra_rare_growths, cx.random);
@@ -208,11 +224,14 @@ impl SculkPatchFeature {
         if self.behaviour(&start) != Behaviour::Default {
             return true;
         }
-        let water_source_block = is_block(&start, "water") && state_has(cx, &start, BlockFact::FluidSource);
+        let water_source_block =
+            is_block(&start, "water") && state_has(cx, &start, BlockFact::FluidSource);
         if !state_has(cx, &start, BlockFact::Air) && !water_source_block {
             return false;
         }
-        Dir::ALL.into_iter().any(|direction| has(cx, relative(origin, direction, 1), BlockFact::FullCollision))
+        Dir::ALL
+            .into_iter()
+            .any(|direction| has(cx, relative(origin, direction, 1), BlockFact::FullCollision))
     }
 
     /// `SculkSpreader.updateCursors`.
@@ -261,7 +280,13 @@ impl SculkPatchFeature {
     }
 
     /// `ChargeCursor.update`.
-    fn update(&self, cx: &mut FeatureContext<'_, '_, '_>, origin: BlockPos, cursor: &mut Cursor, spread_veins: bool) {
+    fn update(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        origin: BlockPos,
+        cursor: &mut Cursor,
+        spread_veins: bool,
+    ) {
         if cursor.charge <= 0 {
             return;
         }
@@ -272,7 +297,13 @@ impl SculkPatchFeature {
         let mut state = Self::state_at(cx, cursor.pos);
         let mut behaviour = self.behaviour(&state);
         if spread_veins
-            && self.attempt_spread_vein(cx, behaviour, cursor.pos, &state, cursor.facings.as_deref())
+            && self.attempt_spread_vein(
+                cx,
+                behaviour,
+                cursor.pos,
+                &state,
+                cursor.facings.as_deref(),
+            )
             && behaviour != Behaviour::Sculk
         {
             state = Self::state_at(cx, cursor.pos);
@@ -296,7 +327,12 @@ impl SculkPatchFeature {
             }
         }
         if self.behaviour(&state) != Behaviour::Default {
-            cursor.facings = Some(Dir::ALL.into_iter().filter(|face| Self::has_face(&state, *face)).collect());
+            cursor.facings = Some(
+                Dir::ALL
+                    .into_iter()
+                    .filter(|face| Self::has_face(&state, *face))
+                    .collect(),
+            );
         }
         cursor.decay_delay = match behaviour {
             Behaviour::Default => (cursor.decay_delay - 1).max(0),
@@ -333,7 +369,13 @@ impl SculkPatchFeature {
     }
 
     /// `SculkVeinBlock.regrow`.
-    fn regrow(&self, cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos, existing: &BlockState, faces: &[Dir]) -> bool {
+    fn regrow(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        pos: BlockPos,
+        existing: &BlockState,
+        faces: &[Dir],
+    ) -> bool {
         let mut state = self.vein.clone();
         let mut any = false;
         for &face in faces {
@@ -353,7 +395,13 @@ impl SculkPatchFeature {
     }
 
     /// `MultifaceSpreader.spreadAll` with the sculk vein spreader's configuration.
-    fn spread_all(&self, cx: &mut FeatureContext<'_, '_, '_>, state: &BlockState, pos: BlockPos, types: &[Spread]) -> i64 {
+    fn spread_all(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        state: &BlockState,
+        pos: BlockPos,
+        types: &[Spread],
+    ) -> i64 {
         let other_source = !self.is_vein(state);
         let mut count = 0;
         for face in Dir::ALL {
@@ -364,7 +412,9 @@ impl SculkPatchFeature {
                 if direction.axis() == face.axis() {
                     continue;
                 }
-                if !(other_source || (Self::has_face(state, face) && !Self::has_face(state, direction))) {
+                if !(other_source
+                    || (Self::has_face(state, face) && !Self::has_face(state, direction)))
+                {
                     continue;
                 }
                 let mut target = None;
@@ -372,7 +422,10 @@ impl SculkPatchFeature {
                     let candidate = match kind {
                         Spread::SamePosition => (pos, direction),
                         Spread::SamePlane => (relative(pos, direction, 1), face),
-                        Spread::WrapAround => (relative(relative(pos, direction, 1), face, 1), direction.opposite()),
+                        Spread::WrapAround => (
+                            relative(relative(pos, direction, 1), face, 1),
+                            direction.opposite(),
+                        ),
                     };
                     if self.can_spread_into(cx, pos, candidate.0, candidate.1) {
                         target = Some(candidate);
@@ -394,7 +447,13 @@ impl SculkPatchFeature {
         count
     }
 
-    fn valid_for_placement(&self, cx: &mut FeatureContext<'_, '_, '_>, old: &BlockState, pos: BlockPos, face: Dir) -> bool {
+    fn valid_for_placement(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        old: &BlockState,
+        pos: BlockPos,
+        face: Dir,
+    ) -> bool {
         if self.is_vein(old) && Self::has_face(old, face) {
             return false;
         }
@@ -423,10 +482,19 @@ impl SculkPatchFeature {
     }
 
     /// `MultifaceSpreader.canSpreadInto` with the sculk vein spreader's rules.
-    fn can_spread_into(&self, cx: &mut FeatureContext<'_, '_, '_>, source: BlockPos, target: BlockPos, face: Dir) -> bool {
+    fn can_spread_into(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        source: BlockPos,
+        target: BlockPos,
+        face: Dir,
+    ) -> bool {
         let existing = Self::state_at(cx, target);
         let against = Self::state_at(cx, relative(target, face, 1));
-        if ["sculk", "sculk_catalyst", "moving_piston"].iter().any(|blocker| is_block(&against, blocker)) {
+        if ["sculk", "sculk_catalyst", "moving_piston"]
+            .iter()
+            .any(|blocker| is_block(&against, blocker))
+        {
             return false;
         }
         if dist_manhattan(source, target) == 2 {
@@ -494,7 +562,9 @@ impl SculkPatchFeature {
                         } else {
                             self.sensor.clone()
                         };
-                        if growth.properties.contains_key("waterlogged") && any_fluid(cx, block_in(cx.region, above)) {
+                        if growth.properties.contains_key("waterlogged")
+                            && any_fluid(cx, block_in(cx.region, above))
+                        {
                             growth = waterlogged(growth, true);
                         }
                         Self::write(cx, above, growth);
@@ -529,7 +599,8 @@ impl SculkPatchFeature {
     /// `SculkBlock.canPlaceGrowth`.
     fn can_place_growth(&self, cx: &FeatureContext<'_, '_, '_>, pos: BlockPos) -> bool {
         let above = block_in(cx.region, offset(pos, 0, 1, 0));
-        let open = state_has(cx, above, BlockFact::Air) || (is_block(above, "water") && water_source(cx, above));
+        let open = state_has(cx, above, BlockFact::Air)
+            || (is_block(above, "water") && water_source(cx, above));
         if !open {
             return false;
         }
@@ -584,25 +655,45 @@ impl SculkPatchFeature {
 
     /// `SculkVeinBlock.onDischarged`: drops the faces that now touch sculk, and the vein itself
     /// once it has none.
-    fn on_discharged(&self, cx: &mut FeatureContext<'_, '_, '_>, behaviour: Behaviour, state: &BlockState, pos: BlockPos) {
+    fn on_discharged(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        behaviour: Behaviour,
+        state: &BlockState,
+        pos: BlockPos,
+    ) {
         if behaviour != Behaviour::Vein || !self.is_vein(state) {
             return;
         }
         let mut state = state.clone();
         for direction in Dir::ALL {
-            if Self::has_face(&state, direction) && block_in(cx.region, relative(pos, direction, 1)).name == self.sculk.name {
+            if Self::has_face(&state, direction)
+                && block_in(cx.region, relative(pos, direction, 1)).name == self.sculk.name
+            {
                 state = Self::with_face(state, direction, false);
             }
         }
-        if !Dir::ALL.into_iter().any(|direction| Self::has_face(&state, direction)) {
+        if !Dir::ALL
+            .into_iter()
+            .any(|direction| Self::has_face(&state, direction))
+        {
             let here = block_in(cx.region, pos);
-            state = if any_fluid(cx, here) { self.water.clone() } else { self.air.clone() };
+            state = if any_fluid(cx, here) {
+                self.water.clone()
+            } else {
+                self.air.clone()
+            };
         }
         Self::write(cx, pos, state);
     }
 
     /// `ChargeCursor.getValidMovementPos`.
-    fn valid_movement(&self, cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos, origin: BlockPos) -> Option<BlockPos> {
+    fn valid_movement(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        pos: BlockPos,
+        origin: BlockPos,
+    ) -> Option<BlockPos> {
         // `NON_CORNER_NEIGHBOURS` in `BlockPos.betweenClosed` order: x fastest, then y, then z.
         let mut offsets = Vec::with_capacity(18);
         for z in -1..=1 {
@@ -624,14 +715,20 @@ impl SculkPatchFeature {
                 continue;
             }
             let transferee = Self::state_at(cx, neighbour);
-            if self.behaviour(&transferee) == Behaviour::Default || !self.unobstructed_move(cx, pos, neighbour) {
+            if self.behaviour(&transferee) == Behaviour::Default
+                || !self.unobstructed_move(cx, pos, neighbour)
+            {
                 continue;
             }
             best = neighbour;
             if self.is_vein(&transferee) {
                 let substrate = Dir::ALL.into_iter().any(|direction| {
                     Self::has_face(&transferee, direction)
-                        && Self::in_tag(cx, "sculk_replaceable", block_in(cx.region, relative(neighbour, direction, 1)))
+                        && Self::in_tag(
+                            cx,
+                            "sculk_replaceable",
+                            block_in(cx.region, relative(neighbour, direction, 1)),
+                        )
                 });
                 if substrate {
                     break;
@@ -642,12 +739,22 @@ impl SculkPatchFeature {
     }
 
     /// `ChargeCursor.isMovementUnobstructed`.
-    fn unobstructed_move(&self, cx: &mut FeatureContext<'_, '_, '_>, from: BlockPos, to: BlockPos) -> bool {
+    fn unobstructed_move(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        from: BlockPos,
+        to: BlockPos,
+    ) -> bool {
         if dist_manhattan(from, to) == 1 {
             return true;
         }
-        let (dx, dy, dz) = (to.x.wrapping_sub(from.x), to.y.wrapping_sub(from.y), to.z.wrapping_sub(from.z));
-        let pick = |value: i32, negative: Dir, positive: Dir| if value < 0 { negative } else { positive };
+        let (dx, dy, dz) = (
+            to.x.wrapping_sub(from.x),
+            to.y.wrapping_sub(from.y),
+            to.z.wrapping_sub(from.z),
+        );
+        let pick =
+            |value: i32, negative: Dir, positive: Dir| if value < 0 { negative } else { positive };
         let dir_x = pick(dx, Dir::West, Dir::East);
         let dir_y = pick(dy, Dir::Down, Dir::Up);
         let dir_z = pick(dz, Dir::North, Dir::South);
@@ -662,6 +769,11 @@ impl SculkPatchFeature {
     }
 
     fn unobstructed(cx: &mut FeatureContext<'_, '_, '_>, from: BlockPos, direction: Dir) -> bool {
-        !face_full(cx, relative(from, direction, 1), direction.opposite(), false)
+        !face_full(
+            cx,
+            relative(from, direction, 1),
+            direction.opposite(),
+            false,
+        )
     }
 }

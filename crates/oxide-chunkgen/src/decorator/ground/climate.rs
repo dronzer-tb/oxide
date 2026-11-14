@@ -29,12 +29,17 @@ use super::super::simplex::{info_noise, SimplexNoise};
 use super::{default_state, is_air, is_block};
 
 /// `Biome.TEMPERATURE_NOISE`.
-static HEIGHT_NOISE: LazyLock<SimplexNoise> = LazyLock::new(|| SimplexNoise::new(&mut LegacyRandom::new(1234)));
+static HEIGHT_NOISE: LazyLock<SimplexNoise> =
+    LazyLock::new(|| SimplexNoise::new(&mut LegacyRandom::new(1234)));
 
 /// `Biome.FROZEN_TEMPERATURE_NOISE`: three octaves from one random source, finest first.
 static FROZEN_NOISE: LazyLock<[SimplexNoise; 3]> = LazyLock::new(|| {
     let mut random = LegacyRandom::new(3456);
-    [SimplexNoise::new(&mut random), SimplexNoise::new(&mut random), SimplexNoise::new(&mut random)]
+    [
+        SimplexNoise::new(&mut random),
+        SimplexNoise::new(&mut random),
+        SimplexNoise::new(&mut random),
+    ]
 });
 
 /// The octaves of [`FROZEN_NOISE`]: input frequency and amplitude, in order.
@@ -61,7 +66,11 @@ impl BiomeClimate {
             Some("frozen") => true,
             Some(other) => bail!("unknown temperature_modifier {other:?}"),
         };
-        Ok(Self { base_temperature: biome.temperature, frozen, has_precipitation: biome.has_precipitation })
+        Ok(Self {
+            base_temperature: biome.temperature,
+            frozen,
+            has_precipitation: biome.has_precipitation,
+        })
     }
 
     /// `TemperatureModifier.modifyTemperature`.
@@ -86,8 +95,11 @@ impl BiomeClimate {
         let base = self.modified(pos);
         let start = sea_level + 17;
         if pos.y > start {
-            let variation =
-                sample(&HEIGHT_NOISE, f64::from(pos.x as f32 / 8.0), f64::from(pos.z as f32 / 8.0)) * 8.0;
+            let variation = sample(
+                &HEIGHT_NOISE,
+                f64::from(pos.x as f32 / 8.0),
+                f64::from(pos.z as f32 / 8.0),
+            ) * 8.0;
             base - ((variation + pos.y as f32 - start as f32) * 0.05 / 40.0)
         } else {
             base
@@ -107,13 +119,20 @@ impl BiomeClimate {
 /// The climate of the biome at `pos`, or `None` when `pos` is outside the window or its biome has
 /// no climate on record.
 fn climate_at<'a>(cx: &'a FeatureContext<'_, '_, '_>, pos: BlockPos) -> Option<&'a BiomeClimate> {
-    cx.region.biome(pos).and_then(|biome| cx.env.biome_climate.get(biome))
+    cx.region
+        .biome(pos)
+        .and_then(|biome| cx.env.biome_climate.get(biome))
 }
 
 /// `Biome.shouldFreeze(level, pos, requireNotSurrounded)` for the biome at `biome_pos`: whether
 /// the water source at `pos` is cold enough to ice over, and, with `require_edge`, has a
 /// non-water neighbour to freeze from.
-pub fn should_freeze(cx: &FeatureContext<'_, '_, '_>, biome_pos: BlockPos, pos: BlockPos, require_edge: bool) -> bool {
+pub fn should_freeze(
+    cx: &FeatureContext<'_, '_, '_>,
+    biome_pos: BlockPos,
+    pos: BlockPos,
+    require_edge: bool,
+) -> bool {
     let Some(climate) = climate_at(cx, biome_pos) else {
         return false;
     };
@@ -127,9 +146,12 @@ pub fn should_freeze(cx: &FeatureContext<'_, '_, '_>, biome_pos: BlockPos, pos: 
     if !require_edge {
         return true;
     }
-    [[-1, 0], [1, 0], [0, -1], [0, 1]]
-        .iter()
-        .any(|[dx, dz]| !cx.region.is(BlockPos::new(pos.x + dx, pos.y, pos.z + dz), BlockFact::Water))
+    [[-1, 0], [1, 0], [0, -1], [0, 1]].iter().any(|[dx, dz]| {
+        !cx.region.is(
+            BlockPos::new(pos.x + dx, pos.y, pos.z + dz),
+            BlockFact::Water,
+        )
+    })
 }
 
 /// `Biome.shouldSnow(level, pos)` for the biome at `pos`: snow falls here and a snow layer could

@@ -37,7 +37,10 @@ impl SeagrassFeature {
         let origin = cx.origin;
         let x = cx.random.next_int_bounded(8) - cx.random.next_int_bounded(8);
         let z = cx.random.next_int_bounded(8) - cx.random.next_int_bounded(8);
-        let Some(y) = cx.region.height(HeightmapType::OceanFloor, origin.x + x, origin.z + z) else {
+        let Some(y) = cx
+            .region
+            .height(HeightmapType::OceanFloor, origin.x + x, origin.z + z)
+        else {
             return false;
         };
         let pos = BlockPos::new(origin.x + x, y, origin.z + z);

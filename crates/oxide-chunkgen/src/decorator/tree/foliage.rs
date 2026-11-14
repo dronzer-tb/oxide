@@ -21,12 +21,20 @@ pub(super) struct Attachment {
 
 impl Attachment {
     pub fn new(pos: BlockPos, radius_offset: i32, double_trunk: bool) -> Self {
-        Self { pos, radius_offset, double_trunk }
+        Self {
+            pos,
+            radius_offset,
+            double_trunk,
+        }
     }
 }
 
 /// `FoliagePlacer.foliageHeight`.
-pub(super) fn foliage_height(placer: &FoliagePlacer, run: &mut Run<'_, '_, '_, '_>, tree_height: i32) -> i32 {
+pub(super) fn foliage_height(
+    placer: &FoliagePlacer,
+    run: &mut Run<'_, '_, '_, '_>,
+    tree_height: i32,
+) -> i32 {
     match &placer.kind {
         FoliageKind::Blob { height }
         | FoliageKind::Fancy { height }
@@ -43,7 +51,11 @@ pub(super) fn foliage_height(placer: &FoliagePlacer, run: &mut Run<'_, '_, '_, '
 }
 
 /// `FoliagePlacer.foliageRadius`.
-pub(super) fn foliage_radius(placer: &FoliagePlacer, run: &mut Run<'_, '_, '_, '_>, trunk_height: i32) -> i32 {
+pub(super) fn foliage_radius(
+    placer: &FoliagePlacer,
+    run: &mut Run<'_, '_, '_, '_>,
+    trunk_height: i32,
+) -> i32 {
     let radius = run.int(&placer.radius);
     if matches!(placer.kind, FoliageKind::Pine { .. }) {
         return radius + run.bounded(trunk_height.wrapping_add(1).max(1));
@@ -52,7 +64,15 @@ pub(super) fn foliage_radius(placer: &FoliagePlacer, run: &mut Run<'_, '_, '_, '
 }
 
 /// `shouldSkipLocation` on offsets already folded to their absolute values.
-fn skip(kind: &FoliageKind, run: &mut Run<'_, '_, '_, '_>, dx: i32, y: i32, dz: i32, r: i32, double: bool) -> bool {
+fn skip(
+    kind: &FoliageKind,
+    run: &mut Run<'_, '_, '_, '_>,
+    dx: i32,
+    y: i32,
+    dz: i32,
+    r: i32,
+    double: bool,
+) -> bool {
     match kind {
         FoliageKind::Blob { .. } => dx == r && dz == r && (run.bounded(2) == 0 || y == 0),
         FoliageKind::Bush { .. } => dx == r && dz == r && run.bounded(2) == 0,
@@ -70,7 +90,8 @@ fn skip(kind: &FoliageKind, run: &mut Run<'_, '_, '_, '_>, dx: i32, y: i32, dz: 
         }
         FoliageKind::Spruce { .. } | FoliageKind::Pine { .. } => dx == r && dz == r && r > 0,
         FoliageKind::MegaPine { .. } | FoliageKind::Jungle { .. } => {
-            dx.wrapping_add(dz) >= 7 || dx.wrapping_mul(dx).wrapping_add(dz.wrapping_mul(dz)) > r.wrapping_mul(r)
+            dx.wrapping_add(dz) >= 7
+                || dx.wrapping_mul(dx).wrapping_add(dz.wrapping_mul(dz)) > r.wrapping_mul(r)
         }
         FoliageKind::DarkOak {} => {
             if y == -1 && !double {
@@ -82,13 +103,19 @@ fn skip(kind: &FoliageKind, run: &mut Run<'_, '_, '_, '_>, dx: i32, y: i32, dz: 
             }
         }
         FoliageKind::RandomSpread { .. } => false,
-        FoliageKind::Cherry { wide_bottom_layer_hole_chance, corner_hole_chance, .. } => {
+        FoliageKind::Cherry {
+            wide_bottom_layer_hole_chance,
+            corner_hole_chance,
+            ..
+        } => {
             if y == -1 && (dx == r || dz == r) && run.float() < *wide_bottom_layer_hole_chance {
                 return true;
             }
             let corner = dx == r && dz == r;
             if r > 2 {
-                corner || (dx.wrapping_add(dz) > r.wrapping_mul(2).wrapping_sub(2) && run.float() < *corner_hole_chance)
+                corner
+                    || (dx.wrapping_add(dz) > r.wrapping_mul(2).wrapping_sub(2)
+                        && run.float() < *corner_hole_chance)
             } else {
                 corner && run.float() < *corner_hole_chance
             }
@@ -99,7 +126,15 @@ fn skip(kind: &FoliageKind, run: &mut Run<'_, '_, '_, '_>, dx: i32, y: i32, dz: 
 /// `shouldSkipLocationSigned`: folds a double-trunk row's offsets toward the nearer trunk column
 /// before the placer's own test. The dark oak placer additionally skips the far corners of its
 /// widened middle row outright.
-fn skip_signed(kind: &FoliageKind, run: &mut Run<'_, '_, '_, '_>, dx: i32, y: i32, dz: i32, r: i32, double: bool) -> bool {
+fn skip_signed(
+    kind: &FoliageKind,
+    run: &mut Run<'_, '_, '_, '_>,
+    dx: i32,
+    y: i32,
+    dz: i32,
+    r: i32,
+    double: bool,
+) -> bool {
     if matches!(kind, FoliageKind::DarkOak {}) {
         let defer = y != 0
             || !double
@@ -110,7 +145,10 @@ fn skip_signed(kind: &FoliageKind, run: &mut Run<'_, '_, '_, '_>, dx: i32, y: i3
         }
     }
     let (mx, mz) = if double {
-        (dx.wrapping_abs().min(dx.wrapping_sub(1).wrapping_abs()), dz.wrapping_abs().min(dz.wrapping_sub(1).wrapping_abs()))
+        (
+            dx.wrapping_abs().min(dx.wrapping_sub(1).wrapping_abs()),
+            dz.wrapping_abs().min(dz.wrapping_sub(1).wrapping_abs()),
+        )
     } else {
         (dx.wrapping_abs(), dz.wrapping_abs())
     };
@@ -161,7 +199,11 @@ fn leaves_row_with_hanging(
         let to_edge = along.clockwise();
         let positive = matches!(to_edge, Dir::East | Dir::South);
         let to_edge_offset = if positive { r + offset } else { r };
-        let mut pos = rel(rel(off(origin, 0, y - 1, 0), to_edge, to_edge_offset), along, r.wrapping_neg());
+        let mut pos = rel(
+            rel(off(origin, 0, y - 1, 0), to_edge, to_edge_offset),
+            along,
+            r.wrapping_neg(),
+        );
         let mut along_offset = r.wrapping_neg();
         while along_offset < r + offset {
             let above = run.foliage_contains(off(pos, 0, 1, 0));
@@ -176,7 +218,13 @@ fn leaves_row_with_hanging(
 }
 
 /// `CherryFoliagePlacer.tryPlaceExtension`.
-fn try_extension(tree: &TreeFeature, run: &mut Run<'_, '_, '_, '_>, chance: f32, log: BlockPos, pos: BlockPos) -> Res<bool> {
+fn try_extension(
+    tree: &TreeFeature,
+    run: &mut Run<'_, '_, '_, '_>,
+    chance: f32,
+    log: BlockPos,
+    pos: BlockPos,
+) -> Res<bool> {
     if dist_manhattan(pos, log) >= 7 {
         return Ok(false);
     }
@@ -229,9 +277,25 @@ pub(super) fn create_foliage(
         }
         FoliageKind::Acacia {} => {
             let p = off(pos, 0, offset, 0);
-            leaves_row(tree, run, kind, p, leaf_radius + radius_offset, -1 - with_offset, double)?;
+            leaves_row(
+                tree,
+                run,
+                kind,
+                p,
+                leaf_radius + radius_offset,
+                -1 - with_offset,
+                double,
+            )?;
             leaves_row(tree, run, kind, p, leaf_radius - 1, -with_offset, double)?;
-            leaves_row(tree, run, kind, p, leaf_radius + radius_offset - 1, 0, double)?;
+            leaves_row(
+                tree,
+                run,
+                kind,
+                p,
+                leaf_radius + radius_offset - 1,
+                0,
+                double,
+            )?;
         }
         FoliageKind::Spruce { .. } => {
             let mut r = run.bounded(2);
@@ -271,14 +335,30 @@ pub(super) fn create_foliage(
                 let smooth = leaf_radius
                     .wrapping_add(radius_offset)
                     .wrapping_add((yo as f32 / with_offset as f32 * 3.5f32).floor() as i32);
-                let jagged = if yo > 0 && smooth == previous && (yy & 1) == 0 { smooth.wrapping_add(1) } else { smooth };
-                leaves_row(tree, run, kind, BlockPos::new(pos.x, yy, pos.z), jagged, 0, double)?;
+                let jagged = if yo > 0 && smooth == previous && (yy & 1) == 0 {
+                    smooth.wrapping_add(1)
+                } else {
+                    smooth
+                };
+                leaves_row(
+                    tree,
+                    run,
+                    kind,
+                    BlockPos::new(pos.x, yy, pos.z),
+                    jagged,
+                    0,
+                    double,
+                )?;
                 previous = smooth;
                 yy += 1;
             }
         }
         FoliageKind::Jungle { .. } => {
-            let leaf_height = if double { foliage_height } else { 1 + run.bounded(2) };
+            let leaf_height = if double {
+                foliage_height
+            } else {
+                1 + run.bounded(2)
+            };
             let mut yo = offset;
             while yo >= offset - leaf_height {
                 let r = leaf_radius + radius_offset + 1 - yo;
@@ -300,7 +380,10 @@ pub(super) fn create_foliage(
                 leaves_row(tree, run, kind, p, leaf_radius + 1, 0, double)?;
             }
         }
-        FoliageKind::RandomSpread { leaf_placement_attempts, .. } => {
+        FoliageKind::RandomSpread {
+            leaf_placement_attempts,
+            ..
+        } => {
             for _ in 0..*leaf_placement_attempts {
                 let dx = run.bounded(leaf_radius) - run.bounded(leaf_radius);
                 let dy = run.bounded(foliage_height) - run.bounded(foliage_height);
@@ -308,7 +391,11 @@ pub(super) fn create_foliage(
                 tree.try_place_leaf(run, off(pos, dx, dy, dz))?;
             }
         }
-        FoliageKind::Cherry { hanging_leaves_chance, hanging_leaves_extension_chance, .. } => {
+        FoliageKind::Cherry {
+            hanging_leaves_chance,
+            hanging_leaves_extension_chance,
+            ..
+        } => {
             let p = off(pos, 0, offset, 0);
             let r = leaf_radius + radius_offset - 1;
             let hanging = (*hanging_leaves_chance, *hanging_leaves_extension_chance);

@@ -55,7 +55,11 @@ struct Wind {
 }
 
 impl Wind {
-    const CALM: Wind = Wind { origin_y: 0, speed: None, max_offset: 0 };
+    const CALM: Wind = Wind {
+        origin_y: 0,
+        speed: None,
+        max_offset: 0,
+    };
 
     fn offset(&self, pos: BlockPos) -> BlockPos {
         let Some((speed_x, speed_z)) = self.speed else {
@@ -76,7 +80,11 @@ impl Wind {
 
 /// `LargeDripstoneFeature.getHeightAtRadius`'s profile.
 fn speleothem_height(distance: f64, radius: f64, scale: f64, bluntness: f64) -> f64 {
-    let distance = if distance < bluntness { bluntness } else { distance };
+    let distance = if distance < bluntness {
+        bluntness
+    } else {
+        distance
+    };
     let r = distance / radius * 0.384;
     let part1 = 0.75 * r.powf(1.3333333333333333);
     let part2 = r.powf(0.6666666666666666);
@@ -87,7 +95,12 @@ fn speleothem_height(distance: f64, radius: f64, scale: f64, bluntness: f64) -> 
 
 impl Cone {
     fn height_at(&self, radius: f32) -> i32 {
-        speleothem_height(f64::from(radius), f64::from(self.radius), self.scale, self.bluntness) as i32
+        speleothem_height(
+            f64::from(radius),
+            f64::from(self.radius),
+            self.scale,
+            self.bluntness,
+        ) as i32
     }
 }
 
@@ -139,7 +152,11 @@ impl LargeDripstoneFeature {
         }
         let by_height = (height as f32 * self.max_radius_ratio) as i32;
         let (min_radius, max_radius_bound) = self.column_radius_bounds;
-        let max_radius = if by_height < min_radius { min_radius } else { by_height.min(max_radius_bound) };
+        let max_radius = if by_height < min_radius {
+            min_radius
+        } else {
+            by_height.min(max_radius_bound)
+        };
         let radius = next_bounded(cx.random, max_radius - min_radius + 1) + min_radius;
         let mut stalactite = Cone {
             root: BlockPos::new(origin.x, ceiling - 1, origin.z),
@@ -156,7 +173,8 @@ impl LargeDripstoneFeature {
             scale: f64::from(self.height_scale.sample(cx.random)),
         };
         let suitable = |cone: &Cone| {
-            cone.radius >= self.min_radius_for_wind && cone.bluntness >= f64::from(self.min_bluntness_for_wind)
+            cone.radius >= self.min_radius_for_wind
+                && cone.bluntness >= f64::from(self.min_bluntness_for_wind)
         };
         let wind = if suitable(&stalactite) && suitable(&stalagmite) {
             let speed = self.wind_speed.sample(cx.random);
@@ -204,8 +222,16 @@ impl LargeDripstoneFeature {
     }
 
     /// `isCircleMostlyEmbeddedInStone`: no cell of the circle is air, water or lava.
-    fn circle_embedded(&self, cx: &FeatureContext<'_, '_, '_>, center: BlockPos, radius: i32) -> bool {
-        if self.blocks.empty_water_or_lava(cx, block_in(cx.region, center)) {
+    fn circle_embedded(
+        &self,
+        cx: &FeatureContext<'_, '_, '_>,
+        center: BlockPos,
+        radius: i32,
+    ) -> bool {
+        if self
+            .blocks
+            .empty_water_or_lava(cx, block_in(cx.region, center))
+        {
             return false;
         }
         let increment = 6.0f32 / radius as f32;
@@ -213,7 +239,10 @@ impl LargeDripstoneFeature {
         while angle < (std::f64::consts::PI * 2.0) as f32 {
             let dx = (mth::cos(f64::from(angle)) * radius as f32) as i32;
             let dz = (mth::sin(f64::from(angle)) * radius as f32) as i32;
-            if self.blocks.empty_water_or_lava(cx, block_in(cx.region, offset(center, dx, 0, dz))) {
+            if self
+                .blocks
+                .empty_water_or_lava(cx, block_in(cx.region, offset(center, dx, 0, dz)))
+            {
                 return false;
             }
             angle += increment;
@@ -242,7 +271,10 @@ impl LargeDripstoneFeature {
                 let mut pos = offset(cone.root, dx, 0, dz);
                 let mut out_of_stone = false;
                 let max_y = if cone.up {
-                    match cx.region.height(HeightmapType::WorldSurfaceWg, pos.x, pos.z) {
+                    match cx
+                        .region
+                        .height(HeightmapType::WorldSurfaceWg, pos.x, pos.z)
+                    {
                         Some(top) => top,
                         None => continue,
                     }

@@ -93,10 +93,14 @@ impl SimplexNoise {
         let ii = i & 255;
         let jj = j & 255;
         let g0 = (self.permute(ii.wrapping_add(self.permute(jj))) % 12) as usize;
-        let g1 = (self.permute(ii.wrapping_add(i1).wrapping_add(self.permute(jj.wrapping_add(j1))))
-            % 12) as usize;
-        let g2 = (self.permute(ii.wrapping_add(1).wrapping_add(self.permute(jj.wrapping_add(1))))
-            % 12) as usize;
+        let g1 = (self.permute(
+            ii.wrapping_add(i1)
+                .wrapping_add(self.permute(jj.wrapping_add(j1))),
+        ) % 12) as usize;
+        let g2 = (self.permute(
+            ii.wrapping_add(1)
+                .wrapping_add(self.permute(jj.wrapping_add(1))),
+        ) % 12) as usize;
 
         70.0 * (Self::corner(g0, x0, y0) + Self::corner(g1, x1, y1) + Self::corner(g2, x2, y2))
     }

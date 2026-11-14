@@ -69,8 +69,7 @@ pub fn load_datapack_stack(pack_roots: &[&Path]) -> Result<Datapack> {
     let mut density_functions =
         load_registry(base_root, "density_function", "worldgen/density_function")?;
     let mut noise_params = load_registry(base_root, "noise", "worldgen/noise")?;
-    let mut noise_settings =
-        load_registry(base_root, "noise_settings", "worldgen/noise_settings")?;
+    let mut noise_settings = load_registry(base_root, "noise_settings", "worldgen/noise_settings")?;
     let mut biomes = load_registry(base_root, "biome", "worldgen/biome")?;
     let mut dimension_types =
         load_registry_at(base_root, Path::new("dimension_type"), "dimension_type")?;
@@ -82,10 +81,8 @@ pub fn load_datapack_stack(pack_roots: &[&Path]) -> Result<Datapack> {
     let mut configured_carvers =
         load_registry(base_root, "configured_carver", "worldgen/configured_carver")?;
     let mut structures = load_registry(base_root, "structure", "worldgen/structure")?;
-    let mut structure_sets =
-        load_registry(base_root, "structure_set", "worldgen/structure_set")?;
-    let mut template_pools =
-        load_registry(base_root, "template_pool", "worldgen/template_pool")?;
+    let mut structure_sets = load_registry(base_root, "structure_set", "worldgen/structure_set")?;
+    let mut template_pools = load_registry(base_root, "template_pool", "worldgen/template_pool")?;
     let mut processor_lists =
         load_registry(base_root, "processor_list", "worldgen/processor_list")?;
     let mut placed_features =
@@ -100,16 +97,17 @@ pub fn load_datapack_stack(pack_roots: &[&Path]) -> Result<Datapack> {
 
     for &overlay_root in &pack_roots[1..] {
         if overlay_root.join("data").is_dir() {
-            if let Ok(df) =
-                load_registry(overlay_root, "density_function", "worldgen/density_function")
-            {
+            if let Ok(df) = load_registry(
+                overlay_root,
+                "density_function",
+                "worldgen/density_function",
+            ) {
                 density_functions.merge(df);
             }
             if let Ok(np) = load_registry(overlay_root, "noise", "worldgen/noise") {
                 noise_params.merge(np);
             }
-            if let Ok(ns) =
-                load_registry(overlay_root, "noise_settings", "worldgen/noise_settings")
+            if let Ok(ns) = load_registry(overlay_root, "noise_settings", "worldgen/noise_settings")
             {
                 noise_settings.merge(ns);
             }
@@ -128,31 +126,27 @@ pub fn load_datapack_stack(pack_roots: &[&Path]) -> Result<Datapack> {
             ) {
                 multi_noise_parameter_lists.merge(mn);
             }
-            if let Ok(cc) =
-                load_registry(overlay_root, "configured_carver", "worldgen/configured_carver")
-            {
+            if let Ok(cc) = load_registry(
+                overlay_root,
+                "configured_carver",
+                "worldgen/configured_carver",
+            ) {
                 configured_carvers.merge(cc);
             }
             if let Ok(s) = load_registry(overlay_root, "structure", "worldgen/structure") {
                 structures.merge(s);
             }
-            if let Ok(ss) =
-                load_registry(overlay_root, "structure_set", "worldgen/structure_set")
-            {
+            if let Ok(ss) = load_registry(overlay_root, "structure_set", "worldgen/structure_set") {
                 structure_sets.merge(ss);
             }
-            if let Ok(tp) =
-                load_registry(overlay_root, "template_pool", "worldgen/template_pool")
-            {
+            if let Ok(tp) = load_registry(overlay_root, "template_pool", "worldgen/template_pool") {
                 template_pools.merge(tp);
             }
-            if let Ok(pl) =
-                load_registry(overlay_root, "processor_list", "worldgen/processor_list")
+            if let Ok(pl) = load_registry(overlay_root, "processor_list", "worldgen/processor_list")
             {
                 processor_lists.merge(pl);
             }
-            if let Ok(pf) =
-                load_registry(overlay_root, "placed_feature", "worldgen/placed_feature")
+            if let Ok(pf) = load_registry(overlay_root, "placed_feature", "worldgen/placed_feature")
             {
                 placed_features.merge(pf);
             }
@@ -163,9 +157,7 @@ pub fn load_datapack_stack(pack_roots: &[&Path]) -> Result<Datapack> {
             ) {
                 configured_features.merge(cf);
             }
-            if let Ok(dim) =
-                load_registry_at(overlay_root, Path::new("dimension"), "dimension")
-            {
+            if let Ok(dim) = load_registry_at(overlay_root, Path::new("dimension"), "dimension") {
                 dimensions.merge(dim);
             }
         }

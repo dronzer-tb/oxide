@@ -3,7 +3,11 @@
 /// Initializes global Pacside off-heap chunk packet cache.
 #[no_mangle]
 pub unsafe extern "C" fn pacside_ffi_init(capacity_chunks: i64) {
-    let cap = if capacity_chunks <= 0 { 32768 } else { capacity_chunks as usize };
+    let cap = if capacity_chunks <= 0 {
+        32768
+    } else {
+        capacity_chunks as usize
+    };
     pacside::pacside_init(cap);
 }
 

@@ -89,7 +89,10 @@ fn matches_java_for_every_vector() {
                 let mut random = LegacyRandom::new(seed);
                 let mut list: Vec<i32> = (0..size as i32).collect();
                 shuffle(&mut list, &mut random);
-                assert_eq!(list, expected, "line {at}: shuffle(seed {seed}, size {size})");
+                assert_eq!(
+                    list, expected,
+                    "line {at}: shuffle(seed {seed}, size {size})"
+                );
                 assert_eq!(
                     random.next_int(),
                     expected_next,
@@ -108,7 +111,10 @@ fn matches_java_for_every_vector() {
                     .into_iter()
                     .map(ordinal_of)
                     .collect();
-                assert_eq!(shuffled, expected, "line {at}: Rotation::get_shuffled({seed})");
+                assert_eq!(
+                    shuffled, expected,
+                    "line {at}: Rotation::get_shuffled({seed})"
+                );
                 assert_eq!(
                     random.next_int(),
                     expected_next,
@@ -128,14 +134,21 @@ fn matches_java_for_every_vector() {
                     expected,
                     "line {at}: Rotation::get_random({seed})"
                 );
-                assert_eq!(random.next_int(), expected_next, "line {at}: wrong draw count");
+                assert_eq!(
+                    random.next_int(),
+                    expected_next,
+                    "line {at}: wrong draw count"
+                );
                 picks += 1;
             }
             other => panic!("line {at}: unknown vector kind {other:?}"),
         }
     }
 
-    assert_eq!(transforms, 336, "vector file is not the one this test expects");
+    assert_eq!(
+        transforms, 336,
+        "vector file is not the one this test expects"
+    );
     assert_eq!(shuffles, 40);
     assert_eq!(rotation_shuffles, 5);
     assert_eq!(picks, 5);

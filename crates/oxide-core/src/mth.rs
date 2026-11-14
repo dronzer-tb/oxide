@@ -45,7 +45,10 @@ pub fn cos(radians: f64) -> f32 {
 /// first product is `int` arithmetic widened afterwards; the rest is `long`, all wrapping.
 pub fn get_seed(x: i32, y: i32, z: i32) -> i64 {
     let seed = (x.wrapping_mul(3_129_871) as i64) ^ (z as i64).wrapping_mul(116_129_781) ^ y as i64;
-    let seed = seed.wrapping_mul(seed).wrapping_mul(42_317_861).wrapping_add(seed.wrapping_mul(11));
+    let seed = seed
+        .wrapping_mul(seed)
+        .wrapping_mul(42_317_861)
+        .wrapping_add(seed.wrapping_mul(11));
     seed >> 16
 }
 

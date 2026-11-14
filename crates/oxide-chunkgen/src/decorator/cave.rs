@@ -53,15 +53,21 @@ impl CaveFeature {
     /// the port can follow exactly; `None` otherwise.
     pub fn compile(ir: &ConfiguredFeature, facts: &BlockFacts) -> Result<Option<Self>> {
         Ok(match ir {
-            ConfiguredFeature::Speleothem(config) => SpeleothemFeature::compile(config, facts)?.map(Self::Speleothem),
+            ConfiguredFeature::Speleothem(config) => {
+                SpeleothemFeature::compile(config, facts)?.map(Self::Speleothem)
+            }
             ConfiguredFeature::SpeleothemCluster(config) => {
                 SpeleothemClusterFeature::compile(config, facts)?.map(Self::SpeleothemCluster)
             }
             ConfiguredFeature::LargeDripstone(config) => {
                 LargeDripstoneFeature::compile(config, facts)?.map(Self::LargeDripstone)
             }
-            ConfiguredFeature::Geode(config) => GeodeFeature::compile(config, facts)?.map(Self::Geode),
-            ConfiguredFeature::SculkPatch(config) => SculkPatchFeature::compile(config, facts)?.map(Self::SculkPatch),
+            ConfiguredFeature::Geode(config) => {
+                GeodeFeature::compile(config, facts)?.map(Self::Geode)
+            }
+            ConfiguredFeature::SculkPatch(config) => {
+                SculkPatchFeature::compile(config, facts)?.map(Self::SculkPatch)
+            }
             _ => None,
         })
     }

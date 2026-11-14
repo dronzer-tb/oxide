@@ -55,7 +55,8 @@ impl EndGatewayFeature {
                     };
                     cx.region.set_block(pos, state.clone());
                     if x && y && z && self.has_exit {
-                        cx.unsupported.record("block_entity", "minecraft:end_gateway");
+                        cx.unsupported
+                            .record("block_entity", "minecraft:end_gateway");
                     }
                 }
             }

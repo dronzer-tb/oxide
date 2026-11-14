@@ -77,17 +77,27 @@ pub struct TemplateLibrary<'d> {
 
 impl<'d> TemplateLibrary<'d> {
     pub fn new(datapack: &'d Datapack) -> Self {
-        Self { datapack, loaded: HashMap::new() }
+        Self {
+            datapack,
+            loaded: HashMap::new(),
+        }
     }
 
     fn template(&mut self, id: &ResourceLocation) -> Result<TemplateRef> {
         if let Some(found) = self.loaded.get(id) {
-            return Ok(TemplateRef { id: id.clone(), template: found.clone() });
+            return Ok(TemplateRef {
+                id: id.clone(),
+                template: found.clone(),
+            });
         }
         let raw = self.datapack.structure_template(id)?;
-        let template = raw.map(|raw| Arc::new(Template::from_raw(&raw, &self.datapack.block_facts)));
+        let template =
+            raw.map(|raw| Arc::new(Template::from_raw(&raw, &self.datapack.block_facts)));
         self.loaded.insert(id.clone(), template.clone());
-        Ok(TemplateRef { id: id.clone(), template })
+        Ok(TemplateRef {
+            id: id.clone(),
+            template,
+        })
     }
 
     /// The processors of a processor-list holder, or `Err(type)` for the first one not
@@ -105,7 +115,8 @@ impl<'d> TemplateLibrary<'d> {
                     .processor_lists
                     .get(id)
                     .with_context(|| format!("unknown processor list {id}"))?;
-                serde_json::from_value(value.clone()).with_context(|| format!("processor list {id}"))?
+                serde_json::from_value(value.clone())
+                    .with_context(|| format!("processor list {id}"))?
             }
         };
         let mut processors = Vec::with_capacity(list.processors().len());
@@ -139,16 +150,24 @@ impl TemplatedFeature {
                     .fossil_structures
                     .iter()
                     .zip(&config.overlay_structures)
-                    .map(|(base, overlay)| Ok((library.template(base)?, library.template(overlay)?)))
+                    .map(|(base, overlay)| {
+                        Ok((library.template(base)?, library.template(overlay)?))
+                    })
                     .collect::<Result<Vec<_>>>()?;
-                let fossil_processors = match library.processors(&config.fossil_processors, facts)? {
-                    Ok(processors) => processors,
-                    Err(kind) => return Ok(Some(Err(format!("minecraft:fossil (processor {kind})")))),
-                };
-                let overlay_processors = match library.processors(&config.overlay_processors, facts)? {
-                    Ok(processors) => processors,
-                    Err(kind) => return Ok(Some(Err(format!("minecraft:fossil (processor {kind})")))),
-                };
+                let fossil_processors =
+                    match library.processors(&config.fossil_processors, facts)? {
+                        Ok(processors) => processors,
+                        Err(kind) => {
+                            return Ok(Some(Err(format!("minecraft:fossil (processor {kind})"))))
+                        }
+                    };
+                let overlay_processors =
+                    match library.processors(&config.overlay_processors, facts)? {
+                        Ok(processors) => processors,
+                        Err(kind) => {
+                            return Ok(Some(Err(format!("minecraft:fossil (processor {kind})"))))
+                        }
+                    };
                 Ok(Self::Fossil(FossilFeature {
                     pairs,
                     fossil_processors,
@@ -161,7 +180,10 @@ impl TemplatedFeature {
                 let mut total_weight = 0i32;
                 for entry in &config.templates {
                     let rotations = match &entry.data.rotations {
-                        Some(names) => names.iter().map(|name| rotation_from_name(name)).collect::<Result<Vec<_>>>()?,
+                        Some(names) => names
+                            .iter()
+                            .map(|name| rotation_from_name(name))
+                            .collect::<Result<Vec<_>>>()?,
                         None => Rotation::VALUES.to_vec(),
                     };
                     if rotations.is_empty() {
@@ -170,13 +192,18 @@ impl TemplatedFeature {
                     if entry.weight < 0 {
                         bail!("template {} has a negative weight", entry.data.id);
                     }
-                    total_weight = total_weight.checked_add(entry.weight).context("template weights overflow")?;
+                    total_weight = total_weight
+                        .checked_add(entry.weight)
+                        .context("template weights overflow")?;
                     entries.push((library.template(&entry.data.id)?, rotations, entry.weight));
                 }
                 if total_weight <= 0 {
                     bail!("a template feature needs a positive total weight");
                 }
-                Ok(Self::Template(TemplateFeature { entries, total_weight }))
+                Ok(Self::Template(TemplateFeature {
+                    entries,
+                    total_weight,
+                }))
             }
             _ => return Ok(None),
         }))

@@ -22,7 +22,10 @@ pub struct SeaPickleFeature {
 
 impl SeaPickleFeature {
     pub(super) fn compile(config: &SeaPickleConfig, facts: &BlockFacts) -> Result<Self> {
-        Ok(Self { count: config.count.clone(), pickle: default_state(facts, "sea_pickle")? })
+        Ok(Self {
+            count: config.count.clone(),
+            pickle: default_state(facts, "sea_pickle")?,
+        })
     }
 
     pub(super) fn place(&self, cx: &mut FeatureContext<'_, '_, '_>) -> bool {
@@ -32,13 +35,18 @@ impl SeaPickleFeature {
         for _ in 0..count {
             let x = cx.random.next_int_bounded(8) - cx.random.next_int_bounded(8);
             let z = cx.random.next_int_bounded(8) - cx.random.next_int_bounded(8);
-            let height = cx.region.height(HeightmapType::OceanFloor, origin.x + x, origin.z + z);
+            let height = cx
+                .region
+                .height(HeightmapType::OceanFloor, origin.x + x, origin.z + z);
             let pickles = cx.random.next_int_bounded(4) + 1;
             let Some(y) = height else {
                 continue;
             };
             let pos = BlockPos::new(origin.x + x, y, origin.z + z);
-            let state = self.pickle.clone().with_property("pickles", pickles.to_string());
+            let state = self
+                .pickle
+                .clone()
+                .with_property("pickles", pickles.to_string());
             if is_water(cx, pos) && survives(cx, &state, pos) {
                 cx.region.set_block(pos, state);
                 placed += 1;

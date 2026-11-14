@@ -244,7 +244,10 @@ mod tests {
     use super::*;
     use oxide_core::WorldgenRandom;
 
-    const BOUNDS: WorldBounds = WorldBounds { min_y: -64, height: 384 };
+    const BOUNDS: WorldBounds = WorldBounds {
+        min_y: -64,
+        height: 384,
+    };
 
     fn int(json: &str) -> IntProvider {
         serde_json::from_str(json).expect("int provider json")
@@ -256,9 +259,8 @@ mod tests {
 
     #[test]
     fn anchors_resolve_against_the_world_extent() {
-        let anchor = |json: &str| -> i32 {
-            resolve_anchor(&serde_json::from_str(json).unwrap(), BOUNDS)
-        };
+        let anchor =
+            |json: &str| -> i32 { resolve_anchor(&serde_json::from_str(json).unwrap(), BOUNDS) };
         assert_eq!(anchor(r#"{"absolute": 12}"#), 12);
         assert_eq!(anchor(r#"{"above_bottom": 8}"#), -56);
         // The topmost block is 319, so `below_top: 0` is 319, not 320.
@@ -271,7 +273,13 @@ mod tests {
         let mut random = WorldgenRandom::new(7);
         let mut untouched = WorldgenRandom::new(7);
         assert_eq!(sample_int(&int("5"), &mut random), 5);
-        assert_eq!(sample_int(&int(r#"{"type":"minecraft:constant","value":9}"#), &mut random), 9);
+        assert_eq!(
+            sample_int(
+                &int(r#"{"type":"minecraft:constant","value":9}"#),
+                &mut random
+            ),
+            9
+        );
         assert_eq!(random.next_long(), untouched.next_long());
     }
 
@@ -289,13 +297,15 @@ mod tests {
 
     #[test]
     fn symmetric_trapezoid_is_the_difference_of_two_draws() {
-        let provider =
-            int(r#"{"type":"minecraft:trapezoid","min":-7,"max":7,"plateau":0}"#);
+        let provider = int(r#"{"type":"minecraft:trapezoid","min":-7,"max":7,"plateau":0}"#);
         let mut random = WorldgenRandom::new(5);
         let mut mirror = WorldgenRandom::new(5);
         for _ in 0..200 {
             let value = sample_int(&provider, &mut random);
-            assert_eq!(value, mirror.next_int_bounded(8) - mirror.next_int_bounded(8));
+            assert_eq!(
+                value,
+                mirror.next_int_bounded(8) - mirror.next_int_bounded(8)
+            );
             assert!((-7..=7).contains(&value));
         }
     }
@@ -307,7 +317,10 @@ mod tests {
         let mut mirror = WorldgenRandom::new(21);
         // range 10, slope (10 - 4) / 2 = 3, middle 7.
         let value = sample_int(&provider, &mut random);
-        assert_eq!(value, 2 + mirror.next_int_bounded(8) + mirror.next_int_bounded(4));
+        assert_eq!(
+            value,
+            2 + mirror.next_int_bounded(8) + mirror.next_int_bounded(4)
+        );
     }
 
     #[test]
@@ -324,10 +337,8 @@ mod tests {
 
     #[test]
     fn weighted_list_draws_once_then_samples_the_entry() {
-        let provider = int(
-            r#"{"type":"minecraft:weighted_list","distribution":[
-                {"data":1,"weight":1},{"data":2,"weight":3}]}"#,
-        );
+        let provider = int(r#"{"type":"minecraft:weighted_list","distribution":[
+                {"data":1,"weight":1},{"data":2,"weight":3}]}"#);
         let mut random = WorldgenRandom::new(13);
         let mut mirror = WorldgenRandom::new(13);
         for _ in 0..100 {
@@ -349,7 +360,10 @@ mod tests {
         // A bare anchor is a constant that draws nothing.
         let mut untouched = WorldgenRandom::new(1);
         let mut random = WorldgenRandom::new(1);
-        assert_eq!(sample_height(&height(r#"{"absolute": 40}"#), &mut random, BOUNDS), 40);
+        assert_eq!(
+            sample_height(&height(r#"{"absolute": 40}"#), &mut random, BOUNDS),
+            40
+        );
         assert_eq!(random.next_long(), untouched.next_long());
     }
 
@@ -363,7 +377,10 @@ mod tests {
         let mut mirror = WorldgenRandom::new(17);
         // range = 20 - 0 - 4 + 1 = 17.
         let first = mirror.next_int_bounded(17);
-        assert_eq!(sample_height(&provider, &mut random, BOUNDS), mirror.next_int_bounded(first + 4));
+        assert_eq!(
+            sample_height(&provider, &mut random, BOUNDS),
+            mirror.next_int_bounded(first + 4)
+        );
     }
 
     #[test]
@@ -374,6 +391,9 @@ mod tests {
         );
         let mut random = WorldgenRandom::new(2);
         let mut mirror = WorldgenRandom::new(2);
-        assert_eq!(sample_height(&provider, &mut random, BOUNDS), mirror.next_int_bounded(11));
+        assert_eq!(
+            sample_height(&provider, &mut random, BOUNDS),
+            mirror.next_int_bounded(11)
+        );
     }
 }

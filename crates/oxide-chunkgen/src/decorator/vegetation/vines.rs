@@ -18,7 +18,9 @@ pub struct VinesFeature {
 
 impl VinesFeature {
     pub fn compile(facts: &BlockFacts) -> Result<Self> {
-        Ok(Self { vine: facts.complete(&BlockState::new(ResourceLocation::minecraft("vine"))) })
+        Ok(Self {
+            vine: facts.complete(&BlockState::new(ResourceLocation::minecraft("vine"))),
+        })
     }
 
     pub fn place(&self, cx: &mut FeatureContext<'_, '_, '_>) -> bool {

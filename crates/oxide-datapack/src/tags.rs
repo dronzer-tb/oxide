@@ -62,7 +62,9 @@ pub struct TagSet {
 impl TagSet {
     /// Whether `id` is a member of `tag`. An unknown tag has no members.
     pub fn contains(&self, tag: &ResourceLocation, id: &ResourceLocation) -> bool {
-        self.tags.get(tag).is_some_and(|members| members.contains(id))
+        self.tags
+            .get(tag)
+            .is_some_and(|members| members.contains(id))
     }
 
     pub fn get(&self, tag: &ResourceLocation) -> Option<&HashSet<ResourceLocation>> {
@@ -120,7 +122,10 @@ pub fn load_tags(pack_roots: &[&Path], kind: &str) -> Result<TagSet> {
         .iter()
         .map(|(id, members)| (id.clone(), members.iter().cloned().collect()))
         .collect();
-    Ok(TagSet { tags, ordered: resolved })
+    Ok(TagSet {
+        tags,
+        ordered: resolved,
+    })
 }
 
 /// Resolves `tag` into `resolved` as an ordered, duplicate-free list (see [`TagSet`]).
@@ -207,17 +212,39 @@ mod tests {
     fn nested_tags_flatten_and_packs_stack() {
         let base = temp("base");
         let over = temp("over");
-        write(&base, "dirt.json", r#"{"values":["minecraft:dirt","minecraft:coarse_dirt"]}"#);
-        write(&base, "soil.json", r##"{"values":["#minecraft:dirt","minecraft:mud"]}"##);
-        write(&base, "mineable/axe.json", r#"{"values":["minecraft:oak_log"]}"#);
+        write(
+            &base,
+            "dirt.json",
+            r#"{"values":["minecraft:dirt","minecraft:coarse_dirt"]}"#,
+        );
+        write(
+            &base,
+            "soil.json",
+            r##"{"values":["#minecraft:dirt","minecraft:mud"]}"##,
+        );
+        write(
+            &base,
+            "mineable/axe.json",
+            r#"{"values":["minecraft:oak_log"]}"#,
+        );
         write(&over, "dirt.json", r#"{"values":["minecraft:podzol"]}"#);
-        write(&over, "soil.json", r#"{"replace":true,"values":["minecraft:clay"]}"#);
+        write(
+            &over,
+            "soil.json",
+            r#"{"replace":true,"values":["minecraft:clay"]}"#,
+        );
 
         let tags = load_tags(&[&base, &over], "block").unwrap();
         assert!(tags.contains(&rl("dirt"), &rl("coarse_dirt")));
-        assert!(tags.contains(&rl("dirt"), &rl("podzol")), "a later pack appends");
+        assert!(
+            tags.contains(&rl("dirt"), &rl("podzol")),
+            "a later pack appends"
+        );
         assert!(tags.contains(&rl("soil"), &rl("clay")));
-        assert!(!tags.contains(&rl("soil"), &rl("mud")), "replace drops the base entries");
+        assert!(
+            !tags.contains(&rl("soil"), &rl("mud")),
+            "replace drops the base entries"
+        );
         assert!(tags.contains(&rl("mineable/axe"), &rl("oak_log")));
         assert!(!tags.contains(&rl("nonexistent"), &rl("dirt")));
 
@@ -228,11 +255,28 @@ mod tests {
     #[test]
     fn ordered_members_follow_the_tag_loader() {
         let root = temp("order");
-        write(&root, "plants.json", r#"{"values":["minecraft:b","minecraft:a"]}"#);
-        write(&root, "all.json", r##"{"values":["minecraft:c","#minecraft:plants","minecraft:b","minecraft:d"]}"##);
+        write(
+            &root,
+            "plants.json",
+            r#"{"values":["minecraft:b","minecraft:a"]}"#,
+        );
+        write(
+            &root,
+            "all.json",
+            r##"{"values":["minecraft:c","#minecraft:plants","minecraft:b","minecraft:d"]}"##,
+        );
         let tags = load_tags(&[&root], "block").unwrap();
-        let ids: Vec<&str> = tags.ordered(&rl("all")).unwrap().iter().map(|id| id.path()).collect();
-        assert_eq!(ids, ["c", "b", "a", "d"], "nested tags expand in place, first appearance wins");
+        let ids: Vec<&str> = tags
+            .ordered(&rl("all"))
+            .unwrap()
+            .iter()
+            .map(|id| id.path())
+            .collect();
+        assert_eq!(
+            ids,
+            ["c", "b", "a", "d"],
+            "nested tags expand in place, first appearance wins"
+        );
         assert!(tags.ordered(&rl("absent")).is_none());
         fs::remove_dir_all(root).unwrap();
     }

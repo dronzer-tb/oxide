@@ -61,7 +61,8 @@ impl ForestVegetationFeature {
                 // Vanilla's `getState` throws where a rule-based provider matches nothing; the
                 // draws after it cannot be followed, so the feature stops here.
                 Ok(None) => {
-                    cx.unsupported.record("provider", "rule_based_state_provider_without_match");
+                    cx.unsupported
+                        .record("provider", "rule_based_state_provider_without_match");
                     return placed > 0;
                 }
                 Err(Unsupported(why)) => {

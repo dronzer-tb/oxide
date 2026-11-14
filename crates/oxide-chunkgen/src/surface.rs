@@ -81,7 +81,12 @@ fn generate_clay_bands(random: &mut impl RandomSource) -> [BlockState; BAND_COUN
 
     let mut i = (random.next_int_bounded(9) + 5) as usize;
     while i < BAND_COUNT {
-        make_band(&mut bands, i, (random.next_int_bounded(2) + 1) as usize, &white);
+        make_band(
+            &mut bands,
+            i,
+            (random.next_int_bounded(2) + 1) as usize,
+            &white,
+        );
         if i >= 1 && random.next_boolean() {
             make_band(&mut bands, i - 1, 1, &light_gray);
         }
@@ -365,10 +370,8 @@ impl<'a> SurfaceSystem<'a> {
             SurfaceRule::Badlands {} => {
                 let offset_noise = self.router.noise(&self.clay_bands_offset_id);
                 let offset = match offset_noise {
-                    Some(noise) => {
-                        (noise.get_value(cursor.x as f64, 0.0, cursor.z as f64) * 4.0).round()
-                            as i32
-                    }
+                    Some(noise) => (noise.get_value(cursor.x as f64, 0.0, cursor.z as f64) * 4.0)
+                        .round() as i32,
                     None => 0,
                 };
                 let band = (cursor.y + offset).rem_euclid(BAND_COUNT as i32) as usize;
@@ -491,11 +494,8 @@ impl<'a> SurfaceSystem<'a> {
                     let temp_noise = self.router.noise(&self.temperature_noise_id);
                     let noise_val = match temp_noise {
                         Some(noise) => {
-                            noise.get_value(
-                                cursor.x as f64 / 8.0,
-                                0.0,
-                                cursor.z as f64 / 8.0,
-                            ) as f32
+                            noise.get_value(cursor.x as f64 / 8.0, 0.0, cursor.z as f64 / 8.0)
+                                as f32
                                 * 8.0
                         }
                         None => 0.0,
@@ -518,10 +518,26 @@ impl<'a> SurfaceSystem<'a> {
                 let local_x = (cursor.x & 15) as usize;
                 let local_z = (cursor.z & 15) as usize;
                 let center = heightmap.get(local_x, local_z);
-                let x_below = if local_x > 0 { heightmap.get(local_x - 1, local_z) } else { center };
-                let x_above = if local_x < 15 { heightmap.get(local_x + 1, local_z) } else { center };
-                let z_below = if local_z > 0 { heightmap.get(local_x, local_z - 1) } else { center };
-                let z_above = if local_z < 15 { heightmap.get(local_x, local_z + 1) } else { center };
+                let x_below = if local_x > 0 {
+                    heightmap.get(local_x - 1, local_z)
+                } else {
+                    center
+                };
+                let x_above = if local_x < 15 {
+                    heightmap.get(local_x + 1, local_z)
+                } else {
+                    center
+                };
+                let z_below = if local_z > 0 {
+                    heightmap.get(local_x, local_z - 1)
+                } else {
+                    center
+                };
+                let z_above = if local_z < 15 {
+                    heightmap.get(local_x, local_z + 1)
+                } else {
+                    center
+                };
                 (x_above - x_below).abs() >= 4 || (z_above - z_below).abs() >= 4
             }
 
@@ -595,8 +611,7 @@ impl<'a> SurfaceSystem<'a> {
         let section = chunk.sections.get(index)?;
         let class = classes.get(index)?;
         let local_y = (y - self.min_y).rem_euclid(16) as usize;
-        let palette_index =
-            section.block_states.indices()[local_index(local_x, local_y, local_z)];
+        let palette_index = section.block_states.indices()[local_index(local_x, local_y, local_z)];
         Some(class.kind(palette_index))
     }
 

@@ -56,15 +56,25 @@ impl EndFeature {
     /// other type.
     pub fn compile(ir: &ConfiguredFeature, facts: &BlockFacts) -> Result<Option<Self>> {
         Ok(Some(match ir {
-            ConfiguredFeature::ChorusPlant(_) => Self::ChorusPlant(ChorusPlantFeature::compile(facts)?),
+            ConfiguredFeature::ChorusPlant(_) => {
+                Self::ChorusPlant(ChorusPlantFeature::compile(facts)?)
+            }
             ConfiguredFeature::EndIsland(_) => Self::EndIsland(EndIslandFeature::compile(facts)?),
-            ConfiguredFeature::EndSpike(config) => Self::EndSpike(EndSpikeFeature::compile(config, facts)?),
-            ConfiguredFeature::EndGateway(config) => Self::EndGateway(EndGatewayFeature::compile(config, facts)?),
-            ConfiguredFeature::EndPlatform(_) => Self::EndPlatform(EndPlatformFeature::compile(facts)?),
+            ConfiguredFeature::EndSpike(config) => {
+                Self::EndSpike(EndSpikeFeature::compile(config, facts)?)
+            }
+            ConfiguredFeature::EndGateway(config) => {
+                Self::EndGateway(EndGatewayFeature::compile(config, facts)?)
+            }
+            ConfiguredFeature::EndPlatform(_) => {
+                Self::EndPlatform(EndPlatformFeature::compile(facts)?)
+            }
             ConfiguredFeature::VoidStartPlatform(_) => {
                 Self::VoidStartPlatform(VoidStartPlatformFeature::compile(facts)?)
             }
-            ConfiguredFeature::BonusChest(_) => Self::BonusChest(BonusChestFeature::compile(facts)?),
+            ConfiguredFeature::BonusChest(_) => {
+                Self::BonusChest(BonusChestFeature::compile(facts)?)
+            }
             _ => return Ok(None),
         }))
     }

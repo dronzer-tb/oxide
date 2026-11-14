@@ -29,8 +29,12 @@ pub(super) struct Root {
 
 impl Root {
     pub fn compile(ir: &RootPlacer, facts: &BlockFacts) -> Result<Self> {
-        let RootPlacer::Mangrove { trunk_offset_y, root_provider, above_root_placement, mangrove_root_placement: placement } =
-            ir;
+        let RootPlacer::Mangrove {
+            trunk_offset_y,
+            root_provider,
+            above_root_placement,
+            mangrove_root_placement: placement,
+        } = ir;
         Ok(Self {
             trunk_offset_y: trunk_offset_y.clone(),
             root: StateProvider::compile(root_provider, facts)?,
@@ -53,11 +57,18 @@ impl Root {
     }
 
     fn can_place_root(&self, run: &Run<'_, '_, '_, '_>, p: BlockPos) -> bool {
-        run.valid_tree_pos(p) || self.can_grow_through.contains_block(run.cx.env, &run.state(p).name)
+        run.valid_tree_pos(p)
+            || self
+                .can_grow_through
+                .contains_block(run.cx.env, &run.state(p).name)
     }
 
     /// `RootPlacer.getStateWithWaterlogging`: a root placed in water keeps it.
-    fn waterlogged(run: &Run<'_, '_, '_, '_>, p: BlockPos, state: oxide_core::BlockState) -> oxide_core::BlockState {
+    fn waterlogged(
+        run: &Run<'_, '_, '_, '_>,
+        p: BlockPos,
+        state: oxide_core::BlockState,
+    ) -> oxide_core::BlockState {
         if state.properties.contains_key("waterlogged") {
             let water = run.fact(p, BlockFact::Water);
             with_property(state, "waterlogged", if water { "true" } else { "false" })
@@ -68,7 +79,10 @@ impl Root {
 
     /// `MangroveRootPlacer.placeRoot`.
     fn place_root(&self, run: &mut Run<'_, '_, '_, '_>, p: BlockPos) -> Res<()> {
-        if self.muddy_roots_in.contains_block(run.cx.env, &run.state(p).name) {
+        if self
+            .muddy_roots_in
+            .contains_block(run.cx.env, &run.state(p).name)
+        {
             let state = run.sample(&self.muddy_roots, p)?;
             let state = Self::waterlogged(run, p, state);
             run.set(Layer::Root, p, state);
@@ -132,7 +146,8 @@ impl Root {
         positions: &mut Vec<BlockPos>,
         layer: i32,
     ) -> bool {
-        if layer == self.max_root_length || positions.len() as i64 > i64::from(self.max_root_length) {
+        if layer == self.max_root_length || positions.len() as i64 > i64::from(self.max_root_length)
+        {
             return false;
         }
         for next in self.potential_positions(run, pos, dir, origin) {
@@ -148,7 +163,13 @@ impl Root {
 
     /// `MangroveRootPlacer.potentialRootPositions`. The branch order decides which draws happen.
     #[allow(clippy::if_same_then_else)]
-    fn potential_positions(&self, run: &mut Run<'_, '_, '_, '_>, pos: BlockPos, dir: Dir, origin: BlockPos) -> Vec<BlockPos> {
+    fn potential_positions(
+        &self,
+        run: &mut Run<'_, '_, '_, '_>,
+        pos: BlockPos,
+        dir: Dir,
+        origin: BlockPos,
+    ) -> Vec<BlockPos> {
         let below = off(pos, 0, -1, 0);
         let next_to = rel(pos, dir, 1);
         let width = dist_manhattan(pos, origin);

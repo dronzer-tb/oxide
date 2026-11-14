@@ -10,8 +10,8 @@
 
 use anyhow::Result;
 use oxide_core::{BlockPos, HeightmapType, RandomSource};
-use oxide_datapack::placement::{HeightmapKind, PlacementModifier, SearchDirection};
 use oxide_datapack::placement::IntProvider;
+use oxide_datapack::placement::{HeightmapKind, PlacementModifier, SearchDirection};
 use oxide_datapack::HeightProvider;
 
 use super::context::{block_in, FeatureContext};
@@ -28,15 +28,35 @@ pub enum Modifier {
     InSquare,
     HeightRange(HeightProvider),
     Heightmap(HeightmapType),
-    RandomOffset { xz_spread: IntProvider, y_spread: IntProvider },
+    RandomOffset {
+        xz_spread: IntProvider,
+        y_spread: IntProvider,
+    },
     Rarity(i32),
     Predicate(Predicate),
     SurfaceWaterDepth(i32),
-    SurfaceRelative { heightmap: HeightmapType, min: i32, max: i32 },
-    EnvironmentScan { upwards: bool, target: Predicate, allowed: Predicate, max_steps: i32 },
+    SurfaceRelative {
+        heightmap: HeightmapType,
+        min: i32,
+        max: i32,
+    },
+    EnvironmentScan {
+        upwards: bool,
+        target: Predicate,
+        allowed: Predicate,
+        max_steps: i32,
+    },
     CountOnEveryLayer(IntProvider),
-    NoiseThresholdCount { level: f64, below: i32, above: i32 },
-    NoiseBasedCount { ratio: i32, factor: f64, offset: f64 },
+    NoiseThresholdCount {
+        level: f64,
+        below: i32,
+        above: i32,
+    },
+    NoiseBasedCount {
+        ratio: i32,
+        factor: f64,
+        offset: f64,
+    },
     Fixed(Vec<BlockPos>),
 }
 
@@ -58,8 +78,13 @@ impl Modifier {
             PlacementModifier::Count { count } => Self::Count(count.clone()),
             PlacementModifier::InSquare => Self::InSquare,
             PlacementModifier::HeightRange { height } => Self::HeightRange(height.clone()),
-            PlacementModifier::Heightmap { heightmap } => Self::Heightmap(heightmap_type(*heightmap)),
-            PlacementModifier::RandomOffset { xz_spread, y_spread } => Self::RandomOffset {
+            PlacementModifier::Heightmap { heightmap } => {
+                Self::Heightmap(heightmap_type(*heightmap))
+            }
+            PlacementModifier::RandomOffset {
+                xz_spread,
+                y_spread,
+            } => Self::RandomOffset {
                 xz_spread: xz_spread.clone(),
                 y_spread: y_spread.clone(),
             },
@@ -90,14 +115,18 @@ impl Modifier {
                 allowed: Predicate::compile(allowed_search_condition, facts)?,
                 max_steps: *max_steps,
             },
-            PlacementModifier::CountOnEveryLayer { count } => Self::CountOnEveryLayer(count.clone()),
-            PlacementModifier::NoiseThresholdCount { noise_level, below_noise, above_noise } => {
-                Self::NoiseThresholdCount {
-                    level: *noise_level,
-                    below: *below_noise,
-                    above: *above_noise,
-                }
+            PlacementModifier::CountOnEveryLayer { count } => {
+                Self::CountOnEveryLayer(count.clone())
             }
+            PlacementModifier::NoiseThresholdCount {
+                noise_level,
+                below_noise,
+                above_noise,
+            } => Self::NoiseThresholdCount {
+                level: *noise_level,
+                below: *below_noise,
+                above: *above_noise,
+            },
             PlacementModifier::NoiseBasedCount {
                 noise_to_count_ratio,
                 noise_factor,
@@ -108,7 +137,10 @@ impl Modifier {
                 offset: *noise_offset,
             },
             PlacementModifier::FixedPlacement { positions } => Self::Fixed(
-                positions.iter().map(|p| BlockPos::new(p[0], p[1], p[2])).collect(),
+                positions
+                    .iter()
+                    .map(|p| BlockPos::new(p[0], p[1], p[2]))
+                    .collect(),
             ),
         })
     }
@@ -124,7 +156,8 @@ impl Modifier {
             Self::Biome => {
                 let Some(key) = cx.top_feature else {
                     // Vanilla throws here: a biome check inside a nested feature is a data error.
-                    cx.unsupported.record("placement", "biome modifier without a top feature");
+                    cx.unsupported
+                        .record("placement", "biome modifier without a top feature");
                     return;
                 };
                 if let Some(biome) = cx.region.biome(pos) {
@@ -145,7 +178,11 @@ impl Modifier {
             }
             Self::HeightRange(height) => {
                 let bounds = cx.bounds();
-                out.push(BlockPos::new(pos.x, sample_height(height, cx.random, bounds), pos.z));
+                out.push(BlockPos::new(
+                    pos.x,
+                    sample_height(height, cx.random, bounds),
+                    pos.z,
+                ));
             }
             Self::Heightmap(kind) => {
                 if let Some(y) = cx.region.height(*kind, pos.x, pos.z) {
@@ -155,7 +192,10 @@ impl Modifier {
                 }
             }
             // The draws are x, then y, then z, with the horizontal provider sampled twice.
-            Self::RandomOffset { xz_spread, y_spread } => {
+            Self::RandomOffset {
+                xz_spread,
+                y_spread,
+            } => {
                 let x = pos.x.wrapping_add(sample_int(xz_spread, cx.random));
                 let y = pos.y.wrapping_add(sample_int(y_spread, cx.random));
                 let z = pos.z.wrapping_add(sample_int(xz_spread, cx.random));
@@ -180,7 +220,11 @@ impl Modifier {
                     }
                 }
             }
-            Self::SurfaceRelative { heightmap, min, max } => {
+            Self::SurfaceRelative {
+                heightmap,
+                min,
+                max,
+            } => {
                 if let Some(height) = cx.region.height(*heightmap, pos.x, pos.z) {
                     let height = i64::from(height);
                     let y = i64::from(pos.y);
@@ -189,13 +233,22 @@ impl Modifier {
                     }
                 }
             }
-            Self::EnvironmentScan { upwards, target, allowed, max_steps } => {
+            Self::EnvironmentScan {
+                upwards,
+                target,
+                allowed,
+                max_steps,
+            } => {
                 if let Some(found) = scan(cx, pos, *upwards, target, allowed, *max_steps) {
                     out.push(found);
                 }
             }
             Self::CountOnEveryLayer(count) => on_every_layer(cx, pos, count, out),
-            Self::NoiseThresholdCount { level, below, above } => {
+            Self::NoiseThresholdCount {
+                level,
+                below,
+                above,
+            } => {
                 // PARITY-CHECK: `info_noise` is a port without a diffable reference.
                 let noise = info_noise(f64::from(pos.x) / 200.0, f64::from(pos.z) / 200.0);
                 let count = if noise < *level { *below } else { *above };
@@ -203,7 +256,11 @@ impl Modifier {
                     out.push(pos);
                 }
             }
-            Self::NoiseBasedCount { ratio, factor, offset } => {
+            Self::NoiseBasedCount {
+                ratio,
+                factor,
+                offset,
+            } => {
                 let noise = info_noise(f64::from(pos.x) / factor, f64::from(pos.z) / factor);
                 let count = ((noise + offset) * f64::from(*ratio)).ceil() as i32;
                 for _ in 0..count {

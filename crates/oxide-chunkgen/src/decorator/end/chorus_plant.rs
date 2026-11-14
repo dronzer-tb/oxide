@@ -18,7 +18,14 @@ use super::{default_state, is_air, is_block, offset, with_property};
 const HORIZONTAL: [[i32; 3]; 4] = [[0, 0, -1], [1, 0, 0], [0, 0, 1], [-1, 0, 0]];
 /// The connection properties in the order of the neighbour offsets below and of the mask bits.
 const FACES: [&str; 6] = ["down", "up", "north", "east", "south", "west"];
-const NEIGHBOURS: [[i32; 3]; 6] = [[0, -1, 0], [0, 1, 0], [0, 0, -1], [1, 0, 0], [0, 0, 1], [-1, 0, 0]];
+const NEIGHBOURS: [[i32; 3]; 6] = [
+    [0, -1, 0],
+    [0, 1, 0],
+    [0, 0, -1],
+    [1, 0, 0],
+    [0, 0, 1],
+    [-1, 0, 0],
+];
 /// `ChorusFlowerBlock.generatePlant`'s maximum depth.
 const MAX_DEPTH: u8 = 4;
 /// `ChorusFlowerBlock.generatePlant`'s maximum horizontal distance from the root.
@@ -36,9 +43,20 @@ impl ChorusPlantFeature {
         let base = default_state(facts, "chorus_plant")?;
         let plant = (0..64usize)
             .map(|mask| {
-                FACES.iter().enumerate().fold(base.clone(), |state, (bit, face)| {
-                    with_property(state, face, if mask & (1 << bit) != 0 { "true" } else { "false" })
-                })
+                FACES
+                    .iter()
+                    .enumerate()
+                    .fold(base.clone(), |state, (bit, face)| {
+                        with_property(
+                            state,
+                            face,
+                            if mask & (1 << bit) != 0 {
+                                "true"
+                            } else {
+                                "false"
+                            },
+                        )
+                    })
             })
             .collect();
         let flower = with_property(default_state(facts, "chorus_flower")?, "age", "5");
@@ -72,7 +90,11 @@ impl ChorusPlantFeature {
     }
 
     /// Whether the four horizontal neighbours of `pos` are air, ignoring side `except`.
-    fn neighbours_empty(cx: &FeatureContext<'_, '_, '_>, pos: BlockPos, except: Option<usize>) -> bool {
+    fn neighbours_empty(
+        cx: &FeatureContext<'_, '_, '_>,
+        pos: BlockPos,
+        except: Option<usize>,
+    ) -> bool {
         HORIZONTAL
             .iter()
             .enumerate()
@@ -98,7 +120,9 @@ impl ChorusPlantFeature {
                 let direction = cx.random.next_int_bounded(4) as usize;
                 let d = HORIZONTAL[direction];
                 let branch = offset(top, d[0], d[1], d[2]);
-                if (branch.x - root.x).abs() >= MAX_HORIZONTAL || (branch.z - root.z).abs() >= MAX_HORIZONTAL {
+                if (branch.x - root.x).abs() >= MAX_HORIZONTAL
+                    || (branch.z - root.z).abs() >= MAX_HORIZONTAL
+                {
                     continue;
                 }
                 let opposite = (direction + 2) % 4;
@@ -125,5 +149,7 @@ fn supports_tag() -> oxide_core::ResourceLocation {
 }
 
 fn supports(cx: &FeatureContext<'_, '_, '_>, pos: BlockPos) -> bool {
-    cx.env.block_tags.contains(&supports_tag(), &block_in(cx.region, pos).name)
+    cx.env
+        .block_tags
+        .contains(&supports_tag(), &block_in(cx.region, pos).name)
 }

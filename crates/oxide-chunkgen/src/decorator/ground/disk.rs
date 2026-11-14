@@ -11,10 +11,10 @@ use oxide_datapack::feature::DiskConfig;
 use oxide_datapack::placement::IntProvider;
 use oxide_datapack::BlockFacts;
 
+use super::super::context::FeatureContext;
 use super::super::predicate::Predicate;
 use super::super::provider::sample_int;
 use super::super::state_provider::{StateProvider, Unsupported};
-use super::super::context::FeatureContext;
 
 #[derive(Debug)]
 pub struct DiskFeature {
@@ -27,7 +27,8 @@ pub struct DiskFeature {
 impl DiskFeature {
     pub fn compile(config: &DiskConfig, facts: &BlockFacts) -> Result<Self> {
         Ok(Self {
-            provider: StateProvider::compile(&config.state_provider, facts).context("disk state provider")?,
+            provider: StateProvider::compile(&config.state_provider, facts)
+                .context("disk state provider")?,
             target: Predicate::compile(&config.target, facts).context("disk target")?,
             radius: config.radius.clone(),
             half_height: config.half_height,

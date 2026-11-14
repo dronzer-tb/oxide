@@ -123,7 +123,10 @@ pub enum FoliageKind {
     #[serde(rename = "minecraft:mega_pine_foliage_placer")]
     MegaPine { crown_height: IntProvider },
     #[serde(rename = "minecraft:random_spread_foliage_placer")]
-    RandomSpread { foliage_height: IntProvider, leaf_placement_attempts: i32 },
+    RandomSpread {
+        foliage_height: IntProvider,
+        leaf_placement_attempts: i32,
+    },
     #[serde(rename = "minecraft:cherry_foliage_placer")]
     Cherry {
         height: IntProvider,
@@ -170,8 +173,12 @@ impl FeatureSize {
     /// `FeatureSize.minClippedHeight`.
     pub fn min_clipped_height(&self) -> Option<i32> {
         match self {
-            Self::TwoLayers { min_clipped_height, .. }
-            | Self::ThreeLayers { min_clipped_height, .. } => *min_clipped_height,
+            Self::TwoLayers {
+                min_clipped_height, ..
+            }
+            | Self::ThreeLayers {
+                min_clipped_height, ..
+            } => *min_clipped_height,
         }
     }
 }
@@ -236,7 +243,11 @@ pub enum TreeDecorator {
     #[serde(rename = "minecraft:creaking_heart")]
     CreakingHeart { probability: f32 },
     #[serde(rename = "minecraft:pale_moss")]
-    PaleMoss { leaves_probability: f32, trunk_probability: f32, ground_probability: f32 },
+    PaleMoss {
+        leaves_probability: f32,
+        trunk_probability: f32,
+        ground_probability: f32,
+    },
     #[serde(rename = "minecraft:place_on_ground")]
     PlaceOnGround {
         #[serde(default = "default_tries")]
@@ -281,8 +292,19 @@ mod tests {
         .expect("tree config");
         assert_eq!(tree.trunk_placer.base_height, 4);
         assert!(matches!(tree.trunk_placer.kind, TrunkKind::Straight {}));
-        assert!(matches!(tree.foliage_placer.kind, FoliageKind::Blob { height: 3 }));
-        assert!(matches!(tree.minimum_size, FeatureSize::TwoLayers { limit: 1, lower_size: 0, upper_size: 1, .. }));
+        assert!(matches!(
+            tree.foliage_placer.kind,
+            FoliageKind::Blob { height: 3 }
+        ));
+        assert!(matches!(
+            tree.minimum_size,
+            FeatureSize::TwoLayers {
+                limit: 1,
+                lower_size: 0,
+                upper_size: 1,
+                ..
+            }
+        ));
         assert!(!tree.ignore_vines);
     }
 }

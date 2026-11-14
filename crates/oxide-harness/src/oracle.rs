@@ -57,7 +57,9 @@ fn parse_state(text: &str) -> Result<BlockState> {
     );
     if let Some(props) = props {
         for pair in props.split(',') {
-            let (k, v) = pair.split_once('=').ok_or_else(|| anyhow!("bad property {pair:?}"))?;
+            let (k, v) = pair
+                .split_once('=')
+                .ok_or_else(|| anyhow!("bad property {pair:?}"))?;
             state = state.with_property(k, v);
         }
     }
@@ -74,7 +76,10 @@ fn unrle(line: &str, expect: usize) -> Result<Vec<u32>> {
         out.extend(std::iter::repeat_n(id, count));
     }
     if out.len() != expect {
-        bail!("run-length line has {} entries, expected {expect}", out.len());
+        bail!(
+            "run-length line has {} entries, expected {expect}",
+            out.len()
+        );
     }
     Ok(out)
 }
@@ -83,7 +88,10 @@ fn load_dump(path: &Path) -> Result<Dump> {
     let file = std::fs::File::open(path)?;
     let mut lines = BufReader::new(flate2::read::GzDecoder::new(file)).lines();
     let mut next = || -> Result<String> {
-        lines.next().ok_or_else(|| anyhow!("truncated dump"))?.map_err(Into::into)
+        lines
+            .next()
+            .ok_or_else(|| anyhow!("truncated dump"))?
+            .map_err(Into::into)
     };
     if next()? != "oxide-oracle 1" {
         bail!("not an oxide-oracle 1 dump");
@@ -139,7 +147,8 @@ fn load_dump(path: &Path) -> Result<Dump> {
                     .split(' ')
                     .map(|v| v.parse::<i32>())
                     .collect::<Result<Vec<_>, _>>()?;
-                dump.heightmaps.push((words[1].to_string(), words[2].to_string(), values));
+                dump.heightmaps
+                    .push((words[1].to_string(), words[2].to_string(), values));
             }
             other => bail!("unknown dump record {other:?}"),
         }
@@ -298,7 +307,12 @@ fn oxide_feature_order(
     }
     let input = possible_biomes
         .iter()
-        .map(|b| lists.get(b).cloned().ok_or_else(|| anyhow!("biome {b} not in datapack")))
+        .map(|b| {
+            lists
+                .get(b)
+                .cloned()
+                .ok_or_else(|| anyhow!("biome {b} not in datapack"))
+        })
         .collect::<Result<Vec<_>>>()?;
     let steps = oxide_chunkgen::feature_order::build_features_per_step(&input)
         .map_err(|cycle| anyhow!("{cycle}"))?;
@@ -462,7 +476,13 @@ fn compare(dump: &Dump, oxide: &Oxide) -> Result<ChunkReport> {
     let index_of = |p: ChunkPos| nine.iter().position(|q| *q == p).expect("chunk in dump");
     for chunk in &terrain {
         if chunk.min_y != dump.min_y || chunk.height != dump.height {
-            bail!("Oxide world height {}+{} != dump {}+{}", chunk.min_y, chunk.height, dump.min_y, dump.height);
+            bail!(
+                "Oxide world height {}+{} != dump {}+{}",
+                chunk.min_y,
+                chunk.height,
+                dump.min_y,
+                dump.height
+            );
         }
     }
 
@@ -514,9 +534,16 @@ fn compare(dump: &Dump, oxide: &Oxide) -> Result<ChunkReport> {
     let refs: [&ChunkData; 9] = std::array::from_fn(|i| &terrain[i]);
     // DecorationRegion wants the ring in dz-major, dx-minor order -- the order the dump uses.
     for (i, p) in nine.iter().enumerate() {
-        let expect = ChunkPos::new(dump.center.x + (i % 3) as i32 - 1, dump.center.z + (i / 3) as i32 - 1);
+        let expect = ChunkPos::new(
+            dump.center.x + (i % 3) as i32 - 1,
+            dump.center.z + (i / 3) as i32 - 1,
+        );
         if *p != expect {
-            bail!("dump ring order {:?} at {i}, expected {:?}", (p.x, p.z), (expect.x, expect.z));
+            bail!(
+                "dump ring order {:?} at {i}, expected {:?}",
+                (p.x, p.z),
+                (expect.x, expect.z)
+            );
         }
     }
     let mut region = DecorationRegion::new(dump.center, refs, oxide.decorator.facts());
@@ -525,7 +552,10 @@ fn compare(dump: &Dump, oxide: &Oxide) -> Result<ChunkReport> {
     // ORACLE_TRACE=1, the Rust half of ChunkOracle's trace: C's writes in first-write order.
     if std::env::var_os("ORACLE_TRACE").is_some() {
         for (at, state) in &writes {
-            eprintln!("OXTRACE {} {} {} {} {state}", dump.center.x, at.x, at.y, at.z);
+            eprintln!(
+                "OXTRACE {} {} {} {} {state}",
+                dump.center.x, at.x, at.y, at.z
+            );
         }
     }
     let mut decorated: Vec<ChunkData> = terrain.clone();
@@ -538,7 +568,13 @@ fn compare(dump: &Dump, oxide: &Oxide) -> Result<ChunkReport> {
         if y_rel < 0 || y_rel >= dump.height {
             continue;
         }
-        set_block_at(&mut decorated[i], (at.x & 15) as usize, y_rel as usize, (at.z & 15) as usize, state);
+        set_block_at(
+            &mut decorated[i],
+            (at.x & 15) as usize,
+            y_rel as usize,
+            (at.z & 15) as usize,
+            state,
+        );
     }
 
     let mut f = FeatureTally::default();
@@ -602,7 +638,12 @@ fn compare(dump: &Dump, oxide: &Oxide) -> Result<ChunkReport> {
     }
 
     Ok(ChunkReport {
-        file: dump.path.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+        file: dump
+            .path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned(),
         center: (dump.center.x, dump.center.z),
         surface_biome: mid.clone(),
         terrain: t,
@@ -616,7 +657,12 @@ fn compare(dump: &Dump, oxide: &Oxide) -> Result<ChunkReport> {
 }
 
 pub fn run(datapack: &Path, root: &Path, dimension: &str, seed: i64) -> Result<Report> {
-    report(&Oxide::open(datapack, dimension, seed)?, root, dimension, seed)
+    report(
+        &Oxide::open(datapack, dimension, seed)?,
+        root,
+        dimension,
+        seed,
+    )
 }
 
 fn report(oxide: &Oxide, root: &Path, dimension: &str, seed: i64) -> Result<Report> {
@@ -640,7 +686,8 @@ fn report(oxide: &Oxide, root: &Path, dimension: &str, seed: i64) -> Result<Repo
     let mut chunks = Vec::new();
     for file in &files {
         let dump = load_dump(file).with_context(|| format!("parsing {}", file.display()))?;
-        chunks.push(compare(&dump, oxide).with_context(|| format!("comparing {}", file.display()))?);
+        chunks
+            .push(compare(&dump, oxide).with_context(|| format!("comparing {}", file.display()))?);
     }
     Ok(Report {
         dimension: dimension.to_string(),
@@ -729,7 +776,11 @@ impl Views {
 fn views(dump: &Dump, nine: &[ChunkPos], terrain: &[ChunkData], decorated: &[ChunkData]) -> Views {
     let height = dump.height as usize;
     let mut names = Interner::default();
-    let mut v = Views { min_y: dump.min_y, height: dump.height, ..Default::default() };
+    let mut v = Views {
+        min_y: dump.min_y,
+        height: dump.height,
+        ..Default::default()
+    };
     let mut slice_v = Vec::with_capacity(48 * height);
     let mut slice_o = Vec::with_capacity(48 * height);
     for gz in 0..48 {
@@ -781,7 +832,11 @@ fn views(dump: &Dump, nine: &[ChunkPos], terrain: &[ChunkData], decorated: &[Chu
             slice_o.push(names.id(block_at(&decorated[i], gx & 15, y, 8).name.to_string()));
         }
     }
-    let wrong: Vec<u32> = slice_v.iter().zip(&slice_o).map(|(a, b)| (a != b) as u32).collect();
+    let wrong: Vec<u32> = slice_v
+        .iter()
+        .zip(&slice_o)
+        .map(|(a, b)| (a != b) as u32)
+        .collect();
     v.slice_wrong = rle(&wrong);
     v.slice_vanilla = rle(&slice_v);
     v.slice_oxide = rle(&slice_o);
@@ -817,11 +872,18 @@ pub struct WorldMap {
 fn save_world(dir: &Path, data_version: i32, world: &[ChunkData]) -> Result<()> {
     let region_dir = dir.join("region");
     std::fs::create_dir_all(&region_dir)?;
-    let opts = oxide_anvil::nbt::ChunkNbtWriteOptions { data_version, last_update: 0, inhabited_time: 0 };
+    let opts = oxide_anvil::nbt::ChunkNbtWriteOptions {
+        data_version,
+        last_update: 0,
+        inhabited_time: 0,
+    };
     let mut regions: BTreeMap<(i32, i32), Vec<(ChunkPos, Vec<u8>)>> = BTreeMap::new();
     for chunk in world {
         let bytes = oxide_anvil::nbt::serialize_chunk(chunk, &opts)?;
-        regions.entry(oxide_anvil::region::region_coords_for(&chunk.pos)).or_default().push((chunk.pos, bytes));
+        regions
+            .entry(oxide_anvil::region::region_coords_for(&chunk.pos))
+            .or_default()
+            .push((chunk.pos, bytes));
     }
     for chunks in regions.values() {
         let file = region_dir.join(oxide_anvil::region::region_file_name(&chunks[0].0));
@@ -834,10 +896,15 @@ fn world_map(oxide: &Oxide, radius: i32, save: Option<(&Path, i32)>) -> Result<W
     let outer = radius + 1;
     let width = (2 * outer + 1) as usize;
     let square = |r: i32| -> Vec<ChunkPos> {
-        (-r..=r).flat_map(|z| (-r..=r).map(move |x| ChunkPos::new(x, z))).collect()
+        (-r..=r)
+            .flat_map(|z| (-r..=r).map(move |x| ChunkPos::new(x, z)))
+            .collect()
     };
     let started = std::time::Instant::now();
-    let terrain: Vec<ChunkData> = square(outer).par_iter().map(|p| oxide.terrain(*p)).collect();
+    let terrain: Vec<ChunkData> = square(outer)
+        .par_iter()
+        .map(|p| oxide.terrain(*p))
+        .collect();
     let terrain_ms = started.elapsed().as_millis() as u64;
     let at = |x: i32, z: i32| &terrain[(z + outer) as usize * width + (x + outer) as usize];
 
@@ -865,7 +932,13 @@ fn world_map(oxide: &Oxide, radius: i32, save: Option<(&Path, i32)>) -> Result<W
             continue;
         }
         let i = (cp.z + radius) as usize * chunks + (cp.x + radius) as usize;
-        set_block_at(&mut world[i], (at.x & 15) as usize, y as usize, (at.z & 15) as usize, state);
+        set_block_at(
+            &mut world[i],
+            (at.x & 15) as usize,
+            y as usize,
+            (at.z & 15) as usize,
+            state,
+        );
     }
 
     if let Some((dir, data_version)) = save {
@@ -950,7 +1023,8 @@ pub fn site(
         Some(dir) => {
             let path = datapack.join("version.json");
             let version: serde_json::Value = serde_json::from_str(
-                &std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?,
+                &std::fs::read_to_string(&path)
+                    .with_context(|| format!("reading {}", path.display()))?,
             )?;
             let data_version = version["data_version"]
                 .as_i64()
@@ -978,7 +1052,10 @@ pub fn site(
         error: report.as_ref().err().map(|e| format!("{e:#}")),
         map: world_map(&oxide, radius, save)?,
     };
-    std::fs::write(out.join(format!("run_{seed}_{dim_path}.json")), serde_json::to_string(&run)?)?;
+    std::fs::write(
+        out.join(format!("run_{seed}_{dim_path}.json")),
+        serde_json::to_string(&run)?,
+    )?;
     let mut runs: Vec<String> = std::fs::read_dir(out)?
         .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
         .filter(|name| name.starts_with("run_") && name.ends_with(".json"))
@@ -1057,13 +1134,22 @@ impl Report {
                 FeatureTally::sum(&f.oxide_only),
             );
         }
-        let _ = writeln!(s, "\n| centre | largest terrain mismatches (vanilla -> oxide) |\n|---|---|");
+        let _ = writeln!(
+            s,
+            "\n| centre | largest terrain mismatches (vanilla -> oxide) |\n|---|---|"
+        );
         for c in &self.chunks {
             let pairs: Vec<String> = top(&c.terrain.pairs, 4)
                 .into_iter()
                 .map(|(k, v)| format!("`{}` {v}", k.replace("minecraft:", "")))
                 .collect();
-            let _ = writeln!(s, "| {},{} | {} |", c.center.0, c.center.1, pairs.join("; "));
+            let _ = writeln!(
+                s,
+                "| {},{} | {} |",
+                c.center.0,
+                c.center.1,
+                pairs.join("; ")
+            );
         }
         let _ = writeln!(s, "\n### Aggregate\n");
         let _ = writeln!(
@@ -1096,14 +1182,26 @@ impl Report {
             FeatureTally::sum(&feats.vanilla_only),
             FeatureTally::sum(&feats.oxide_only)
         );
-        let _ = writeln!(s, "\n| heightmap | columns | wrong | mean abs error of wrong |\n|---|---|---|---|");
+        let _ = writeln!(
+            s,
+            "\n| heightmap | columns | wrong | mean abs error of wrong |\n|---|---|---|---|"
+        );
         for (k, (t, w, e)) in &hm {
             let mean = if *w == 0 { 0.0 } else { *e as f64 / *w as f64 };
             let _ = writeln!(s, "| {k} | {t} | {w} | {mean:.2} |");
         }
-        let _ = writeln!(s, "\n| terrain Y band | blocks | mismatched | match |\n|---|---|---|---|");
+        let _ = writeln!(
+            s,
+            "\n| terrain Y band | blocks | mismatched | match |\n|---|---|---|---|"
+        );
         for (band, (t, m)) in &terrain.bands {
-            let _ = writeln!(s, "| {}..{} | {t} | {m} | {} |", band, band + 31, pct(t - m, *t));
+            let _ = writeln!(
+                s,
+                "| {}..{} | {t} | {m} | {} |",
+                band,
+                band + 31,
+                pct(t - m, *t)
+            );
         }
         let section = |s: &mut String, title: &str, map: &BTreeMap<String, u64>, n: usize| {
             let _ = writeln!(s, "\n| {title} | count |\n|---|---|");
@@ -1113,9 +1211,24 @@ impl Report {
         };
         section(&mut s, "terrain: vanilla -> oxide", &terrain.pairs, 25);
         section(&mut s, "biome: vanilla -> oxide", &biome_pairs, 15);
-        section(&mut s, "features, vanilla-only (vanilla block)", &feats.vanilla_only, 20);
-        section(&mut s, "features, oxide-only (oxide block)", &feats.oxide_only, 20);
-        section(&mut s, "features, different final state", &feats.different, 15);
+        section(
+            &mut s,
+            "features, vanilla-only (vanilla block)",
+            &feats.vanilla_only,
+            20,
+        );
+        section(
+            &mut s,
+            "features, oxide-only (oxide block)",
+            &feats.oxide_only,
+            20,
+        );
+        section(
+            &mut s,
+            "features, different final state",
+            &feats.different,
+            15,
+        );
         if let Some(order) = &self.feature_order {
             let _ = writeln!(
                 s,
@@ -1129,7 +1242,10 @@ impl Report {
             }
         }
         if !self.unsupported.is_empty() {
-            let _ = writeln!(s, "\n| Oxide decoration gaps (skipped) | count |\n|---|---|");
+            let _ = writeln!(
+                s,
+                "\n| Oxide decoration gaps (skipped) | count |\n|---|---|"
+            );
             for (k, v) in &self.unsupported {
                 let _ = writeln!(s, "| `{k}` | {v} |");
             }
@@ -1165,7 +1281,11 @@ mod tests {
                 continue;
             };
             for dim in ["minecraft:overworld", "minecraft:the_nether"] {
-                if !seed.path().join(dim.trim_start_matches("minecraft:")).exists() {
+                if !seed
+                    .path()
+                    .join(dim.trim_start_matches("minecraft:"))
+                    .exists()
+                {
                     continue;
                 }
                 let report = run(&root, &oracle, dim, seed_value).expect("oracle comparison");

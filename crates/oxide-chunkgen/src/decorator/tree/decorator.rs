@@ -32,11 +32,19 @@ pub(super) struct Lists {
 }
 
 impl Lists {
-    pub fn new(mut logs: Vec<BlockPos>, mut leaves: Vec<BlockPos>, mut roots: Vec<BlockPos>) -> Self {
+    pub fn new(
+        mut logs: Vec<BlockPos>,
+        mut leaves: Vec<BlockPos>,
+        mut roots: Vec<BlockPos>,
+    ) -> Self {
         logs.sort_by_key(|p| p.y);
         leaves.sort_by_key(|p| p.y);
         roots.sort_by_key(|p| p.y);
-        Self { logs, leaves, roots }
+        Self {
+            logs,
+            leaves,
+            roots,
+        }
     }
 
     /// `Context.logs()` combined with roots as `getLowestTrunkOrRootOfTree`.
@@ -55,10 +63,21 @@ impl Lists {
 
 #[derive(Debug)]
 pub(super) enum Decorator {
-    TrunkVine { vine: BlockState },
-    LeaveVine { probability: f32, vine: BlockState },
-    Cocoa { probability: f32, cocoa: BlockState },
-    Beehive { probability: f32, nest: BlockState },
+    TrunkVine {
+        vine: BlockState,
+    },
+    LeaveVine {
+        probability: f32,
+        vine: BlockState,
+    },
+    Cocoa {
+        probability: f32,
+        cocoa: BlockState,
+    },
+    Beehive {
+        probability: f32,
+        nest: BlockState,
+    },
     AlterGround(StateProvider),
     AttachedToLeaves {
         probability: f32,
@@ -68,15 +87,35 @@ pub(super) enum Decorator {
         required_empty: i32,
         directions: Vec<Dir>,
     },
-    AttachedToLogs { probability: f32, provider: StateProvider, directions: Vec<Dir> },
-    CreakingHeart { probability: f32, heart: BlockState },
-    PaleMoss { leaves: f32, trunk: f32, ground: f32, patch: Arc<Feature>, moss: BlockState },
-    PlaceOnGround { tries: i32, radius: i32, height: i32, provider: StateProvider },
+    AttachedToLogs {
+        probability: f32,
+        provider: StateProvider,
+        directions: Vec<Dir>,
+    },
+    CreakingHeart {
+        probability: f32,
+        heart: BlockState,
+    },
+    PaleMoss {
+        leaves: f32,
+        trunk: f32,
+        ground: f32,
+        patch: Arc<Feature>,
+        moss: BlockState,
+    },
+    PlaceOnGround {
+        tries: i32,
+        radius: i32,
+        height: i32,
+        provider: StateProvider,
+    },
 }
 
 /// The default state of block `path`, with `properties` applied, if the facts know the result.
 fn known_state(facts: &BlockFacts, path: &str, properties: &[(&str, &str)]) -> Option<BlockState> {
-    let mut state = facts.default_state(&ResourceLocation::minecraft(path))?.clone();
+    let mut state = facts
+        .default_state(&ResourceLocation::minecraft(path))?
+        .clone();
     for (name, value) in properties {
         state = with_property(state, name, value);
     }
@@ -85,7 +124,8 @@ fn known_state(facts: &BlockFacts, path: &str, properties: &[(&str, &str)]) -> O
 
 /// The bare vine state, when the facts also know a vine with a face set.
 fn vine(facts: &BlockFacts) -> Option<BlockState> {
-    known_state(facts, "vine", &[]).filter(|_| known_state(facts, "vine", &[("east", "true")]).is_some())
+    known_state(facts, "vine", &[])
+        .filter(|_| known_state(facts, "vine", &[("east", "true")]).is_some())
 }
 
 fn directions(names: &[String]) -> Result<Vec<Dir>> {
@@ -132,18 +172,33 @@ impl Decorator {
                 None => return missing("minecraft:trunk_vine"),
             },
             TreeDecorator::LeaveVine { probability } => match vine(facts) {
-                Some(vine) => Self::LeaveVine { probability: *probability, vine },
+                Some(vine) => Self::LeaveVine {
+                    probability: *probability,
+                    vine,
+                },
                 None => return missing("minecraft:leave_vine"),
             },
-            TreeDecorator::Cocoa { probability } => match known_state(facts, "cocoa", &[("age", "2"), ("facing", "north")]) {
-                Some(cocoa) => Self::Cocoa { probability: *probability, cocoa },
-                None => return missing("minecraft:cocoa"),
-            },
-            TreeDecorator::Beehive { probability } => match known_state(facts, "bee_nest", &[("facing", "south")]) {
-                Some(nest) => Self::Beehive { probability: *probability, nest },
-                None => return missing("minecraft:beehive"),
-            },
-            TreeDecorator::AlterGround { provider } => Self::AlterGround(StateProvider::compile(provider, facts)?),
+            TreeDecorator::Cocoa { probability } => {
+                match known_state(facts, "cocoa", &[("age", "2"), ("facing", "north")]) {
+                    Some(cocoa) => Self::Cocoa {
+                        probability: *probability,
+                        cocoa,
+                    },
+                    None => return missing("minecraft:cocoa"),
+                }
+            }
+            TreeDecorator::Beehive { probability } => {
+                match known_state(facts, "bee_nest", &[("facing", "south")]) {
+                    Some(nest) => Self::Beehive {
+                        probability: *probability,
+                        nest,
+                    },
+                    None => return missing("minecraft:beehive"),
+                }
+            }
+            TreeDecorator::AlterGround { provider } => {
+                Self::AlterGround(StateProvider::compile(provider, facts)?)
+            }
             TreeDecorator::AttachedToLeaves {
                 probability,
                 exclusion_radius_xz,
@@ -159,18 +214,33 @@ impl Decorator {
                 required_empty: *required_empty_blocks,
                 directions: directions(names)?,
             },
-            TreeDecorator::AttachedToLogs { probability, block_provider, directions: names } => Self::AttachedToLogs {
+            TreeDecorator::AttachedToLogs {
+                probability,
+                block_provider,
+                directions: names,
+            } => Self::AttachedToLogs {
                 probability: *probability,
                 provider: StateProvider::compile(block_provider, facts)?,
                 directions: directions(names)?,
             },
             TreeDecorator::CreakingHeart { probability } => {
-                match known_state(facts, "creaking_heart", &[("creaking_heart_state", "dormant"), ("natural", "true")]) {
-                    Some(heart) => Self::CreakingHeart { probability: *probability, heart },
+                match known_state(
+                    facts,
+                    "creaking_heart",
+                    &[("creaking_heart_state", "dormant"), ("natural", "true")],
+                ) {
+                    Some(heart) => Self::CreakingHeart {
+                        probability: *probability,
+                        heart,
+                    },
                     None => return missing("minecraft:creaking_heart"),
                 }
             }
-            TreeDecorator::PaleMoss { leaves_probability, trunk_probability, ground_probability } => {
+            TreeDecorator::PaleMoss {
+                leaves_probability,
+                trunk_probability,
+                ground_probability,
+            } => {
                 let moss = known_state(facts, "pale_hanging_moss", &[("tip", "true")]);
                 let patch = lookup(&ResourceLocation::minecraft(PALE_MOSS_PATCH))?;
                 match (moss, patch) {
@@ -184,7 +254,12 @@ impl Decorator {
                     _ => return missing("minecraft:pale_moss (moss block or ground patch)"),
                 }
             }
-            TreeDecorator::PlaceOnGround { tries, radius, height, block_state_provider } => Self::PlaceOnGround {
+            TreeDecorator::PlaceOnGround {
+                tries,
+                radius,
+                height,
+                block_state_provider,
+            } => Self::PlaceOnGround {
                 tries: *tries,
                 radius: *radius,
                 height: *height,
@@ -268,7 +343,14 @@ impl Decorator {
                     }
                 }
             }
-            Self::AttachedToLeaves { probability, exclusion_xz, exclusion_y, provider, required_empty, directions } => {
+            Self::AttachedToLeaves {
+                probability,
+                exclusion_xz,
+                exclusion_y,
+                provider,
+                required_empty,
+                directions,
+            } => {
                 let mut blacklist = HashSet::new();
                 let mut leaves = lists.leaves.clone();
                 shuffle(&mut leaves, &mut *run.cx.random);
@@ -292,7 +374,11 @@ impl Decorator {
                     run.set(Layer::Decoration, p, state);
                 }
             }
-            Self::AttachedToLogs { probability, provider, directions } => {
+            Self::AttachedToLogs {
+                probability,
+                provider,
+                directions,
+            } => {
                 let mut logs = lists.logs.clone();
                 shuffle(&mut logs, &mut *run.cx.random);
                 for log in logs {
@@ -317,10 +403,20 @@ impl Decorator {
                     }
                 }
             }
-            Self::PaleMoss { leaves, trunk, ground, patch, moss } => {
+            Self::PaleMoss {
+                leaves,
+                trunk,
+                ground,
+                patch,
+                moss,
+            } => {
                 let mut logs = lists.logs.clone();
                 shuffle(&mut logs, &mut *run.cx.random);
-                let Some(origin) = logs.iter().copied().reduce(|best, p| if p.y < best.y { p } else { best }) else {
+                let Some(origin) = logs
+                    .iter()
+                    .copied()
+                    .reduce(|best, p| if p.y < best.y { p } else { best })
+                else {
                     return Ok(());
                 };
                 if run.float() < *ground {
@@ -339,7 +435,12 @@ impl Decorator {
                     }
                 }
             }
-            Self::PlaceOnGround { tries, radius, height, provider } => {
+            Self::PlaceOnGround {
+                tries,
+                radius,
+                height,
+                provider,
+            } => {
                 place_on_ground(run, lists, (*tries, *radius, *height), provider)?;
             }
         }
@@ -349,11 +450,19 @@ impl Decorator {
 
 /// A vine on `p` attached to the face pointing at `face`.
 fn place_vine(run: &mut Run<'_, '_, '_, '_>, vine: &BlockState, p: BlockPos, face: Dir) {
-    run.set(Layer::Decoration, p, with_property(vine.clone(), face.name(), "true"));
+    run.set(
+        Layer::Decoration,
+        p,
+        with_property(vine.clone(), face.name(), "true"),
+    );
 }
 
 /// `AlterGroundDecorator.placeCircle`.
-fn place_circle(run: &mut Run<'_, '_, '_, '_>, provider: &StateProvider, center: BlockPos) -> Res<()> {
+fn place_circle(
+    run: &mut Run<'_, '_, '_, '_>,
+    provider: &StateProvider,
+    center: BlockPos,
+) -> Res<()> {
     for xx in -2i32..=2 {
         for zz in -2i32..=2 {
             if xx.abs() != 2 || zz.abs() != 2 {
@@ -443,7 +552,11 @@ fn place_on_ground(
     let (low_y, high_y) = (min_y.wrapping_sub(height), min_y.wrapping_add(height));
     let (low_z, high_z) = (min_z.wrapping_sub(radius), max_z.wrapping_add(radius));
     for _ in 0..tries {
-        let p = BlockPos::new(run.between(low_x, high_x), run.between(low_y, high_y), run.between(low_z, high_z));
+        let p = BlockPos::new(
+            run.between(low_x, high_x),
+            run.between(low_y, high_y),
+            run.between(low_z, high_z),
+        );
         let above = off(p, 0, 1, 0);
         if !(run.is_air(above) || run.has_vine(above)) {
             continue;
@@ -451,7 +564,11 @@ fn place_on_ground(
         if !run.fact(p, BlockFact::SolidRender) {
             continue;
         }
-        let Some(surface) = run.cx.region.height(HeightmapType::MotionBlockingNoLeaves, p.x, p.z) else {
+        let Some(surface) = run
+            .cx
+            .region
+            .height(HeightmapType::MotionBlockingNoLeaves, p.x, p.z)
+        else {
             continue;
         };
         if surface <= above.y {

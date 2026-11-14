@@ -41,9 +41,13 @@ impl LakeFeature {
         Ok(Self {
             fluid: StateProvider::compile(&config.fluid, facts).context("lake fluid")?,
             barrier: StateProvider::compile(&config.barrier, facts).context("lake barrier")?,
-            can_place_feature: Predicate::compile(&config.can_place_feature, facts).context("lake can_place_feature")?,
-            can_replace_with_air_or_fluid: Predicate::compile(&config.can_replace_with_air_or_fluid, facts)
-                .context("lake can_replace_with_air_or_fluid")?,
+            can_place_feature: Predicate::compile(&config.can_place_feature, facts)
+                .context("lake can_place_feature")?,
+            can_replace_with_air_or_fluid: Predicate::compile(
+                &config.can_replace_with_air_or_fluid,
+                facts,
+            )
+            .context("lake can_replace_with_air_or_fluid")?,
             can_replace_with_barrier: Predicate::compile(&config.can_replace_with_barrier, facts)
                 .context("lake can_replace_with_barrier")?,
             cave_air: default_state(facts, "cave_air")?,
@@ -133,7 +137,11 @@ impl LakeFeature {
                 for y in layers(grid[(x * 16 + z) as usize]) {
                     let pos = offset(origin, x, y, z);
                     if self.can_replace_with_air_or_fluid.test(cx, pos) {
-                        let state = if y >= 4 { self.cave_air.clone() } else { fluid.clone() };
+                        let state = if y >= 4 {
+                            self.cave_air.clone()
+                        } else {
+                            fluid.clone()
+                        };
                         cx.region.set_block(pos, state);
                     }
                 }
@@ -161,7 +169,9 @@ impl LakeFeature {
             for x in 0..16 {
                 for z in 0..16 {
                     let pos = offset(origin, x, 4, z);
-                    if should_freeze(cx, pos, pos, false) && self.can_replace_with_air_or_fluid.test(cx, pos) {
+                    if should_freeze(cx, pos, pos, false)
+                        && self.can_replace_with_air_or_fluid.test(cx, pos)
+                    {
                         cx.region.set_block(pos, self.ice.clone());
                     }
                 }

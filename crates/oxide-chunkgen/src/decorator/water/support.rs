@@ -81,7 +81,11 @@ impl Dir {
 
 pub(super) fn relative(pos: BlockPos, dir: Dir, distance: i32) -> BlockPos {
     let (dx, dy, dz) = dir.step();
-    BlockPos::new(pos.x + dx * distance, pos.y + dy * distance, pos.z + dz * distance)
+    BlockPos::new(
+        pos.x + dx * distance,
+        pos.y + dy * distance,
+        pos.z + dz * distance,
+    )
 }
 
 pub(super) fn offset(pos: BlockPos, dx: i32, dy: i32, dz: i32) -> BlockPos {
@@ -122,7 +126,10 @@ pub(super) fn is_air(cx: &FeatureContext<'_, '_, '_>, pos: BlockPos) -> bool {
 
 /// Whether the block at `pos` is in the block tag `minecraft:<tag>`.
 pub(super) fn in_tag_at(cx: &FeatureContext<'_, '_, '_>, pos: BlockPos, tag: &str) -> bool {
-    cx.env.block_tags.contains(&ResourceLocation::minecraft(tag), &block_in(cx.region, pos).name)
+    cx.env.block_tags.contains(
+        &ResourceLocation::minecraft(tag),
+        &block_in(cx.region, pos).name,
+    )
 }
 
 /// `BuiltInRegistries.BLOCK.getRandomElementOf(#minecraft:<tag>, random)`: one `nextInt(size)`
@@ -130,8 +137,14 @@ pub(super) fn in_tag_at(cx: &FeatureContext<'_, '_, '_>, pos: BlockPos, tag: &st
 // PARITY-CHECK: vanilla drops an optional (`required: false`) tag entry naming a block the
 // registry lacks, shrinking the list; the tag loader keeps the id, so a datapack with such an
 // entry draws over a longer list. Vanilla 26.2's coral tags have none; verify per datapack.
-pub(super) fn random_member(cx: &mut FeatureContext<'_, '_, '_>, tag: &str) -> Option<ResourceLocation> {
-    let members = cx.env.block_tags.ordered(&ResourceLocation::minecraft(tag))?;
+pub(super) fn random_member(
+    cx: &mut FeatureContext<'_, '_, '_>,
+    tag: &str,
+) -> Option<ResourceLocation> {
+    let members = cx
+        .env
+        .block_tags
+        .ordered(&ResourceLocation::minecraft(tag))?;
     if members.is_empty() {
         return None;
     }
@@ -140,7 +153,10 @@ pub(super) fn random_member(cx: &mut FeatureContext<'_, '_, '_>, tag: &str) -> O
 }
 
 /// A tag member's default state; a block the facts do not list is tallied and yields `None`.
-pub(super) fn member_default(cx: &mut FeatureContext<'_, '_, '_>, block: &ResourceLocation) -> Option<BlockState> {
+pub(super) fn member_default(
+    cx: &mut FeatureContext<'_, '_, '_>,
+    block: &ResourceLocation,
+) -> Option<BlockState> {
     match cx.env.facts.default_state(block) {
         Some(state) => Some(state.clone()),
         None => {
@@ -151,7 +167,11 @@ pub(super) fn member_default(cx: &mut FeatureContext<'_, '_, '_>, block: &Resour
 }
 
 /// `BlockState.canSurvive`, with an unanswered question tallied and read as "cannot place".
-pub(super) fn survives(cx: &mut FeatureContext<'_, '_, '_>, state: &BlockState, pos: BlockPos) -> bool {
+pub(super) fn survives(
+    cx: &mut FeatureContext<'_, '_, '_>,
+    state: &BlockState,
+    pos: BlockPos,
+) -> bool {
     match cx.env.behaviours.can_survive(state, cx.region, pos) {
         Some(answer) => answer,
         None => {

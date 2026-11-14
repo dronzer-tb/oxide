@@ -65,7 +65,11 @@ fn radius_round(random: &mut impl RandomSource, y: i32, height: i32, width: i32)
     let k = 3.5f32 - random.next_float();
     let mut scale = (1.0f32 - pow2(y) as f32 / (height as f32 * k)) * width as f32;
     if height > 15 + random.next_int_bounded(5) {
-        let temp = if y < 3 + random.next_int_bounded(6) { y / 2 } else { y };
+        let temp = if y < 3 + random.next_int_bounded(6) {
+            y / 2
+        } else {
+            y
+        };
         scale = (1.0f32 - temp as f32 / (height as f32 * k * 0.4f32)) * width as f32;
     }
     ceil(scale / 2.0)
@@ -90,7 +94,9 @@ impl IcebergFeature {
 
     /// Packed ice, snow block or blue ice: the blocks an iceberg is made of.
     fn is_iceberg_block(&self, state: &BlockState) -> bool {
-        ["packed_ice", "snow_block", "blue_ice"].iter().any(|path| is_block(state, path))
+        ["packed_ice", "snow_block", "blue_ice"]
+            .iter()
+            .any(|path| is_block(state, path))
     }
 
     /// `IcebergFeature.place`: the origin is moved to sea level before anything is drawn.
@@ -112,13 +118,21 @@ impl IcebergFeature {
         let under = (over + cx.random.next_int_bounded(11)).min(18);
         let width = (over + cx.random.next_int_bounded(7) - cx.random.next_int_bounded(5)).min(11);
         let a = if is_ellipse { ellipse_a } else { 11 };
-        let shape = Shape { origin, snow_on_top, is_ellipse, ellipse_c, angle };
+        let shape = Shape {
+            origin,
+            snow_on_top,
+            is_ellipse,
+            ellipse_c,
+            angle,
+        };
 
         for x in -a..a {
             for z in -a..a {
                 for y in 0..over {
                     let radius = if is_ellipse {
-                        ceil((1.0f32 - pow2(y) as f32 / (over as f32 * 1.0f32)) * width as f32 / 2.0)
+                        ceil(
+                            (1.0f32 - pow2(y) as f32 / (over as f32 * 1.0f32)) * width as f32 / 2.0,
+                        )
                     } else {
                         radius_round(cx.random, y, over, width)
                     };
@@ -146,7 +160,11 @@ impl IcebergFeature {
                 }
             }
         }
-        let cut_out = if is_ellipse { cx.random.next_double() > 0.1 } else { cx.random.next_double() > 0.7 };
+        let cut_out = if is_ellipse {
+            cx.random.next_double() > 0.1
+        } else {
+            cx.random.next_double() > 0.7
+        };
         if cut_out {
             self.cut_out(cx, &shape, width, over, ellipse_a);
         }
@@ -181,14 +199,20 @@ impl IcebergFeature {
             return;
         }
         let pos = offset(shape.origin, x, y, z);
-        let compare = if shape.is_ellipse { -0.5 } else { f64::from(-6 - cx.random.next_int_bounded(3)) };
+        let compare = if shape.is_ellipse {
+            -0.5
+        } else {
+            f64::from(-6 - cx.random.next_int_bounded(3))
+        };
         if signed > compare && cx.random.next_double() > 0.9 {
             return;
         }
         let height_difference = height - y;
         let state = block_in(cx.region, pos);
         let replaceable = cx.env.facts.is(state, BlockFact::Air)
-            || ["snow_block", "ice", "water"].iter().any(|path| is_block(state, path));
+            || ["snow_block", "ice", "water"]
+                .iter()
+                .any(|path| is_block(state, path));
         if !replaceable {
             return;
         }
@@ -198,9 +222,14 @@ impl IcebergFeature {
         let snow = shape.snow_on_top
             && !is_water
             && f64::from(height_difference)
-                <= f64::from(cx.random.next_int_bounded((height / divisor).max(1))) + f64::from(height) * 0.6
+                <= f64::from(cx.random.next_int_bounded((height / divisor).max(1)))
+                    + f64::from(height) * 0.6
             && randomness;
-        let placed = if snow { self.snow_block.clone() } else { self.state.clone() };
+        let placed = if snow {
+            self.snow_block.clone()
+        } else {
+            self.state.clone()
+        };
         cx.region.set_block(pos, placed);
     }
 
@@ -231,7 +260,10 @@ impl IcebergFeature {
                     } else if iceberg {
                         let open = [(-1, 0), (1, 0), (0, -1), (0, 1)]
                             .iter()
-                            .filter(|(dx, dz)| !self.is_iceberg_block(block_in(cx.region, offset(pos, *dx, 0, *dz))))
+                            .filter(|(dx, dz)| {
+                                !self
+                                    .is_iceberg_block(block_in(cx.region, offset(pos, *dx, 0, *dz)))
+                            })
                             .count();
                         if open >= 3 {
                             cx.region.set_block(pos, self.air.clone());
@@ -244,7 +276,14 @@ impl IcebergFeature {
 
     /// `IcebergFeature.carve`'s caller: one cut through the iceberg, a chasm above water that
     /// becomes a water-filled slot below it.
-    fn cut_out(&self, cx: &mut FeatureContext<'_, '_, '_>, shape: &Shape, width: i32, height: i32, ellipse_a: i32) {
+    fn cut_out(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        shape: &Shape,
+        width: i32,
+        height: i32,
+        ellipse_a: i32,
+    ) {
         let sign_x = if cx.random.next_boolean() { -1 } else { 1 };
         let sign_z = if cx.random.next_boolean() { -1 } else { 1 };
         let mut x_offset = cx.random.next_int_bounded((width / 2 - 2).max(1));

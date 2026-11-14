@@ -86,8 +86,17 @@ impl DecorationCache {
         }
     }
 
-    fn terrain(&self, pos: ChunkPos, generate: &(dyn Fn(ChunkPos) -> ChunkData + Sync)) -> Arc<ChunkData> {
-        if let Some(found) = self.terrain.lock().expect("terrain cache poisoned").get(&pos) {
+    fn terrain(
+        &self,
+        pos: ChunkPos,
+        generate: &(dyn Fn(ChunkPos) -> ChunkData + Sync),
+    ) -> Arc<ChunkData> {
+        if let Some(found) = self
+            .terrain
+            .lock()
+            .expect("terrain cache poisoned")
+            .get(&pos)
+        {
             return found;
         }
         // Outside the lock: generation is slow, and two threads racing here produce the same
@@ -147,7 +156,8 @@ pub fn decorated_chunk(
             let source = ChunkPos::new(pos.x + dx, pos.z + dz);
             let writes = cache.writes(source, generate, decorator, facts);
             for (at, state) in writes.iter() {
-                if at.chunk_pos() != pos || at.y < chunk.min_y || at.y >= chunk.min_y + chunk.height {
+                if at.chunk_pos() != pos || at.y < chunk.min_y || at.y >= chunk.min_y + chunk.height
+                {
                     continue;
                 }
                 let Some(section) = chunk.sections.get_mut(((at.y - chunk.min_y) >> 4) as usize)
@@ -187,7 +197,10 @@ pub fn heightmaps(chunk: &ChunkData, facts: &BlockFacts) -> HashMap<HeightmapTyp
             .iter()
             .map(|state| KINDS.map(|kind| facts.is(state, height_fact(kind))))
             .collect();
-        if counted.iter().all(|kinds| kinds.iter().all(|&counts| !counts)) {
+        if counted
+            .iter()
+            .all(|kinds| kinds.iter().all(|&counts| !counts))
+        {
             continue;
         }
         let indices = section.block_states.indices();
@@ -235,7 +248,11 @@ mod tests {
         let section = &chunk.sections[((y - chunk.min_y) >> 4) as usize];
         section
             .block_states
-            .get(local_index((x & 15) as usize, ((y - chunk.min_y) & 15) as usize, (z & 15) as usize))
+            .get(local_index(
+                (x & 15) as usize,
+                ((y - chunk.min_y) & 15) as usize,
+                (z & 15) as usize,
+            ))
             .clone()
     }
 
@@ -258,14 +275,23 @@ mod tests {
         assert_eq!(surface.get(0, 0), 64 + 3 + 64);
         assert_eq!(surface.get(5, 5), 64 + 64);
         let no_leaves = &chunk.heightmaps[&HeightmapType::MotionBlockingNoLeaves];
-        assert_eq!(no_leaves.get(15, 0), 64 + 64, "a leaf does not raise this map");
+        assert_eq!(
+            no_leaves.get(15, 0),
+            64 + 64,
+            "a leaf does not raise this map"
+        );
     }
 
     #[test]
     fn output_does_not_depend_on_request_order_or_on_the_cache() {
         let facts = facts();
         let terrain = |pos: ChunkPos| flat_chunk(pos, 60 + (pos.x + pos.z).rem_euclid(3));
-        let targets = [ChunkPos::new(0, 0), ChunkPos::new(1, 0), ChunkPos::new(0, 1), ChunkPos::new(-1, -1)];
+        let targets = [
+            ChunkPos::new(0, 0),
+            ChunkPos::new(1, 0),
+            ChunkPos::new(0, 1),
+            ChunkPos::new(-1, -1),
+        ];
 
         let warm = DecorationCache::new(64, 64);
         let forward: Vec<ChunkData> = targets
@@ -300,7 +326,11 @@ mod tests {
             flat_chunk(pos, 64)
         };
         decorated_chunk(ChunkPos::new(0, 0), &terrain, &Poles, &facts, &cache);
-        assert_eq!(calls.load(Ordering::Relaxed), 25, "the 5x5 around one chunk");
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            25,
+            "the 5x5 around one chunk"
+        );
         decorated_chunk(ChunkPos::new(1, 0), &terrain, &Poles, &facts, &cache);
         assert_eq!(calls.load(Ordering::Relaxed), 30, "one new column of five");
     }

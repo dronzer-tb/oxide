@@ -28,7 +28,10 @@ pub struct BonusChestFeature {
 
 impl BonusChestFeature {
     pub fn compile(facts: &BlockFacts) -> Result<Self> {
-        Ok(Self { chest: default_state(facts, "chest")?, torch: default_state(facts, "torch")? })
+        Ok(Self {
+            chest: default_state(facts, "chest")?,
+            torch: default_state(facts, "torch")?,
+        })
     }
 
     /// `BonusChestFeature.place`.
@@ -44,11 +47,18 @@ impl BonusChestFeature {
         }
         for x in xs {
             for z in zs {
-                let Some(y) = cx.region.height(HeightmapType::MotionBlockingNoLeaves, x, z) else {
+                let Some(y) = cx
+                    .region
+                    .height(HeightmapType::MotionBlockingNoLeaves, x, z)
+                else {
                     return false;
                 };
                 let pos = BlockPos::new(x, y, z);
-                let open = is_air(cx, pos) || cx.env.facts.is(block_in(cx.region, pos), BlockFact::NoCollision);
+                let open = is_air(cx, pos)
+                    || cx
+                        .env
+                        .facts
+                        .is(block_in(cx.region, pos), BlockFact::NoCollision);
                 if !open {
                     continue;
                 }
@@ -62,7 +72,9 @@ impl BonusChestFeature {
                             cx.region.set_block(side, self.torch.clone());
                         }
                         Some(false) => {}
-                        None => cx.unsupported.record("survival", &self.torch.name.to_string()),
+                        None => cx
+                            .unsupported
+                            .record("survival", &self.torch.name.to_string()),
                     }
                 }
                 return true;

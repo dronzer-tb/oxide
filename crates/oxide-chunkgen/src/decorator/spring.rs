@@ -39,11 +39,17 @@ impl SpringFeature {
             "minecraft:lava" => "lava",
             _ => return Ok(None),
         };
-        let falling = config.state.properties.get("falling").is_some_and(|v| v == "true");
+        let falling = config
+            .state
+            .properties
+            .get("falling")
+            .is_some_and(|v| v == "true");
         // `FlowingFluid.createLegacyBlock`: the liquid block's `level` is 0 for a still source,
         // plus 8 when the fluid is falling.
         let mut state = BlockState::new(ResourceLocation::minecraft(block));
-        state.properties.insert("level".into(), if falling { "8" } else { "0" }.into());
+        state
+            .properties
+            .insert("level".into(), if falling { "8" } else { "0" }.into());
         let state = facts.complete(&state);
         if !facts.knows(&state) {
             bail!("spring block state {state} is not in the exported block facts");
@@ -60,10 +66,15 @@ impl SpringFeature {
     pub fn place(&self, cx: &mut FeatureContext<'_, '_, '_>) -> bool {
         let pos = cx.origin;
         let at = |dx: i32, dy: i32, dz: i32| {
-            BlockPos::new(pos.x.wrapping_add(dx), pos.y.wrapping_add(dy), pos.z.wrapping_add(dz))
+            BlockPos::new(
+                pos.x.wrapping_add(dx),
+                pos.y.wrapping_add(dy),
+                pos.z.wrapping_add(dz),
+            )
         };
         let valid = |cx: &FeatureContext<'_, '_, '_>, p: BlockPos| {
-            self.valid_blocks.contains_block(cx.env, &block_in(cx.region, p).name)
+            self.valid_blocks
+                .contains_block(cx.env, &block_in(cx.region, p).name)
         };
         if !valid(cx, at(0, 1, 0)) {
             return false;
@@ -72,11 +83,18 @@ impl SpringFeature {
             return false;
         }
         let here = block_in(cx.region, pos);
-        if !cx.env.facts.is(here, BlockFact::Air) && !self.valid_blocks.contains_block(cx.env, &here.name)
+        if !cx.env.facts.is(here, BlockFact::Air)
+            && !self.valid_blocks.contains_block(cx.env, &here.name)
         {
             return false;
         }
-        let neighbours = [at(-1, 0, 0), at(1, 0, 0), at(0, 0, -1), at(0, 0, 1), at(0, -1, 0)];
+        let neighbours = [
+            at(-1, 0, 0),
+            at(1, 0, 0),
+            at(0, 0, -1),
+            at(0, 0, 1),
+            at(0, -1, 0),
+        ];
         let rocks = neighbours.iter().filter(|p| valid(cx, **p)).count() as i32;
         let holes = neighbours
             .iter()

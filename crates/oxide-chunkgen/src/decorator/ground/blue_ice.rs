@@ -19,7 +19,9 @@ pub struct BlueIceFeature {
 
 impl BlueIceFeature {
     pub fn compile(facts: &BlockFacts) -> Result<Self> {
-        Ok(Self { blue_ice: default_state(facts, "blue_ice")? })
+        Ok(Self {
+            blue_ice: default_state(facts, "blue_ice")?,
+        })
     }
 
     /// `BlueIceFeature.place`.
@@ -28,7 +30,8 @@ impl BlueIceFeature {
         if origin.y > cx.env.sea_level - 1 {
             return false;
         }
-        if !is_block_at(cx, origin, "water") && !is_block_at(cx, offset(origin, 0, -1, 0), "water") {
+        if !is_block_at(cx, origin, "water") && !is_block_at(cx, offset(origin, 0, -1, 0), "water")
+        {
             return false;
         }
         // Every direction but down.
@@ -53,13 +56,19 @@ impl BlueIceFeature {
             let dz = cx.random.next_int_bounded(radius) - cx.random.next_int_bounded(radius);
             let pos = offset(origin, dx, dy, dz);
             let replaceable = is_air(cx, pos)
-                || ["water", "packed_ice", "ice"].iter().any(|path| is_block_at(cx, pos, path));
+                || ["water", "packed_ice", "ice"]
+                    .iter()
+                    .any(|path| is_block_at(cx, pos, path));
             if !replaceable {
                 continue;
             }
-            let touches_blue_ice = DIRECTIONS
-                .iter()
-                .any(|d| is_block_at(cx, BlockPos::new(pos.x + d[0], pos.y + d[1], pos.z + d[2]), "blue_ice"));
+            let touches_blue_ice = DIRECTIONS.iter().any(|d| {
+                is_block_at(
+                    cx,
+                    BlockPos::new(pos.x + d[0], pos.y + d[1], pos.z + d[2]),
+                    "blue_ice",
+                )
+            });
             if touches_blue_ice {
                 cx.region.set_block(pos, self.blue_ice.clone());
             }

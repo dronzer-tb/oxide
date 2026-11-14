@@ -20,8 +20,11 @@ const CEILING_BOTTOM: i32 = 80;
 
 /// Facts for the blocks these tests touch, in the exporter's format.
 fn facts() -> BlockFacts {
-    let dir = std::env::temp_dir()
-        .join(format!("oxide-nether-facts-{}-{:?}", std::process::id(), std::thread::current().id()));
+    let dir = std::env::temp_dir().join(format!(
+        "oxide-nether-facts-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let full = "Dsmoudf1234";
     let mut text = String::from(
@@ -38,8 +41,18 @@ fn facts() -> BlockFacts {
          minecraft:warped_stem[axis=y]\tDsmoudf1234\n",
     );
     for name in [
-        "stone", "netherrack", "magma_block", "crimson_nylium", "warped_nylium", "nether_wart_block",
-        "warped_wart_block", "shroomlight", "chest", "glowstone", "blackstone", "soul_sand",
+        "stone",
+        "netherrack",
+        "magma_block",
+        "crimson_nylium",
+        "warped_nylium",
+        "nether_wart_block",
+        "warped_wart_block",
+        "shroomlight",
+        "chest",
+        "glowstone",
+        "blackstone",
+        "soul_sand",
     ] {
         text.push_str(&format!("minecraft:{name}\t{full}\n"));
     }
@@ -77,7 +90,11 @@ struct Outcome {
 impl Outcome {
     /// The positions the feature itself wrote, i.e. every write of a block in `paths`.
     fn of(&self, paths: &[&str]) -> Vec<BlockPos> {
-        self.writes.iter().filter(|(_, s)| paths.contains(&s.name.path())).map(|(p, _)| *p).collect()
+        self.writes
+            .iter()
+            .filter(|(_, s)| paths.contains(&s.name.path()))
+            .map(|(p, _)| *p)
+            .collect()
     }
 
     fn count(&self, path: &str) -> usize {
@@ -97,7 +114,9 @@ fn place(
     let ir: PlacedFeatureIr =
         serde_json::from_str(&format!(r#"{{"feature":{config},"placement":[]}}"#)).expect("json");
     let (placed_registry, configured) = (Registry::default(), Registry::default());
-    let placed = Compiler::new(&env.facts, &placed_registry, &configured).compile_placed(&ir).expect("compiles");
+    let placed = Compiler::new(&env.facts, &placed_registry, &configured)
+        .compile_placed(&ir)
+        .expect("compiles");
     let chunks = flat_ring(ChunkPos::new(0, 0), 64);
     let mut region = DecorationRegion::new(ChunkPos::new(0, 0), refs(&chunks), &env.facts);
     prepare(&mut region);
@@ -114,7 +133,11 @@ fn place(
         };
         place_placed(&placed, &mut cx, origin, None)
     };
-    Outcome { writes: region.into_writes(), tally, placed: did_place }
+    Outcome {
+        writes: region.into_writes(),
+        tally,
+        placed: did_place,
+    }
 }
 
 fn fill(region: &mut DecorationRegion<'_>, y: (i32, i32), path: &str, name_props: &[(&str, &str)]) {
@@ -139,7 +162,9 @@ fn cavern(region: &mut DecorationRegion<'_>) {
 }
 
 fn inside_window(positions: &[BlockPos]) -> bool {
-    positions.iter().all(|pos| (-16..32).contains(&pos.x) && (-16..32).contains(&pos.z))
+    positions
+        .iter()
+        .all(|pos| (-16..32).contains(&pos.x) && (-16..32).contains(&pos.z))
 }
 
 const DELTA: &str = r#"{"type":"minecraft:delta_feature","config":{"contents":{"Name":"minecraft:lava","Properties":{"level":"0"}},"rim":{"Name":"minecraft:magma_block"},"rim_size":{"type":"minecraft:uniform","max_inclusive":2,"min_inclusive":0},"size":{"type":"minecraft:uniform","max_inclusive":7,"min_inclusive":3}}}"#;
@@ -169,7 +194,11 @@ fn a_delta_patch_lies_on_the_floor_surface_and_is_deterministic() {
             // No rim: the contents are not shifted, so they stay inside the Manhattan diamond.
             assert_eq!(first.count("magma_block"), 0, "seed {seed}");
             let lava = first.of(&["lava"]);
-            assert!(lava.iter().all(|pos| (pos.x - 8).abs() + (pos.z - 8).abs() <= 7), "seed {seed}");
+            assert!(
+                lava.iter()
+                    .all(|pos| (pos.x - 8).abs() + (pos.z - 8).abs() <= 7),
+                "seed {seed}"
+            );
         }
     }
     assert!(saw_rim, "no seed rolled a rim");
@@ -208,14 +237,22 @@ fn blobs_sink_to_the_target_and_replace_only_it() {
     let origin = BlockPos::new(8, 70, 8);
     for seed in 0..8 {
         let first = place(&env, &config, seed, origin, cavern);
-        assert_eq!(first.writes, place(&env, &config, seed, origin, cavern).writes);
+        assert_eq!(
+            first.writes,
+            place(&env, &config, seed, origin, cavern).writes
+        );
         assert!(first.placed, "seed {seed}");
         let basalt = first.of(&["basalt"]);
         assert!(inside_window(&basalt));
         // The origin sank to the floor's top block, y = 63; the diamond is at most 7 wide.
-        assert!(basalt.iter().all(|pos| (pos.x - 8).abs() + (pos.y - 63).abs() + (pos.z - 8).abs() <= 7));
+        assert!(basalt
+            .iter()
+            .all(|pos| (pos.x - 8).abs() + (pos.y - 63).abs() + (pos.z - 8).abs() <= 7));
         assert!(basalt.iter().all(|pos| pos.y < FLOOR_TOP), "seed {seed}");
-        assert!(basalt.iter().any(|pos| pos.y == FLOOR_TOP - 1), "seed {seed}");
+        assert!(
+            basalt.iter().any(|pos| pos.y == FLOOR_TOP - 1),
+            "seed {seed}"
+        );
     }
 }
 
@@ -249,7 +286,10 @@ fn a_crimson_fungus_grows_a_stem_and_a_wart_hat_on_nylium() {
     let mut vines_seen = false;
     for seed in 0..40 {
         let first = place(&env, &config, seed, origin, nylium_floor);
-        assert_eq!(first.writes, place(&env, &config, seed, origin, nylium_floor).writes);
+        assert_eq!(
+            first.writes,
+            place(&env, &config, seed, origin, nylium_floor).writes
+        );
         assert!(first.placed, "seed {seed}");
         let stems = first.of(&["crimson_stem"]);
         assert!(stems.len() >= 4 && inside_window(&stems), "seed {seed}");
@@ -279,7 +319,10 @@ fn a_warped_fungus_grows_no_vines_and_needs_its_base() {
     };
     for seed in 0..20 {
         let outcome = place(&env, &config, seed, origin, on_warped);
-        assert!(outcome.placed && outcome.count("weeping_vines") == 0, "seed {seed}");
+        assert!(
+            outcome.placed && outcome.count("weeping_vines") == 0,
+            "seed {seed}"
+        );
     }
     // Plain netherrack under the origin is not the valid base.
     let wrong = place(&env, &config, 1, origin, cavern);
@@ -290,7 +333,13 @@ fn a_warped_fungus_grows_no_vines_and_needs_its_base() {
 fn a_planted_fungus_stays_unsupported() {
     let env = env();
     let origin = BlockPos::new(8, FLOOR_TOP, 8);
-    let planted = place(&env, &fungus("crimson_stem", "nether_wart_block", "crimson_nylium", true), 1, origin, nylium_floor);
+    let planted = place(
+        &env,
+        &fungus("crimson_stem", "nether_wart_block", "crimson_nylium", true),
+        1,
+        origin,
+        nylium_floor,
+    );
     assert!(!planted.placed);
     assert_eq!(planted.tally.get("feature:minecraft:huge_fungus"), 1);
 }
@@ -300,28 +349,52 @@ fn a_planted_fungus_stays_unsupported() {
 #[test]
 fn every_reference_nether_feature_compiles() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../reference");
-    if !root.join("data/minecraft/worldgen/configured_feature").is_dir() || !root.join("block_facts.tsv").is_file() {
-        eprintln!("skipping: no extracted vanilla export at {}", root.display());
+    if !root
+        .join("data/minecraft/worldgen/configured_feature")
+        .is_dir()
+        || !root.join("block_facts.tsv").is_file()
+    {
+        eprintln!(
+            "skipping: no extracted vanilla export at {}",
+            root.display()
+        );
         return;
     }
     let datapack = oxide_datapack::load_datapack(&root).expect("reference datapack loads");
     const TYPES: [&str; 9] = [
-        "basalt_columns", "basalt_pillar", "delta_feature", "glowstone_blob", "huge_fungus",
-        "nether_forest_vegetation", "netherrack_replace_blobs", "twisting_vines", "weeping_vines",
+        "basalt_columns",
+        "basalt_pillar",
+        "delta_feature",
+        "glowstone_blob",
+        "huge_fungus",
+        "nether_forest_vegetation",
+        "netherrack_replace_blobs",
+        "twisting_vines",
+        "weeping_vines",
     ];
     let (mut ported, mut unsupported) = (0, 0);
     for (id, ir) in datapack.configured_features.iter() {
         let value = serde_json::to_value(ir).unwrap();
         let tag = value["type"].as_str().unwrap().to_string();
-        let Some(kind) = tag.strip_prefix("minecraft:").filter(|kind| TYPES.contains(kind)) else {
+        let Some(kind) = tag
+            .strip_prefix("minecraft:")
+            .filter(|kind| TYPES.contains(kind))
+        else {
             continue;
         };
-        let wrapper: PlacedFeatureIr =
-            serde_json::from_value(serde_json::json!({ "feature": id.to_string(), "placement": [] })).unwrap();
-        let placed = Compiler::new(&datapack.block_facts, &datapack.placed_features, &datapack.configured_features)
-            .compile_placed(&wrapper)
-            .unwrap_or_else(|error| panic!("{id}: {error:#}"));
-        let is_ported = !(kind == "huge_fungus" && value["config"]["planted"] == serde_json::json!(true));
+        let wrapper: PlacedFeatureIr = serde_json::from_value(
+            serde_json::json!({ "feature": id.to_string(), "placement": [] }),
+        )
+        .unwrap();
+        let placed = Compiler::new(
+            &datapack.block_facts,
+            &datapack.placed_features,
+            &datapack.configured_features,
+        )
+        .compile_placed(&wrapper)
+        .unwrap_or_else(|error| panic!("{id}: {error:#}"));
+        let is_ported =
+            !(kind == "huge_fungus" && value["config"]["planted"] == serde_json::json!(true));
         match (&*placed.feature, is_ported) {
             (Feature::Nether(_), true) => ported += 1,
             (Feature::Unsupported(_), false) => unsupported += 1,
@@ -339,7 +412,12 @@ fn age(state: &oxide_core::BlockState) -> i32 {
 
 /// The last write at `pos`, when there is one.
 fn written(outcome: &Outcome, pos: BlockPos) -> Option<&str> {
-    outcome.writes.iter().rev().find(|(p, _)| *p == pos).map(|(_, s)| s.name.path())
+    outcome
+        .writes
+        .iter()
+        .rev()
+        .find(|(p, _)| *p == pos)
+        .map(|(_, s)| s.name.path())
 }
 
 const LARGE_COLUMNS: &str = r#"{"type":"minecraft:basalt_columns","config":{"height":{"type":"minecraft:uniform","max_inclusive":10,"min_inclusive":5},"reach":{"type":"minecraft:uniform","max_inclusive":3,"min_inclusive":2}}}"#;
@@ -350,13 +428,27 @@ fn basalt_columns_rise_from_the_floor_and_refuse_a_blocked_base() {
     let origin = BlockPos::new(8, FLOOR_TOP, 8);
     for seed in 0..10 {
         let first = place(&env, LARGE_COLUMNS, seed, origin, cavern);
-        assert_eq!(first.writes, place(&env, LARGE_COLUMNS, seed, origin, cavern).writes, "seed {seed}");
+        assert_eq!(
+            first.writes,
+            place(&env, LARGE_COLUMNS, seed, origin, cavern).writes,
+            "seed {seed}"
+        );
         assert!(first.placed, "seed {seed}");
         let basalt = first.of(&["basalt"]);
         assert!(inside_window(&basalt), "seed {seed}");
         // Every column starts on the floor and stays below the ceiling.
-        assert!(basalt.iter().all(|pos| (FLOOR_TOP..CEILING_BOTTOM).contains(&pos.y)), "seed {seed}");
-        assert!(basalt.iter().all(|pos| pos.y == FLOOR_TOP || basalt.contains(&offset(*pos, 0, -1, 0))), "seed {seed}");
+        assert!(
+            basalt
+                .iter()
+                .all(|pos| (FLOOR_TOP..CEILING_BOTTOM).contains(&pos.y)),
+            "seed {seed}"
+        );
+        assert!(
+            basalt
+                .iter()
+                .all(|pos| pos.y == FLOOR_TOP || basalt.contains(&offset(*pos, 0, -1, 0))),
+            "seed {seed}"
+        );
     }
     let on_soul_sand = |region: &mut DecorationRegion<'_>| {
         cavern(region);
@@ -371,7 +463,12 @@ fn basalt_columns_fill_a_lava_sea_but_not_lava_above_it() {
     let origin = BlockPos::new(8, FLOOR_TOP, 8);
     let flooded = |region: &mut DecorationRegion<'_>| {
         cavern(region);
-        fill(region, (FLOOR_TOP, FLOOR_TOP + 2), "lava", &[("level", "0")]);
+        fill(
+            region,
+            (FLOOR_TOP, FLOOR_TOP + 2),
+            "lava",
+            &[("level", "0")],
+        );
     };
     // With the sea level above the lava, the origin counts as open sea.
     let mut sea = env();
@@ -391,15 +488,25 @@ fn a_basalt_pillar_spans_ceiling_to_floor_with_a_skirt() {
     let origin = BlockPos::new(8, CEILING_BOTTOM - 1, 8);
     for seed in 0..10 {
         let first = place(&env, config, seed, origin, cavern);
-        assert_eq!(first.writes, place(&env, config, seed, origin, cavern).writes, "seed {seed}");
+        assert_eq!(
+            first.writes,
+            place(&env, config, seed, origin, cavern).writes,
+            "seed {seed}"
+        );
         assert!(first.placed, "seed {seed}");
         for y in FLOOR_TOP..CEILING_BOTTOM {
-            assert_eq!(written(&first, BlockPos::new(8, y, 8)), Some("basalt"), "seed {seed} y {y}");
+            assert_eq!(
+                written(&first, BlockPos::new(8, y, 8)),
+                Some("basalt"),
+                "seed {seed} y {y}"
+            );
         }
         let basalt = first.of(&["basalt"]);
         assert!(inside_window(&basalt), "seed {seed}");
         // The skirt replaces floor blocks within three of the pillar, nothing lower.
-        assert!(basalt.iter().all(|pos| pos.y >= FLOOR_TOP - 1 && (pos.x - 8).abs() <= 3 && (pos.z - 8).abs() <= 3));
+        assert!(basalt
+            .iter()
+            .all(|pos| pos.y >= FLOOR_TOP - 1 && (pos.x - 8).abs() <= 3 && (pos.z - 8).abs() <= 3));
     }
     // Needs air at the origin and a block above it.
     let hanging_free = place(&env, config, 1, BlockPos::new(8, 70, 8), cavern);
@@ -415,12 +522,18 @@ fn a_glowstone_blob_hangs_below_its_ceiling() {
     let origin = BlockPos::new(8, CEILING_BOTTOM - 1, 8);
     for seed in 0..10 {
         let first = place(&env, config, seed, origin, cavern);
-        assert_eq!(first.writes, place(&env, config, seed, origin, cavern).writes, "seed {seed}");
+        assert_eq!(
+            first.writes,
+            place(&env, config, seed, origin, cavern).writes,
+            "seed {seed}"
+        );
         assert!(first.placed, "seed {seed}");
         let glow = first.of(&["glowstone"]);
         assert!(glow.len() > 1 && glow.contains(&origin), "seed {seed}");
         assert!(glow.iter().all(|pos| {
-            (pos.x - 8).abs() <= 7 && (pos.z - 8).abs() <= 7 && (origin.y - 11..=origin.y).contains(&pos.y)
+            (pos.x - 8).abs() <= 7
+                && (pos.z - 8).abs() <= 7
+                && (origin.y - 11..=origin.y).contains(&pos.y)
         }));
     }
     let on_chest = |region: &mut DecorationRegion<'_>| {
@@ -443,17 +556,29 @@ fn twisting_vines_grow_up_from_a_warped_floor() {
     let origin = BlockPos::new(8, FLOOR_TOP, 8);
     for seed in 0..10 {
         let first = place(&env, config, seed, origin, warped_floor);
-        assert_eq!(first.writes, place(&env, config, seed, origin, warped_floor).writes, "seed {seed}");
+        assert_eq!(
+            first.writes,
+            place(&env, config, seed, origin, warped_floor).writes,
+            "seed {seed}"
+        );
         assert!(first.placed, "seed {seed}");
         let vines = first.of(&["twisting_vines", "twisting_vines_plant"]);
         assert!(!vines.is_empty() && inside_window(&vines), "seed {seed}");
         for (pos, state) in &first.writes {
             match state.name.path() {
-                "twisting_vines" => assert!((17..=25).contains(&age(state)), "seed {seed} at {pos:?}"),
+                "twisting_vines" => {
+                    assert!((17..=25).contains(&age(state)), "seed {seed} at {pos:?}")
+                }
                 // A plant block always carries more vine above it, and stands on the floor or vine.
                 "twisting_vines_plant" => {
-                    assert!(vines.contains(&offset(*pos, 0, 1, 0)), "seed {seed} at {pos:?}");
-                    assert!(pos.y == FLOOR_TOP || vines.contains(&offset(*pos, 0, -1, 0)), "seed {seed} at {pos:?}");
+                    assert!(
+                        vines.contains(&offset(*pos, 0, 1, 0)),
+                        "seed {seed} at {pos:?}"
+                    );
+                    assert!(
+                        pos.y == FLOOR_TOP || vines.contains(&offset(*pos, 0, -1, 0)),
+                        "seed {seed} at {pos:?}"
+                    );
                 }
                 _ => {}
             }
@@ -461,7 +586,12 @@ fn twisting_vines_grow_up_from_a_warped_floor() {
     }
     // Crimson nylium is not a twisting-vine ground.
     let crimson = place(&env, config, 1, origin, nylium_floor);
-    assert!(!crimson.placed && crimson.of(&["twisting_vines", "twisting_vines_plant"]).is_empty());
+    assert!(
+        !crimson.placed
+            && crimson
+                .of(&["twisting_vines", "twisting_vines_plant"])
+                .is_empty()
+    );
 }
 
 #[test]
@@ -472,11 +602,19 @@ fn weeping_vines_hang_from_a_wart_covered_roof() {
     let mut heads = 0;
     for seed in 0..10 {
         let first = place(&env, config, seed, origin, cavern);
-        assert_eq!(first.writes, place(&env, config, seed, origin, cavern).writes, "seed {seed}");
+        assert_eq!(
+            first.writes,
+            place(&env, config, seed, origin, cavern).writes,
+            "seed {seed}"
+        );
         assert!(first.placed, "seed {seed}");
         let wart = first.of(&["nether_wart_block"]);
         assert!(wart.contains(&origin), "seed {seed}");
-        assert!(wart.iter().all(|pos| (origin.y - 4..=origin.y + 1).contains(&pos.y)), "seed {seed}");
+        assert!(
+            wart.iter()
+                .all(|pos| (origin.y - 4..=origin.y + 1).contains(&pos.y)),
+            "seed {seed}"
+        );
         let vines = first.of(&["weeping_vines", "weeping_vines_plant"]);
         assert!(inside_window(&vines), "seed {seed}");
         for (pos, state) in &first.writes {
@@ -485,7 +623,10 @@ fn weeping_vines_hang_from_a_wart_covered_roof() {
                     heads += 1;
                     assert!((17..=25).contains(&age(state)), "seed {seed} at {pos:?}");
                 }
-                "weeping_vines_plant" => assert!(vines.contains(&offset(*pos, 0, -1, 0)), "seed {seed} at {pos:?}"),
+                "weeping_vines_plant" => assert!(
+                    vines.contains(&offset(*pos, 0, -1, 0)),
+                    "seed {seed} at {pos:?}"
+                ),
                 _ => {}
             }
         }
@@ -505,18 +646,33 @@ fn weeping_vines_hang_from_a_wart_covered_roof() {
 struct OnNylium;
 
 impl BlockBehaviours for OnNylium {
-    fn can_survive(&self, _: &oxide_core::BlockState, region: &DecorationRegion<'_>, pos: BlockPos) -> Option<bool> {
+    fn can_survive(
+        &self,
+        _: &oxide_core::BlockState,
+        region: &DecorationRegion<'_>,
+        pos: BlockPos,
+    ) -> Option<bool> {
         let below = region.block(offset(pos, 0, -1, 0))?;
-        Some(matches!(below.name.path(), "crimson_nylium" | "warped_nylium"))
+        Some(matches!(
+            below.name.path(),
+            "crimson_nylium" | "warped_nylium"
+        ))
     }
 }
 
 fn nylium_tags() -> TagSet {
-    let root = std::env::temp_dir()
-        .join(format!("oxide-nether-tags-{}-{:?}", std::process::id(), std::thread::current().id()));
+    let root = std::env::temp_dir().join(format!(
+        "oxide-nether-tags-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
     let path = root.join("data/minecraft/tags/block/nylium.json");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(&path, r#"{"values":["minecraft:crimson_nylium","minecraft:warped_nylium"]}"#).unwrap();
+    std::fs::write(
+        &path,
+        r#"{"values":["minecraft:crimson_nylium","minecraft:warped_nylium"]}"#,
+    )
+    .unwrap();
     let tags = oxide_datapack::load_tags(&[&root], "block").unwrap();
     std::fs::remove_dir_all(root).unwrap();
     tags
@@ -531,10 +687,16 @@ fn forest_vegetation_covers_nylium_where_the_plants_survive() {
     let plants = ["crimson_roots", "crimson_fungus", "warped_fungus"];
     for seed in 0..10 {
         let first = place(&env, CRIMSON_VEGETATION, seed, origin, nylium_floor);
-        assert_eq!(first.writes, place(&env, CRIMSON_VEGETATION, seed, origin, nylium_floor).writes, "seed {seed}");
+        assert_eq!(
+            first.writes,
+            place(&env, CRIMSON_VEGETATION, seed, origin, nylium_floor).writes,
+            "seed {seed}"
+        );
         assert!(first.placed && first.tally.is_empty(), "seed {seed}");
         let placed = first.of(&plants);
-        assert!(placed.iter().all(|pos| pos.y == FLOOR_TOP && (pos.x - 8).abs() < 8 && (pos.z - 8).abs() < 8));
+        assert!(placed
+            .iter()
+            .all(|pos| pos.y == FLOOR_TOP && (pos.x - 8).abs() < 8 && (pos.z - 8).abs() < 8));
         assert!(first.count("crimson_roots") > 0, "seed {seed}");
     }
     // Not over nylium: nothing, and no draw-dependent tally.
@@ -544,5 +706,8 @@ fn forest_vegetation_covers_nylium_where_the_plants_survive() {
     let unknown = env_with(nylium_tags(), Box::new(NoBlockBehaviours));
     let outcome = place(&unknown, CRIMSON_VEGETATION, 1, origin, nylium_floor);
     assert!(!outcome.placed && outcome.of(&plants).is_empty());
-    assert!(outcome.tally.entries().any(|(key, count)| key.starts_with("survival:") && count > 0));
+    assert!(outcome
+        .tally
+        .entries()
+        .any(|(key, count)| key.starts_with("survival:") && count > 0));
 }

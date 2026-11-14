@@ -115,39 +115,209 @@ impl MergedQuad {
         match f {
             Face::Up => {
                 out.push(PackedVertex::new(x, y + 1, z, f, 0, 0, bs, lt, ao));
-                out.push(PackedVertex::new(x, y + 1, z + h, f, 0, h as u16 * 16, bs, lt, ao));
-                out.push(PackedVertex::new(x + w, y + 1, z + h, f, w as u16 * 16, h as u16 * 16, bs, lt, ao));
-                out.push(PackedVertex::new(x + w, y + 1, z, f, w as u16 * 16, 0, bs, lt, ao));
+                out.push(PackedVertex::new(
+                    x,
+                    y + 1,
+                    z + h,
+                    f,
+                    0,
+                    h as u16 * 16,
+                    bs,
+                    lt,
+                    ao,
+                ));
+                out.push(PackedVertex::new(
+                    x + w,
+                    y + 1,
+                    z + h,
+                    f,
+                    w as u16 * 16,
+                    h as u16 * 16,
+                    bs,
+                    lt,
+                    ao,
+                ));
+                out.push(PackedVertex::new(
+                    x + w,
+                    y + 1,
+                    z,
+                    f,
+                    w as u16 * 16,
+                    0,
+                    bs,
+                    lt,
+                    ao,
+                ));
             }
             Face::Down => {
                 out.push(PackedVertex::new(x, y, z, f, 0, 0, bs, lt, ao));
-                out.push(PackedVertex::new(x + w, y, z, f, w as u16 * 16, 0, bs, lt, ao));
-                out.push(PackedVertex::new(x + w, y, z + h, f, w as u16 * 16, h as u16 * 16, bs, lt, ao));
-                out.push(PackedVertex::new(x, y, z + h, f, 0, h as u16 * 16, bs, lt, ao));
+                out.push(PackedVertex::new(
+                    x + w,
+                    y,
+                    z,
+                    f,
+                    w as u16 * 16,
+                    0,
+                    bs,
+                    lt,
+                    ao,
+                ));
+                out.push(PackedVertex::new(
+                    x + w,
+                    y,
+                    z + h,
+                    f,
+                    w as u16 * 16,
+                    h as u16 * 16,
+                    bs,
+                    lt,
+                    ao,
+                ));
+                out.push(PackedVertex::new(
+                    x,
+                    y,
+                    z + h,
+                    f,
+                    0,
+                    h as u16 * 16,
+                    bs,
+                    lt,
+                    ao,
+                ));
             }
             Face::North => {
                 out.push(PackedVertex::new(x + w, y, z, f, 0, 0, bs, lt, ao));
                 out.push(PackedVertex::new(x, y, z, f, w as u16 * 16, 0, bs, lt, ao));
-                out.push(PackedVertex::new(x, y + h, z, f, w as u16 * 16, h as u16 * 16, bs, lt, ao));
-                out.push(PackedVertex::new(x + w, y + h, z, f, 0, h as u16 * 16, bs, lt, ao));
+                out.push(PackedVertex::new(
+                    x,
+                    y + h,
+                    z,
+                    f,
+                    w as u16 * 16,
+                    h as u16 * 16,
+                    bs,
+                    lt,
+                    ao,
+                ));
+                out.push(PackedVertex::new(
+                    x + w,
+                    y + h,
+                    z,
+                    f,
+                    0,
+                    h as u16 * 16,
+                    bs,
+                    lt,
+                    ao,
+                ));
             }
             Face::South => {
                 out.push(PackedVertex::new(x, y, z + 1, f, 0, 0, bs, lt, ao));
-                out.push(PackedVertex::new(x + w, y, z + 1, f, w as u16 * 16, 0, bs, lt, ao));
-                out.push(PackedVertex::new(x + w, y + h, z + 1, f, w as u16 * 16, h as u16 * 16, bs, lt, ao));
-                out.push(PackedVertex::new(x, y + h, z + 1, f, 0, h as u16 * 16, bs, lt, ao));
+                out.push(PackedVertex::new(
+                    x + w,
+                    y,
+                    z + 1,
+                    f,
+                    w as u16 * 16,
+                    0,
+                    bs,
+                    lt,
+                    ao,
+                ));
+                out.push(PackedVertex::new(
+                    x + w,
+                    y + h,
+                    z + 1,
+                    f,
+                    w as u16 * 16,
+                    h as u16 * 16,
+                    bs,
+                    lt,
+                    ao,
+                ));
+                out.push(PackedVertex::new(
+                    x,
+                    y + h,
+                    z + 1,
+                    f,
+                    0,
+                    h as u16 * 16,
+                    bs,
+                    lt,
+                    ao,
+                ));
             }
             Face::West => {
                 out.push(PackedVertex::new(x, y, z, f, 0, 0, bs, lt, ao));
-                out.push(PackedVertex::new(x, y, z + w, f, w as u16 * 16, 0, bs, lt, ao));
-                out.push(PackedVertex::new(x, y + h, z + w, f, w as u16 * 16, h as u16 * 16, bs, lt, ao));
-                out.push(PackedVertex::new(x, y + h, z, f, 0, h as u16 * 16, bs, lt, ao));
+                out.push(PackedVertex::new(
+                    x,
+                    y,
+                    z + w,
+                    f,
+                    w as u16 * 16,
+                    0,
+                    bs,
+                    lt,
+                    ao,
+                ));
+                out.push(PackedVertex::new(
+                    x,
+                    y + h,
+                    z + w,
+                    f,
+                    w as u16 * 16,
+                    h as u16 * 16,
+                    bs,
+                    lt,
+                    ao,
+                ));
+                out.push(PackedVertex::new(
+                    x,
+                    y + h,
+                    z,
+                    f,
+                    0,
+                    h as u16 * 16,
+                    bs,
+                    lt,
+                    ao,
+                ));
             }
             Face::East => {
                 out.push(PackedVertex::new(x + 1, y, z + w, f, 0, 0, bs, lt, ao));
-                out.push(PackedVertex::new(x + 1, y, z, f, w as u16 * 16, 0, bs, lt, ao));
-                out.push(PackedVertex::new(x + 1, y + h, z, f, w as u16 * 16, h as u16 * 16, bs, lt, ao));
-                out.push(PackedVertex::new(x + 1, y + h, z + w, f, 0, h as u16 * 16, bs, lt, ao));
+                out.push(PackedVertex::new(
+                    x + 1,
+                    y,
+                    z,
+                    f,
+                    w as u16 * 16,
+                    0,
+                    bs,
+                    lt,
+                    ao,
+                ));
+                out.push(PackedVertex::new(
+                    x + 1,
+                    y + h,
+                    z,
+                    f,
+                    w as u16 * 16,
+                    h as u16 * 16,
+                    bs,
+                    lt,
+                    ao,
+                ));
+                out.push(PackedVertex::new(
+                    x + 1,
+                    y + h,
+                    z + w,
+                    f,
+                    0,
+                    h as u16 * 16,
+                    bs,
+                    lt,
+                    ao,
+                ));
             }
         }
     }

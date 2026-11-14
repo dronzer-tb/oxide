@@ -21,7 +21,14 @@ pub(super) enum Dir {
 
 impl Dir {
     /// `Direction.values()`.
-    pub const ALL: [Dir; 6] = [Dir::Down, Dir::Up, Dir::North, Dir::South, Dir::West, Dir::East];
+    pub const ALL: [Dir; 6] = [
+        Dir::Down,
+        Dir::Up,
+        Dir::North,
+        Dir::South,
+        Dir::West,
+        Dir::East,
+    ];
     /// `Direction.Plane.HORIZONTAL`.
     pub const HORIZONTAL: [Dir; 4] = [Dir::North, Dir::East, Dir::South, Dir::West];
 
@@ -71,13 +78,22 @@ impl Dir {
 
 /// `pos.offset(dx, dy, dz)`.
 pub(super) fn offset(pos: BlockPos, dx: i32, dy: i32, dz: i32) -> BlockPos {
-    BlockPos::new(pos.x.wrapping_add(dx), pos.y.wrapping_add(dy), pos.z.wrapping_add(dz))
+    BlockPos::new(
+        pos.x.wrapping_add(dx),
+        pos.y.wrapping_add(dy),
+        pos.z.wrapping_add(dz),
+    )
 }
 
 /// `pos.relative(dir, distance)`.
 pub(super) fn relative(pos: BlockPos, dir: Dir, distance: i32) -> BlockPos {
     let (dx, dy, dz) = dir.step();
-    offset(pos, dx.wrapping_mul(distance), dy.wrapping_mul(distance), dz.wrapping_mul(distance))
+    offset(
+        pos,
+        dx.wrapping_mul(distance),
+        dy.wrapping_mul(distance),
+        dz.wrapping_mul(distance),
+    )
 }
 
 /// `Vec3i.distManhattan`, including the float accumulation vanilla does it in.

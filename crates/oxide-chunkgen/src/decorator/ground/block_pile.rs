@@ -21,7 +21,10 @@ pub struct BlockPileFeature {
 
 impl BlockPileFeature {
     pub fn compile(config: &BlockPileConfig, facts: &BlockFacts) -> Result<Self> {
-        Ok(Self { provider: StateProvider::compile(&config.state_provider, facts).context("block pile provider")? })
+        Ok(Self {
+            provider: StateProvider::compile(&config.state_provider, facts)
+                .context("block pile provider")?,
+        })
     }
 
     /// `BlockPileFeature.place`.

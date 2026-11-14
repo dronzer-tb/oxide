@@ -21,7 +21,10 @@ pub struct WorldgenRandom {
 
 impl WorldgenRandom {
     pub fn new(seed: i64) -> Self {
-        Self { source: Xoroshiro128PlusPlus::new(seed), next_next_gaussian: None }
+        Self {
+            source: Xoroshiro128PlusPlus::new(seed),
+            next_next_gaussian: None,
+        }
     }
 }
 
@@ -110,7 +113,10 @@ mod tests {
         let mut raw = Xoroshiro128PlusPlus::new(42);
         let mut top = |bits: u32| ((raw.next_long() as u64) >> (64 - bits)) as i32;
 
-        assert_eq!(random.next_int_bounded(16), ((16i64 * top(31) as i64) >> 31) as i32);
+        assert_eq!(
+            random.next_int_bounded(16),
+            ((16i64 * top(31) as i64) >> 31) as i32
+        );
         let (upper, lower) = (top(32) as i64, top(32) as i64);
         assert_eq!(random.next_long(), (upper << 32).wrapping_add(lower));
         assert_eq!(random.next_float(), top(24) as f32 / FLOAT_DIVISOR);

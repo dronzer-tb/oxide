@@ -31,8 +31,14 @@ use super::structure_template::step;
 use crate::decorator::context::{block_in, FeatureContext};
 
 /// `BlockBehaviour.UPDATE_SHAPE_ORDER`.
-const UPDATE_SHAPE_ORDER: [Direction; 6] =
-    [Direction::West, Direction::East, Direction::North, Direction::South, Direction::Down, Direction::Up];
+const UPDATE_SHAPE_ORDER: [Direction; 6] = [
+    Direction::West,
+    Direction::East,
+    Direction::North,
+    Direction::South,
+    Direction::Down,
+    Direction::Up,
+];
 
 /// Runs both passes over the positions `placeInWorld` wrote, in the order it wrote them.
 pub(super) fn update_shapes(cx: &mut FeatureContext<'_, '_, '_>, placed: &[BlockPos]) {
@@ -128,12 +134,16 @@ fn update_shape(
         "potent_sulfur" if state.name.namespace() == "minecraft" => potent_sulfur(cx, state, pos),
         "sulfur_spike" | "pointed_dripstone"
             if state.name.namespace() == "minecraft"
-                && state.properties.get("vertical_direction").is_some_and(|tip| tip == "up") =>
+                && state
+                    .properties
+                    .get("vertical_direction")
+                    .is_some_and(|tip| tip == "up") =>
         {
             speleothem_up(cx, state, pos, direction)
         }
         _ => {
-            cx.unsupported.record("shape_update", &state.name.to_string());
+            cx.unsupported
+                .record("shape_update", &state.name.to_string());
             state.clone()
         }
     }
@@ -159,7 +169,11 @@ fn potent_sulfur(cx: &FeatureContext<'_, '_, '_>, state: &BlockState, pos: Block
     }
     if tagged("causes_periodic_geyser_eruptions") && source_if_fluid {
         // The block entity's countdown reset is not state, so it is not modelled.
-        return if state.properties.get("potent_sulfur_state").is_some_and(|value| value == "erupting") {
+        return if state
+            .properties
+            .get("potent_sulfur_state")
+            .is_some_and(|value| value == "erupting")
+        {
             state.clone()
         } else {
             with("dormant")
@@ -169,7 +183,11 @@ fn potent_sulfur(cx: &FeatureContext<'_, '_, '_>, state: &BlockState, pos: Block
 }
 
 fn thickness(state: &BlockState) -> &str {
-    state.properties.get("thickness").map(String::as_str).unwrap_or("")
+    state
+        .properties
+        .get("thickness")
+        .map(String::as_str)
+        .unwrap_or("")
 }
 
 /// `SpeleothemBlock.updateShape` for a tip pointing up. (Pointing down it first consults the
@@ -187,23 +205,35 @@ fn speleothem_up(
     let tags = &cx.env.block_tags;
     let speleothem_pointing = |other: &BlockState, tip: &str| {
         tags.contains(&ResourceLocation::minecraft("speleothems"), &other.name)
-            && other.properties.get("vertical_direction").is_some_and(|value| value == tip)
+            && other
+                .properties
+                .get("vertical_direction")
+                .is_some_and(|value| value == tip)
     };
     let below = block_in(cx.region, step(pos, Direction::Down));
     // `canSurvive` = `isValidSpeleothemPlacement(pos, UP)`: a sturdy top below, or the same
     // block pointing up. Failing it on the update from below only schedules a tick.
-    let survives = facts.is(below, BlockFact::SturdyTop) || (speleothem_pointing(below, "up") && below.name == state.name);
+    let survives = facts.is(below, BlockFact::SturdyTop)
+        || (speleothem_pointing(below, "up") && below.name == state.name);
     if direction == Direction::Down && !survives {
         return state.clone();
     }
     let in_front = block_in(cx.region, step(pos, Direction::Up));
     let merge = thickness(state) == "tip_merge";
     let new_thickness = if speleothem_pointing(in_front, "down") && in_front.name == state.name {
-        if !merge && thickness(in_front) != "tip_merge" { "tip" } else { "tip_merge" }
+        if !merge && thickness(in_front) != "tip_merge" {
+            "tip"
+        } else {
+            "tip_merge"
+        }
     } else if !speleothem_pointing(in_front, "up") {
         "tip"
     } else if thickness(in_front) != "tip" && thickness(in_front) != "tip_merge" {
-        if !speleothem_pointing(below, "up") { "base" } else { "middle" }
+        if !speleothem_pointing(below, "up") {
+            "base"
+        } else {
+            "middle"
+        }
     } else {
         "frustum"
     };

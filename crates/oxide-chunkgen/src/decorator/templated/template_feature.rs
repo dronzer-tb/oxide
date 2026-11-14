@@ -35,11 +35,23 @@ impl TemplateFeature {
         // negative direction as turned by the rotation.
         let size = template.raw_size();
         let mut pos = cx.origin;
-        for (negative, half) in [(Direction::West, size[0] / 2), (Direction::North, size[2] / 2)] {
+        for (negative, half) in [
+            (Direction::West, size[0] / 2),
+            (Direction::North, size[2] / 2),
+        ] {
             let turned = rotation.rotate(negative);
-            pos = offset(pos, turned.step_x() * half, turned.step_y() * half, turned.step_z() * half);
+            pos = offset(
+                pos,
+                turned.step_x() * half,
+                turned.step_y() * half,
+                turned.step_z() * half,
+            );
         }
-        let settings = PlaceSettings { rotation, bounding_box: None, processors: &[] };
+        let settings = PlaceSettings {
+            rotation,
+            bounding_box: None,
+            processors: &[],
+        };
         place_in_world(template, &template_ref.id, cx, pos, &settings)
     }
 }

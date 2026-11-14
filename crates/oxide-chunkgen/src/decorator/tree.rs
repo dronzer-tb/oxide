@@ -64,7 +64,14 @@ pub(super) enum Dir {
 }
 
 impl Dir {
-    pub const ALL: [Dir; 6] = [Dir::Down, Dir::Up, Dir::North, Dir::South, Dir::West, Dir::East];
+    pub const ALL: [Dir; 6] = [
+        Dir::Down,
+        Dir::Up,
+        Dir::North,
+        Dir::South,
+        Dir::West,
+        Dir::East,
+    ];
     /// `Direction.Plane.HORIZONTAL`.
     pub const HORIZONTAL: [Dir; 4] = [Dir::North, Dir::East, Dir::South, Dir::West];
 
@@ -142,12 +149,21 @@ impl Axis {
 }
 
 pub(super) fn off(p: BlockPos, dx: i32, dy: i32, dz: i32) -> BlockPos {
-    BlockPos::new(p.x.wrapping_add(dx), p.y.wrapping_add(dy), p.z.wrapping_add(dz))
+    BlockPos::new(
+        p.x.wrapping_add(dx),
+        p.y.wrapping_add(dy),
+        p.z.wrapping_add(dz),
+    )
 }
 
 pub(super) fn rel(p: BlockPos, dir: Dir, distance: i32) -> BlockPos {
     let n = dir.normal();
-    off(p, n[0].wrapping_mul(distance), n[1].wrapping_mul(distance), n[2].wrapping_mul(distance))
+    off(
+        p,
+        n[0].wrapping_mul(distance),
+        n[1].wrapping_mul(distance),
+        n[2].wrapping_mul(distance),
+    )
 }
 
 /// `Vec3i.distManhattan`, including its float accumulation.
@@ -222,7 +238,12 @@ pub(super) struct Run<'c, 'e, 'a, 'r> {
 impl<'c, 'e, 'a, 'r> Run<'c, 'e, 'a, 'r> {
     pub fn new(cx: &'c mut FeatureContext<'e, 'a, 'r>, track: bool) -> Self {
         let tags = Tags::new(cx.env);
-        Self { cx, tags, sets: Sets::default(), track }
+        Self {
+            cx,
+            tags,
+            sets: Sets::default(),
+            track,
+        }
     }
 
     pub fn state(&self, p: BlockPos) -> &BlockState {
@@ -270,7 +291,11 @@ impl<'c, 'e, 'a, 'r> Run<'c, 'e, 'a, 'r> {
             .ok_or(Unsupported("state provider produced no state"))
     }
 
-    pub fn sample_optional(&mut self, provider: &StateProvider, p: BlockPos) -> Res<Option<BlockState>> {
+    pub fn sample_optional(
+        &mut self,
+        provider: &StateProvider,
+        p: BlockPos,
+    ) -> Res<Option<BlockState>> {
         provider.state(self.cx, p)
     }
 
@@ -337,9 +362,15 @@ pub struct TreeFeature {
 pub type FeatureLookup<'a> = dyn FnMut(&ResourceLocation) -> Result<Option<Arc<Feature>>> + 'a;
 
 impl TreeFeature {
-    pub fn compile(config: &TreeConfig, facts: &BlockFacts, lookup: &mut FeatureLookup<'_>) -> Result<Self> {
+    pub fn compile(
+        config: &TreeConfig,
+        facts: &BlockFacts,
+        lookup: &mut FeatureLookup<'_>,
+    ) -> Result<Self> {
         let grow_through = match &config.trunk_placer.kind {
-            TrunkKind::UpwardsBranching { can_grow_through, .. } => Some(IdSet::compile(can_grow_through)?),
+            TrunkKind::UpwardsBranching {
+                can_grow_through, ..
+            } => Some(IdSet::compile(can_grow_through)?),
             _ => None,
         };
         let (decorators, unsupported) = Decorator::compile_list(&config.decorators, facts, lookup)?;
@@ -349,7 +380,11 @@ impl TreeFeature {
             foliage: StateProvider::compile(&config.foliage_provider, facts)?,
             below_trunk: StateProvider::compile(&config.below_trunk_provider, facts)?,
             grow_through,
-            root: config.root_placer.as_ref().map(|root| Root::compile(root, facts)).transpose()?,
+            root: config
+                .root_placer
+                .as_ref()
+                .map(|root| Root::compile(root, facts))
+                .transpose()?,
             decorators,
             unsupported,
         })
@@ -373,7 +408,9 @@ impl TreeFeature {
     }
 
     fn place_tree(&self, run: &mut Run<'_, '_, '_, '_>, origin: BlockPos) -> Res<bool> {
-        if !self.do_place(run, origin)? || (run.sets.trunks.is_empty() && run.sets.foliage.is_empty()) {
+        if !self.do_place(run, origin)?
+            || (run.sets.trunks.is_empty() && run.sets.foliage.is_empty())
+        {
             return Ok(false);
         }
         if !self.decorators.is_empty() {
@@ -419,7 +456,11 @@ impl TreeFeature {
             None => origin,
         };
         let min_y = origin.y.min(trunk_origin.y);
-        let max_y = origin.y.max(trunk_origin.y).wrapping_add(tree_height).wrapping_add(1);
+        let max_y = origin
+            .y
+            .max(trunk_origin.y)
+            .wrapping_add(tree_height)
+            .wrapping_add(1);
         // PARITY-CHECK: vanilla compares against `getMaxY() + 1`, which is the exclusive top of
         // the world; `max_y()` here is that exclusive top already.
         if min_y < run.cx.region.min_y().wrapping_add(1) || max_y > run.cx.region.max_y() {
@@ -427,7 +468,11 @@ impl TreeFeature {
         }
         let clipped = self.max_free_tree_height(run, tree_height, trunk_origin);
         if clipped < tree_height
-            && self.config.minimum_size.min_clipped_height().is_none_or(|min| clipped < min)
+            && self
+                .config
+                .minimum_size
+                .min_clipped_height()
+                .is_none_or(|min| clipped < min)
         {
             return Ok(false);
         }
@@ -446,10 +491,26 @@ impl TreeFeature {
     /// `FeatureSize.getSizeAtHeight`.
     fn size_at_height(&self, tree_height: i32, y: i32) -> i32 {
         match &self.config.minimum_size {
-            FeatureSize::TwoLayers { limit, lower_size, upper_size, .. } => {
-                if y < *limit { *lower_size } else { *upper_size }
+            FeatureSize::TwoLayers {
+                limit,
+                lower_size,
+                upper_size,
+                ..
+            } => {
+                if y < *limit {
+                    *lower_size
+                } else {
+                    *upper_size
+                }
             }
-            FeatureSize::ThreeLayers { limit, upper_limit, lower_size, middle_size, upper_size, .. } => {
+            FeatureSize::ThreeLayers {
+                limit,
+                upper_limit,
+                lower_size,
+                middle_size,
+                upper_size,
+                ..
+            } => {
                 if y < *limit {
                     *lower_size
                 } else if y >= tree_height.wrapping_sub(*upper_limit) {
@@ -463,13 +524,20 @@ impl TreeFeature {
 
     /// `TreeFeature.getMaxFreeTreeHeight`: how tall the tree can grow before something blocks
     /// its column, as the height to clip it to.
-    fn max_free_tree_height(&self, run: &Run<'_, '_, '_, '_>, max_tree_height: i32, tree_pos: BlockPos) -> i32 {
+    fn max_free_tree_height(
+        &self,
+        run: &Run<'_, '_, '_, '_>,
+        max_tree_height: i32,
+        tree_pos: BlockPos,
+    ) -> i32 {
         for y in 0..=max_tree_height.wrapping_add(1) {
             let radius = self.size_at_height(max_tree_height, y);
             for x in -radius..=radius {
                 for z in -radius..=radius {
                     let p = off(tree_pos, x, y, z);
-                    if !trunk::is_free(self, run, p) || (!self.config.ignore_vines && run.has_vine(p)) {
+                    if !trunk::is_free(self, run, p)
+                        || (!self.config.ignore_vines && run.has_vine(p))
+                    {
                         return y - 2;
                     }
                 }
@@ -481,7 +549,12 @@ impl TreeFeature {
     /// `FoliagePlacer.tryPlaceLeaf`.
     fn try_place_leaf(&self, run: &mut Run<'_, '_, '_, '_>, p: BlockPos) -> Res<bool> {
         let here = run.state(p);
-        if here.properties.get("persistent").is_some_and(|value| value == "true") || !run.valid_tree_pos(p) {
+        if here
+            .properties
+            .get("persistent")
+            .is_some_and(|value| value == "true")
+            || !run.valid_tree_pos(p)
+        {
             return Ok(false);
         }
         let mut state = run.sample(&self.foliage, p)?;
@@ -506,7 +579,10 @@ struct Shape {
 
 impl Shape {
     fn new(size: [i32; 3]) -> Self {
-        Self { size, bits: vec![false; size.iter().map(|&v| v as usize).product()] }
+        Self {
+            size,
+            bits: vec![false; size.iter().map(|&v| v as usize).product()],
+        }
     }
 
     fn index(&self, p: [i32; 3]) -> usize {
@@ -519,7 +595,10 @@ impl Shape {
     }
 
     fn full(&self, p: [i32; 3]) -> bool {
-        p.iter().zip(self.size).all(|(v, size)| (0..size).contains(v)) && self.bits[self.index(p)]
+        p.iter()
+            .zip(self.size)
+            .all(|(v, size)| (0..size).contains(v))
+            && self.bits[self.index(p)]
     }
 }
 
@@ -549,7 +628,13 @@ fn update_leaves(run: &mut Run<'_, '_, '_, '_>, low: BlockPos, high: BlockPos) {
         return;
     }
     let mut shape = Shape::new(span.map(|v| v as i32));
-    let local = |p: BlockPos| [p.x.wrapping_sub(low.x), p.y.wrapping_sub(low.y), p.z.wrapping_sub(low.z)];
+    let local = |p: BlockPos| {
+        [
+            p.x.wrapping_sub(low.x),
+            p.y.wrapping_sub(low.y),
+            p.z.wrapping_sub(low.z),
+        ]
+    };
     let mut fixed = run.sets.decorations.to_vec();
     fixed.extend(run.sets.roots.to_vec());
     for p in fixed {
@@ -574,7 +659,8 @@ fn update_leaves(run: &mut Run<'_, '_, '_, '_>, low: BlockPos, high: BlockPos) {
                 continue;
             }
             if smallest != 0 {
-                let updated = with_property(run.state(pos).clone(), "distance", &smallest.to_string());
+                let updated =
+                    with_property(run.state(pos).clone(), "distance", &smallest.to_string());
                 run.cx.region.set_block(pos, updated);
             }
             shape.fill(local(pos));

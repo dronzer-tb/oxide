@@ -41,12 +41,12 @@ mod water;
 mod tests;
 
 pub use biome_decorator::BiomeDecorator;
+pub use cave::CaveFeature;
 pub use context::{
     block_in, BlockBehaviours, Environment, FeatureContext, NoBlockBehaviours, UnsupportedTally,
 };
-pub use feature::{place_configured_feature, place_placed, Compiler, Feature, Placed};
 pub use end::EndFeature;
-pub use cave::CaveFeature;
+pub use feature::{place_configured_feature, place_placed, Compiler, Feature, Placed};
 pub use ground::{BiomeClimate, GroundFeature};
 pub use nether::NetherFeature;
 pub use ore::{OreFeature, RuleTest};

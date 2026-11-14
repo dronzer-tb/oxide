@@ -30,11 +30,17 @@ fn env(tags: &[(&str, &str)], behaviours: Box<dyn BlockBehaviours>) -> Environme
     ));
     let _ = std::fs::remove_dir_all(&root);
     for (name, body) in tags {
-        let path = root.join("data/minecraft/tags/block").join(format!("{name}.json"));
+        let path = root
+            .join("data/minecraft/tags/block")
+            .join(format!("{name}.json"));
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, body).unwrap();
     }
-    let block_tags = if tags.is_empty() { TagSet::default() } else { load_tags(&[&root], "block").unwrap() };
+    let block_tags = if tags.is_empty() {
+        TagSet::default()
+    } else {
+        load_tags(&[&root], "block").unwrap()
+    };
     let _ = std::fs::remove_dir_all(&root);
     Environment {
         block_tags,
@@ -53,7 +59,9 @@ fn env(tags: &[(&str, &str)], behaviours: Box<dyn BlockBehaviours>) -> Environme
 fn compile(json: &str, facts: &BlockFacts) -> Placed {
     let ir: PlacedFeatureIr = serde_json::from_str(json).expect("placed feature json");
     let (placed, configured) = (Registry::default(), Registry::default());
-    Compiler::new(facts, &placed, &configured).compile_placed(&ir).expect("compiles")
+    Compiler::new(facts, &placed, &configured)
+        .compile_placed(&ir)
+        .expect("compiles")
 }
 
 struct Outcome {
@@ -88,7 +96,11 @@ fn place_in_flat(
         };
         place_placed(&placed, &mut cx, origin, None)
     };
-    Outcome { writes: region.into_writes(), tally, placed: placed_any }
+    Outcome {
+        writes: region.into_writes(),
+        tally,
+        placed: placed_any,
+    }
 }
 
 const LOG_FEATURE: &str = r#"{"type":"minecraft:simple_block","config":{"to_place":
@@ -99,7 +111,11 @@ fn with_chain(chain: &str) -> String {
 }
 
 fn positions(outcome: &Outcome) -> Vec<(i32, i32, i32)> {
-    outcome.writes.iter().map(|(pos, _)| (pos.x, pos.y, pos.z)).collect()
+    outcome
+        .writes
+        .iter()
+        .map(|(pos, _)| (pos.x, pos.y, pos.z))
+        .collect()
 }
 
 #[test]
@@ -124,7 +140,10 @@ fn the_chain_runs_depth_first_drawing_in_vanillas_order() {
     }
     assert_eq!(positions(&outcome), expected);
     assert!(outcome.placed);
-    assert!(outcome.writes.iter().all(|(_, state)| *state == block("oak_log")));
+    assert!(outcome
+        .writes
+        .iter()
+        .all(|(_, state)| *state == block("oak_log")));
 }
 
 #[test]
@@ -172,7 +191,11 @@ fn heightmap_surface_filters_and_relative_threshold() {
            {"type":"minecraft:surface_relative_threshold_filter","heightmap":"OCEAN_FLOOR_WG",
             "min_inclusive":1,"max_inclusive":5}"#,
     );
-    assert!(place_in_flat(&env, &json, 1, BlockPos::new(9, 10, 9), |_| {}).writes.is_empty());
+    assert!(
+        place_in_flat(&env, &json, 1, BlockPos::new(9, 10, 9), |_| {})
+            .writes
+            .is_empty()
+    );
 }
 
 #[test]
@@ -188,7 +211,11 @@ fn environment_scan_walks_down_to_the_first_solid_block() {
     assert_eq!(positions(&outcome), vec![(5, 63, 5)]);
     // Too few steps to reach the ground finds nothing.
     let short = json.replace("\"max_steps\":32", "\"max_steps\":2");
-    assert!(place_in_flat(&env, &short, 1, BlockPos::new(5, 70, 5), |_| {}).writes.is_empty());
+    assert!(
+        place_in_flat(&env, &short, 1, BlockPos::new(5, 70, 5), |_| {})
+            .writes
+            .is_empty()
+    );
 }
 
 #[test]
@@ -214,7 +241,10 @@ fn fixed_placement_keeps_only_positions_in_the_same_chunk() {
 #[test]
 fn block_predicates_read_blocks_tags_and_fluids() {
     let env = env(
-        &[("stoneish", r#"{"values":["minecraft:stone","minecraft:deepslate"]}"#)],
+        &[(
+            "stoneish",
+            r#"{"values":["minecraft:stone","minecraft:deepslate"]}"#,
+        )],
         Box::new(AlwaysSurvives),
     );
     let at = BlockPos::new(4, 63, 4);
@@ -224,14 +254,24 @@ fn block_predicates_read_blocks_tags_and_fluids() {
         ));
         !place_in_flat(&env, &json, 1, at, |_| {}).writes.is_empty()
     };
-    assert!(check(r#"{"type":"minecraft:matching_blocks","blocks":"minecraft:stone"}"#));
-    assert!(!check(r#"{"type":"minecraft:matching_blocks","blocks":["minecraft:dirt"]}"#));
+    assert!(check(
+        r#"{"type":"minecraft:matching_blocks","blocks":"minecraft:stone"}"#
+    ));
+    assert!(!check(
+        r#"{"type":"minecraft:matching_blocks","blocks":["minecraft:dirt"]}"#
+    ));
     assert!(check(
         r#"{"type":"minecraft:matching_blocks","blocks":"minecraft:air","offset":[0,1,0]}"#
     ));
-    assert!(check(r#"{"type":"minecraft:matching_block_tag","tag":"minecraft:stoneish"}"#));
-    assert!(check(r##"{"type":"minecraft:matching_blocks","blocks":"#minecraft:stoneish"}"##));
-    assert!(check(r#"{"type":"minecraft:not","predicate":{"type":"minecraft:replaceable"}}"#));
+    assert!(check(
+        r#"{"type":"minecraft:matching_block_tag","tag":"minecraft:stoneish"}"#
+    ));
+    assert!(check(
+        r##"{"type":"minecraft:matching_blocks","blocks":"#minecraft:stoneish"}"##
+    ));
+    assert!(check(
+        r#"{"type":"minecraft:not","predicate":{"type":"minecraft:replaceable"}}"#
+    ));
     assert!(check(
         r#"{"type":"minecraft:all_of","predicates":[{"type":"minecraft:solid"},{"type":"minecraft:true"}]}"#
     ));
@@ -239,11 +279,21 @@ fn block_predicates_read_blocks_tags_and_fluids() {
         r#"{"type":"minecraft:any_of","predicates":[{"type":"minecraft:replaceable"},
             {"type":"minecraft:matching_blocks","blocks":"minecraft:oak_log"}]}"#
     ));
-    assert!(check(r#"{"type":"minecraft:matching_fluids","fluids":"minecraft:empty"}"#));
-    assert!(!check(r#"{"type":"minecraft:matching_fluids","fluids":["minecraft:water","minecraft:flowing_water"]}"#));
-    assert!(check(r#"{"type":"minecraft:inside_world_bounds","offset":[0,0,0]}"#));
-    assert!(!check(r#"{"type":"minecraft:inside_world_bounds","offset":[0,-200,0]}"#));
-    assert!(check(r#"{"type":"minecraft:has_sturdy_face","direction":"up"}"#));
+    assert!(check(
+        r#"{"type":"minecraft:matching_fluids","fluids":"minecraft:empty"}"#
+    ));
+    assert!(!check(
+        r#"{"type":"minecraft:matching_fluids","fluids":["minecraft:water","minecraft:flowing_water"]}"#
+    ));
+    assert!(check(
+        r#"{"type":"minecraft:inside_world_bounds","offset":[0,0,0]}"#
+    ));
+    assert!(!check(
+        r#"{"type":"minecraft:inside_world_bounds","offset":[0,-200,0]}"#
+    ));
+    assert!(check(
+        r#"{"type":"minecraft:has_sturdy_face","direction":"up"}"#
+    ));
 }
 
 #[test]
@@ -321,7 +371,9 @@ fn noise_providers_are_deterministic_and_stay_in_their_state_lists() {
     let noise = r#"{"firstOctave":-3,"amplitudes":[1.0]}"#;
     let states = r#"[{"Name":"minecraft:stone"},{"Name":"minecraft:oak_log"},{"Name":"minecraft:oak_leaves"}]"#;
     let providers = [
-        format!(r#"{{"type":"minecraft:noise_provider","seed":2345,"noise":{noise},"scale":1.3,"states":{states}}}"#),
+        format!(
+            r#"{{"type":"minecraft:noise_provider","seed":2345,"noise":{noise},"scale":1.3,"states":{states}}}"#
+        ),
         format!(
             r#"{{"type":"minecraft:dual_noise_provider","seed":2345,"noise":{noise},"scale":1.3,
                 "states":{states},"variety":[1,3],"slow_noise":{noise},"slow_scale":2.1}}"#
@@ -348,7 +400,10 @@ fn noise_providers_are_deterministic_and_stay_in_their_state_lists() {
             );
             seen.insert(state);
         }
-        assert!(seen.len() > 1, "a noise provider that never varies: {provider}");
+        assert!(
+            seen.len() > 1,
+            "a noise provider that never varies: {provider}"
+        );
     }
 }
 
@@ -374,7 +429,10 @@ const COAL: &str = r#"{"feature":{"type":"minecraft:ore","config":{"size":9,
 #[test]
 fn an_ore_blob_replaces_only_its_targets_inside_a_small_neighbourhood() {
     let env = env(
-        &[("stone_ore_replaceables", r#"{"values":["minecraft:stone"]}"#)],
+        &[(
+            "stone_ore_replaceables",
+            r#"{"values":["minecraft:stone"]}"#,
+        )],
         Box::new(NoBlockBehaviours),
     );
     let origin = BlockPos::new(8, 20, 8);
@@ -383,7 +441,10 @@ fn an_ore_blob_replaces_only_its_targets_inside_a_small_neighbourhood() {
     assert!(!outcome.writes.is_empty());
     for (pos, state) in &outcome.writes {
         assert_eq!(*state, block("coal_ore"));
-        assert!((pos.x - origin.x).abs() <= 6 && (pos.z - origin.z).abs() <= 6, "{pos:?}");
+        assert!(
+            (pos.x - origin.x).abs() <= 6 && (pos.z - origin.z).abs() <= 6,
+            "{pos:?}"
+        );
         assert!((pos.y - origin.y).abs() <= 6, "{pos:?}");
     }
     // The same seed gives the same blob; another seed gives another.
@@ -396,7 +457,10 @@ fn an_ore_blob_replaces_only_its_targets_inside_a_small_neighbourhood() {
 #[test]
 fn an_ore_blob_in_open_air_places_nothing() {
     let env = env(
-        &[("stone_ore_replaceables", r#"{"values":["minecraft:stone"]}"#)],
+        &[(
+            "stone_ore_replaceables",
+            r#"{"values":["minecraft:stone"]}"#,
+        )],
         Box::new(NoBlockBehaviours),
     );
     // Far above the surface there is no ground for the height scan to find under the blob.
@@ -407,10 +471,16 @@ fn an_ore_blob_in_open_air_places_nothing() {
 #[test]
 fn air_exposure_discard_keeps_ore_out_of_cave_walls() {
     let env = env(
-        &[("stone_ore_replaceables", r#"{"values":["minecraft:stone"]}"#)],
+        &[(
+            "stone_ore_replaceables",
+            r#"{"values":["minecraft:stone"]}"#,
+        )],
         Box::new(NoBlockBehaviours),
     );
-    let json = COAL.replace("\"discard_chance_on_air_exposure\":0.0", "\"discard_chance_on_air_exposure\":1.0");
+    let json = COAL.replace(
+        "\"discard_chance_on_air_exposure\":0.0",
+        "\"discard_chance_on_air_exposure\":1.0",
+    );
     let origin = BlockPos::new(8, 62, 8);
     // Chance 1 refuses every block touching air, so only blocks at least two deep survive.
     let outcome = place_in_flat(&env, &json, 77, origin, |_| {});
@@ -422,7 +492,10 @@ fn air_exposure_discard_keeps_ore_out_of_cave_walls() {
 #[test]
 fn scattered_ore_places_single_blocks_near_the_origin() {
     let env = env(
-        &[("stone_ore_replaceables", r#"{"values":["minecraft:stone"]}"#)],
+        &[(
+            "stone_ore_replaceables",
+            r#"{"values":["minecraft:stone"]}"#,
+        )],
         Box::new(NoBlockBehaviours),
     );
     let json = r#"{"feature":{"type":"minecraft:scattered_ore","config":{"size":20,
@@ -434,7 +507,11 @@ fn scattered_ore_places_single_blocks_near_the_origin() {
     let outcome = place_in_flat(&env, json, 3, origin, |_| {});
     assert!(!outcome.writes.is_empty());
     for (pos, _) in &outcome.writes {
-        assert!((pos.x - origin.x).abs() <= 7 && (pos.y - origin.y).abs() <= 7 && (pos.z - origin.z).abs() <= 7);
+        assert!(
+            (pos.x - origin.x).abs() <= 7
+                && (pos.y - origin.y).abs() <= 7
+                && (pos.z - origin.z).abs() <= 7
+        );
     }
 }
 
@@ -448,7 +525,9 @@ fn a_spring_needs_four_rocks_and_one_hole() {
     let origin = BlockPos::new(8, 30, 8);
 
     // Solid stone: no hole, so no spring.
-    assert!(place_in_flat(&env, SPRING, 1, origin, |_| {}).writes.is_empty());
+    assert!(place_in_flat(&env, SPRING, 1, origin, |_| {})
+        .writes
+        .is_empty());
 
     // One air neighbour: the cavity vanilla wants.
     let outcome = place_in_flat(&env, SPRING, 1, origin, |region| {
@@ -468,7 +547,13 @@ fn a_spring_needs_four_rocks_and_one_hole() {
         region.set_block(BlockPos::new(7, 30, 8), block("air"));
         region.set_block(BlockPos::new(9, 30, 8), block("air"));
     });
-    assert!(crowded.writes.iter().all(|(_, state)| *state == block("air")), "no spring");
+    assert!(
+        crowded
+            .writes
+            .iter()
+            .all(|(_, state)| *state == block("air")),
+        "no spring"
+    );
 }
 
 #[test]
@@ -491,15 +576,31 @@ fn selectors_choose_with_vanillas_draws() {
     );
     for seed in 0..30 {
         let at = BlockPos::new(2, 70, 2);
-        let wrote = |json: &str| place_in_flat(&env, json, seed, at, |_| {}).writes[0].1.clone();
+        let wrote = |json: &str| {
+            place_in_flat(&env, json, seed, at, |_| {}).writes[0]
+                .1
+                .clone()
+        };
 
-        let want = if WorldgenRandom::new(seed).next_boolean() { block("oak_log") } else { block("stone") };
+        let want = if WorldgenRandom::new(seed).next_boolean() {
+            block("oak_log")
+        } else {
+            block("stone")
+        };
         assert_eq!(wrote(&boolean), want, "boolean, seed {seed}");
 
-        let want = if WorldgenRandom::new(seed).next_int_bounded(2) == 0 { block("oak_log") } else { block("stone") };
+        let want = if WorldgenRandom::new(seed).next_int_bounded(2) == 0 {
+            block("oak_log")
+        } else {
+            block("stone")
+        };
         assert_eq!(wrote(&simple), want, "simple, seed {seed}");
 
-        let want = if WorldgenRandom::new(seed).next_float() < 0.5 { block("oak_log") } else { block("stone") };
+        let want = if WorldgenRandom::new(seed).next_float() < 0.5 {
+            block("oak_log")
+        } else {
+            block("stone")
+        };
         assert_eq!(wrote(&chance), want, "chance, seed {seed}");
     }
 }
@@ -514,7 +615,12 @@ fn an_unsupported_feature_places_nothing_and_is_tallied() {
         "placement":[{"type":"minecraft:count","count":3}]}"#;
     let outcome = place_in_flat(&env, json, 1, BlockPos::new(4, 64, 4), |_| {});
     assert!(!outcome.placed && outcome.writes.is_empty());
-    assert_eq!(outcome.tally.get("feature:minecraft:fossil (no datapack tree)"), 3);
+    assert_eq!(
+        outcome
+            .tally
+            .get("feature:minecraft:fossil (no datapack tree)"),
+        3
+    );
 }
 
 #[test]
@@ -541,8 +647,13 @@ fn overworld_biomes() -> Vec<ResourceLocation> {
 #[test]
 fn a_decorator_built_from_the_reference_tree_writes_ores_deterministically() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../reference");
-    if !root.join("data/minecraft/worldgen/placed_feature").is_dir() || !root.join("block_facts.tsv").is_file() {
-        eprintln!("skipping: no extracted vanilla export at {}", root.display());
+    if !root.join("data/minecraft/worldgen/placed_feature").is_dir()
+        || !root.join("block_facts.tsv").is_file()
+    {
+        eprintln!(
+            "skipping: no extracted vanilla export at {}",
+            root.display()
+        );
         return;
     }
     let datapack = oxide_datapack::load_datapack(&root).expect("reference datapack loads");
@@ -558,7 +669,10 @@ fn a_decorator_built_from_the_reference_tree_writes_ores_deterministically() {
     };
     let first = writes_for(&decorator);
     let second = writes_for(&decorator);
-    assert_eq!(first, second, "the same seed and terrain must give identical writes");
+    assert_eq!(
+        first, second,
+        "the same seed and terrain must give identical writes"
+    );
 
     let ores = first
         .iter()
@@ -566,19 +680,30 @@ fn a_decorator_built_from_the_reference_tree_writes_ores_deterministically() {
         .count();
     assert!(ores > 0, "no ore among {} writes", first.len());
     let lowest = first.iter().map(|(pos, _)| pos.y).min().unwrap();
-    assert!(lowest < 0, "deepslate-level ores expected, lowest write at y={lowest}");
+    assert!(
+        lowest < 0,
+        "deepslate-level ores expected, lowest write at y={lowest}"
+    );
 
     // Another world seed decorates the same terrain differently.
     let other = BiomeDecorator::new(&datapack, &biomes, 4243, 63).expect("decorator builds");
     assert_ne!(first, writes_for(&other));
 
     let tally = decorator.unsupported();
-    eprintln!("{} writes, unsupported: {:?}", first.len(), tally.entries().collect::<Vec<_>>());
+    eprintln!(
+        "{} writes, unsupported: {:?}",
+        first.len(),
+        tally.entries().collect::<Vec<_>>()
+    );
 }
 
 /// Facts for the two-block plants the tests below place, in the exporter's own format.
 fn plant_facts() -> BlockFacts {
-    let dir = std::env::temp_dir().join(format!("oxide-plant-facts-{}-{:?}", std::process::id(), std::thread::current().id()));
+    let dir = std::env::temp_dir().join(format!(
+        "oxide-plant-facts-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("block_facts.tsv"),
@@ -605,7 +730,9 @@ fn two_block_env() -> Environment {
 }
 
 fn plant_json(state: &str) -> String {
-    feature_json(&format!(r#"{{"type":"minecraft:simple_state_provider","state":{state}}}"#))
+    feature_json(&format!(
+        r#"{{"type":"minecraft:simple_state_provider","state":{state}}}"#
+    ))
 }
 
 #[test]
@@ -617,8 +744,14 @@ fn a_two_block_plant_is_placed_as_both_halves() {
     assert_eq!(
         outcome.writes,
         vec![
-            (BlockPos::new(4, 64, 4), block("tall_grass").with_property("half", "lower")),
-            (BlockPos::new(4, 65, 4), block("tall_grass").with_property("half", "upper")),
+            (
+                BlockPos::new(4, 64, 4),
+                block("tall_grass").with_property("half", "lower")
+            ),
+            (
+                BlockPos::new(4, 65, 4),
+                block("tall_grass").with_property("half", "upper")
+            ),
         ]
     );
 }
@@ -631,7 +764,11 @@ fn a_two_block_plant_needs_the_cell_above_empty() {
         region.set_block(BlockPos::new(4, 65, 4), block("stone"));
     });
     assert!(!outcome.placed);
-    assert_eq!(outcome.writes, vec![(BlockPos::new(4, 65, 4), block("stone"))], "only the test's own block");
+    assert_eq!(
+        outcome.writes,
+        vec![(BlockPos::new(4, 65, 4), block("stone"))],
+        "only the test's own block"
+    );
 }
 
 #[test]
@@ -641,7 +778,10 @@ fn each_half_copies_its_waterlogging_from_the_water_already_there() {
         r#"{"Name":"minecraft:small_dripleaf","Properties":{"half":"lower","facing":"north","waterlogged":"false"}}"#,
     );
     let outcome = place_in_flat(&env, &json, 1, BlockPos::new(4, 64, 4), |region| {
-        region.set_block(BlockPos::new(4, 64, 4), block("water").with_property("level", "0"));
+        region.set_block(
+            BlockPos::new(4, 64, 4),
+            block("water").with_property("level", "0"),
+        );
     });
     assert!(outcome.placed);
     let dripleaf = |half: &str, waterlogged: &str| {
@@ -652,7 +792,10 @@ fn each_half_copies_its_waterlogging_from_the_water_already_there() {
     };
     let written: HashMap<_, _> = outcome.writes.into_iter().collect();
     assert_eq!(written[&BlockPos::new(4, 64, 4)], dripleaf("lower", "true"));
-    assert_eq!(written[&BlockPos::new(4, 65, 4)], dripleaf("upper", "false"));
+    assert_eq!(
+        written[&BlockPos::new(4, 65, 4)],
+        dripleaf("upper", "false")
+    );
 }
 
 /// A decorator built from the real 26.2 export, on grass, no longer stops at "survival unknown"
@@ -660,12 +803,18 @@ fn each_half_copies_its_waterlogging_from_the_water_already_there() {
 #[test]
 fn reference_decoration_on_grass_places_short_grass() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../reference");
-    if !root.join("data/minecraft/worldgen/placed_feature").is_dir() || !root.join("block_facts.tsv").is_file() {
-        eprintln!("skipping: no extracted vanilla export at {}", root.display());
+    if !root.join("data/minecraft/worldgen/placed_feature").is_dir()
+        || !root.join("block_facts.tsv").is_file()
+    {
+        eprintln!(
+            "skipping: no extracted vanilla export at {}",
+            root.display()
+        );
         return;
     }
     let datapack = oxide_datapack::load_datapack(&root).expect("reference datapack loads");
-    let decorator = BiomeDecorator::new(&datapack, &overworld_biomes(), 4242, 63).expect("decorator builds");
+    let decorator =
+        BiomeDecorator::new(&datapack, &overworld_biomes(), 4242, 63).expect("decorator builds");
     let center = ChunkPos::new(3, -2);
     let mut chunks = flat_ring(center, 64);
     for chunk in &mut chunks {
@@ -673,15 +822,24 @@ fn reference_decoration_on_grass_places_short_grass() {
         for z in 0..16 {
             for x in 0..16 {
                 let slot = crate::fill::local_index(x, ((63 - chunk.min_y) & 15) as usize, z);
-                top.block_states.set(slot, block("grass_block").with_property("snowy", "false"));
+                top.block_states
+                    .set(slot, block("grass_block").with_property("snowy", "false"));
             }
         }
     }
     let mut region = DecorationRegion::new(center, refs(&chunks), decorator.facts());
     decorator.decorate(&mut region);
     let writes = region.into_writes();
-    let grass = writes.iter().filter(|(_, state)| state.name.path() == "short_grass").count();
+    let grass = writes
+        .iter()
+        .filter(|(_, state)| state.name.path() == "short_grass")
+        .count();
     let tally = decorator.unsupported();
-    assert_eq!(tally.get("survival:minecraft:short_grass"), 0, "{:?}", tally.entries().collect::<Vec<_>>());
+    assert_eq!(
+        tally.get("survival:minecraft:short_grass"),
+        0,
+        "{:?}",
+        tally.entries().collect::<Vec<_>>()
+    );
     assert!(grass > 0, "no short_grass among {} writes", writes.len());
 }

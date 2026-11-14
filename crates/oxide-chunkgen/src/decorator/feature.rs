@@ -22,8 +22,8 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
 use oxide_core::{BlockPos, BlockState, RandomSource, ResourceLocation};
-use oxide_datapack::feature::{ConfiguredFeature, HolderList};
 use oxide_datapack::feature::Holder;
+use oxide_datapack::feature::{ConfiguredFeature, HolderList};
 use oxide_datapack::placement::PlacedFeature as PlacedFeatureIr;
 use oxide_datapack::{BlockFact, BlockFacts, Datapack, Registry};
 
@@ -35,8 +35,8 @@ use super::nether::NetherFeature;
 use super::ore::OreFeature;
 use super::placement::{run, Modifier};
 use super::spring::SpringFeature;
-use super::templated::{TemplateLibrary, TemplatedFeature};
 use super::state_provider::{StateProvider, Unsupported};
+use super::templated::{TemplateLibrary, TemplatedFeature};
 use super::tree::{FallenTreeFeature, TreeFeature};
 use super::vegetation::VegetationFeature;
 use super::water::WaterFeature;
@@ -56,11 +56,17 @@ pub enum Feature {
     SimpleBlock(StateProvider),
     Spring(SpringFeature),
     /// Rolls each entry's `chance` in order and places the first that passes, else `default`.
-    RandomSelector { features: Vec<(f32, Arc<Placed>)>, default: Arc<Placed> },
+    RandomSelector {
+        features: Vec<(f32, Arc<Placed>)>,
+        default: Arc<Placed>,
+    },
     SimpleRandomSelector(Vec<Arc<Placed>>),
     /// Places one entry picked by weight; a zero total weight places nothing.
     WeightedRandomSelector(Vec<(Arc<Placed>, i32)>),
-    RandomBooleanSelector { when_true: Arc<Placed>, when_false: Arc<Placed> },
+    RandomBooleanSelector {
+        when_true: Arc<Placed>,
+        when_false: Arc<Placed>,
+    },
     /// Places every entry in order, stopping at the first that fails.
     Sequence(Vec<Arc<Placed>>),
     /// Patches, root systems, multiface growth, vines, bamboo and huge mushrooms.
@@ -134,8 +140,14 @@ impl<'d> Compiler<'d> {
         if let Some(found) = self.placed_memo.get(id) {
             return Ok(found.clone());
         }
-        let ir = self.placed.get(id).ok_or_else(|| anyhow!("unknown placed feature {id}"))?;
-        let compiled = Arc::new(self.compile_placed(ir).with_context(|| format!("placed feature {id}"))?);
+        let ir = self
+            .placed
+            .get(id)
+            .ok_or_else(|| anyhow!("unknown placed feature {id}"))?;
+        let compiled = Arc::new(
+            self.compile_placed(ir)
+                .with_context(|| format!("placed feature {id}"))?,
+        );
         self.placed_memo.insert(id.clone(), compiled.clone());
         Ok(compiled)
     }
@@ -149,7 +161,10 @@ impl<'d> Compiler<'d> {
         let Some(config) = self.configured.get(id) else {
             return Ok(None);
         };
-        let compiled = Arc::new(self.feature(config).with_context(|| format!("configured feature {id}"))?);
+        let compiled = Arc::new(
+            self.feature(config)
+                .with_context(|| format!("configured feature {id}"))?,
+        );
         self.configured_memo.insert(id.clone(), compiled.clone());
         Ok(Some(compiled))
     }
@@ -181,7 +196,8 @@ impl<'d> Compiler<'d> {
                             .get(id)
                             .ok_or_else(|| anyhow!("unknown configured feature {id}"))?;
                         let compiled = Arc::new(
-                            self.feature(config).with_context(|| format!("configured feature {id}"))?,
+                            self.feature(config)
+                                .with_context(|| format!("configured feature {id}"))?,
                         );
                         self.configured_memo.insert(id.clone(), compiled.clone());
                         compiled
@@ -197,17 +213,23 @@ impl<'d> Compiler<'d> {
 
     fn feature(&mut self, ir: &ConfiguredFeature) -> Result<Feature> {
         Ok(match ir {
-            ConfiguredFeature::Ore(config) => Feature::Ore(OreFeature::compile(config, self.facts)?),
+            ConfiguredFeature::Ore(config) => {
+                Feature::Ore(OreFeature::compile(config, self.facts)?)
+            }
             ConfiguredFeature::ScatteredOre(config) => {
                 Feature::ScatteredOre(OreFeature::compile(config, self.facts)?)
             }
             ConfiguredFeature::SimpleBlock(config) => {
                 Feature::SimpleBlock(StateProvider::compile(&config.to_place, self.facts)?)
             }
-            ConfiguredFeature::SpringFeature(config) => match SpringFeature::compile(config, self.facts)? {
-                Some(spring) => Feature::Spring(spring),
-                None => Feature::Unsupported("minecraft:spring_feature (non-source fluid)".into()),
-            },
+            ConfiguredFeature::SpringFeature(config) => {
+                match SpringFeature::compile(config, self.facts)? {
+                    Some(spring) => Feature::Spring(spring),
+                    None => {
+                        Feature::Unsupported("minecraft:spring_feature (non-source fluid)".into())
+                    }
+                }
+            }
             ConfiguredFeature::RandomSelector(config) => Feature::RandomSelector {
                 features: config
                     .features
@@ -218,17 +240,25 @@ impl<'d> Compiler<'d> {
             },
             ConfiguredFeature::SimpleRandomSelector(config) => match &config.features {
                 HolderList::List(list) => Feature::SimpleRandomSelector(
-                    list.iter().map(|holder| self.placed_holder(holder)).collect::<Result<_>>()?,
+                    list.iter()
+                        .map(|holder| self.placed_holder(holder))
+                        .collect::<Result<_>>()?,
                 ),
                 // A tag of placed features: the datapack has no placed-feature tags loaded.
-                HolderList::Tag(_) => Feature::Unsupported("minecraft:simple_random_selector (tag)".into()),
+                HolderList::Tag(_) => {
+                    Feature::Unsupported("minecraft:simple_random_selector (tag)".into())
+                }
             },
             ConfiguredFeature::RandomBooleanSelector(config) => Feature::RandomBooleanSelector {
                 when_true: self.placed_holder(&config.feature_true)?,
                 when_false: self.placed_holder(&config.feature_false)?,
             },
             ConfiguredFeature::Sequence(config) => Feature::Sequence(
-                config.features.iter().map(|holder| self.placed_holder(holder)).collect::<Result<_>>()?,
+                config
+                    .features
+                    .iter()
+                    .map(|holder| self.placed_holder(holder))
+                    .collect::<Result<_>>()?,
             ),
             ConfiguredFeature::NoOp(_) => Feature::NoOp,
             ConfiguredFeature::WeightedRandomSelector(config) => Feature::WeightedRandomSelector(
@@ -246,18 +276,24 @@ impl<'d> Compiler<'d> {
             | ConfiguredFeature::Bamboo(_)
             | ConfiguredFeature::HugeRedMushroom(_)
             | ConfiguredFeature::HugeBrownMushroom(_)) => {
-                match VegetationFeature::compile(other, self.facts, &mut |holder| self.placed_holder(holder))? {
+                match VegetationFeature::compile(other, self.facts, &mut |holder| {
+                    self.placed_holder(holder)
+                })? {
                     Some(feature) => Feature::Vegetation(feature),
                     None => Feature::Unsupported(type_id(other)),
                 }
             }
             ConfiguredFeature::Tree(config) => {
                 let facts = self.facts;
-                Feature::Tree(TreeFeature::compile(config, facts, &mut |id| self.configured_by_id(id))?)
+                Feature::Tree(TreeFeature::compile(config, facts, &mut |id| {
+                    self.configured_by_id(id)
+                })?)
             }
             ConfiguredFeature::FallenTree(config) => {
                 let facts = self.facts;
-                Feature::FallenTree(FallenTreeFeature::compile(config, facts, &mut |id| self.configured_by_id(id))?)
+                Feature::FallenTree(FallenTreeFeature::compile(config, facts, &mut |id| {
+                    self.configured_by_id(id)
+                })?)
             }
             other @ (ConfiguredFeature::DeltaFeature(_)
             | ConfiguredFeature::NetherrackReplaceBlobs(_)
@@ -267,10 +303,12 @@ impl<'d> Compiler<'d> {
             | ConfiguredFeature::GlowstoneBlob(_)
             | ConfiguredFeature::TwistingVines(_)
             | ConfiguredFeature::WeepingVines(_)
-            | ConfiguredFeature::NetherForestVegetation(_)) => match NetherFeature::compile(other, self.facts)? {
-                Some(feature) => Feature::Nether(feature),
-                None => Feature::Unsupported(type_id(other)),
-            },
+            | ConfiguredFeature::NetherForestVegetation(_)) => {
+                match NetherFeature::compile(other, self.facts)? {
+                    Some(feature) => Feature::Nether(feature),
+                    None => Feature::Unsupported(type_id(other)),
+                }
+            }
             other @ (ConfiguredFeature::ChorusPlant(_)
             | ConfiguredFeature::EndIsland(_)
             | ConfiguredFeature::EndSpike(_)
@@ -295,18 +333,22 @@ impl<'d> Compiler<'d> {
             | ConfiguredFeature::CoralTree(_)
             | ConfiguredFeature::CoralClaw(_)
             | ConfiguredFeature::CoralMushroom(_)
-            | ConfiguredFeature::DesertWell(_)) => match WaterFeature::compile(other, self.facts)? {
-                Some(feature) => Feature::Water(feature),
-                None => Feature::Unsupported(type_id(other)),
-            },
-            other @ (ConfiguredFeature::Fossil(_) | ConfiguredFeature::Template(_)) => match self.templates.as_mut() {
-                Some(library) => match TemplatedFeature::compile(other, self.facts, library)? {
-                    Some(Ok(feature)) => Feature::Templated(feature),
-                    Some(Err(detail)) => Feature::Unsupported(detail),
+            | ConfiguredFeature::DesertWell(_)) => {
+                match WaterFeature::compile(other, self.facts)? {
+                    Some(feature) => Feature::Water(feature),
                     None => Feature::Unsupported(type_id(other)),
-                },
-                None => Feature::Unsupported(format!("{} (no datapack tree)", type_id(other))),
-            },
+                }
+            }
+            other @ (ConfiguredFeature::Fossil(_) | ConfiguredFeature::Template(_)) => {
+                match self.templates.as_mut() {
+                    Some(library) => match TemplatedFeature::compile(other, self.facts, library)? {
+                        Some(Ok(feature)) => Feature::Templated(feature),
+                        Some(Err(detail)) => Feature::Unsupported(detail),
+                        None => Feature::Unsupported(type_id(other)),
+                    },
+                    None => Feature::Unsupported(format!("{} (no datapack tree)", type_id(other))),
+                }
+            }
             other => match GroundFeature::compile(other, self.facts)? {
                 Some(feature) => Feature::Ground(feature),
                 None => Feature::Unsupported(type_id(other)),
@@ -319,7 +361,11 @@ impl<'d> Compiler<'d> {
 fn type_id(ir: &ConfiguredFeature) -> String {
     serde_json::to_value(ir)
         .ok()
-        .and_then(|value| value.get("type").and_then(|tag| tag.as_str().map(str::to_owned)))
+        .and_then(|value| {
+            value
+                .get("type")
+                .and_then(|tag| tag.as_str().map(str::to_owned))
+        })
         .unwrap_or_else(|| "unknown".to_string())
 }
 
@@ -368,7 +414,9 @@ pub fn place_configured_feature(feature: &Feature, cx: &mut FeatureContext<'_, '
             place_placed(&features[index], cx, origin, None)
         }
         Feature::WeightedRandomSelector(features) => {
-            let total = features.iter().fold(0i32, |sum, (_, weight)| sum.wrapping_add(*weight));
+            let total = features
+                .iter()
+                .fold(0i32, |sum, (_, weight)| sum.wrapping_add(*weight));
             if total <= 0 {
                 return false;
             }
@@ -388,8 +436,15 @@ pub fn place_configured_feature(feature: &Feature, cx: &mut FeatureContext<'_, '
         Feature::Templated(feature) => feature.place(cx),
         Feature::End(feature) => feature.place(cx),
         Feature::Nether(feature) => feature.place(cx),
-        Feature::RandomBooleanSelector { when_true, when_false } => {
-            let chosen = if cx.random.next_boolean() { when_true } else { when_false };
+        Feature::RandomBooleanSelector {
+            when_true,
+            when_false,
+        } => {
+            let chosen = if cx.random.next_boolean() {
+                when_true
+            } else {
+                when_false
+            };
             place_placed(chosen, cx, origin, None)
         }
         Feature::Sequence(features) => {
@@ -436,14 +491,22 @@ fn place_simple_block(provider: &StateProvider, cx: &mut FeatureContext<'_, '_, 
             return false;
         }
     }
-    if state.properties.get("half").is_some_and(|half| half == "lower") {
+    if state
+        .properties
+        .get("half")
+        .is_some_and(|half| half == "lower")
+    {
         return place_two_block_plant(cx, state, pos);
     }
     cx.region.set_block(pos, state)
 }
 
 /// `DoublePlantBlock.placeAt`, behind `SimpleBlockFeature`'s check that the cell above is empty.
-fn place_two_block_plant(cx: &mut FeatureContext<'_, '_, '_>, state: BlockState, pos: BlockPos) -> bool {
+fn place_two_block_plant(
+    cx: &mut FeatureContext<'_, '_, '_>,
+    state: BlockState,
+    pos: BlockPos,
+) -> bool {
     let above = BlockPos::new(pos.x, pos.y + 1, pos.z);
     if !cx.env.facts.is(block_in(cx.region, above), BlockFact::Air) {
         return false;

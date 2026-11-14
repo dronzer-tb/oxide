@@ -68,12 +68,16 @@ impl VegetationFeature {
             ConfiguredFeature::RootSystem(config) => {
                 Self::RootSystem(RootSystemFeature::compile(config, facts, placed)?)
             }
-            ConfiguredFeature::MultifaceGrowth(config) => match MultifaceFeature::compile(config, facts)? {
-                Some(feature) => Self::Multiface(feature),
-                None => return Ok(None),
-            },
+            ConfiguredFeature::MultifaceGrowth(config) => {
+                match MultifaceFeature::compile(config, facts)? {
+                    Some(feature) => Self::Multiface(feature),
+                    None => return Ok(None),
+                }
+            }
             ConfiguredFeature::Vines(_) => Self::Vines(VinesFeature::compile(facts)?),
-            ConfiguredFeature::Bamboo(config) => Self::Bamboo(BambooFeature::compile(config, facts)?),
+            ConfiguredFeature::Bamboo(config) => {
+                Self::Bamboo(BambooFeature::compile(config, facts)?)
+            }
             ConfiguredFeature::HugeRedMushroom(config) => {
                 Self::HugeMushroom(MushroomFeature::compile(config, true, facts)?)
             }

@@ -24,12 +24,18 @@ fn synthetic_facts() -> BlockFacts {
     for wood in ["oak", "spruce"] {
         for axis in ["x", "y", "z"] {
             let default = if axis == "y" { "D" } else { "" };
-            table.push_str(&format!("minecraft:{wood}_log[axis={axis}]\t{default}smoudf1234\n"));
+            table.push_str(&format!(
+                "minecraft:{wood}_log[axis={axis}]\t{default}smoudf1234\n"
+            ));
         }
         for distance in 1..=7 {
             for persistent in [true, false] {
                 for waterlogged in [true, false] {
-                    let default = if distance == 7 && !persistent && !waterlogged { "D" } else { "" };
+                    let default = if distance == 7 && !persistent && !waterlogged {
+                        "D"
+                    } else {
+                        ""
+                    };
                     let water = if waterlogged { "WS" } else { "" };
                     table.push_str(&format!(
                         "minecraft:{wood}_leaves[distance={distance},persistent={persistent},waterlogged={waterlogged}]\t{default}smf123{water}\n"
@@ -38,7 +44,11 @@ fn synthetic_facts() -> BlockFacts {
             }
         }
     }
-    let dir = std::env::temp_dir().join(format!("oxide-tree-facts-{}-{:?}", std::process::id(), std::thread::current().id()));
+    let dir = std::env::temp_dir().join(format!(
+        "oxide-tree-facts-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
     std::fs::create_dir_all(&dir).expect("temp dir");
     std::fs::write(dir.join("block_facts.tsv"), table).expect("write facts");
     let facts = BlockFacts::load(&dir).expect("facts load");
@@ -47,7 +57,11 @@ fn synthetic_facts() -> BlockFacts {
 }
 
 fn synthetic_tags() -> TagSet {
-    let root = std::env::temp_dir().join(format!("oxide-tree-tags-{}-{:?}", std::process::id(), std::thread::current().id()));
+    let root = std::env::temp_dir().join(format!(
+        "oxide-tree-tags-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
     let _ = std::fs::remove_dir_all(&root);
     let dir = root.join("data/minecraft/tags/block");
     std::fs::create_dir_all(&dir).expect("tag dir");
@@ -108,19 +122,28 @@ fn run_on_flat(
         };
         place(&mut cx)
     };
-    Placed { writes: region.into_writes(), tally, placed }
+    Placed {
+        writes: region.into_writes(),
+        tally,
+        placed,
+    }
 }
 
 fn tree(env: &Environment, json: &str) -> TreeFeature {
     let ir: ConfiguredFeature = serde_json::from_str(json).expect("configured feature json");
-    let ConfiguredFeature::Tree(config) = ir else { panic!("not a tree") };
+    let ConfiguredFeature::Tree(config) = ir else {
+        panic!("not a tree")
+    };
     TreeFeature::compile(&config, &env.facts, &mut |_| Ok(None)).expect("tree compiles")
 }
 
 fn fallen(env: &Environment, json: &str) -> FallenTreeFeature {
     let ir: ConfiguredFeature = serde_json::from_str(json).expect("configured feature json");
-    let ConfiguredFeature::FallenTree(config) = ir else { panic!("not a fallen tree") };
-    FallenTreeFeature::compile(&config, &env.facts, &mut |_| Ok(None)).expect("fallen tree compiles")
+    let ConfiguredFeature::FallenTree(config) = ir else {
+        panic!("not a fallen tree")
+    };
+    FallenTreeFeature::compile(&config, &env.facts, &mut |_| Ok(None))
+        .expect("fallen tree compiles")
 }
 
 const OAK: &str = r#"{"type":"minecraft:tree","config":{
@@ -152,7 +175,9 @@ const FALLEN_OAK: &str = r#"{"type":"minecraft:fallen_tree","config":{
   "stump_decorators":[],"log_decorators":[]}}"#;
 
 fn named<'a>(writes: &'a [BlockWrite], suffix: &'a str) -> impl Iterator<Item = &'a BlockWrite> {
-    writes.iter().filter(move |(_, state)| state.name.path().ends_with(suffix))
+    writes
+        .iter()
+        .filter(move |(_, state)| state.name.path().ends_with(suffix))
 }
 
 #[test]
@@ -163,27 +188,49 @@ fn an_oak_is_a_straight_log_column_under_a_blob_of_leaves() {
     let outcome = run_on_flat(&env, 7, origin, |cx| oak.place(cx));
     assert!(outcome.placed && outcome.tally.is_empty());
 
-    let mut logs: Vec<i32> = named(&outcome.writes, "_log").map(|(pos, _)| {
-        assert_eq!((pos.x, pos.z), (8, 8), "an oak trunk is one column");
-        pos.y
-    }).collect();
+    let mut logs: Vec<i32> = named(&outcome.writes, "_log")
+        .map(|(pos, _)| {
+            assert_eq!((pos.x, pos.z), (8, 8), "an oak trunk is one column");
+            pos.y
+        })
+        .collect();
     logs.sort_unstable();
     assert!((4..=6).contains(&logs.len()), "{} logs", logs.len());
     assert_eq!(logs[0], 64);
-    assert!(logs.windows(2).all(|pair| pair[1] == pair[0] + 1), "contiguous: {logs:?}");
+    assert!(
+        logs.windows(2).all(|pair| pair[1] == pair[0] + 1),
+        "contiguous: {logs:?}"
+    );
 
     let top = *logs.last().expect("a log");
     let leaves: Vec<&BlockWrite> = named(&outcome.writes, "_leaves").collect();
     assert!(leaves.len() > 20, "{} leaves", leaves.len());
-    assert!(leaves.iter().all(|(pos, _)| pos.y >= top - 2 && pos.y <= top + 1), "a blob around the crown");
-    let above_top = leaves.iter().find(|(pos, _)| *pos == BlockPos::new(8, top + 1, 8)).expect("a leaf above the trunk");
-    assert_eq!(above_top.1.properties.get("distance").map(String::as_str), Some("1"));
     assert!(
-        leaves.iter().all(|(_, state)| state.properties["distance"] != "7"),
+        leaves
+            .iter()
+            .all(|(pos, _)| pos.y >= top - 2 && pos.y <= top + 1),
+        "a blob around the crown"
+    );
+    let above_top = leaves
+        .iter()
+        .find(|(pos, _)| *pos == BlockPos::new(8, top + 1, 8))
+        .expect("a leaf above the trunk");
+    assert_eq!(
+        above_top.1.properties.get("distance").map(String::as_str),
+        Some("1")
+    );
+    assert!(
+        leaves
+            .iter()
+            .all(|(_, state)| state.properties["distance"] != "7"),
         "the distance pass reaches every leaf of a lone oak"
     );
 
-    let dirt = outcome.writes.iter().find(|(pos, _)| *pos == BlockPos::new(8, 63, 8)).expect("dirt under the trunk");
+    let dirt = outcome
+        .writes
+        .iter()
+        .find(|(pos, _)| *pos == BlockPos::new(8, 63, 8))
+        .expect("dirt under the trunk");
     assert_eq!(dirt.1.name, ResourceLocation::minecraft("dirt"));
 }
 
@@ -197,7 +244,13 @@ fn the_same_seed_gives_the_same_tree_and_seeds_vary_its_height() {
     assert_eq!(first.writes, second.writes);
 
     let heights: std::collections::BTreeSet<usize> = (0..40)
-        .map(|seed| named(&run_on_flat(&env, seed, origin, |cx| oak.place(cx)).writes, "_log").count())
+        .map(|seed| {
+            named(
+                &run_on_flat(&env, seed, origin, |cx| oak.place(cx)).writes,
+                "_log",
+            )
+            .count()
+        })
         .collect();
     assert_eq!(heights.iter().copied().min(), Some(4));
     assert_eq!(heights.iter().copied().max(), Some(6));
@@ -210,7 +263,10 @@ fn a_tree_at_the_region_edge_is_clipped_not_refused() {
     // x = 31 is the last column of the 3x3 chunk window around chunk (0, 0).
     let outcome = run_on_flat(&env, 3, BlockPos::new(31, 64, 8), |cx| oak.place(cx));
     assert!(outcome.placed);
-    assert!(outcome.writes.iter().all(|(pos, _)| (-16..32).contains(&pos.x) && (-16..32).contains(&pos.z)));
+    assert!(outcome
+        .writes
+        .iter()
+        .all(|(pos, _)| (-16..32).contains(&pos.x) && (-16..32).contains(&pos.z)));
     assert!(named(&outcome.writes, "_leaves").any(|(pos, _)| pos.x == 31));
     assert!(named(&outcome.writes, "_leaves").any(|(pos, _)| pos.x == 29));
 }
@@ -223,7 +279,10 @@ fn a_blocked_column_clips_or_refuses_the_tree() {
     // Stone two blocks up leaves a free height of 0, below the default minimum of the tree's
     // own height, and `two_layers_feature_size` has no `min_clipped_height`.
     let outcome = run_on_flat(&env, 1, origin, |cx| {
-        cx.region.set_block(BlockPos::new(8, 66, 8), BlockState::new(ResourceLocation::minecraft("stone")));
+        cx.region.set_block(
+            BlockPos::new(8, 66, 8),
+            BlockState::new(ResourceLocation::minecraft("stone")),
+        );
         oak.place(cx)
     });
     assert!(!outcome.placed);
@@ -247,8 +306,14 @@ fn a_spruce_narrows_toward_the_top() {
     }
     let rows: Vec<(i32, i32)> = radius_at.into_iter().collect();
     assert!(rows.len() >= 3, "{rows:?}");
-    let (top_row, bottom_widest) = (rows.last().expect("row").1, rows.iter().map(|row| row.1).max().expect("row"));
-    assert!(top_row < bottom_widest, "the crown comes to a point: {rows:?}");
+    let (top_row, bottom_widest) = (
+        rows.last().expect("row").1,
+        rows.iter().map(|row| row.1).max().expect("row"),
+    );
+    assert!(
+        top_row < bottom_widest,
+        "the crown comes to a point: {rows:?}"
+    );
 }
 
 #[test]
@@ -266,17 +331,37 @@ fn a_fallen_oak_is_a_stump_and_a_log_lying_on_its_side() {
     assert!((2..=5).contains(&lying.len()), "{} lying logs", lying.len());
     let axis = &lying[0].1.properties["axis"];
     assert_ne!(axis, "y");
-    assert!(lying.iter().all(|(pos, state)| pos.y == 64 && &state.properties["axis"] == axis));
-    let along = |pos: &BlockPos| if axis == "x" { (pos.z, pos.x) } else { (pos.x, pos.z) };
-    assert!(lying.iter().all(|(pos, _)| along(pos).0 == along(&lying[0].0).0), "one straight line");
+    assert!(lying
+        .iter()
+        .all(|(pos, state)| pos.y == 64 && &state.properties["axis"] == axis));
+    let along = |pos: &BlockPos| {
+        if axis == "x" {
+            (pos.z, pos.x)
+        } else {
+            (pos.x, pos.z)
+        }
+    };
+    assert!(
+        lying
+            .iter()
+            .all(|(pos, _)| along(pos).0 == along(&lying[0].0).0),
+        "one straight line"
+    );
 }
 
 fn reference_root() -> Option<std::path::PathBuf> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../reference");
-    if root.join("data/minecraft/worldgen/configured_feature").is_dir() && root.join("block_facts.tsv").is_file() {
+    if root
+        .join("data/minecraft/worldgen/configured_feature")
+        .is_dir()
+        && root.join("block_facts.tsv").is_file()
+    {
         Some(root)
     } else {
-        eprintln!("skipping: no extracted vanilla export at {}", root.display());
+        eprintln!(
+            "skipping: no extracted vanilla export at {}",
+            root.display()
+        );
         None
     }
 }
@@ -285,11 +370,15 @@ fn reference_root() -> Option<std::path::PathBuf> {
 fn every_26_2_tree_compiles() {
     let Some(root) = reference_root() else { return };
     let datapack = oxide_datapack::load_datapack(&root).expect("reference datapack loads");
-    let (placed, configured): (&Registry<_>, _) = (&datapack.placed_features, &datapack.configured_features);
+    let (placed, configured): (&Registry<_>, _) =
+        (&datapack.placed_features, &datapack.configured_features);
     let mut compiler = Compiler::new(&datapack.block_facts, placed, configured);
     let mut compiled = 0;
     for (id, config) in configured.iter() {
-        if matches!(config, ConfiguredFeature::Tree(_) | ConfiguredFeature::FallenTree(_)) {
+        if matches!(
+            config,
+            ConfiguredFeature::Tree(_) | ConfiguredFeature::FallenTree(_)
+        ) {
             compiler
                 .configured_by_id(id)
                 .unwrap_or_else(|error| panic!("{id}: {error:#}"))
@@ -305,8 +394,11 @@ fn the_real_oak_and_spruce_place_on_flat_ground() {
     let Some(root) = reference_root() else { return };
     let datapack = oxide_datapack::load_datapack(&root).expect("reference datapack loads");
     let env = environment(datapack.block_facts.clone(), datapack.block_tags.clone());
-    let mut compiler =
-        Compiler::new(&datapack.block_facts, &datapack.placed_features, &datapack.configured_features);
+    let mut compiler = Compiler::new(
+        &datapack.block_facts,
+        &datapack.placed_features,
+        &datapack.configured_features,
+    );
     for (name, min_logs, max_logs) in [("oak", 4, 6), ("spruce", 5, 8)] {
         let feature = compiler
             .configured_by_id(&ResourceLocation::minecraft(name))
@@ -315,11 +407,22 @@ fn the_real_oak_and_spruce_place_on_flat_ground() {
         let outcome = run_on_flat(&env, 21, BlockPos::new(8, 64, 8), |cx| {
             super::super::feature::place_configured_feature(&feature, cx)
         });
-        assert!(outcome.placed, "{name}: {:?}", outcome.tally.entries().collect::<Vec<_>>());
+        assert!(
+            outcome.placed,
+            "{name}: {:?}",
+            outcome.tally.entries().collect::<Vec<_>>()
+        );
         let logs = named(&outcome.writes, "_log").count();
         assert!((min_logs..=max_logs).contains(&logs), "{name}: {logs} logs");
-        assert!(named(&outcome.writes, "_leaves").count() > 10, "{name} has leaves");
-        assert!(outcome.tally.is_empty(), "{name}: {:?}", outcome.tally.entries().collect::<Vec<_>>());
+        assert!(
+            named(&outcome.writes, "_leaves").count() > 10,
+            "{name} has leaves"
+        );
+        assert!(
+            outcome.tally.is_empty(),
+            "{name}: {:?}",
+            outcome.tally.entries().collect::<Vec<_>>()
+        );
     }
 }
 
@@ -328,20 +431,32 @@ fn every_26_2_tree_places_without_panicking_on_flat_ground() {
     let Some(root) = reference_root() else { return };
     let datapack = oxide_datapack::load_datapack(&root).expect("reference datapack loads");
     let env = environment(datapack.block_facts.clone(), datapack.block_tags.clone());
-    let mut compiler =
-        Compiler::new(&datapack.block_facts, &datapack.placed_features, &datapack.configured_features);
+    let mut compiler = Compiler::new(
+        &datapack.block_facts,
+        &datapack.placed_features,
+        &datapack.configured_features,
+    );
     let mut placed = 0;
     for (id, config) in datapack.configured_features.iter() {
-        if !matches!(config, ConfiguredFeature::Tree(_) | ConfiguredFeature::FallenTree(_)) {
+        if !matches!(
+            config,
+            ConfiguredFeature::Tree(_) | ConfiguredFeature::FallenTree(_)
+        ) {
             continue;
         }
-        let feature = compiler.configured_by_id(id).expect("compiles").expect("registered");
+        let feature = compiler
+            .configured_by_id(id)
+            .expect("compiles")
+            .expect("registered");
         for seed in 0..3 {
             let outcome = run_on_flat(&env, seed, BlockPos::new(8, 64, 8), |cx| {
                 super::super::feature::place_configured_feature(&feature, cx)
             });
             assert!(
-                outcome.writes.iter().all(|(pos, _)| (-16..32).contains(&pos.x) && (-16..32).contains(&pos.z)),
+                outcome
+                    .writes
+                    .iter()
+                    .all(|(pos, _)| (-16..32).contains(&pos.x) && (-16..32).contains(&pos.z)),
                 "{id} wrote outside the region"
             );
             placed += usize::from(outcome.placed);

@@ -210,7 +210,9 @@ impl OxideGenerator {
             }
         }
         let decoration = if possible_biomes.is_empty() {
-            Err(format!("dimension {dim_id} has no multi-noise biome source to decorate from"))
+            Err(format!(
+                "dimension {dim_id} has no multi-noise biome source to decorate from"
+            ))
         } else {
             BiomeDecorator::new(&datapack, &possible_biomes, seed, settings.sea_level)
                 .map(|decorator| Decoration {
@@ -552,7 +554,9 @@ mod tests {
         let generate = |handle: &OxideGenerator, x: i32, z: i32| {
             let mut blocks = vec![0u16; handle.block_buffer_len()];
             let mut biomes = vec![0u16; handle.biome_buffer_len()];
-            handle.generate_chunk(x, z, &mut blocks, &mut biomes).unwrap();
+            handle
+                .generate_chunk(x, z, &mut blocks, &mut biomes)
+                .unwrap();
             let palette = handle.block_palette().read().unwrap();
             blocks
                 .iter()
@@ -566,7 +570,10 @@ mod tests {
 
         let first = OxideGenerator::open(reference(), "minecraft:overworld", 1234).unwrap();
         let bare = generate(&first, 3, -2);
-        assert!(bare.iter().all(|name| !name.contains("_ore")), "terrain alone has no ore blobs");
+        assert!(
+            bare.iter().all(|name| !name.contains("_ore")),
+            "terrain alone has no ore blobs"
+        );
         assert!(first.set_decoration(true).unwrap());
         let neighbour = generate(&first, 4, -2);
         let decorated = generate(&first, 3, -2);
@@ -589,7 +596,10 @@ mod tests {
     #[test]
     fn asking_about_a_chunks_columns_costs_less_than_generating_it() {
         if !reference().is_dir() {
-            eprintln!("skipping: no extracted vanilla export at {}", reference().display());
+            eprintln!(
+                "skipping: no extracted vanilla export at {}",
+                reference().display()
+            );
             return;
         }
         let handle = OxideGenerator::open(reference(), "minecraft:overworld", 1234).unwrap();

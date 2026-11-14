@@ -18,7 +18,10 @@ const INITIAL_CAPACITY: usize = 16;
 
 /// `BlockPos.hashCode`: `Vec3i.hashCode`, `(y + z * 31) * 31 + x`.
 fn java_hash(pos: BlockPos) -> i32 {
-    pos.y.wrapping_add(pos.z.wrapping_mul(31)).wrapping_mul(31).wrapping_add(pos.x)
+    pos.y
+        .wrapping_add(pos.z.wrapping_mul(31))
+        .wrapping_mul(31)
+        .wrapping_add(pos.x)
 }
 
 /// `HashMap.hash`: the high half of the hash is folded into the low half.

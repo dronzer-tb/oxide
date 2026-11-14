@@ -14,7 +14,7 @@
 //! blocks in vanilla's spreader, not a tag; confirm the set against 26.2.
 
 use anyhow::{bail, Context, Result};
-use oxide_core::{RandomSource, BlockPos, BlockState, ResourceLocation};
+use oxide_core::{BlockPos, BlockState, RandomSource, ResourceLocation};
 use oxide_datapack::vegetation_feature::MultifaceGrowthConfig;
 use oxide_datapack::{BlockFact, BlockFacts};
 
@@ -77,9 +77,14 @@ impl MultifaceFeature {
             search_range: config.search_range,
             directions,
             chance_of_spreading: config.chance_of_spreading,
-            can_be_placed_on: IdSet::compile(&config.can_be_placed_on).context("can_be_placed_on")?,
+            can_be_placed_on: IdSet::compile(&config.can_be_placed_on)
+                .context("can_be_placed_on")?,
             water: named("water"),
-            sculk_blockers: [named("sculk"), named("sculk_catalyst"), named("moving_piston")],
+            sculk_blockers: [
+                named("sculk"),
+                named("sculk_catalyst"),
+                named("moving_piston"),
+            ],
             sculk_vein: named("sculk_vein"),
             fire: named("fire"),
         }))
@@ -94,7 +99,10 @@ impl MultifaceFeature {
     }
 
     fn has_face(state: &BlockState, face: Dir) -> bool {
-        state.properties.get(face.name()).is_some_and(|value| value == "true")
+        state
+            .properties
+            .get(face.name())
+            .is_some_and(|value| value == "true")
     }
 
     fn air_or_water(&self, cx: &FeatureContext<'_, '_, '_>, pos: BlockPos) -> bool {
@@ -113,8 +121,12 @@ impl MultifaceFeature {
             return true;
         }
         for &search in &directions {
-            let mut placement: Vec<Dir> =
-                self.directions.iter().copied().filter(|&dir| dir != search.opposite()).collect();
+            let mut placement: Vec<Dir> = self
+                .directions
+                .iter()
+                .copied()
+                .filter(|&dir| dir != search.opposite())
+                .collect();
             shuffle(&mut placement, &mut *cx.random);
             for _ in 0..self.search_range {
                 // Vanilla's `setWithOffset(origin, search)` restarts from the origin every
@@ -141,7 +153,10 @@ impl MultifaceFeature {
     ) -> bool {
         for &direction in directions {
             let neighbour = block_in(cx.region, relative(pos, direction, 1));
-            if !self.can_be_placed_on.contains_block(cx.env, &neighbour.name) {
+            if !self
+                .can_be_placed_on
+                .contains_block(cx.env, &neighbour.name)
+            {
                 continue;
             }
             let Some(state) = self.state_for_placement(cx, old, pos, direction) else {
@@ -191,17 +206,23 @@ impl MultifaceFeature {
             old.clone()
         } else {
             let mut fresh = self.block.clone();
-            let water_source = cx.env.facts.is(old, BlockFact::Water) && cx.env.facts.is(old, BlockFact::FluidSource);
+            let water_source = cx.env.facts.is(old, BlockFact::Water)
+                && cx.env.facts.is(old, BlockFact::FluidSource);
             if water_source && fresh.properties.contains_key("waterlogged") {
                 fresh.properties.insert("waterlogged".into(), "true".into());
             }
             fresh
         };
         if !state.properties.contains_key(direction.name()) {
-            cx.unsupported.record("feature", "minecraft:multiface_growth (block without face properties)");
+            cx.unsupported.record(
+                "feature",
+                "minecraft:multiface_growth (block without face properties)",
+            );
             return None;
         }
-        state.properties.insert(direction.name().into(), "true".into());
+        state
+            .properties
+            .insert(direction.name().into(), "true".into());
         Some(state)
     }
 
@@ -225,7 +246,10 @@ impl MultifaceFeature {
             let (target, face) = match kind {
                 Spread::SamePosition => (pos, direction),
                 Spread::SamePlane => (relative(pos, direction, 1), from),
-                Spread::WrapAround => (relative(relative(pos, direction, 1), from, 1), direction.opposite()),
+                Spread::WrapAround => (
+                    relative(relative(pos, direction, 1), from, 1),
+                    direction.opposite(),
+                ),
             };
             if self.can_spread_into(cx, pos, target, face) {
                 let old = block_in(cx.region, target).clone();
@@ -257,15 +281,18 @@ impl MultifaceFeature {
                     blocked = face_full(cx, neighbour, face, Shape::Support);
                 }
                 let facts = &cx.env.facts;
-                let fluid = facts.is(&existing, BlockFact::Water) || facts.is(&existing, BlockFact::Lava);
-                let water_source = facts.is(&existing, BlockFact::Water) && facts.is(&existing, BlockFact::FluidSource);
+                let fluid =
+                    facts.is(&existing, BlockFact::Water) || facts.is(&existing, BlockFact::Lava);
+                let water_source = facts.is(&existing, BlockFact::Water)
+                    && facts.is(&existing, BlockFact::FluidSource);
                 if blocked
                     || (fluid && !water_source)
                     || cx.env.block_tags.contains(&self.fire, &existing.name)
                 {
                     false
                 } else {
-                    facts.is(&existing, BlockFact::Replaceable) || self.default_replaceable(cx, &existing)
+                    facts.is(&existing, BlockFact::Replaceable)
+                        || self.default_replaceable(cx, &existing)
                 }
             }
         } else {

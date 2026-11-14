@@ -45,7 +45,8 @@ pub fn spikes_for_seed(seed: i64) -> Vec<Spike> {
     }
     (0..10)
         .map(|i| {
-            let angle = 2.0 * (-std::f64::consts::PI + (std::f64::consts::PI / 10.0) * f64::from(i));
+            let angle =
+                2.0 * (-std::f64::consts::PI + (std::f64::consts::PI / 10.0) * f64::from(i));
             let size = sizes[i as usize];
             Spike {
                 center_x: (42.0 * angle.cos()).floor() as i32,
@@ -93,7 +94,11 @@ impl EndSpikeFeature {
 
     /// `SpikeFeature.place`: builds every pillar centred in the origin's chunk.
     pub fn place(&self, cx: &mut FeatureContext<'_, '_, '_>) -> bool {
-        let spikes = if self.spikes.is_empty() { spikes_for_seed(cx.env.seed) } else { self.spikes.clone() };
+        let spikes = if self.spikes.is_empty() {
+            spikes_for_seed(cx.env.seed)
+        } else {
+            self.spikes.clone()
+        };
         for spike in spikes {
             if cx.origin.x >> 4 == spike.center_x >> 4 && cx.origin.z >> 4 == spike.center_z >> 4 {
                 self.place_spike(cx, spike);
@@ -103,11 +108,16 @@ impl EndSpikeFeature {
     }
 
     fn bars(&self, north: bool, south: bool, west: bool, east: bool) -> BlockState {
-        [("north", north), ("south", south), ("west", west), ("east", east)]
-            .into_iter()
-            .fold(self.iron_bars.clone(), |state, (name, on)| {
-                with_property(state, name, if on { "true" } else { "false" })
-            })
+        [
+            ("north", north),
+            ("south", south),
+            ("west", west),
+            ("east", east),
+        ]
+        .into_iter()
+        .fold(self.iron_bars.clone(), |state, (name, on)| {
+            with_property(state, name, if on { "true" } else { "false" })
+        })
     }
 
     /// `SpikeFeature.placeSpike`.
@@ -138,8 +148,16 @@ impl EndSpikeFeature {
                         if x_side || z_side || top {
                             let x_edge = dx == -2 || dx == 2 || top;
                             let z_edge = dz == -2 || dz == 2 || top;
-                            let state = self.bars(x_edge && dz != -2, x_edge && dz != 2, z_edge && dx != -2, z_edge && dx != 2);
-                            cx.region.set_block(BlockPos::new(center_x + dx, spike.height + dy, center_z + dz), state);
+                            let state = self.bars(
+                                x_edge && dz != -2,
+                                x_edge && dz != 2,
+                                z_edge && dx != -2,
+                                z_edge && dx != 2,
+                            );
+                            cx.region.set_block(
+                                BlockPos::new(center_x + dx, spike.height + dy, center_z + dz),
+                                state,
+                            );
                         }
                     }
                 }
@@ -148,7 +166,13 @@ impl EndSpikeFeature {
         // The crystal's yaw; the entity itself is not carried.
         cx.random.next_float();
         cx.unsupported.record("entity", "minecraft:end_crystal");
-        cx.region.set_block(BlockPos::new(center_x, spike.height, center_z), self.bedrock.clone());
-        cx.region.set_block(BlockPos::new(center_x, spike.height + 1, center_z), self.fire.clone());
+        cx.region.set_block(
+            BlockPos::new(center_x, spike.height, center_z),
+            self.bedrock.clone(),
+        );
+        cx.region.set_block(
+            BlockPos::new(center_x, spike.height + 1, center_z),
+            self.fire.clone(),
+        );
     }
 }

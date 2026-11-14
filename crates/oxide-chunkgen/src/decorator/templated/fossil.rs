@@ -39,23 +39,34 @@ impl FossilFeature {
         let mut lowest_surface = origin.y;
         for x in 0..size[0] {
             for z in 0..size[2] {
-                let Some(height) = cx.region.height(HeightmapType::OceanFloorWg, low_corner.x + x, low_corner.z + z)
-                else {
+                let Some(height) = cx.region.height(
+                    HeightmapType::OceanFloorWg,
+                    low_corner.x + x,
+                    low_corner.z + z,
+                ) else {
                     // Out of the window: vanilla's region would throw. Cannot happen for an
                     // origin in the centre chunk and a footprint under 32 blocks.
-                    cx.unsupported.record("fossil", "footprint outside the region");
+                    cx.unsupported
+                        .record("fossil", "footprint outside the region");
                     return false;
                 };
                 lowest_surface = lowest_surface.min(height);
             }
         }
         let target_y = (lowest_surface - 15 - cx.random.next_int_bounded(10)).max(min_y + 10);
-        let target = base.zero_position(BlockPos::new(low_corner.x, target_y, low_corner.z), rotation);
+        let target = base.zero_position(
+            BlockPos::new(low_corner.x, target_y, low_corner.z),
+            rotation,
+        );
         if count_empty_corners(cx, base.bounding_box(target, rotation)) > self.max_empty_corners {
             return false;
         }
 
-        let mut settings = PlaceSettings { rotation, bounding_box: Some(bounds), processors: &self.fossil_processors };
+        let mut settings = PlaceSettings {
+            rotation,
+            bounding_box: Some(bounds),
+            processors: &self.fossil_processors,
+        };
         place_in_world(base, &base_ref.id, cx, target, &settings);
         settings.processors = &self.overlay_processors;
         place_in_world(overlay, &overlay_ref.id, cx, target, &settings);

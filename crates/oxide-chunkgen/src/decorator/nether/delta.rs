@@ -17,8 +17,15 @@ use super::super::state_provider::state_from_spec;
 use super::{has, offset};
 
 /// `DeltaFeature.CANNOT_REPLACE`; the contents block is added at compile time.
-const BLOCKED: [&str; 7] =
-    ["bedrock", "nether_bricks", "nether_brick_fence", "nether_brick_stairs", "nether_wart", "chest", "spawner"];
+const BLOCKED: [&str; 7] = [
+    "bedrock",
+    "nether_bricks",
+    "nether_brick_fence",
+    "nether_brick_stairs",
+    "nether_wart",
+    "chest",
+    "spawner",
+];
 
 /// The six faces, up first; the delta's cell test needs air on exactly the up face.
 const FACES: [([i32; 3], bool); 6] = [
@@ -42,7 +49,10 @@ pub struct DeltaFeature {
 impl DeltaFeature {
     pub fn compile(config: &DeltaConfig, facts: &BlockFacts) -> Result<Self> {
         let contents = state_from_spec(&config.contents, facts).context("delta contents")?;
-        let mut blocked: Vec<ResourceLocation> = BLOCKED.iter().map(|path| ResourceLocation::minecraft(*path)).collect();
+        let mut blocked: Vec<ResourceLocation> = BLOCKED
+            .iter()
+            .map(|path| ResourceLocation::minecraft(*path))
+            .collect();
         blocked.push(contents.name.clone());
         Ok(Self {
             contents,
@@ -57,8 +67,16 @@ impl DeltaFeature {
     pub fn place(&self, cx: &mut FeatureContext<'_, '_, '_>) -> bool {
         let origin = cx.origin;
         let draw_rim = cx.random.next_double() < 0.9;
-        let rim_x = if draw_rim { sample_int(&self.rim_size, cx.random) } else { 0 };
-        let rim_z = if draw_rim { sample_int(&self.rim_size, cx.random) } else { 0 };
+        let rim_x = if draw_rim {
+            sample_int(&self.rim_size, cx.random)
+        } else {
+            0
+        };
+        let rim_z = if draw_rim {
+            sample_int(&self.rim_size, cx.random)
+        } else {
+            0
+        };
         let has_rim = draw_rim && rim_x != 0 && rim_z != 0;
         let size_x = sample_int(&self.size, cx.random);
         let size_z = sample_int(&self.size, cx.random);
@@ -72,9 +90,21 @@ impl DeltaFeature {
                 if z > size_z {
                     continue;
                 }
-                self.place_at(cx, offset(origin, x, 0, z), [rim_x, rim_z], has_rim, &mut placed);
+                self.place_at(
+                    cx,
+                    offset(origin, x, 0, z),
+                    [rim_x, rim_z],
+                    has_rim,
+                    &mut placed,
+                );
                 if z != 0 {
-                    self.place_at(cx, offset(origin, x, 0, -z), [rim_x, rim_z], has_rim, &mut placed);
+                    self.place_at(
+                        cx,
+                        offset(origin, x, 0, -z),
+                        [rim_x, rim_z],
+                        has_rim,
+                        &mut placed,
+                    );
                 }
             }
         }

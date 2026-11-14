@@ -31,17 +31,28 @@ struct Column {
 
 impl Column {
     fn compile(facts: &BlockFacts, head: &str, step: i32) -> Result<Self> {
-        Ok(Self { head: default_state(facts, head)?, plant: default_state(facts, &format!("{head}_plant"))?, step })
+        Ok(Self {
+            head: default_state(facts, head)?,
+            plant: default_state(facts, &format!("{head}_plant"))?,
+            step,
+        })
     }
 
     /// `placeWeepingVinesColumn` of either feature. Twisting vines count `1..=total`, weeping
     /// vines `0..=total`, one more cell; `first` is where the count starts.
-    fn place(&self, cx: &mut FeatureContext<'_, '_, '_>, mut pos: BlockPos, first: i32, total: i32) {
+    fn place(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        mut pos: BlockPos,
+        first: i32,
+        total: i32,
+    ) {
         for height in first..=total {
             if is_empty(cx, pos) {
                 if height == total || !is_empty(cx, offset(pos, 0, self.step, 0)) {
                     let age = mth_next_int(cx.random, MIN_AGE, MAX_AGE);
-                    cx.region.set_block(pos, self.head.clone().with_property("age", age.to_string()));
+                    cx.region
+                        .set_block(pos, self.head.clone().with_property("age", age.to_string()));
                     break;
                 }
                 cx.region.set_block(pos, self.plant.clone());
@@ -85,7 +96,8 @@ impl TwistingVinesFeature {
             spread_height: config.spread_height,
             max_height: config.max_height,
             column: Column::compile(facts, "twisting_vines", 1)?,
-            grounds: ["netherrack", "warped_nylium", "warped_wart_block"].map(ResourceLocation::minecraft),
+            grounds: ["netherrack", "warped_nylium", "warped_wart_block"]
+                .map(ResourceLocation::minecraft),
         })
     }
 

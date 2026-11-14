@@ -18,7 +18,9 @@ pub struct EndIslandFeature {
 
 impl EndIslandFeature {
     pub fn compile(facts: &BlockFacts) -> Result<Self> {
-        Ok(Self { end_stone: default_state(facts, "end_stone")? })
+        Ok(Self {
+            end_stone: default_state(facts, "end_stone")?,
+        })
     }
 
     /// `EndIslandFeature.place`.
@@ -32,7 +34,8 @@ impl EndIslandFeature {
             for x in low..=high {
                 for z in low..=high {
                     if (x * x + z * z) as f32 <= (radius + 1.0) * (radius + 1.0) {
-                        cx.region.set_block(offset(origin, x, y, z), self.end_stone.clone());
+                        cx.region
+                            .set_block(offset(origin, x, y, z), self.end_stone.clone());
                     }
                 }
             }

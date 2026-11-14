@@ -5,7 +5,7 @@
 //! six face properties from where each block sits so the inside faces stay hidden.
 
 use anyhow::{Context, Result};
-use oxide_core::{RandomSource, BlockPos, BlockState, ResourceLocation};
+use oxide_core::{BlockPos, BlockState, RandomSource, ResourceLocation};
 use oxide_datapack::vegetation_feature::HugeMushroomConfig;
 use oxide_datapack::BlockFacts;
 
@@ -33,7 +33,8 @@ impl MushroomFeature {
             cap: StateProvider::compile(&config.cap_provider, facts).context("cap_provider")?,
             stem: StateProvider::compile(&config.stem_provider, facts).context("stem_provider")?,
             foliage_radius: config.foliage_radius,
-            can_place_on: Predicate::compile(&config.can_place_on, facts).context("can_place_on")?,
+            can_place_on: Predicate::compile(&config.can_place_on, facts)
+                .context("can_place_on")?,
             leaves: ResourceLocation::minecraft("leaves"),
             replaceable: ResourceLocation::minecraft("replaceable_by_mushrooms"),
         })
@@ -82,7 +83,9 @@ impl MushroomFeature {
                         let x_edge = dx == -radius || dx == radius;
                         let z_edge = dz == -radius || dz == radius;
                         if dy >= height || x_edge != z_edge {
-                            let Some(state) = sample_state(cx, &self.cap, origin) else { return false };
+                            let Some(state) = sample_state(cx, &self.cap, origin) else {
+                                return false;
+                            };
                             let state = with_faces(
                                 state,
                                 &[
@@ -109,10 +112,17 @@ impl MushroomFeature {
                         let east = max_x || (z_edge && dx == r - 1);
                         let north = min_z || (x_edge && dz == 1 - r);
                         let south = max_z || (x_edge && dz == r - 1);
-                        let Some(state) = sample_state(cx, &self.cap, origin) else { return false };
+                        let Some(state) = sample_state(cx, &self.cap, origin) else {
+                            return false;
+                        };
                         let state = with_faces(
                             state,
-                            &[("west", west), ("east", east), ("north", north), ("south", south)],
+                            &[
+                                ("west", west),
+                                ("east", east),
+                                ("north", north),
+                                ("south", south),
+                            ],
                         );
                         self.place_block(cx, offset(origin, dx, height, dz), state);
                     }
@@ -120,7 +130,9 @@ impl MushroomFeature {
             }
         }
         for dy in 0..height {
-            let Some(state) = sample_state(cx, &self.stem, origin) else { return false };
+            let Some(state) = sample_state(cx, &self.stem, origin) else {
+                return false;
+            };
             self.place_block(cx, offset(origin, 0, dy, 0), state);
         }
         true
@@ -128,7 +140,12 @@ impl MushroomFeature {
 
     /// `isValidPosition`'s volume test: every block the stem and cap could occupy is air or
     /// leaves.
-    fn volume_is_clear(&self, cx: &FeatureContext<'_, '_, '_>, origin: BlockPos, height: i32) -> bool {
+    fn volume_is_clear(
+        &self,
+        cx: &FeatureContext<'_, '_, '_>,
+        origin: BlockPos,
+        height: i32,
+    ) -> bool {
         for dy in 0..=height {
             let radius = self.radius_for_height(-1, self.foliage_radius, dy);
             for dx in -radius..=radius {
@@ -154,9 +171,14 @@ impl MushroomFeature {
 /// Sets each named face property, but only when the state has every one of them: a cap provider
 /// naming some other block is left as the provider wrote it.
 fn with_faces(mut state: BlockState, faces: &[(&str, bool)]) -> BlockState {
-    if faces.iter().all(|(name, _)| state.properties.contains_key(*name)) {
+    if faces
+        .iter()
+        .all(|(name, _)| state.properties.contains_key(*name))
+    {
         for (name, value) in faces {
-            state.properties.insert((*name).to_string(), value.to_string());
+            state
+                .properties
+                .insert((*name).to_string(), value.to_string());
         }
     }
     state

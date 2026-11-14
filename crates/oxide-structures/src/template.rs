@@ -223,7 +223,10 @@ fn parse_state_spec(spec: &str) -> BlockState {
     state
 }
 
-fn extract_string(map: &std::collections::HashMap<String, fastnbt::Value>, key: &str) -> Option<String> {
+fn extract_string(
+    map: &std::collections::HashMap<String, fastnbt::Value>,
+    key: &str,
+) -> Option<String> {
     match map.get(key) {
         Some(fastnbt::Value::String(s)) => Some(s.clone()),
         _ => None,
@@ -299,10 +302,9 @@ mod tests {
         template.jigsaws[0].final_state =
             BlockState::new(ResourceLocation::minecraft("oak_planks"));
         let placed = template.blocks_at(BlockPos::new(0, 0, 0), Rotation::None);
-        assert!(placed
-            .iter()
-            .any(|(pos, state)| *pos == BlockPos::new(4, 1, 0)
-                && state.name.path() == "oak_planks"));
+        assert!(placed.iter().any(
+            |(pos, state)| *pos == BlockPos::new(4, 1, 0) && state.name.path() == "oak_planks"
+        ));
     }
 
     #[test]

@@ -6,8 +6,8 @@
 //! written through the same trunk set as the logs.
 
 use oxide_core::BlockPos;
-use oxide_datapack::tree::{TrunkKind, UniformRange};
 use oxide_datapack::placement::IntProvider;
+use oxide_datapack::tree::{TrunkKind, UniformRange};
 
 use super::foliage::Attachment;
 use super::{dist_manhattan, off, rel, Axis, Dir, Layer, Res, Run, TreeFeature};
@@ -27,7 +27,12 @@ pub(super) fn is_free(tree: &TreeFeature, run: &Run<'_, '_, '_, '_>, p: BlockPos
     valid_log_pos(tree, run, p) || run.is_log(p)
 }
 
-fn place_log(tree: &TreeFeature, run: &mut Run<'_, '_, '_, '_>, p: BlockPos, axis: Option<Axis>) -> Res<bool> {
+fn place_log(
+    tree: &TreeFeature,
+    run: &mut Run<'_, '_, '_, '_>,
+    p: BlockPos,
+    axis: Option<Axis>,
+) -> Res<bool> {
     if !valid_log_pos(tree, run, p) {
         return Ok(false);
     }
@@ -67,7 +72,11 @@ pub(super) fn place_trunk(
             for y in 0..tree_height {
                 place_log(tree, run, off(origin, 0, y, 0), None)?;
             }
-            Ok(vec![Attachment::new(off(origin, 0, tree_height, 0), 0, false)])
+            Ok(vec![Attachment::new(
+                off(origin, 0, tree_height, 0),
+                0,
+                false,
+            )])
         }
         TrunkKind::Forking {} => forking(tree, run, tree_height, origin),
         TrunkKind::Giant {} => giant(tree, run, tree_height, origin),
@@ -80,16 +89,28 @@ pub(super) fn place_trunk(
                 for b in 0..5 {
                     bx = (1.5f32 + oxide_core::mth::cos(f64::from(angle)) * b as f32) as i32;
                     bz = (1.5f32 + oxide_core::mth::sin(f64::from(angle)) * b as f32) as i32;
-                    place_log(tree, run, off(origin, bx, branch_height - 3 + b / 2, bz), None)?;
+                    place_log(
+                        tree,
+                        run,
+                        off(origin, bx, branch_height - 3 + b / 2, bz),
+                        None,
+                    )?;
                 }
-                attachments.push(Attachment::new(off(origin, bx, branch_height, bz), -2, false));
+                attachments.push(Attachment::new(
+                    off(origin, bx, branch_height, bz),
+                    -2,
+                    false,
+                ));
                 branch_height -= 2 + run.bounded(4);
             }
             Ok(attachments)
         }
         TrunkKind::DarkOak {} => dark_oak(tree, run, tree_height, origin),
         TrunkKind::Fancy {} => fancy(tree, run, tree_height, origin),
-        TrunkKind::Bending { min_height_for_leaves, bend_length } => {
+        TrunkKind::Bending {
+            min_height_for_leaves,
+            bend_length,
+        } => {
             let direction = run.horizontal();
             let log_height = tree_height - 1;
             let mut pos = origin;
@@ -147,7 +168,11 @@ pub(super) fn place_trunk(
                     )?;
                 }
                 if height == tree_height - 1 {
-                    attachments.push(Attachment::new(BlockPos::new(origin.x, current.wrapping_add(1), origin.z), 0, false));
+                    attachments.push(Attachment::new(
+                        BlockPos::new(origin.x, current.wrapping_add(1), origin.z),
+                        0,
+                        false,
+                    ));
                 }
             }
             Ok(attachments)
@@ -162,13 +187,23 @@ pub(super) fn place_trunk(
             run,
             tree_height,
             origin,
-            (branch_count, branch_horizontal_length, branch_start_offset_from_top, branch_end_offset_from_top),
+            (
+                branch_count,
+                branch_horizontal_length,
+                branch_start_offset_from_top,
+                branch_end_offset_from_top,
+            ),
         ),
     }
 }
 
 /// `ForkingTrunkPlacer.placeTrunk`.
-fn forking(tree: &TreeFeature, run: &mut Run<'_, '_, '_, '_>, tree_height: i32, origin: BlockPos) -> Res<Vec<Attachment>> {
+fn forking(
+    tree: &TreeFeature,
+    run: &mut Run<'_, '_, '_, '_>,
+    tree_height: i32,
+    origin: BlockPos,
+) -> Res<Vec<Attachment>> {
     place_below_trunk(tree, run, off(origin, 0, -1, 0))?;
     let mut attachments = Vec::new();
     let lean = run.horizontal();
@@ -220,7 +255,12 @@ fn forking(tree: &TreeFeature, run: &mut Run<'_, '_, '_, '_>, tree_height: i32, 
 }
 
 /// `GiantTrunkPlacer.placeTrunk`: a 2x2 trunk.
-fn giant(tree: &TreeFeature, run: &mut Run<'_, '_, '_, '_>, tree_height: i32, origin: BlockPos) -> Res<Vec<Attachment>> {
+fn giant(
+    tree: &TreeFeature,
+    run: &mut Run<'_, '_, '_, '_>,
+    tree_height: i32,
+    origin: BlockPos,
+) -> Res<Vec<Attachment>> {
     let below = off(origin, 0, -1, 0);
     place_below_trunk(tree, run, below)?;
     place_below_trunk(tree, run, off(below, 1, 0, 0))?;
@@ -234,11 +274,20 @@ fn giant(tree: &TreeFeature, run: &mut Run<'_, '_, '_, '_>, tree_height: i32, or
             place_log_if_free(tree, run, off(origin, 0, hh, 1))?;
         }
     }
-    Ok(vec![Attachment::new(off(origin, 0, tree_height, 0), 0, true)])
+    Ok(vec![Attachment::new(
+        off(origin, 0, tree_height, 0),
+        0,
+        true,
+    )])
 }
 
 /// `DarkOakTrunkPlacer.placeTrunk`.
-fn dark_oak(tree: &TreeFeature, run: &mut Run<'_, '_, '_, '_>, tree_height: i32, origin: BlockPos) -> Res<Vec<Attachment>> {
+fn dark_oak(
+    tree: &TreeFeature,
+    run: &mut Run<'_, '_, '_, '_>,
+    tree_height: i32,
+    origin: BlockPos,
+) -> Res<Vec<Attachment>> {
     let mut attachments = Vec::new();
     let below = off(origin, 0, -1, 0);
     place_below_trunk(tree, run, below)?;
@@ -275,11 +324,19 @@ fn dark_oak(tree: &TreeFeature, run: &mut Run<'_, '_, '_, '_>, tree_height: i32,
                     place_log(
                         tree,
                         run,
-                        BlockPos::new(x.wrapping_add(ox), end_y.wrapping_sub(branch_y).wrapping_sub(1), z.wrapping_add(oz)),
+                        BlockPos::new(
+                            x.wrapping_add(ox),
+                            end_y.wrapping_sub(branch_y).wrapping_sub(1),
+                            z.wrapping_add(oz),
+                        ),
                         None,
                     )?;
                 }
-                attachments.push(Attachment::new(BlockPos::new(x.wrapping_add(ox), end_y, z.wrapping_add(oz)), 0, false));
+                attachments.push(Attachment::new(
+                    BlockPos::new(x.wrapping_add(ox), end_y, z.wrapping_add(oz)),
+                    0,
+                    false,
+                ));
             }
         }
     }
@@ -325,7 +382,12 @@ fn upwards_branch(
     Ok(())
 }
 
-type CherryProviders<'a> = (&'a IntProvider, &'a IntProvider, &'a UniformRange, &'a IntProvider);
+type CherryProviders<'a> = (
+    &'a IntProvider,
+    &'a IntProvider,
+    &'a UniformRange,
+    &'a IntProvider,
+);
 
 /// `CherryTrunkPlacer.placeTrunk`.
 fn cherry(
@@ -336,8 +398,11 @@ fn cherry(
     (branch_count, horizontal_length, start_offset, end_offset): CherryProviders<'_>,
 ) -> Res<Vec<Attachment>> {
     place_below_trunk(tree, run, off(origin, 0, -1, 0))?;
-    let first = 0.max(tree_height - 1 + run.between(start_offset.min_inclusive, start_offset.max_inclusive));
-    let mut second = 0.max(tree_height - 1 + run.between(start_offset.min_inclusive, start_offset.max_inclusive - 1));
+    let first = 0
+        .max(tree_height - 1 + run.between(start_offset.min_inclusive, start_offset.max_inclusive));
+    let mut second = 0.max(
+        tree_height - 1 + run.between(start_offset.min_inclusive, start_offset.max_inclusive - 1),
+    );
     if second >= first {
         second += 1;
     }
@@ -360,7 +425,11 @@ fn cherry(
     }
     let direction = run.horizontal();
     let sideways = direction.axis();
-    let branch = |run: &mut Run<'_, '_, '_, '_>, dir: Dir, offset: i32, middle_continues: bool| -> Res<Attachment> {
+    let branch = |run: &mut Run<'_, '_, '_, '_>,
+                  dir: Dir,
+                  offset: i32,
+                  middle_continues: bool|
+     -> Res<Attachment> {
         let mut log = off(origin, 0, offset, 0);
         let end_y = tree_height - 1 + run.int(end_offset);
         let extend = middle_continues || end_y < offset;
@@ -379,18 +448,37 @@ fn cherry(
             let chance = end.y.wrapping_sub(log.y).wrapping_abs() as f32 / distance as f32;
             let grow_vertically = run.float() < chance;
             log = rel(log, if grow_vertically { vertical } else { dir }, 1);
-            place_log(tree, run, log, if grow_vertically { None } else { Some(sideways) })?;
+            place_log(
+                tree,
+                run,
+                log,
+                if grow_vertically {
+                    None
+                } else {
+                    Some(sideways)
+                },
+            )?;
         }
     };
     attachments.push(branch(run, direction, first, first < trunk_height - 1)?);
     if both {
-        attachments.push(branch(run, direction.opposite(), second, second < trunk_height - 1)?);
+        attachments.push(branch(
+            run,
+            direction.opposite(),
+            second,
+            second < trunk_height - 1,
+        )?);
     }
     Ok(attachments)
 }
 
 /// `FancyTrunkPlacer.placeTrunk`: a trunk with limbs to clusters of foliage.
-fn fancy(tree: &TreeFeature, run: &mut Run<'_, '_, '_, '_>, tree_height: i32, origin: BlockPos) -> Res<Vec<Attachment>> {
+fn fancy(
+    tree: &TreeFeature,
+    run: &mut Run<'_, '_, '_, '_>,
+    tree_height: i32,
+    origin: BlockPos,
+) -> Res<Vec<Attachment>> {
     let height = tree_height + 2;
     let trunk_height = (f64::from(height) * 0.618).floor() as i32;
     place_below_trunk(tree, run, off(origin, 0, -1, 0))?;
@@ -415,10 +503,14 @@ fn fancy(tree: &TreeFeature, run: &mut Run<'_, '_, '_, '_>, tree_height: i32, or
                 if make_limb(tree, run, check_start, check_end, false)? {
                     let dx = origin.x.wrapping_sub(check_start.x);
                     let dz = origin.z.wrapping_sub(check_start.z);
-                    let branch_height =
-                        f64::from(check_start.y) - f64::from(dx.wrapping_mul(dx).wrapping_add(dz.wrapping_mul(dz))).sqrt() * 0.381;
-                    let branch_top =
-                        if branch_height > f64::from(trunk_top) { trunk_top } else { branch_height as i32 };
+                    let branch_height = f64::from(check_start.y)
+                        - f64::from(dx.wrapping_mul(dx).wrapping_add(dz.wrapping_mul(dz))).sqrt()
+                            * 0.381;
+                    let branch_top = if branch_height > f64::from(trunk_top) {
+                        trunk_top
+                    } else {
+                        branch_height as i32
+                    };
                     let base = BlockPos::new(origin.x, branch_top, origin.z);
                     if make_limb(tree, run, base, check_start, false)? {
                         coords.push((check_start, base.y));
@@ -443,15 +535,29 @@ fn fancy(tree: &TreeFeature, run: &mut Run<'_, '_, '_, '_>, tree_height: i32, or
 }
 
 /// `FancyTrunkPlacer.makeLimb`: with `place` false, whether a straight line is free.
-fn make_limb(tree: &TreeFeature, run: &mut Run<'_, '_, '_, '_>, start: BlockPos, end: BlockPos, place: bool) -> Res<bool> {
+fn make_limb(
+    tree: &TreeFeature,
+    run: &mut Run<'_, '_, '_, '_>,
+    start: BlockPos,
+    end: BlockPos,
+    place: bool,
+) -> Res<bool> {
     if !place && start == end {
         return Ok(true);
     }
-    let delta = [end.x.wrapping_sub(start.x), end.y.wrapping_sub(start.y), end.z.wrapping_sub(start.z)];
-    let steps = delta[0].wrapping_abs().max(delta[1].wrapping_abs().max(delta[2].wrapping_abs()));
+    let delta = [
+        end.x.wrapping_sub(start.x),
+        end.y.wrapping_sub(start.y),
+        end.z.wrapping_sub(start.z),
+    ];
+    let steps = delta[0]
+        .wrapping_abs()
+        .max(delta[1].wrapping_abs().max(delta[2].wrapping_abs()));
     let step = delta.map(|d| d as f32 / steps as f32);
     for i in 0..=steps {
-        let at = |axis: usize, from: i32| from.wrapping_add((0.5f32 + i as f32 * step[axis]).floor() as i32);
+        let at = |axis: usize, from: i32| {
+            from.wrapping_add((0.5f32 + i as f32 * step[axis]).floor() as i32)
+        };
         let p = BlockPos::new(at(0, start.x), at(1, start.y), at(2, start.z));
         if place {
             place_log(tree, run, p, Some(log_axis(start, p)))?;
@@ -468,7 +574,11 @@ fn log_axis(start: BlockPos, p: BlockPos) -> Axis {
     let z_diff = p.z.wrapping_sub(start.z).wrapping_abs();
     let max = x_diff.max(z_diff);
     if max > 0 {
-        if x_diff == max { Axis::X } else { Axis::Z }
+        if x_diff == max {
+            Axis::X
+        } else {
+            Axis::Z
+        }
     } else {
         Axis::Y
     }

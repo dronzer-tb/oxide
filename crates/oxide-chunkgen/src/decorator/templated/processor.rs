@@ -30,7 +30,10 @@ use crate::decorator::state_provider::state_from_spec;
 #[derive(Debug, Clone)]
 pub enum Processor {
     /// `BlockRotProcessor`.
-    BlockRot { rottable: Option<IdSet>, integrity: f32 },
+    BlockRot {
+        rottable: Option<IdSet>,
+        integrity: f32,
+    },
     /// `ProtectedBlockProcessor`.
     ProtectedBlocks(IdSet),
     /// `RuleProcessor`.
@@ -50,17 +53,26 @@ impl Processor {
     /// Compiles one processor. `Ok(Err(type))` names a processor type, or a part of a rule,
     /// that is not implemented.
     pub fn compile(value: &serde_json::Value, facts: &BlockFacts) -> Result<Result<Self, String>> {
-        let kind = value.get("processor_type").and_then(|kind| kind.as_str()).unwrap_or("unknown");
+        let kind = value
+            .get("processor_type")
+            .and_then(|kind| kind.as_str())
+            .unwrap_or("unknown");
         if !ProcessorIr::TYPES.contains(&kind) {
             return Ok(Err(kind.to_string()));
         }
-        let ir: ProcessorIr = serde_json::from_value(value.clone()).with_context(|| format!("processor {kind}"))?;
+        let ir: ProcessorIr =
+            serde_json::from_value(value.clone()).with_context(|| format!("processor {kind}"))?;
         Ok(Ok(match ir {
-            ProcessorIr::BlockRot { integrity, rottable_blocks } => Self::BlockRot {
+            ProcessorIr::BlockRot {
+                integrity,
+                rottable_blocks,
+            } => Self::BlockRot {
                 rottable: rottable_blocks.as_ref().map(IdSet::compile).transpose()?,
                 integrity,
             },
-            ProcessorIr::ProtectedBlocks { value } => Self::ProtectedBlocks(IdSet::compile(&value)?),
+            ProcessorIr::ProtectedBlocks { value } => {
+                Self::ProtectedBlocks(IdSet::compile(&value)?)
+            }
             ProcessorIr::Rule { rules } => {
                 let mut compiled = Vec::with_capacity(rules.len());
                 for rule in &rules {
@@ -85,8 +97,13 @@ impl Processor {
         random: &mut impl RandomSource,
     ) -> Option<BlockInfo> {
         match self {
-            Self::BlockRot { rottable, integrity } => {
-                let eligible = rottable.as_ref().is_none_or(|set| set.contains_in(tags, &info.state.name));
+            Self::BlockRot {
+                rottable,
+                integrity,
+            } => {
+                let eligible = rottable
+                    .as_ref()
+                    .is_none_or(|set| set.contains_in(tags, &info.state.name));
                 // `!(nextFloat() <= integrity)`: the draw happens only for an eligible block.
                 if eligible && random.next_float() > *integrity {
                     None
@@ -97,12 +114,16 @@ impl Processor {
             Self::ProtectedBlocks(set) => (!set.contains_in(tags, &world.name)).then_some(info),
             Self::Rule(rules) => {
                 // `RandomSource.create(Mth.getSeed(pos))`, shared by every rule of this block.
-                let mut rule_random = LegacyRandom::new(get_seed(info.pos.x, info.pos.y, info.pos.z));
+                let mut rule_random =
+                    LegacyRandom::new(get_seed(info.pos.x, info.pos.y, info.pos.z));
                 for rule in rules {
                     if rule.input.test(&info.state, &mut rule_random, tags)
                         && rule.location.test(world, &mut rule_random, tags)
                     {
-                        return Some(BlockInfo { state: rule.output.clone(), ..info });
+                        return Some(BlockInfo {
+                            state: rule.output.clone(),
+                            ..info
+                        });
                     }
                 }
                 Some(info)
@@ -114,7 +135,11 @@ impl Processor {
 impl Rule {
     fn compile(ir: &ProcessorRule, facts: &BlockFacts) -> Result<Result<Self, String>> {
         let kind_of = |value: &serde_json::Value, tag: &str| {
-            value.get(tag).and_then(|kind| kind.as_str()).map(str::to_owned).unwrap_or_default()
+            value
+                .get(tag)
+                .and_then(|kind| kind.as_str())
+                .map(str::to_owned)
+                .unwrap_or_default()
         };
         if let Some(predicate) = &ir.position_predicate {
             let kind = kind_of(predicate, "predicate_type");
@@ -151,10 +176,16 @@ pub(super) fn process_block_infos(
     for block in blocks {
         let moved = transform(block.pos, Mirror::None, settings.rotation, origin);
         let pos = offset(moved, position.x, position.y, position.z);
-        if settings.bounding_box.is_some_and(|bounds| !bounds.is_inside(pos)) {
+        if settings
+            .bounding_box
+            .is_some_and(|bounds| !bounds.is_inside(pos))
+        {
             continue;
         }
-        let mut info = Some(BlockInfo { pos, ..block.clone() });
+        let mut info = Some(BlockInfo {
+            pos,
+            ..block.clone()
+        });
         for processor in settings.processors {
             let Some(current) = info else { break };
             let world = block_in(cx.region, current.pos);

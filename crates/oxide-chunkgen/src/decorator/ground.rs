@@ -14,10 +14,10 @@
 //! not recorded: the region produces block writes only. They affect when a block updates after
 //! the chunk loads, never which block is placed.
 
-mod blue_ice;
 mod block_blob;
 mod block_column;
 mod block_pile;
+mod blue_ice;
 mod climate;
 mod disk;
 mod freeze;
@@ -40,10 +40,10 @@ use super::state_provider::{StateProvider, Unsupported};
 
 pub use climate::BiomeClimate;
 
-use blue_ice::BlueIceFeature;
 use block_blob::BlockBlobFeature;
 use block_column::BlockColumnFeature;
 use block_pile::BlockPileFeature;
+use blue_ice::BlueIceFeature;
 use disk::DiskFeature;
 use freeze::FreezeTopLayerFeature;
 use iceberg::IcebergFeature;
@@ -74,20 +74,30 @@ impl GroundFeature {
     pub fn compile(ir: &ConfiguredFeature, facts: &BlockFacts) -> Result<Option<Self>> {
         Ok(Some(match ir {
             ConfiguredFeature::Disk(config) => Self::Disk(DiskFeature::compile(config, facts)?),
-            ConfiguredFeature::BlockPile(config) => Self::BlockPile(BlockPileFeature::compile(config, facts)?),
-            ConfiguredFeature::BlockBlob(config) => Self::BlockBlob(BlockBlobFeature::compile(config, facts)?),
+            ConfiguredFeature::BlockPile(config) => {
+                Self::BlockPile(BlockPileFeature::compile(config, facts)?)
+            }
+            ConfiguredFeature::BlockBlob(config) => {
+                Self::BlockBlob(BlockBlobFeature::compile(config, facts)?)
+            }
             ConfiguredFeature::BlockColumn(config) => {
                 Self::BlockColumn(BlockColumnFeature::compile(config, facts)?)
             }
             ConfiguredFeature::Lake(config) => Self::Lake(LakeFeature::compile(config, facts)?),
-            ConfiguredFeature::FreezeTopLayer(_) => Self::FreezeTopLayer(FreezeTopLayerFeature::compile(facts)?),
+            ConfiguredFeature::FreezeTopLayer(_) => {
+                Self::FreezeTopLayer(FreezeTopLayerFeature::compile(facts)?)
+            }
             ConfiguredFeature::Spike(config) => Self::Spike(SpikeFeature::compile(config, facts)?),
-            ConfiguredFeature::Iceberg(config) => Self::Iceberg(IcebergFeature::compile(config, facts)?),
+            ConfiguredFeature::Iceberg(config) => {
+                Self::Iceberg(IcebergFeature::compile(config, facts)?)
+            }
             ConfiguredFeature::BlueIce(_) => Self::BlueIce(BlueIceFeature::compile(facts)?),
             ConfiguredFeature::UnderwaterMagma(config) => {
                 Self::UnderwaterMagma(UnderwaterMagmaFeature::compile(config, facts)?)
             }
-            ConfiguredFeature::MonsterRoom(_) => Self::MonsterRoom(MonsterRoomFeature::compile(facts)?),
+            ConfiguredFeature::MonsterRoom(_) => {
+                Self::MonsterRoom(MonsterRoomFeature::compile(facts)?)
+            }
             _ => return Ok(None),
         }))
     }
@@ -140,12 +150,18 @@ fn is_block_at(cx: &FeatureContext<'_, '_, '_>, pos: BlockPos, path: &str) -> bo
 
 /// Whether `state`'s block is in the block tag `minecraft:<tag>`.
 fn in_tag(cx: &FeatureContext<'_, '_, '_>, tag: &str, state: &BlockState) -> bool {
-    cx.env.block_tags.contains(&ResourceLocation::minecraft(tag), &state.name)
+    cx.env
+        .block_tags
+        .contains(&ResourceLocation::minecraft(tag), &state.name)
 }
 
 /// `BlockStateProvider.getState` for a provider that must yield: a provider with no state, or
 /// one the decorator cannot evaluate, is tallied and gives `None`.
-fn provide(cx: &mut FeatureContext<'_, '_, '_>, provider: &StateProvider, pos: BlockPos) -> Option<BlockState> {
+fn provide(
+    cx: &mut FeatureContext<'_, '_, '_>,
+    provider: &StateProvider,
+    pos: BlockPos,
+) -> Option<BlockState> {
     match provider.state(cx, pos) {
         Ok(Some(state)) => Some(state),
         Ok(None) => {
@@ -165,7 +181,14 @@ fn offset(pos: BlockPos, dx: i32, dy: i32, dz: i32) -> BlockPos {
 
 /// The six directions as unit offsets, in `Direction.values()` order: down, up, north, south,
 /// west, east.
-const DIRECTIONS: [[i32; 3]; 6] = [[0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1], [-1, 0, 0], [1, 0, 0]];
+const DIRECTIONS: [[i32; 3]; 6] = [
+    [0, -1, 0],
+    [0, 1, 0],
+    [0, 0, -1],
+    [0, 0, 1],
+    [-1, 0, 0],
+    [1, 0, 0],
+];
 
 /// `BlockPos.betweenClosed(a, b)`: every position of the box, x fastest, then y, then z.
 fn between_closed(a: BlockPos, b: BlockPos) -> impl Iterator<Item = BlockPos> {
@@ -174,6 +197,10 @@ fn between_closed(a: BlockPos, b: BlockPos) -> impl Iterator<Item = BlockPos> {
     let size_y = a.y.max(b.y) - min_y + 1;
     let size_z = a.z.max(b.z) - min_z + 1;
     (0..size_x * size_y * size_z).map(move |index| {
-        BlockPos::new(min_x + index % size_x, min_y + (index / size_x) % size_y, min_z + index / size_x / size_y)
+        BlockPos::new(
+            min_x + index % size_x,
+            min_y + (index / size_x) % size_y,
+            min_z + index / size_x / size_y,
+        )
     })
 }

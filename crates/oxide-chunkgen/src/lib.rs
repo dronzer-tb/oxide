@@ -29,8 +29,8 @@ pub use aquifer::for_settings as aquifer_for_settings;
 pub use carver::{apply_carvers, CarverWorld};
 pub use decorate::{decorated_chunk, DecorationCache, Decorator};
 pub use decorator::{BiomeDecorator, BlockBehaviours, FeatureContext, UnsupportedTally};
-pub use region::{BlockWrite, DecorationRegion};
 pub use fill::{base_height, base_height_in, fill_chunk, fill_chunk_culling};
+pub use region::{BlockWrite, DecorationRegion};
 pub use surface::{BiomeTemperatures, SurfaceSystem};
 
 use oxide_biome::BiomeSearchTree;

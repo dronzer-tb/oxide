@@ -27,9 +27,15 @@ pub struct FallenTreeFeature {
 }
 
 impl FallenTreeFeature {
-    pub fn compile(config: &FallenTreeConfig, facts: &BlockFacts, lookup: &mut FeatureLookup<'_>) -> Result<Self> {
-        let (stump_decorators, stump_unsupported) = Decorator::compile_list(&config.stump_decorators, facts, lookup)?;
-        let (log_decorators, log_unsupported) = Decorator::compile_list(&config.log_decorators, facts, lookup)?;
+    pub fn compile(
+        config: &FallenTreeConfig,
+        facts: &BlockFacts,
+        lookup: &mut FeatureLookup<'_>,
+    ) -> Result<Self> {
+        let (stump_decorators, stump_unsupported) =
+            Decorator::compile_list(&config.stump_decorators, facts, lookup)?;
+        let (log_decorators, log_unsupported) =
+            Decorator::compile_list(&config.log_decorators, facts, lookup)?;
         Ok(Self {
             trunk: StateProvider::compile(&config.trunk_provider, facts)?,
             log_length: config.log_length.clone(),
@@ -81,7 +87,12 @@ impl FallenTreeFeature {
         Ok(())
     }
 
-    fn place_log(&self, run: &mut Run<'_, '_, '_, '_>, p: BlockPos, axis: Option<Axis>) -> Res<BlockPos> {
+    fn place_log(
+        &self,
+        run: &mut Run<'_, '_, '_, '_>,
+        p: BlockPos,
+        axis: Option<Axis>,
+    ) -> Res<BlockPos> {
         let mut state = run.sample(&self.trunk, p)?;
         if let Some(axis) = axis {
             state = run.with_axis(state, axis);

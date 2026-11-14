@@ -104,7 +104,8 @@ impl<'a> DecorationRegion<'a> {
 
     /// Whether `fact` holds at `pos`. Outside the window nothing holds.
     pub fn is(&self, pos: BlockPos, fact: BlockFact) -> bool {
-        self.block(pos).is_some_and(|state| self.facts.is(state, fact))
+        self.block(pos)
+            .is_some_and(|state| self.facts.is(state, fact))
     }
 
     /// Writes `state` at `pos`. Returns `false`, writing nothing, outside the window -- the
@@ -137,7 +138,10 @@ impl<'a> DecorationRegion<'a> {
             return Some(stored.unwrap_or(self.min_y));
         };
         let fact = height_fact(kind);
-        let start = stored.unwrap_or(self.max_y()).max(written_top + 1).min(self.max_y());
+        let start = stored
+            .unwrap_or(self.max_y())
+            .max(written_top + 1)
+            .min(self.max_y());
         let mut y = start;
         while y > self.min_y {
             if self.is(BlockPos::new(x, y - 1, z), fact) {
@@ -202,7 +206,9 @@ impl<'a> DecorationRegion<'a> {
 /// The block fact a heightmap kind counts.
 pub(crate) fn height_fact(kind: HeightmapType) -> BlockFact {
     match kind {
-        HeightmapType::WorldSurface | HeightmapType::WorldSurfaceWg => BlockFact::HeightWorldSurface,
+        HeightmapType::WorldSurface | HeightmapType::WorldSurfaceWg => {
+            BlockFact::HeightWorldSurface
+        }
         HeightmapType::OceanFloor | HeightmapType::OceanFloorWg => BlockFact::HeightOceanFloor,
         HeightmapType::MotionBlocking => BlockFact::HeightMotionBlocking,
         HeightmapType::MotionBlockingNoLeaves => BlockFact::HeightMotionBlockingNoLeaves,
@@ -292,7 +298,10 @@ pub(crate) mod testutil {
         let mut chunks = Vec::new();
         for dz in -1..=1 {
             for dx in -1..=1 {
-                chunks.push(flat_chunk(ChunkPos::new(center.x + dx, center.z + dz), surface));
+                chunks.push(flat_chunk(
+                    ChunkPos::new(center.x + dx, center.z + dz),
+                    surface,
+                ));
             }
         }
         chunks
@@ -316,7 +325,10 @@ mod tests {
 
         let inside = BlockPos::new(2 * 16 + 5, 64, -3 * 16 + 9);
         assert_eq!(region.block(inside), Some(&block("air")));
-        assert_eq!(region.block(BlockPos::new(inside.x, 63, inside.z)), Some(&block("stone")));
+        assert_eq!(
+            region.block(BlockPos::new(inside.x, 63, inside.z)),
+            Some(&block("stone"))
+        );
 
         // A neighbouring chunk is writable; two chunks away is not.
         let next_door = BlockPos::new(3 * 16 + 1, 64, -3 * 16);
@@ -349,8 +361,15 @@ mod tests {
         // Grass is not air, so the world surface counts it; nothing else does.
         assert_eq!(region.height(HeightmapType::WorldSurface, 3, 3), Some(67));
         assert_eq!(region.height(HeightmapType::MotionBlocking, 3, 3), Some(66));
-        assert_eq!(region.height(HeightmapType::MotionBlockingNoLeaves, 3, 3), Some(65));
-        assert_eq!(region.height(HeightmapType::WorldSurface, 4, 3), Some(64), "untouched column");
+        assert_eq!(
+            region.height(HeightmapType::MotionBlockingNoLeaves, 3, 3),
+            Some(65)
+        );
+        assert_eq!(
+            region.height(HeightmapType::WorldSurface, 4, 3),
+            Some(64),
+            "untouched column"
+        );
 
         // Digging below the stored surface lowers it.
         region.set_block(BlockPos::new(8, 63, 8), block("air"));

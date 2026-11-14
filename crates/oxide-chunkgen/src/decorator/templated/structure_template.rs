@@ -105,7 +105,12 @@ pub(super) fn offset(pos: BlockPos, dx: i32, dy: i32, dz: i32) -> BlockPos {
 }
 
 pub(super) fn step(pos: BlockPos, direction: Direction) -> BlockPos {
-    offset(pos, direction.step_x(), direction.step_y(), direction.step_z())
+    offset(
+        pos,
+        direction.step_x(),
+        direction.step_y(),
+        direction.step_z(),
+    )
 }
 
 impl Template {
@@ -118,8 +123,10 @@ impl Template {
             .all_palettes()
             .into_iter()
             .map(|palette| {
-                let states: Vec<BlockState> =
-                    palette.iter().map(|entry| read_block_state(entry, facts, &air)).collect();
+                let states: Vec<BlockState> = palette
+                    .iter()
+                    .map(|entry| read_block_state(entry, facts, &air))
+                    .collect();
                 let (mut full, mut other, mut with_nbt) = (Vec::new(), Vec::new(), Vec::new());
                 for entry in &raw.blocks {
                     let info = BlockInfo {
@@ -161,7 +168,9 @@ impl Template {
     /// `getSize(rotation)`: X and Z swap under a quarter turn.
     pub fn size(&self, rotation: Rotation) -> [i32; 3] {
         match rotation {
-            Rotation::Clockwise90 | Rotation::Counterclockwise90 => [self.size[2], self.size[1], self.size[0]],
+            Rotation::Clockwise90 | Rotation::Counterclockwise90 => {
+                [self.size[2], self.size[1], self.size[0]]
+            }
             Rotation::None | Rotation::Clockwise180 => self.size,
         }
     }
@@ -198,7 +207,10 @@ fn read_block_state(entry: &RawBlockState, facts: &BlockFacts, air: &BlockState)
     if facts.default_state(&name).is_none() {
         return air.clone();
     }
-    facts.complete(&BlockState { name, properties: entry.properties.clone() })
+    facts.complete(&BlockState {
+        name,
+        properties: entry.properties.clone(),
+    })
 }
 
 /// `StructureTemplate.placeInWorld(level, position, position, settings, random, flags)`.
@@ -221,7 +233,9 @@ pub fn place_in_world(
     // it even when there is a single palette.
     let index = cx.random.next_int_bounded(template.palettes.len() as i32) as usize;
     let blocks = &template.palettes[index];
-    if (blocks.is_empty() && template.entity_count == 0) || template.size.iter().any(|&side| side < 1) {
+    if (blocks.is_empty() && template.entity_count == 0)
+        || template.size.iter().any(|&side| side < 1)
+    {
         return false;
     }
 
@@ -232,7 +246,10 @@ pub fn place_in_world(
     let mut locked: HashSet<BlockPos> = HashSet::new();
     let mut placed: Vec<BlockPos> = Vec::with_capacity(processed.len());
     for info in processed {
-        if settings.bounding_box.is_some_and(|bounds| !bounds.is_inside(info.pos)) {
+        if settings
+            .bounding_box
+            .is_some_and(|bounds| !bounds.is_inside(info.pos))
+        {
             continue;
         }
         let previous = block_in(cx.region, info.pos).clone();
@@ -248,7 +265,8 @@ pub fn place_in_world(
         }
         placed.push(info.pos);
         if facts.is(&state, BlockFact::BlockEntity) {
-            cx.unsupported.record("block_entity", &state.name.to_string());
+            cx.unsupported
+                .record("block_entity", &state.name.to_string());
         }
         if facts.is(&state, BlockFact::FluidSource) {
             locked.insert(info.pos);
@@ -284,11 +302,22 @@ fn is_liquid_container(state: &BlockState) -> bool {
 
 /// `SimpleWaterloggedBlock.placeLiquid`: a dry container standing where a water source was
 /// (or next to one, from [`flood`]) becomes waterlogged. Returns whether it took the fluid.
-fn place_liquid(cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos, state: &BlockState, fluid: &BlockState) -> bool {
+fn place_liquid(
+    cx: &mut FeatureContext<'_, '_, '_>,
+    pos: BlockPos,
+    state: &BlockState,
+    fluid: &BlockState,
+) -> bool {
     let facts = &cx.env.facts;
     let water_source = facts.is(fluid, BlockFact::Water) && facts.is(fluid, BlockFact::FluidSource);
-    if state.properties.get("waterlogged").is_some_and(|value| value == "false") && water_source {
-        cx.region.set_block(pos, state.clone().with_property("waterlogged", "true"));
+    if state
+        .properties
+        .get("waterlogged")
+        .is_some_and(|value| value == "false")
+        && water_source
+    {
+        cx.region
+            .set_block(pos, state.clone().with_property("waterlogged", "true"));
         return true;
     }
     false
@@ -297,9 +326,18 @@ fn place_liquid(cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos, state: &Bloc
 /// The `toFill` loop of `placeInWorld`: each container that did not start in a source takes
 /// the first unlocked source next to it (up, north, east, south, west), repeated while a pass
 /// fills anything.
-fn flood(cx: &mut FeatureContext<'_, '_, '_>, to_fill: &mut Vec<BlockPos>, locked: &HashSet<BlockPos>) {
-    const AROUND: [Direction; 5] =
-        [Direction::Up, Direction::North, Direction::East, Direction::South, Direction::West];
+fn flood(
+    cx: &mut FeatureContext<'_, '_, '_>,
+    to_fill: &mut Vec<BlockPos>,
+    locked: &HashSet<BlockPos>,
+) {
+    const AROUND: [Direction; 5] = [
+        Direction::Up,
+        Direction::North,
+        Direction::East,
+        Direction::South,
+        Direction::West,
+    ];
     let mut filled = true;
     while filled && !to_fill.is_empty() {
         filled = false;

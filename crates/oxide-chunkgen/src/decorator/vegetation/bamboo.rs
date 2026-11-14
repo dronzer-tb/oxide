@@ -7,7 +7,7 @@
 //! selector wrapping this feature.
 
 use anyhow::{Context, Result};
-use oxide_core::{RandomSource, BlockPos, BlockState, HeightmapType, ResourceLocation};
+use oxide_core::{BlockPos, BlockState, HeightmapType, RandomSource, ResourceLocation};
 use oxide_datapack::vegetation_feature::BambooConfig;
 use oxide_datapack::BlockFacts;
 
@@ -45,7 +45,11 @@ impl BambooFeature {
             probability: config.probability,
             sapling: facts.complete(&BlockState::new(bamboo.clone())),
             trunk: state("none", "0"),
-            crown: [state("large", "1"), state("large", "0"), state("small", "0")],
+            crown: [
+                state("large", "1"),
+                state("large", "0"),
+                state("small", "0"),
+            ],
             podzol,
             podzol_replaceable: ResourceLocation::minecraft("beneath_bamboo_podzol_replaceable"),
         })
@@ -56,11 +60,16 @@ impl BambooFeature {
         if !is_air(cx, origin) {
             return false;
         }
-        match cx.env.behaviours.can_survive(&self.sapling, cx.region, origin) {
+        match cx
+            .env
+            .behaviours
+            .can_survive(&self.sapling, cx.region, origin)
+        {
             Some(true) => {}
             Some(false) => return true,
             None => {
-                cx.unsupported.record("survival", &self.sapling.name.to_string());
+                cx.unsupported
+                    .record("survival", &self.sapling.name.to_string());
                 return false;
             }
         }
@@ -95,7 +104,9 @@ impl BambooFeature {
                 if dx.wrapping_mul(dx).wrapping_add(dz.wrapping_mul(dz)) > radius * radius {
                     continue;
                 }
-                let Some(top) = cx.region.height(HeightmapType::WorldSurface, x, z) else { continue };
+                let Some(top) = cx.region.height(HeightmapType::WorldSurface, x, z) else {
+                    continue;
+                };
                 let pos = BlockPos::new(x, top.wrapping_sub(1), z);
                 if in_tag(cx, pos, &self.podzol_replaceable) {
                     cx.region.set_block(pos, self.podzol.clone());

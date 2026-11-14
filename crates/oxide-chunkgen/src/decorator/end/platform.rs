@@ -20,7 +20,10 @@ pub struct EndPlatformFeature {
 
 impl EndPlatformFeature {
     pub fn compile(facts: &BlockFacts) -> Result<Self> {
-        Ok(Self { obsidian: default_state(facts, "obsidian")?, air: default_state(facts, "air")? })
+        Ok(Self {
+            obsidian: default_state(facts, "obsidian")?,
+            air: default_state(facts, "air")?,
+        })
     }
 
     /// `EndPlatformFeature.createEndPlatform` with `dropBlocks = false`: a block already in its
@@ -50,7 +53,10 @@ pub struct VoidStartPlatformFeature {
 
 impl VoidStartPlatformFeature {
     pub fn compile(facts: &BlockFacts) -> Result<Self> {
-        Ok(Self { stone: default_state(facts, "stone")?, cobblestone: default_state(facts, "cobblestone")? })
+        Ok(Self {
+            stone: default_state(facts, "stone")?,
+            cobblestone: default_state(facts, "cobblestone")?,
+        })
     }
 
     /// `VoidStartPlatformFeature.place`: only the chunk ring within one chunk of the origin is
@@ -67,8 +73,13 @@ impl VoidStartPlatformFeature {
         for z in (chunk_z << 4)..=(chunk_z << 4) + 15 {
             for x in (chunk_x << 4)..=(chunk_x << 4) + 15 {
                 if (8 - x).abs().max((8 - z).abs()) <= 16 {
-                    let state = if x == 8 && z == 8 { &self.cobblestone } else { &self.stone };
-                    cx.region.set_block(oxide_core::BlockPos::new(x, y, z), state.clone());
+                    let state = if x == 8 && z == 8 {
+                        &self.cobblestone
+                    } else {
+                        &self.stone
+                    };
+                    cx.region
+                        .set_block(oxide_core::BlockPos::new(x, y, z), state.clone());
                 }
             }
         }

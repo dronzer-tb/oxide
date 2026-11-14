@@ -63,8 +63,11 @@ impl NoiseSource {
     /// to double, so the multiplication happens in double precision.
     fn value(&self, pos: BlockPos) -> f64 {
         let scale = f64::from(self.scale);
-        self.noise
-            .get_value(f64::from(pos.x) * scale, f64::from(pos.y) * scale, f64::from(pos.z) * scale)
+        self.noise.get_value(
+            f64::from(pos.x) * scale,
+            f64::from(pos.y) * scale,
+            f64::from(pos.z) * scale,
+        )
     }
 
     /// `DualNoiseProvider.getSlowNoiseValue`: here the multiplication is `int * float`, done in
@@ -126,7 +129,10 @@ pub enum StateProvider {
 }
 
 fn compile_states(specs: &[BlockStateSpec], facts: &BlockFacts) -> Result<Vec<BlockState>> {
-    specs.iter().map(|spec| state_from_spec(spec, facts)).collect()
+    specs
+        .iter()
+        .map(|spec| state_from_spec(spec, facts))
+        .collect()
 }
 
 impl StateProvider {
@@ -141,23 +147,41 @@ impl StateProvider {
                     compiled.push((state_from_spec(&entry.data, facts)?, entry.weight));
                     total = total.wrapping_add(entry.weight);
                 }
-                Self::Weighted { entries: compiled, total }
+                Self::Weighted {
+                    entries: compiled,
+                    total,
+                }
             }
-            BlockStateProvider::RandomizedInt { source, property, values } => Self::RandomizedInt {
+            BlockStateProvider::RandomizedInt {
+                source,
+                property,
+                values,
+            } => Self::RandomizedInt {
                 source: Box::new(Self::compile(source, facts)?),
                 property: property.clone(),
                 values: values.clone(),
             },
             BlockStateProvider::RuleBased { fallback, rules } => Self::RuleBased {
-                fallback: fallback.as_ref().map(|fallback| Self::compile(fallback, facts).map(Box::new)).transpose()?,
+                fallback: fallback
+                    .as_ref()
+                    .map(|fallback| Self::compile(fallback, facts).map(Box::new))
+                    .transpose()?,
                 rules: rules
                     .iter()
                     .map(|rule| {
-                        Ok((Predicate::compile(&rule.if_true, facts)?, Self::compile(&rule.then, facts)?))
+                        Ok((
+                            Predicate::compile(&rule.if_true, facts)?,
+                            Self::compile(&rule.then, facts)?,
+                        ))
                     })
                     .collect::<Result<_>>()?,
             },
-            BlockStateProvider::Noise { seed, noise, scale, states } => Self::Noise {
+            BlockStateProvider::Noise {
+                seed,
+                noise,
+                scale,
+                states,
+            } => Self::Noise {
                 source: NoiseSource::new(*seed, noise, *scale),
                 states: compile_states(states, facts)?,
             },
@@ -220,7 +244,11 @@ impl StateProvider {
                 }
                 chosen
             }
-            Self::RandomizedInt { source, property, values } => {
+            Self::RandomizedInt {
+                source,
+                property,
+                values,
+            } => {
                 let Some(mut state) = source.state(cx, pos)? else {
                     return Ok(None);
                 };
@@ -234,7 +262,9 @@ impl StateProvider {
                     let value = sample_int(values, cx.random);
                     state.properties.insert(property.clone(), value.to_string());
                     if !cx.env.facts.knows(&state) {
-                        return Err(Unsupported("randomized_int_state_provider value out of range"));
+                        return Err(Unsupported(
+                            "randomized_int_state_provider value out of range",
+                        ));
                     }
                 }
                 Some(state)
@@ -258,7 +288,14 @@ impl StateProvider {
                 }
                 Some(states[pick_by_noise(states.len(), source.value(pos))].clone())
             }
-            Self::NoiseThreshold { source, threshold, high_chance, default, low, high } => {
+            Self::NoiseThreshold {
+                source,
+                threshold,
+                high_chance,
+                default,
+                low,
+                high,
+            } => {
                 if source.value(pos) < f64::from(*threshold) {
                     if low.is_empty() {
                         return Err(Unsupported("noise_threshold_provider without low states"));
@@ -273,7 +310,12 @@ impl StateProvider {
                     Some(default.clone())
                 }
             }
-            Self::DualNoise { fast, slow, states, variety } => {
+            Self::DualNoise {
+                fast,
+                slow,
+                states,
+                variety,
+            } => {
                 if states.is_empty() {
                     return Err(Unsupported("dual_noise_provider without states"));
                 }

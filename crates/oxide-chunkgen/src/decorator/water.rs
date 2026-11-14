@@ -53,14 +53,24 @@ impl WaterFeature {
     pub fn compile(ir: &ConfiguredFeature, facts: &BlockFacts) -> Result<Option<Self>> {
         Ok(Some(match ir {
             ConfiguredFeature::Kelp(_) => Self::Kelp(KelpFeature::compile(facts)?),
-            ConfiguredFeature::Seagrass(config) => Self::Seagrass(SeagrassFeature::compile(config, facts)?),
-            ConfiguredFeature::SeaPickle(config) => Self::SeaPickle(SeaPickleFeature::compile(config, facts)?),
-            ConfiguredFeature::CoralTree(_) => Self::Coral(CoralFeature::compile(CoralShape::Tree, facts)?),
-            ConfiguredFeature::CoralClaw(_) => Self::Coral(CoralFeature::compile(CoralShape::Claw, facts)?),
+            ConfiguredFeature::Seagrass(config) => {
+                Self::Seagrass(SeagrassFeature::compile(config, facts)?)
+            }
+            ConfiguredFeature::SeaPickle(config) => {
+                Self::SeaPickle(SeaPickleFeature::compile(config, facts)?)
+            }
+            ConfiguredFeature::CoralTree(_) => {
+                Self::Coral(CoralFeature::compile(CoralShape::Tree, facts)?)
+            }
+            ConfiguredFeature::CoralClaw(_) => {
+                Self::Coral(CoralFeature::compile(CoralShape::Claw, facts)?)
+            }
             ConfiguredFeature::CoralMushroom(_) => {
                 Self::Coral(CoralFeature::compile(CoralShape::Mushroom, facts)?)
             }
-            ConfiguredFeature::DesertWell(_) => Self::DesertWell(DesertWellFeature::compile(facts)?),
+            ConfiguredFeature::DesertWell(_) => {
+                Self::DesertWell(DesertWellFeature::compile(facts)?)
+            }
             _ => return Ok(None),
         }))
     }

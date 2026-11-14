@@ -34,7 +34,11 @@ impl GlowstoneFeature {
             return false;
         }
         let above = offset(origin, 0, 1, 0);
-        if !self.ceilings.iter().any(|name| is_block_at(cx, above, name)) {
+        if !self
+            .ceilings
+            .iter()
+            .any(|name| is_block_at(cx, above, name))
+        {
             return false;
         }
         cx.region.set_block(origin, self.glowstone.clone());

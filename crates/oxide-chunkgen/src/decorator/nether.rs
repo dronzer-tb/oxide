@@ -61,23 +61,33 @@ impl NetherFeature {
     /// and for the Nether configurations that stay unsupported.
     pub fn compile(ir: &ConfiguredFeature, facts: &BlockFacts) -> Result<Option<Self>> {
         Ok(Some(match ir {
-            ConfiguredFeature::DeltaFeature(config) => Self::Delta(DeltaFeature::compile(config, facts)?),
+            ConfiguredFeature::DeltaFeature(config) => {
+                Self::Delta(DeltaFeature::compile(config, facts)?)
+            }
             ConfiguredFeature::NetherrackReplaceBlobs(config) => {
                 Self::ReplaceBlobs(ReplaceBlobsFeature::compile(config, facts)?)
             }
-            ConfiguredFeature::HugeFungus(config) => match HugeFungusFeature::compile(config, facts)? {
-                Some(feature) => Self::HugeFungus(feature),
-                None => return Ok(None),
-            },
+            ConfiguredFeature::HugeFungus(config) => {
+                match HugeFungusFeature::compile(config, facts)? {
+                    Some(feature) => Self::HugeFungus(feature),
+                    None => return Ok(None),
+                }
+            }
             ConfiguredFeature::BasaltColumns(config) => {
                 Self::BasaltColumns(BasaltColumnsFeature::compile(config, facts)?)
             }
-            ConfiguredFeature::BasaltPillar(_) => Self::BasaltPillar(BasaltPillarFeature::compile(facts)?),
-            ConfiguredFeature::GlowstoneBlob(_) => Self::Glowstone(GlowstoneFeature::compile(facts)?),
+            ConfiguredFeature::BasaltPillar(_) => {
+                Self::BasaltPillar(BasaltPillarFeature::compile(facts)?)
+            }
+            ConfiguredFeature::GlowstoneBlob(_) => {
+                Self::Glowstone(GlowstoneFeature::compile(facts)?)
+            }
             ConfiguredFeature::TwistingVines(config) => {
                 Self::TwistingVines(TwistingVinesFeature::compile(config, facts)?)
             }
-            ConfiguredFeature::WeepingVines(_) => Self::WeepingVines(WeepingVinesFeature::compile(facts)?),
+            ConfiguredFeature::WeepingVines(_) => {
+                Self::WeepingVines(WeepingVinesFeature::compile(facts)?)
+            }
             ConfiguredFeature::NetherForestVegetation(config) => {
                 Self::ForestVegetation(ForestVegetationFeature::compile(config, facts)?)
             }
@@ -129,7 +139,14 @@ fn offset(pos: BlockPos, dx: i32, dy: i32, dz: i32) -> BlockPos {
 }
 
 /// `Direction.values()` as offsets: down, up, north, south, west, east.
-const DIRECTIONS: [[i32; 3]; 6] = [[0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1], [-1, 0, 0], [1, 0, 0]];
+const DIRECTIONS: [[i32; 3]; 6] = [
+    [0, -1, 0],
+    [0, 1, 0],
+    [0, 0, -1],
+    [0, 0, 1],
+    [-1, 0, 0],
+    [1, 0, 0],
+];
 
 /// `Mth.nextInt`: `min` without a draw when the range is empty or a single value, otherwise
 /// `nextInt(max - min + 1) + min` (a range too wide for an `int` draws nothing, where vanilla

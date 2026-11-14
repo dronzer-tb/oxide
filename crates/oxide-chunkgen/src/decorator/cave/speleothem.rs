@@ -46,7 +46,10 @@ pub(super) struct Blocks {
 
 impl Blocks {
     pub fn compile(base: BlockState, replaceable: &BlockList) -> Result<Self> {
-        Ok(Self { base, replaceable: IdSet::compile(replaceable)? })
+        Ok(Self {
+            base,
+            replaceable: IdSet::compile(replaceable)?,
+        })
     }
 
     /// Air or the water block.
@@ -69,7 +72,11 @@ impl Blocks {
     }
 
     /// `placeBaseBlockIfPossible`: writes the base block over a replaceable block.
-    pub fn place_base_if_possible(&self, cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos) -> bool {
+    pub fn place_base_if_possible(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        pos: BlockPos,
+    ) -> bool {
         if self.is_replaceable(cx, block_in(cx.region, pos)) {
             cx.region.set_block(pos, self.base.clone());
             return true;
@@ -162,14 +169,27 @@ impl Speleothem {
         let Some(pointed) = Pointed::compile(pointed, facts)? else {
             return Ok(None);
         };
-        Ok(Some(Self { blocks: Blocks::compile(state_from_spec(base, facts)?, replaceable)?, pointed }))
+        Ok(Some(Self {
+            blocks: Blocks::compile(state_from_spec(base, facts)?, replaceable)?,
+            pointed,
+        }))
     }
 
     /// `SpeleothemUtils.growSpeleothem`: a column of pointed blocks from `start`, `height` tall,
     /// growing up or hanging down, provided the cell behind `start` is base.
-    pub fn grow(&self, cx: &mut FeatureContext<'_, '_, '_>, start: BlockPos, up: bool, height: i32, merged: bool) {
+    pub fn grow(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        start: BlockPos,
+        up: bool,
+        height: i32,
+        merged: bool,
+    ) {
         let step = if up { 1 } else { -1 };
-        if !self.blocks.is_base(cx, block_in(cx.region, offset(start, 0, -step, 0))) {
+        if !self
+            .blocks
+            .is_base(cx, block_in(cx.region, offset(start, 0, -step, 0)))
+        {
             return;
         }
         let mut sequence: Vec<&str> = Vec::new();
@@ -186,7 +206,8 @@ impl Speleothem {
         let mut at = start;
         for thickness in sequence {
             let water = has(cx, at, BlockFact::Water);
-            cx.region.set_block(at, self.pointed.state(up, thickness, water));
+            cx.region
+                .set_block(at, self.pointed.state(up, thickness, water));
             at = offset(at, 0, step, 0);
         }
     }
@@ -202,8 +223,12 @@ pub struct SpeleothemFeature {
 
 impl SpeleothemFeature {
     pub fn compile(config: &SpeleothemConfig, facts: &BlockFacts) -> Result<Option<Self>> {
-        let Some(speleothem) =
-            Speleothem::compile(&config.base_block, &config.pointed_block, &config.replaceable_blocks, facts)?
+        let Some(speleothem) = Speleothem::compile(
+            &config.base_block,
+            &config.pointed_block,
+            &config.replaceable_blocks,
+            facts,
+        )?
         else {
             return Ok(None);
         };
@@ -255,7 +280,10 @@ impl SpeleothemFeature {
             let thicknesses: &[&str] = if tall { &["frustum", "tip"] } else { &["tip"] };
             for thickness in thicknesses {
                 let water = has(cx, at, BlockFact::Water);
-                cx.region.set_block(at, self.speleothem.pointed.state(!hanging, thickness, water));
+                cx.region.set_block(
+                    at,
+                    self.speleothem.pointed.state(!hanging, thickness, water),
+                );
                 at = relative(at, step, 1);
             }
         }

@@ -38,6 +38,7 @@ pub mod version;
 pub mod water_feature;
 
 pub use biome::{Biome, BiomeEffects, SpawnerData};
+pub use block_facts::{BlockFact, BlockFacts};
 pub use carver::{
     CanyonCarverConfig, CanyonShape, CarverConfig, CaveCarverConfig, ConfiguredCarver,
     FloatProvider, HeightProvider,
@@ -64,7 +65,6 @@ pub use structure::{
 };
 pub use surface_rule::{SurfaceCondition, SurfaceRule, SurfaceType, VerticalAnchor};
 pub use tags::{load_tags, TagSet};
-pub use block_facts::{BlockFact, BlockFacts};
 pub use version::{DataVersion, PackMeta, PackMetaInner, VersionJson};
 
 pub use oxide_core::{BiomeId, BlockState, ResourceLocation};

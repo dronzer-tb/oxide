@@ -24,7 +24,8 @@ impl BlockBlobFeature {
     pub fn compile(config: &BlockBlobConfig, facts: &BlockFacts) -> Result<Self> {
         Ok(Self {
             state: state_from_spec(&config.state, facts).context("block blob state")?,
-            can_place_on: Predicate::compile(&config.can_place_on, facts).context("block blob can_place_on")?,
+            can_place_on: Predicate::compile(&config.can_place_on, facts)
+                .context("block blob can_place_on")?,
         })
     }
 

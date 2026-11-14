@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use oxide_core::{RandomSource, BlockPos, BlockState, ResourceLocation};
+use oxide_core::{BlockPos, BlockState, RandomSource, ResourceLocation};
 use oxide_datapack::feature::Holder;
 use oxide_datapack::placement::{IntProvider, PlacedFeature};
 use oxide_datapack::vegetation_feature::{CaveSurface, VegetationPatchConfig};
@@ -89,10 +89,12 @@ impl PatchFeature {
     fn flood(&self, cx: &mut FeatureContext<'_, '_, '_>, surface: &PosSet) -> PosSet {
         let mut sealed = PosSet::default();
         for pos in surface.iter_java_order() {
-            let exposed = [Dir::North, Dir::East, Dir::South, Dir::West, Dir::Down].into_iter().any(|dir| {
-                let neighbour = relative(pos, dir, 1);
-                !face_full(cx, neighbour, dir.opposite(), Shape::Support)
-            });
+            let exposed = [Dir::North, Dir::East, Dir::South, Dir::West, Dir::Down]
+                .into_iter()
+                .any(|dir| {
+                    let neighbour = relative(pos, dir, 1);
+                    !face_full(cx, neighbour, dir.opposite(), Shape::Support)
+                });
             if !exposed {
                 sealed.insert(pos);
             }
@@ -114,9 +116,15 @@ impl PatchFeature {
             return false;
         }
         let placed = block_in(cx.region, pos);
-        if placed.properties.get("waterlogged").is_some_and(|value| value == "false") {
+        if placed
+            .properties
+            .get("waterlogged")
+            .is_some_and(|value| value == "false")
+        {
             let mut flooded = placed.clone();
-            flooded.properties.insert("waterlogged".into(), "true".into());
+            flooded
+                .properties
+                .insert("waterlogged".into(), "true".into());
             cx.region.set_block(pos, flooded);
         }
         true
@@ -161,7 +169,8 @@ impl PatchFeature {
                     if is_air(cx, pos) && face_full(cx, below, outwards, Shape::Support) {
                         let extra = self.extra_bottom_block_chance > 0.0
                             && cx.random.next_float() < self.extra_bottom_block_chance;
-                        let depth = sample_int(&self.depth, &mut *cx.random).wrapping_add(i32::from(extra));
+                        let depth =
+                            sample_int(&self.depth, &mut *cx.random).wrapping_add(i32::from(extra));
                         if self.place_ground(cx, below, depth) {
                             surface.insert(below);
                         }
@@ -176,7 +185,12 @@ impl PatchFeature {
 
     /// `VegetationPatchFeature.placeGround`: stacks up to `depth` ground blocks inwards from
     /// `below`, stopping at the first block that may not be replaced.
-    fn place_ground(&self, cx: &mut FeatureContext<'_, '_, '_>, mut below: BlockPos, depth: i32) -> bool {
+    fn place_ground(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        mut below: BlockPos,
+        depth: i32,
+    ) -> bool {
         for step in 0..depth {
             let state = match self.ground.state(cx, below) {
                 Ok(Some(state)) => state,

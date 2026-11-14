@@ -25,7 +25,9 @@ pub struct ReplaceBlobsFeature {
 impl ReplaceBlobsFeature {
     pub fn compile(config: &ReplaceBlobsConfig, facts: &BlockFacts) -> Result<Self> {
         Ok(Self {
-            target: state_from_spec(&config.target, facts).context("replace blobs target")?.name,
+            target: state_from_spec(&config.target, facts)
+                .context("replace blobs target")?
+                .name,
             state: state_from_spec(&config.state, facts).context("replace blobs state")?,
             radius: config.radius.clone(),
         })

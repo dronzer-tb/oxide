@@ -48,18 +48,25 @@ impl RuleTest {
                 Self::BlockStateMatch(state_from_spec(block_state, facts)?)
             }
             RuleTestIr::TagMatch { tag } => Self::TagMatch(block(tag.trim_start_matches('#'))?),
-            RuleTestIr::RandomBlockMatch { block: name, probability } => {
-                Self::RandomBlockMatch(block(name)?, *probability)
-            }
-            RuleTestIr::RandomBlockStateMatch { block_state, probability } => {
-                Self::RandomBlockStateMatch(state_from_spec(block_state, facts)?, *probability)
-            }
+            RuleTestIr::RandomBlockMatch {
+                block: name,
+                probability,
+            } => Self::RandomBlockMatch(block(name)?, *probability),
+            RuleTestIr::RandomBlockStateMatch {
+                block_state,
+                probability,
+            } => Self::RandomBlockStateMatch(state_from_spec(block_state, facts)?, *probability),
         })
     }
 
     /// The random variants draw a float only when the block already matches, as vanilla's
     /// short-circuiting `&&` does.
-    pub(crate) fn test(&self, state: &BlockState, random: &mut impl RandomSource, tags: &TagSet) -> bool {
+    pub(crate) fn test(
+        &self,
+        state: &BlockState,
+        random: &mut impl RandomSource,
+        tags: &TagSet,
+    ) -> bool {
         match self {
             Self::AlwaysTrue => true,
             Self::BlockMatch(name) => state.name == *name,
@@ -135,11 +142,27 @@ impl OreFeature {
         let max_radius = ((self.size as f32 / 16.0 * 2.0 + 1.0) / 2.0).ceil() as i32;
         let spread = f64::from(spread_xz);
         let (sin, cos) = (f64::from(direction).sin(), f64::from(direction).cos());
-        let x_ends = [f64::from(origin.x) + sin * spread, f64::from(origin.x) - sin * spread];
-        let z_ends = [f64::from(origin.z) + cos * spread, f64::from(origin.z) - cos * spread];
+        let x_ends = [
+            f64::from(origin.x) + sin * spread,
+            f64::from(origin.x) - sin * spread,
+        ];
+        let z_ends = [
+            f64::from(origin.z) + cos * spread,
+            f64::from(origin.z) - cos * spread,
+        ];
         let y_ends = [
-            f64::from(origin.y.wrapping_add(next_bounded(cx.random, 3)).wrapping_sub(2)),
-            f64::from(origin.y.wrapping_add(next_bounded(cx.random, 3)).wrapping_sub(2)),
+            f64::from(
+                origin
+                    .y
+                    .wrapping_add(next_bounded(cx.random, 3))
+                    .wrapping_sub(2),
+            ),
+            f64::from(
+                origin
+                    .y
+                    .wrapping_add(next_bounded(cx.random, 3))
+                    .wrapping_sub(2),
+            ),
         ];
         let spread_ceil = spread.ceil() as i32;
         let x_start = origin.x.wrapping_sub(spread_ceil).wrapping_sub(max_radius);
@@ -335,8 +358,14 @@ fn skip_air_check(random: &mut impl RandomSource, chance: f32) -> bool {
 
 /// `OreFeature.isAdjacentToAir`: any of the six neighbours is air. Outside the world is air.
 fn is_adjacent_to_air(region: &DecorationRegion<'_>, env: &Environment, pos: BlockPos) -> bool {
-    const NEIGHBOURS: [[i32; 3]; 6] =
-        [[0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1], [-1, 0, 0], [1, 0, 0]];
+    const NEIGHBOURS: [[i32; 3]; 6] = [
+        [0, -1, 0],
+        [0, 1, 0],
+        [0, 0, -1],
+        [0, 0, 1],
+        [-1, 0, 0],
+        [1, 0, 0],
+    ];
     NEIGHBOURS.iter().any(|d| {
         let neighbour = BlockPos::new(
             pos.x.wrapping_add(d[0]),

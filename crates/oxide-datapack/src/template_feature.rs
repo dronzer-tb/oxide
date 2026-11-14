@@ -96,8 +96,11 @@ pub enum Processor {
 impl Processor {
     /// The `processor_type` ids [`Processor`] parses. A value naming any other type is a
     /// processor the generator does not implement.
-    pub const TYPES: [&'static str; 3] =
-        ["minecraft:block_rot", "minecraft:protected_blocks", "minecraft:rule"];
+    pub const TYPES: [&'static str; 3] = [
+        "minecraft:block_rot",
+        "minecraft:protected_blocks",
+        "minecraft:rule",
+    ];
 }
 
 /// `ProcessorRule`. `position_predicate` and `block_entity_modifier` stay raw: absent they are

@@ -75,7 +75,9 @@ impl GeodeFeature {
         let Some((_, outer_wall_max)) = int_bounds(&config.outer_wall_distance) else {
             return Ok(None);
         };
-        if int_bounds(&config.distribution_points).is_none() || int_bounds(&config.point_offset).is_none() {
+        if int_bounds(&config.distribution_points).is_none()
+            || int_bounds(&config.point_offset).is_none()
+        {
             return Ok(None);
         }
         if config.blocks.inner_placements.is_empty() {
@@ -88,14 +90,23 @@ impl GeodeFeature {
             .map(|spec| state_from_spec(spec, facts))
             .collect::<Result<Vec<_>>>()?;
         let six_way = |state: &BlockState| {
-            state.properties.get("facing").is_none_or(|value| value == "up" || value == "down")
+            state
+                .properties
+                .get("facing")
+                .is_none_or(|value| value == "up" || value == "down")
         };
         if !inner_placements.iter().all(six_way) {
             return Ok(None);
         }
         let blocks = &config.blocks;
         let provider = |ir| StateProvider::compile(ir, facts);
-        let air = state_from_spec(&BlockStateSpec { name: "minecraft:air".into(), properties: Default::default() }, facts)?;
+        let air = state_from_spec(
+            &BlockStateSpec {
+                name: "minecraft:air".into(),
+                properties: Default::default(),
+            },
+            facts,
+        )?;
         Ok(Some(Self {
             filling: provider(&blocks.filling_provider)?,
             inner: provider(&blocks.inner_layer_provider)?,
@@ -131,13 +142,20 @@ impl GeodeFeature {
 
     /// `Feature.safeSetBlock`: writes `state` unless the block there may not be replaced.
     fn safe_set(&self, cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos, state: BlockState) {
-        if !self.cannot_replace.contains_block(cx.env, &block_in(cx.region, pos).name) {
+        if !self
+            .cannot_replace
+            .contains_block(cx.env, &block_in(cx.region, pos).name)
+        {
             cx.region.set_block(pos, state);
         }
     }
 
     /// The provider's state at `pos`; a provider that cannot give one is tallied.
-    fn sample(cx: &mut FeatureContext<'_, '_, '_>, provider: &StateProvider, pos: BlockPos) -> Option<BlockState> {
+    fn sample(
+        cx: &mut FeatureContext<'_, '_, '_>,
+        provider: &StateProvider,
+        pos: BlockPos,
+    ) -> Option<BlockState> {
         match provider.state(cx, pos) {
             Ok(Some(state)) => Some(state),
             Ok(None) => {
@@ -164,8 +182,10 @@ impl GeodeFeature {
         let inner_crust = 1.0 / (middle + crack_adjust).sqrt();
         let outer_crust = 1.0 / (outer + crack_adjust).sqrt();
         let crack_size = 1.0
-            / (self.base_crack_size + cx.random.next_double() / 2.0 + if num_points > 3 { crack_adjust } else { 0.0 })
-                .sqrt();
+            / (self.base_crack_size
+                + cx.random.next_double() / 2.0
+                + if num_points > 3 { crack_adjust } else { 0.0 })
+            .sqrt();
         let crack = f64::from(cx.random.next_float()) < self.crack_chance;
         let mut invalid = 0;
         let mut points = Vec::new();
@@ -175,7 +195,9 @@ impl GeodeFeature {
             let z = sample_int(&self.outer_wall_distance, cx.random);
             let pos = offset(origin, x, y, z);
             let state = block_in(cx.region, pos);
-            if state_has(cx, state, BlockFact::Air) || self.invalid_blocks.contains_block(cx.env, &state.name) {
+            if state_has(cx, state, BlockFact::Air)
+                || self.invalid_blocks.contains_block(cx.env, &state.name)
+            {
                 invalid += 1;
                 if invalid > self.invalid_threshold {
                     return false;
@@ -206,10 +228,12 @@ impl GeodeFeature {
                 for dx in low..=high {
                     let pos = offset(origin, dx, dy, dz);
                     let noise_offset =
-                        noise.get_value(f64::from(pos.x), f64::from(pos.y), f64::from(pos.z)) * self.noise_multiplier;
+                        noise.get_value(f64::from(pos.x), f64::from(pos.y), f64::from(pos.z))
+                            * self.noise_multiplier;
                     let mut shell = 0.0;
                     for (point, point_offset) in &points {
-                        shell += 1.0 / (dist_sqr(pos, *point) + f64::from(*point_offset)).sqrt() + noise_offset;
+                        shell += 1.0 / (dist_sqr(pos, *point) + f64::from(*point_offset)).sqrt()
+                            + noise_offset;
                     }
                     if shell < outer_crust {
                         continue;
@@ -223,14 +247,19 @@ impl GeodeFeature {
                     }
                     let mut crack_sum = 0.0;
                     for point in &crack_points {
-                        crack_sum +=
-                            1.0 / (dist_sqr(pos, *point) + f64::from(self.crack_point_offset)).sqrt() + noise_offset;
+                        crack_sum += 1.0
+                            / (dist_sqr(pos, *point) + f64::from(self.crack_point_offset)).sqrt()
+                            + noise_offset;
                     }
                     if crack && crack_sum >= crack_size {
                         self.safe_set(cx, pos, self.air.clone());
                     } else if shell >= innermost {
                         let alternate = f64::from(cx.random.next_float()) < self.alternate_chance;
-                        let provider = if alternate { &self.alternate_inner } else { &self.inner };
+                        let provider = if alternate {
+                            &self.alternate_inner
+                        } else {
+                            &self.inner
+                        };
                         let Some(state) = Self::sample(cx, provider, pos) else {
                             return false;
                         };
@@ -282,6 +311,10 @@ impl GeodeFeature {
         }
         // A water block's fluid is full at level 0 (source) and at the falling levels 8 and up.
         is_block(state, "water")
-            && state.properties.get("level").and_then(|level| level.parse::<i32>().ok()).is_some_and(|level| level == 0 || level >= 8)
+            && state
+                .properties
+                .get("level")
+                .and_then(|level| level.parse::<i32>().ok())
+                .is_some_and(|level| level == 0 || level >= 8)
     }
 }

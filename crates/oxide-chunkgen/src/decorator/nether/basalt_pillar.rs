@@ -22,7 +22,9 @@ pub struct BasaltPillarFeature {
 
 impl BasaltPillarFeature {
     pub fn compile(facts: &BlockFacts) -> Result<Self> {
-        Ok(Self { basalt: default_state(facts, "basalt")? })
+        Ok(Self {
+            basalt: default_state(facts, "basalt")?,
+        })
     }
 
     /// `BasaltPillarFeature.place`.
@@ -47,7 +49,8 @@ impl BasaltPillarFeature {
         pos = offset(pos, 0, 1, 0);
         for [dx, dz] in SIDES {
             if cx.random.next_boolean() {
-                cx.region.set_block(offset(pos, dx, 0, dz), self.basalt.clone());
+                cx.region
+                    .set_block(offset(pos, dx, 0, dz), self.basalt.clone());
             }
         }
         pos = offset(pos, 0, -1, 0);

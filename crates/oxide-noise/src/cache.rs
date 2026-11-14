@@ -79,7 +79,13 @@ impl ChunkCaches {
     /// position -- which is what lets the fill skip ~75% of a chunk's density evaluations.
     ///
     /// `(cell_x, cell_y, cell_z)` are cell indices within this chunk, not block coordinates.
-    pub fn cell_bounds(&self, slot: usize, cell_x: i32, cell_y: i32, cell_z: i32) -> Option<(f64, f64)> {
+    pub fn cell_bounds(
+        &self,
+        slot: usize,
+        cell_x: i32,
+        cell_y: i32,
+        cell_z: i32,
+    ) -> Option<(f64, f64)> {
         let grids = self.interpolated.borrow();
         let grid = grids.get(slot)?.as_ref()?;
 

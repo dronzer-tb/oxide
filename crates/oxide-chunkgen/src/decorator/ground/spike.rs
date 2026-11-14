@@ -28,8 +28,10 @@ impl SpikeFeature {
     pub fn compile(config: &SpikeConfig, facts: &BlockFacts) -> Result<Self> {
         Ok(Self {
             state: state_from_spec(&config.state, facts).context("spike state")?,
-            can_place_on: Predicate::compile(&config.can_place_on, facts).context("spike can_place_on")?,
-            can_replace: Predicate::compile(&config.can_replace, facts).context("spike can_replace")?,
+            can_place_on: Predicate::compile(&config.can_place_on, facts)
+                .context("spike can_place_on")?,
+            can_replace: Predicate::compile(&config.can_replace, facts)
+                .context("spike can_replace")?,
         })
     }
 
@@ -59,7 +61,9 @@ impl SpikeFeature {
                     if (x != 0 || z != 0) && fx * fx + fz * fz > radius * radius {
                         continue;
                     }
-                    if (x == -ceil || x == ceil || z == -ceil || z == ceil) && cx.random.next_float() > 0.75 {
+                    if (x == -ceil || x == ceil || z == -ceil || z == ceil)
+                        && cx.random.next_float() > 0.75
+                    {
                         continue;
                     }
                     self.place_part(cx, offset(origin, x, layer, z));
@@ -88,7 +92,11 @@ impl SpikeFeature {
                     pos = BlockPos::new(pos.x, pos.y - 1, pos.z);
                     remaining -= 1;
                     if remaining <= 0 {
-                        pos = BlockPos::new(pos.x, pos.y - (cx.random.next_int_bounded(5) + 1), pos.z);
+                        pos = BlockPos::new(
+                            pos.x,
+                            pos.y - (cx.random.next_int_bounded(5) + 1),
+                            pos.z,
+                        );
                         remaining = cx.random.next_int_bounded(5);
                     }
                 }

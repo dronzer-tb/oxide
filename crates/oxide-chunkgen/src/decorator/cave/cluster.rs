@@ -103,7 +103,11 @@ impl SpeleothemClusterFeature {
     /// `SpeleothemClusterFeature.place`.
     pub fn place(&self, cx: &mut FeatureContext<'_, '_, '_>) -> bool {
         let origin = cx.origin;
-        if !self.speleothem.blocks.empty_or_water(cx, block_in(cx.region, origin)) {
+        if !self
+            .speleothem
+            .blocks
+            .empty_or_water(cx, block_in(cx.region, origin))
+        {
             return false;
         }
         let height = sample_int(&self.height, cx.random);
@@ -140,8 +144,9 @@ impl SpeleothemClusterFeature {
         density: f32,
     ) {
         let blocks = &self.speleothem.blocks;
-        let Some(base_column) = blocks.scan(cx, pos, self.search_range, &|state| !blocks.empty_or_water(cx, state))
-        else {
+        let Some(base_column) = blocks.scan(cx, pos, self.search_range, &|state| {
+            !blocks.empty_or_water(cx, state)
+        }) else {
             return;
         };
         let ceiling = base_column.ceiling;
@@ -151,9 +156,15 @@ impl SpeleothemClusterFeature {
         }
         let want_pool = cx.random.next_float() < chance_of_water;
         let column = match base_floor {
-            Some(floor_y) if want_pool && self.can_place_pool(cx, BlockPos::new(pos.x, floor_y, pos.z)) => {
-                cx.region.set_block(BlockPos::new(pos.x, floor_y, pos.z), self.water.clone());
-                Column { floor: Some(floor_y - 1), ceiling }
+            Some(floor_y)
+                if want_pool && self.can_place_pool(cx, BlockPos::new(pos.x, floor_y, pos.z)) =>
+            {
+                cx.region
+                    .set_block(BlockPos::new(pos.x, floor_y, pos.z), self.water.clone());
+                Column {
+                    floor: Some(floor_y - 1),
+                    ceiling,
+                }
             }
             _ => base_column,
         };
@@ -161,7 +172,8 @@ impl SpeleothemClusterFeature {
         let want_stalactite = cx.random.next_double() < chance;
         let stalactite_height = match ceiling {
             Some(c)
-                if want_stalactite && !is_block(block_in(cx.region, BlockPos::new(pos.x, c, pos.z)), "lava") =>
+                if want_stalactite
+                    && !is_block(block_in(cx.region, BlockPos::new(pos.x, c, pos.z)), "lava") =>
             {
                 let thickness = sample_int(&self.layer_thickness, cx.random);
                 self.replace_with_base(cx, BlockPos::new(pos.x, c, pos.z), thickness, 1);
@@ -176,7 +188,8 @@ impl SpeleothemClusterFeature {
         let want_stalagmite = cx.random.next_double() < chance;
         let stalagmite_height = match floor {
             Some(f)
-                if want_stalagmite && !is_block(block_in(cx.region, BlockPos::new(pos.x, f, pos.z)), "lava") =>
+                if want_stalagmite
+                    && !is_block(block_in(cx.region, BlockPos::new(pos.x, f, pos.z)), "lava") =>
             {
                 let thickness = sample_int(&self.layer_thickness, cx.random);
                 self.replace_with_base(cx, BlockPos::new(pos.x, f, pos.z), thickness, -1);
@@ -193,7 +206,8 @@ impl SpeleothemClusterFeature {
             (Some(c), Some(f)) if c - stalactite_height <= f + stalagmite_height => {
                 let lowest_bottom = (c - stalactite_height).max(f + 1);
                 let highest_top = (f + stalagmite_height).min(c - 1);
-                let bottom = next_bounded(cx.random, highest_top + 1 - lowest_bottom + 1) + lowest_bottom;
+                let bottom =
+                    next_bounded(cx.random, highest_top + 1 - lowest_bottom + 1) + lowest_bottom;
                 (c - bottom, bottom - 1 - f)
             }
             _ => (stalactite_height, stalagmite_height),
@@ -201,17 +215,38 @@ impl SpeleothemClusterFeature {
         let merge = cx.random.next_boolean()
             && actual_stalactite > 0
             && actual_stalagmite > 0
-            && column.height().is_some_and(|h| actual_stalactite + actual_stalagmite == h);
+            && column
+                .height()
+                .is_some_and(|h| actual_stalactite + actual_stalagmite == h);
         if let Some(c) = ceiling {
-            self.speleothem.grow(cx, BlockPos::new(pos.x, c - 1, pos.z), false, actual_stalactite, merge);
+            self.speleothem.grow(
+                cx,
+                BlockPos::new(pos.x, c - 1, pos.z),
+                false,
+                actual_stalactite,
+                merge,
+            );
         }
         if let Some(f) = floor {
-            self.speleothem.grow(cx, BlockPos::new(pos.x, f + 1, pos.z), true, actual_stalagmite, merge);
+            self.speleothem.grow(
+                cx,
+                BlockPos::new(pos.x, f + 1, pos.z),
+                true,
+                actual_stalagmite,
+                merge,
+            );
         }
     }
 
     /// `getSpeleothemHeight`.
-    fn speleothem_height(&self, cx: &mut FeatureContext<'_, '_, '_>, dx: i32, dz: i32, density: f32, max_height: i32) -> i32 {
+    fn speleothem_height(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        dx: i32,
+        dz: i32,
+        density: f32,
+        max_height: i32,
+    ) -> i32 {
         if cx.random.next_float() > density {
             return 0;
         }
@@ -222,7 +257,11 @@ impl SpeleothemClusterFeature {
             0.0,
         ) as f32;
         let value = mean + cx.random.next_gaussian() as f32 * self.height_deviation as f32;
-        let clamped = if value < 0.0 { 0.0 } else { value.min(max_height as f32) };
+        let clamped = if value < 0.0 {
+            0.0
+        } else {
+            value.min(max_height as f32)
+        };
         clamped as i32
     }
 
@@ -250,13 +289,22 @@ impl SpeleothemClusterFeature {
     /// Base stone of the overworld, or water, holds a pool in.
     fn adjacent_ok(&self, cx: &FeatureContext<'_, '_, '_>, pos: BlockPos) -> bool {
         let state = block_in(cx.region, pos);
-        let stone = cx.env.block_tags.contains(&oxide_core::ResourceLocation::minecraft("base_stone_overworld"), &state.name);
+        let stone = cx.env.block_tags.contains(
+            &oxide_core::ResourceLocation::minecraft("base_stone_overworld"),
+            &state.name,
+        );
         stone || state_has(cx, state, BlockFact::Water)
     }
 
     /// `replaceBlocksWithBase`: up to `count` base blocks from `first` along y, stopping at the
     /// first cell that is not replaceable.
-    fn replace_with_base(&self, cx: &mut FeatureContext<'_, '_, '_>, first: BlockPos, count: i32, step: i32) {
+    fn replace_with_base(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        first: BlockPos,
+        count: i32,
+        step: i32,
+    ) {
         let mut at = first;
         for _ in 0..count {
             if !self.speleothem.blocks.place_base_if_possible(cx, at) {

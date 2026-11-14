@@ -26,9 +26,9 @@ use oxide_core::{BiomeId, BlockPos, WorldgenRandom};
 use oxide_datapack::Datapack;
 
 use super::context::{BlockBehaviours, Environment, FeatureContext, UnsupportedTally};
-use super::survival::SurvivalRules;
 use super::feature::{place_placed, Compiler, Placed};
 use super::ground::BiomeClimate;
+use super::survival::SurvivalRules;
 use crate::decorate::Decorator;
 use crate::decoration_seed::{set_decoration_seed, set_feature_seed};
 use crate::feature_order::build_features_per_step;
@@ -121,7 +121,11 @@ impl BiomeDecorator {
         let index_in_step: Vec<HashMap<u32, u32>> = steps
             .iter()
             .map(|features| {
-                features.iter().enumerate().map(|(index, &key)| (key, index as u32)).collect()
+                features
+                    .iter()
+                    .enumerate()
+                    .map(|(index, &key)| (key, index as u32))
+                    .collect()
             })
             .collect();
         let mut biome_steps = HashMap::new();
@@ -132,7 +136,12 @@ impl BiomeDecorator {
                 .map(|(step, keys)| {
                     let mut indices: Vec<u32> = keys
                         .iter()
-                        .filter_map(|key| index_in_step.get(step).and_then(|map| map.get(key)).copied())
+                        .filter_map(|key| {
+                            index_in_step
+                                .get(step)
+                                .and_then(|map| map.get(key))
+                                .copied()
+                        })
                         .collect();
                     indices.sort_unstable();
                     indices.dedup();
@@ -144,7 +153,12 @@ impl BiomeDecorator {
 
         let biome_features = lists
             .into_iter()
-            .map(|(biome, per_step)| (biome, per_step.into_iter().flatten().collect::<HashSet<u32>>()))
+            .map(|(biome, per_step)| {
+                (
+                    biome,
+                    per_step.into_iter().flatten().collect::<HashSet<u32>>(),
+                )
+            })
             .collect();
 
         let env = Environment {
@@ -159,11 +173,22 @@ impl BiomeDecorator {
             biome_climate: datapack
                 .biomes
                 .iter()
-                .map(|(id, biome)| Ok((id.clone(), BiomeClimate::from_biome(biome).with_context(|| format!("biome {id}"))?)))
+                .map(|(id, biome)| {
+                    Ok((
+                        id.clone(),
+                        BiomeClimate::from_biome(biome).with_context(|| format!("biome {id}"))?,
+                    ))
+                })
                 .collect::<Result<_>>()?,
             biome_features,
         };
-        Ok(Self { env, steps, placed, biome_steps, unsupported: Mutex::new(UnsupportedTally::default()) })
+        Ok(Self {
+            env,
+            steps,
+            placed,
+            biome_steps,
+            unsupported: Mutex::new(UnsupportedTally::default()),
+        })
     }
 
     /// Replaces the answers to per-block questions (see [`BlockBehaviours`]).
@@ -180,7 +205,10 @@ impl BiomeDecorator {
     /// Everything decoration was asked to do and did not, summed over every chunk decorated so
     /// far. Keys are `category:detail`; see [`UnsupportedTally`].
     pub fn unsupported(&self) -> UnsupportedTally {
-        self.unsupported.lock().expect("unsupported tally poisoned").clone()
+        self.unsupported
+            .lock()
+            .expect("unsupported tally poisoned")
+            .clone()
     }
 }
 
@@ -205,7 +233,11 @@ impl Decorator for BiomeDecorator {
         for (step, features) in self.steps.iter().enumerate() {
             let mut indices: Vec<u32> = present
                 .iter()
-                .filter_map(|biome| self.biome_steps.get(biome).and_then(|steps| steps.get(step)))
+                .filter_map(|biome| {
+                    self.biome_steps
+                        .get(biome)
+                        .and_then(|steps| steps.get(step))
+                })
                 .flatten()
                 .copied()
                 .collect();
@@ -227,7 +259,10 @@ impl Decorator for BiomeDecorator {
             }
         }
         if !tally.is_empty() {
-            self.unsupported.lock().expect("unsupported tally poisoned").merge(&tally);
+            self.unsupported
+                .lock()
+                .expect("unsupported tally poisoned")
+                .merge(&tally);
         }
     }
 }

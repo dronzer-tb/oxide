@@ -20,8 +20,11 @@ const WATER_TOP: i32 = 80;
 const COLOURS: [&str; 5] = ["tube", "brain", "bubble", "fire", "horn"];
 
 fn facts() -> BlockFacts {
-    let dir = std::env::temp_dir()
-        .join(format!("oxide-water-facts-{}-{:?}", std::process::id(), std::thread::current().id()));
+    let dir = std::env::temp_dir().join(format!(
+        "oxide-water-facts-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let full = "Dsmoudf1234";
     let mut text = String::from(
@@ -41,9 +44,15 @@ fn facts() -> BlockFacts {
     }
     for colour in COLOURS {
         text.push_str(&format!("minecraft:{colour}_coral_block\t{full}\n"));
-        text.push_str(&format!("minecraft:{colour}_coral[waterlogged=true]\tDcWS\n"));
-        text.push_str(&format!("minecraft:{colour}_coral_fan[waterlogged=true]\tDcWS\n"));
-        text.push_str(&format!("minecraft:{colour}_coral_wall_fan[facing=north,waterlogged=true]\tDcWS\n"));
+        text.push_str(&format!(
+            "minecraft:{colour}_coral[waterlogged=true]\tDcWS\n"
+        ));
+        text.push_str(&format!(
+            "minecraft:{colour}_coral_fan[waterlogged=true]\tDcWS\n"
+        ));
+        text.push_str(&format!(
+            "minecraft:{colour}_coral_wall_fan[facing=north,waterlogged=true]\tDcWS\n"
+        ));
     }
     std::fs::write(dir.join("block_facts.tsv"), text).unwrap();
     let facts = BlockFacts::load(&dir).unwrap();
@@ -54,20 +63,38 @@ fn facts() -> BlockFacts {
 /// The coral tags in the shape 26.2 gives them (`corals` nests `coral_plants`), and the two
 /// survival tags the plants consult.
 fn tags() -> TagSet {
-    let root = std::env::temp_dir()
-        .join(format!("oxide-water-tags-{}-{:?}", std::process::id(), std::thread::current().id()));
+    let root = std::env::temp_dir().join(format!(
+        "oxide-water-tags-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
     let _ = std::fs::remove_dir_all(&root);
-    let list = |suffix: &str| COLOURS.map(|c| format!("\"minecraft:{c}{suffix}\"")).join(",");
+    let list = |suffix: &str| {
+        COLOURS
+            .map(|c| format!("\"minecraft:{c}{suffix}\""))
+            .join(",")
+    };
     let files = [
         ("coral_blocks", list("_coral_block")),
         ("coral_plants", list("_coral")),
-        ("corals", format!("\"#minecraft:coral_plants\",{}", list("_coral_fan"))),
+        (
+            "corals",
+            format!("\"#minecraft:coral_plants\",{}", list("_coral_fan")),
+        ),
         ("wall_corals", list("_coral_wall_fan")),
-        ("cannot_support_kelp", String::from("\"minecraft:magma_block\"")),
-        ("cannot_support_seagrass", String::from("\"minecraft:magma_block\"")),
+        (
+            "cannot_support_kelp",
+            String::from("\"minecraft:magma_block\""),
+        ),
+        (
+            "cannot_support_seagrass",
+            String::from("\"minecraft:magma_block\""),
+        ),
     ];
     for (name, values) in files {
-        let path = root.join("data/minecraft/tags/block").join(format!("{name}.json"));
+        let path = root
+            .join("data/minecraft/tags/block")
+            .join(format!("{name}.json"));
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, format!("{{\"values\":[{values}]}}")).unwrap();
     }
@@ -101,7 +128,11 @@ struct Outcome {
 impl Outcome {
     /// The final writes of blocks whose path satisfies `keep`.
     fn matching(&self, keep: impl Fn(&str) -> bool) -> Vec<(BlockPos, BlockState)> {
-        self.writes.iter().filter(|(_, s)| keep(s.name.path())).cloned().collect()
+        self.writes
+            .iter()
+            .filter(|(_, s)| keep(s.name.path()))
+            .cloned()
+            .collect()
     }
 
     fn count(&self, path: &str) -> usize {
@@ -121,8 +152,14 @@ fn place(
     let ir: PlacedFeatureIr =
         serde_json::from_str(&format!(r#"{{"feature":{config},"placement":[]}}"#)).expect("json");
     let (placed_registry, configured) = (Registry::default(), Registry::default());
-    let placed = Compiler::new(&env.facts, &placed_registry, &configured).compile_placed(&ir).expect("compiles");
-    assert!(matches!(&*placed.feature, Feature::Water(_)), "{config} compiled to {:?}", placed.feature);
+    let placed = Compiler::new(&env.facts, &placed_registry, &configured)
+        .compile_placed(&ir)
+        .expect("compiles");
+    assert!(
+        matches!(&*placed.feature, Feature::Water(_)),
+        "{config} compiled to {:?}",
+        placed.feature
+    );
     let chunks = flat_ring(ChunkPos::new(0, 0), FLOOR_TOP);
     let mut region = DecorationRegion::new(ChunkPos::new(0, 0), refs(&chunks), &env.facts);
     prepare(&mut region);
@@ -139,7 +176,11 @@ fn place(
         };
         place_placed(&placed, &mut cx, origin, None)
     };
-    Outcome { writes: region.into_writes(), tally, placed: did_place }
+    Outcome {
+        writes: region.into_writes(),
+        tally,
+        placed: did_place,
+    }
 }
 
 fn fill(region: &mut DecorationRegion<'_>, y: (i32, i32), state: &BlockState) {
@@ -153,15 +194,20 @@ fn fill(region: &mut DecorationRegion<'_>, y: (i32, i32), state: &BlockState) {
 }
 
 fn state(path: &str, properties: &[(&str, &str)]) -> BlockState {
-    properties
-        .iter()
-        .fold(BlockState::new(ResourceLocation::minecraft(path)), |s, (k, v)| s.with_property(*k, *v))
+    properties.iter().fold(
+        BlockState::new(ResourceLocation::minecraft(path)),
+        |s, (k, v)| s.with_property(*k, *v),
+    )
 }
 
 /// Sand from y = 60 to the floor, water from the floor to y = 80.
 fn seabed(region: &mut DecorationRegion<'_>) {
     fill(region, (60, FLOOR_TOP), &state("sand", &[]));
-    fill(region, (FLOOR_TOP, WATER_TOP), &state("water", &[("level", "0")]));
+    fill(
+        region,
+        (FLOOR_TOP, WATER_TOP),
+        &state("water", &[("level", "0")]),
+    );
 }
 
 /// Sand from y = 56 to the surface, air above (the flat world's own).
@@ -170,14 +216,20 @@ fn dunes(region: &mut DecorationRegion<'_>) {
 }
 
 fn inside_window(writes: &[(BlockPos, BlockState)]) -> bool {
-    writes.iter().all(|(pos, _)| (-16..32).contains(&pos.x) && (-16..32).contains(&pos.z))
+    writes
+        .iter()
+        .all(|(pos, _)| (-16..32).contains(&pos.x) && (-16..32).contains(&pos.z))
 }
 
 fn int_property(state: &BlockState, key: &str) -> i32 {
     state.properties[key].parse().unwrap()
 }
 
-const ORIGIN: BlockPos = BlockPos { x: 8, y: FLOOR_TOP, z: 8 };
+const ORIGIN: BlockPos = BlockPos {
+    x: 8,
+    y: FLOOR_TOP,
+    z: 8,
+};
 
 #[test]
 fn kelp_grows_a_plant_column_under_an_aged_head() {
@@ -190,13 +242,31 @@ fn kelp_grows_a_plant_column_under_an_aged_head() {
         assert!(column.iter().all(|(pos, _)| pos.x == 8 && pos.z == 8));
         let mut ys: Vec<i32> = column.iter().map(|(pos, _)| pos.y).collect();
         ys.sort_unstable();
-        assert_eq!(ys, (FLOOR_TOP..FLOOR_TOP + ys.len() as i32).collect::<Vec<_>>(), "seed {seed}");
-        assert!((2..=11).contains(&ys.len()), "1 + nextInt(10) plants and a head, seed {seed}");
-        let heads: Vec<_> = column.iter().filter(|(_, s)| s.name.path() == "kelp").collect();
+        assert_eq!(
+            ys,
+            (FLOOR_TOP..FLOOR_TOP + ys.len() as i32).collect::<Vec<_>>(),
+            "seed {seed}"
+        );
+        assert!(
+            (2..=11).contains(&ys.len()),
+            "1 + nextInt(10) plants and a head, seed {seed}"
+        );
+        let heads: Vec<_> = column
+            .iter()
+            .filter(|(_, s)| s.name.path() == "kelp")
+            .collect();
         assert_eq!(heads.len(), 1, "seed {seed}");
-        assert_eq!(heads[0].0.y, *ys.last().unwrap(), "the head tops the column");
+        assert_eq!(
+            heads[0].0.y,
+            *ys.last().unwrap(),
+            "the head tops the column"
+        );
         assert!((20..=23).contains(&int_property(&heads[0].1, "age")));
-        assert_eq!(outcome.writes, place(&env, kelp, seed, ORIGIN, seabed).writes, "deterministic");
+        assert_eq!(
+            outcome.writes,
+            place(&env, kelp, seed, ORIGIN, seabed).writes,
+            "deterministic"
+        );
     }
     let dry = place(&env, kelp, 1, ORIGIN, |_| {});
     assert!(!dry.placed && dry.writes.is_empty());
@@ -207,12 +277,25 @@ fn kelp_stops_under_the_surface_with_a_head() {
     let env = env();
     let shallow = |region: &mut DecorationRegion<'_>| {
         fill(region, (60, FLOOR_TOP), &state("sand", &[]));
-        fill(region, (FLOOR_TOP, FLOOR_TOP + 3), &state("water", &[("level", "0")]));
+        fill(
+            region,
+            (FLOOR_TOP, FLOOR_TOP + 3),
+            &state("water", &[("level", "0")]),
+        );
     };
     for seed in 0..16 {
-        let outcome = place(&env, r#"{"type":"minecraft:kelp","config":{}}"#, seed, ORIGIN, shallow);
+        let outcome = place(
+            &env,
+            r#"{"type":"minecraft:kelp","config":{}}"#,
+            seed,
+            ORIGIN,
+            shallow,
+        );
         let column = outcome.matching(|p| p == "kelp" || p == "kelp_plant");
-        assert!(column.iter().all(|(pos, _)| pos.y < FLOOR_TOP + 2), "needs water above, seed {seed}");
+        assert!(
+            column.iter().all(|(pos, _)| pos.y < FLOOR_TOP + 2),
+            "needs water above, seed {seed}"
+        );
         let top = column.iter().max_by_key(|(pos, _)| pos.y).unwrap();
         assert_eq!(top.1.name.path(), "kelp", "seed {seed}");
     }
@@ -239,7 +322,11 @@ fn seagrass_places_short_or_two_tall_halves() {
         assert_eq!(lower.1.properties["half"], "lower");
         assert_eq!(upper.1.properties["half"], "upper");
         assert_eq!(BlockPos::new(lower.0.x, lower.0.y + 1, lower.0.z), upper.0);
-        assert_eq!(outcome.writes, place(&env, tall, seed, ORIGIN, seabed).writes, "deterministic");
+        assert_eq!(
+            outcome.writes,
+            place(&env, tall, seed, ORIGIN, seabed).writes,
+            "deterministic"
+        );
     }
 }
 
@@ -248,9 +335,19 @@ fn seagrass_on_magma_does_not_survive() {
     let env = env();
     let magma = |region: &mut DecorationRegion<'_>| {
         seabed(region);
-        fill(region, (FLOOR_TOP - 1, FLOOR_TOP), &state("magma_block", &[]));
+        fill(
+            region,
+            (FLOOR_TOP - 1, FLOOR_TOP),
+            &state("magma_block", &[]),
+        );
     };
-    let outcome = place(&env, r#"{"type":"minecraft:seagrass","config":{"probability":0.0}}"#, 3, ORIGIN, magma);
+    let outcome = place(
+        &env,
+        r#"{"type":"minecraft:seagrass","config":{"probability":0.0}}"#,
+        3,
+        ORIGIN,
+        magma,
+    );
     assert!(!outcome.placed);
     assert_eq!(outcome.count("seagrass"), 0);
 }
@@ -272,7 +369,11 @@ fn sea_pickles_scatter_with_one_to_four_pickles() {
             assert_eq!(block.properties["waterlogged"], "true");
         }
         total += pickles.len();
-        assert_eq!(outcome.writes, place(&env, config, seed, ORIGIN, seabed).writes, "deterministic");
+        assert_eq!(
+            outcome.writes,
+            place(&env, config, seed, ORIGIN, seabed).writes,
+            "deterministic"
+        );
     }
     assert!(total > 40);
 }
@@ -281,13 +382,26 @@ fn sea_pickles_scatter_with_one_to_four_pickles() {
 /// the same colour, and only coral and pickle blocks are written.
 fn check_reef(outcome: &Outcome, seed: i64) {
     let reef = outcome.matching(|p| p != "water" && p != "sand");
-    assert!(reef.iter().all(|(_, s)| s.name.path().contains("coral") || s.name.path() == "sea_pickle"), "seed {seed}");
+    assert!(
+        reef.iter()
+            .all(|(_, s)| s.name.path().contains("coral") || s.name.path() == "sea_pickle"),
+        "seed {seed}"
+    );
     assert!(inside_window(&reef));
-    let blocks: Vec<_> = reef.iter().filter(|(_, s)| s.name.path().ends_with("_coral_block")).collect();
+    let blocks: Vec<_> = reef
+        .iter()
+        .filter(|(_, s)| s.name.path().ends_with("_coral_block"))
+        .collect();
     assert!(!blocks.is_empty(), "seed {seed}");
-    assert!(blocks.iter().all(|(_, s)| s.name == blocks[0].1.name), "one colour per feature");
+    assert!(
+        blocks.iter().all(|(_, s)| s.name == blocks[0].1.name),
+        "one colour per feature"
+    );
     let at: HashMap<BlockPos, &BlockState> = reef.iter().map(|(p, s)| (*p, s)).collect();
-    for (pos, fan) in reef.iter().filter(|(_, s)| s.name.path().ends_with("_wall_fan")) {
+    for (pos, fan) in reef
+        .iter()
+        .filter(|(_, s)| s.name.path().ends_with("_wall_fan"))
+    {
         let (dx, dz) = match fan.properties["facing"].as_str() {
             "north" => (0, -1),
             "south" => (0, 1),
@@ -296,7 +410,11 @@ fn check_reef(outcome: &Outcome, seed: i64) {
             other => panic!("facing {other}"),
         };
         let support = BlockPos::new(pos.x - dx, pos.y, pos.z - dz);
-        assert!(at.get(&support).is_some_and(|s| s.name.path().ends_with("_coral_block")), "seed {seed}");
+        assert!(
+            at.get(&support)
+                .is_some_and(|s| s.name.path().ends_with("_coral_block")),
+            "seed {seed}"
+        );
     }
 }
 
@@ -311,10 +429,17 @@ fn coral_shapes_build_reefs() {
             assert!(outcome.placed, "{kind} seed {seed}");
             check_reef(&outcome, seed);
             fans += outcome.matching(|p| p.ends_with("_wall_fan")).len();
-            assert_eq!(outcome.writes, place(&env, &config, seed, ORIGIN, seabed).writes, "{kind} deterministic");
+            assert_eq!(
+                outcome.writes,
+                place(&env, &config, seed, ORIGIN, seabed).writes,
+                "{kind} deterministic"
+            );
         }
         let dry = place(&env, &config, 1, ORIGIN, |_| {});
-        assert!(dry.matching(|p| p.contains("coral")).is_empty(), "{kind} needs water");
+        assert!(
+            dry.matching(|p| p.contains("coral")).is_empty(),
+            "{kind} needs water"
+        );
     }
     assert!(fans > 0);
 }
@@ -323,7 +448,13 @@ fn coral_shapes_build_reefs() {
 fn a_coral_without_its_tags_places_nothing() {
     let mut env = env();
     env.block_tags = TagSet::default();
-    let outcome = place(&env, r#"{"type":"minecraft:coral_tree","config":{}}"#, 1, ORIGIN, seabed);
+    let outcome = place(
+        &env,
+        r#"{"type":"minecraft:coral_tree","config":{}}"#,
+        1,
+        ORIGIN,
+        seabed,
+    );
     assert!(!outcome.placed);
     assert!(outcome.matching(|p| p.contains("coral")).is_empty());
 }
@@ -338,7 +469,8 @@ fn the_desert_well_is_built_on_sand() {
         let center = BlockPos::new(8, FLOOR_TOP - 1, 8);
         let at: HashMap<BlockPos, BlockState> = outcome.writes.iter().cloned().collect();
         let name = |dx: i32, dy: i32, dz: i32| {
-            at.get(&BlockPos::new(center.x + dx, center.y + dy, center.z + dz)).map(|s| s.name.path().to_string())
+            at.get(&BlockPos::new(center.x + dx, center.y + dy, center.z + dz))
+                .map(|s| s.name.path().to_string())
         };
         for (dx, dz) in [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)] {
             assert_eq!(name(dx, 0, dz).as_deref(), Some("water"));
@@ -352,12 +484,19 @@ fn the_desert_well_is_built_on_sand() {
         }
         assert_eq!(outcome.count("sandstone_slab"), 12);
         assert_eq!(outcome.count("suspicious_sand"), 2);
-        assert_eq!(outcome.tally.get("block_entity:minecraft:brushable_block"), 2);
+        assert_eq!(
+            outcome.tally.get("block_entity:minecraft:brushable_block"),
+            2
+        );
         let sus = outcome.matching(|p| p == "suspicious_sand");
         assert_eq!(sus.iter().filter(|(p, _)| p.y == center.y - 1).count(), 1);
         assert_eq!(sus.iter().filter(|(p, _)| p.y == center.y - 2).count(), 1);
         assert!(inside_window(&outcome.matching(|_| true)));
-        assert_eq!(outcome.writes, place(&env, well, seed, ORIGIN, dunes).writes, "deterministic");
+        assert_eq!(
+            outcome.writes,
+            place(&env, well, seed, ORIGIN, dunes).writes,
+            "deterministic"
+        );
     }
     let on_stone = place(&env, well, 1, ORIGIN, |_| {});
     assert!(!on_stone.placed && on_stone.writes.is_empty());
@@ -376,7 +515,11 @@ fn the_desert_well_is_built_on_sand() {
 #[test]
 fn every_reference_water_feature_compiles() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../reference");
-    if !root.join("data/minecraft/worldgen/configured_feature").is_dir() || !root.join("block_facts.tsv").is_file() {
+    if !root
+        .join("data/minecraft/worldgen/configured_feature")
+        .is_dir()
+        || !root.join("block_facts.tsv").is_file()
+    {
         return;
     }
     let datapack = oxide_datapack::load_datapack(&root).expect("reference datapack loads");
@@ -384,17 +527,28 @@ fn every_reference_water_feature_compiles() {
     let compile = |id: &str| {
         let wrapper: PlacedFeatureIr =
             serde_json::from_value(serde_json::json!({ "feature": id, "placement": [] })).unwrap();
-        Compiler::new(&datapack.block_facts, &datapack.placed_features, &datapack.configured_features)
-            .compile_placed(&wrapper)
-            .unwrap_or_else(|error| panic!("{id}: {error:#}"))
+        Compiler::new(
+            &datapack.block_facts,
+            &datapack.placed_features,
+            &datapack.configured_features,
+        )
+        .compile_placed(&wrapper)
+        .unwrap_or_else(|error| panic!("{id}: {error:#}"))
     };
     let mut ported = 0;
     for (id, ir) in datapack.configured_features.iter() {
         let value = serde_json::to_value(ir).unwrap();
         let tag = value["type"].as_str().unwrap();
-        if tag.strip_prefix("minecraft:").is_some_and(|kind| TYPES.contains(&kind)) {
+        if tag
+            .strip_prefix("minecraft:")
+            .is_some_and(|kind| TYPES.contains(&kind))
+        {
             let placed = compile(&id.to_string());
-            assert!(matches!(&*placed.feature, Feature::Water(_)), "{id} compiled to {:?}", placed.feature);
+            assert!(
+                matches!(&*placed.feature, Feature::Water(_)),
+                "{id} compiled to {:?}",
+                placed.feature
+            );
             ported += 1;
         }
     }
@@ -404,7 +558,12 @@ fn every_reference_water_feature_compiles() {
         panic!("warm_ocean_vegetation compiled to {:?}", reef.feature);
     };
     assert_eq!(shapes.len(), 3);
-    assert!(shapes.iter().all(|shape| matches!(&*shape.feature, Feature::Water(_))));
-    let corals = datapack.block_tags.ordered(&ResourceLocation::minecraft("coral_blocks")).expect("coral_blocks");
+    assert!(shapes
+        .iter()
+        .all(|shape| matches!(&*shape.feature, Feature::Water(_))));
+    let corals = datapack
+        .block_tags
+        .ordered(&ResourceLocation::minecraft("coral_blocks"))
+        .expect("coral_blocks");
     assert_eq!(corals.len(), 5);
 }

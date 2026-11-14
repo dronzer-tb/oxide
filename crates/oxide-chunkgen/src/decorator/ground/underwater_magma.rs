@@ -98,7 +98,9 @@ impl UnderwaterMagmaFeature {
         if !occludes(cx, offset(pos, 0, -1, 0)) {
             return false;
         }
-        [[0, -1], [1, 0], [0, 1], [-1, 0]].iter().all(|[dx, dz]| occludes(cx, offset(pos, *dx, 0, *dz)))
+        [[0, -1], [1, 0], [0, 1], [-1, 0]]
+            .iter()
+            .all(|[dx, dz]| occludes(cx, offset(pos, *dx, 0, *dz)))
     }
 }
 
