@@ -89,6 +89,22 @@ struct Args {
     /// With `--oracle`: also write the per-chunk report as JSON to this path.
     #[arg(long)]
     oracle_json: Option<PathBuf>,
+    /// With `--oracle`: also write the website's data for this seed and dimension into this
+    /// directory (`website/lab/data`) -- the report, what both worlds look like, and Oxide's
+    /// own map out to `--radius`.
+    #[arg(long)]
+    site: Option<PathBuf>,
+    /// With `--site`: the commit the data was generated from, shown on the website.
+    #[arg(long, default_value = "")]
+    site_commit: String,
+    /// With `--site`: leave out the views of the game's own world, keeping Oxide's world, the
+    /// difference masks and the figures. The only form of the data that may be hosted publicly.
+    #[arg(long)]
+    site_public: bool,
+    /// With `--site`: also write Oxide's map area as Anvil regions under `<dir>/region`, for
+    /// an isometric renderer. For pictures only -- not a world to load in a server.
+    #[arg(long)]
+    site_world: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -96,7 +112,20 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     if let Some(root) = args.oracle.as_deref() {
-        let report = oracle::run(&args.datapack, root, &args.dimension, args.seed)?;
+        let report = match args.site.as_deref() {
+            Some(out) => oracle::site(
+                &args.datapack,
+                root,
+                &args.dimension,
+                args.seed,
+                args.radius,
+                out,
+                &args.site_commit,
+                args.site_public,
+                args.site_world.as_deref(),
+            )?,
+            None => oracle::run(&args.datapack, root, &args.dimension, args.seed)?,
+        };
         print!("{}", report.render());
         if let Some(path) = args.oracle_json.as_deref() {
             std::fs::write(path, serde_json::to_string_pretty(&report)?)?;

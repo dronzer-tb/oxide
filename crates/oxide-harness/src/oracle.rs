@@ -442,6 +442,7 @@ pub struct ChunkReport {
     /// "phase TYPE" -> (columns, mismatched columns, sum of |difference|).
     pub heightmaps: BTreeMap<String, (u64, u64, u64)>,
     pub features: FeatureTally,
+    pub views: Views,
 }
 
 #[derive(Serialize)]
@@ -610,10 +611,15 @@ fn compare(dump: &Dump, oxide: &Oxide) -> Result<ChunkReport> {
         biome_pairs,
         heightmaps: hm,
         features: f,
+        views: views(dump, &nine, &terrain, &decorated),
     })
 }
 
 pub fn run(datapack: &Path, root: &Path, dimension: &str, seed: i64) -> Result<Report> {
+    report(&Oxide::open(datapack, dimension, seed)?, root, dimension, seed)
+}
+
+fn report(oxide: &Oxide, root: &Path, dimension: &str, seed: i64) -> Result<Report> {
     let dim_path = dimension.rsplit(':').next().unwrap_or(dimension);
     let dir = root.join(seed.to_string()).join(dim_path);
     let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
@@ -625,7 +631,6 @@ pub fn run(datapack: &Path, root: &Path, dimension: &str, seed: i64) -> Result<R
     if files.is_empty() {
         bail!("no oracle dumps in {}", dir.display());
     }
-    let oxide = Oxide::open(datapack, dimension, seed)?;
     let order_file = dir.join("feature_order.txt");
     let feature_order = if order_file.exists() {
         Some(check_feature_order(&order_file, &oxide.feature_order)?)
@@ -635,7 +640,7 @@ pub fn run(datapack: &Path, root: &Path, dimension: &str, seed: i64) -> Result<R
     let mut chunks = Vec::new();
     for file in &files {
         let dump = load_dump(file).with_context(|| format!("parsing {}", file.display()))?;
-        chunks.push(compare(&dump, &oxide).with_context(|| format!("comparing {}", file.display()))?);
+        chunks.push(compare(&dump, oxide).with_context(|| format!("comparing {}", file.display()))?);
     }
     Ok(Report {
         dimension: dimension.to_string(),
@@ -649,6 +654,338 @@ pub fn run(datapack: &Path, root: &Path, dimension: &str, seed: i64) -> Result<R
             .map(|(k, v)| (k.to_string(), v))
             .collect(),
     })
+}
+
+// ------------------------------------------------------------------------------- site
+
+fn is_air(state: &BlockState) -> bool {
+    matches!(state.name.path(), "air" | "cave_air" | "void_air")
+}
+
+/// Interns ids so the website's arrays carry small integers, not strings.
+#[derive(Default)]
+struct Interner {
+    ids: HashMap<String, u32>,
+    names: Vec<String>,
+}
+
+impl Interner {
+    fn id(&mut self, name: String) -> u32 {
+        if let Some(id) = self.ids.get(&name) {
+            return *id;
+        }
+        let id = self.names.len() as u32;
+        self.names.push(name.clone());
+        self.ids.insert(name, id);
+        id
+    }
+}
+
+/// Flat `[id, count, id, count, ...]`.
+fn rle(ids: &[u32]) -> Vec<u32> {
+    let mut out: Vec<u32> = Vec::new();
+    for id in ids {
+        match out.len() {
+            n if n >= 2 && out[n - 2] == *id => out[n - 1] += 1,
+            _ => out.extend([*id, 1]),
+        }
+    }
+    out
+}
+
+/// What the website draws for one dump: the 48x48 columns of the 3x3 from above, and a
+/// vertical cut through the centre chunk. Both worlds are the finished (decorated) ones.
+#[derive(Serialize, Clone, Default)]
+pub struct Views {
+    pub min_y: i32,
+    pub height: i32,
+    /// Block ids the arrays below index.
+    pub palette: Vec<String>,
+    /// Row-major z then x, 48x48: highest non-air block and its y, per world.
+    pub top_vanilla: Vec<u32>,
+    pub top_oxide: Vec<u32>,
+    pub y_vanilla: Vec<i32>,
+    pub y_oxide: Vec<i32>,
+    /// Per column: terrain blocks that differ, and feature writes that disagree.
+    pub terrain_wrong: Vec<u32>,
+    pub feature_wrong: Vec<u32>,
+    /// Cut along x at the centre chunk's z=8, 48 wide, top row first, run-length coded.
+    pub slice_vanilla: Vec<u32>,
+    pub slice_oxide: Vec<u32>,
+    /// The same cut as a 0/1 mask: 1 where the two worlds hold different blocks.
+    pub slice_wrong: Vec<u32>,
+}
+
+impl Views {
+    /// Drops what shows the game's own world, leaving Oxide's and where the two differ --
+    /// the form that may be published (PRD 4, 8: game output stays on this machine).
+    fn strip_game(&mut self) {
+        self.top_vanilla = Vec::new();
+        self.y_vanilla = Vec::new();
+        self.slice_vanilla = Vec::new();
+    }
+}
+
+fn views(dump: &Dump, nine: &[ChunkPos], terrain: &[ChunkData], decorated: &[ChunkData]) -> Views {
+    let height = dump.height as usize;
+    let mut names = Interner::default();
+    let mut v = Views { min_y: dump.min_y, height: dump.height, ..Default::default() };
+    let mut slice_v = Vec::with_capacity(48 * height);
+    let mut slice_o = Vec::with_capacity(48 * height);
+    for gz in 0..48 {
+        for gx in 0..48 {
+            let i = (gz / 16) * 3 + gx / 16;
+            let (x, z) = (gx & 15, gz & 15);
+            let before = &dump.carvers[i].1;
+            let after = &dump.features[&nine[i]];
+            let mut top_v = None;
+            let mut top_o = None;
+            let (mut terrain_wrong, mut feature_wrong) = (0, 0);
+            for y in (0..height).rev() {
+                let n = (y << 8) | (z << 4) | x;
+                let vb = &dump.palette[before[n] as usize];
+                let va = &dump.palette[after[n] as usize];
+                let ob = block_at(&terrain[i], x, y, z);
+                let oa = block_at(&decorated[i], x, y, z);
+                terrain_wrong += (vb != ob) as u32;
+                let (vc, oc) = (vb != va, ob != oa);
+                feature_wrong += ((vc || oc) && !(vc && oc && va == oa)) as u32;
+                if top_v.is_none() && !is_air(va) {
+                    top_v = Some((va, y));
+                }
+                if top_o.is_none() && !is_air(oa) {
+                    top_o = Some((oa, y));
+                }
+            }
+            for (top, ids, ys) in [
+                (top_v, &mut v.top_vanilla, &mut v.y_vanilla),
+                (top_o, &mut v.top_oxide, &mut v.y_oxide),
+            ] {
+                let (name, y) = match top {
+                    Some((state, y)) => (state.name.to_string(), dump.min_y + y as i32),
+                    None => ("minecraft:air".to_string(), dump.min_y - 1),
+                };
+                ids.push(names.id(name));
+                ys.push(y);
+            }
+            v.terrain_wrong.push(terrain_wrong);
+            v.feature_wrong.push(feature_wrong);
+        }
+    }
+    for y in (0..height).rev() {
+        for gx in 0..48 {
+            let i = 3 + gx / 16;
+            let n = (y << 8) | (8 << 4) | (gx & 15);
+            let va = &dump.palette[dump.features[&nine[i]][n] as usize];
+            slice_v.push(names.id(va.name.to_string()));
+            slice_o.push(names.id(block_at(&decorated[i], gx & 15, y, 8).name.to_string()));
+        }
+    }
+    let wrong: Vec<u32> = slice_v.iter().zip(&slice_o).map(|(a, b)| (a != b) as u32).collect();
+    v.slice_wrong = rle(&wrong);
+    v.slice_vanilla = rle(&slice_v);
+    v.slice_oxide = rle(&slice_o);
+    v.palette = names.names;
+    v
+}
+
+/// Oxide's own finished world from above, `-radius..=radius` chunks around the origin: terrain
+/// plus every chunk's feature writes, applied in chunk order.
+#[derive(Serialize)]
+pub struct WorldMap {
+    pub radius: i32,
+    /// Blocks per side.
+    pub side: usize,
+    pub min_y: i32,
+    pub height: i32,
+    pub palette: Vec<String>,
+    pub biomes: Vec<String>,
+    /// Row-major z then x, run-length coded: highest non-air block.
+    pub top: Vec<u32>,
+    pub y: Vec<i32>,
+    /// One cell per 4x4 columns, run-length coded: the biome at the surface.
+    pub biome: Vec<u32>,
+    pub threads: usize,
+    /// Wall time, all threads together, for `terrain_chunks` and `side/16` squared chunks.
+    pub terrain_chunks: usize,
+    pub terrain_ms: u64,
+    pub decoration_ms: u64,
+}
+
+/// Writes `world` as Anvil regions under `<dir>/region`, for a map renderer to read. Not a
+/// world to load in a server: heightmaps are the undecorated terrain's and there is no light.
+fn save_world(dir: &Path, data_version: i32, world: &[ChunkData]) -> Result<()> {
+    let region_dir = dir.join("region");
+    std::fs::create_dir_all(&region_dir)?;
+    let opts = oxide_anvil::nbt::ChunkNbtWriteOptions { data_version, last_update: 0, inhabited_time: 0 };
+    let mut regions: BTreeMap<(i32, i32), Vec<(ChunkPos, Vec<u8>)>> = BTreeMap::new();
+    for chunk in world {
+        let bytes = oxide_anvil::nbt::serialize_chunk(chunk, &opts)?;
+        regions.entry(oxide_anvil::region::region_coords_for(&chunk.pos)).or_default().push((chunk.pos, bytes));
+    }
+    for chunks in regions.values() {
+        let file = region_dir.join(oxide_anvil::region::region_file_name(&chunks[0].0));
+        oxide_anvil::region::write_region_file(&file, chunks)?;
+    }
+    Ok(())
+}
+
+fn world_map(oxide: &Oxide, radius: i32, save: Option<(&Path, i32)>) -> Result<WorldMap> {
+    let outer = radius + 1;
+    let width = (2 * outer + 1) as usize;
+    let square = |r: i32| -> Vec<ChunkPos> {
+        (-r..=r).flat_map(|z| (-r..=r).map(move |x| ChunkPos::new(x, z))).collect()
+    };
+    let started = std::time::Instant::now();
+    let terrain: Vec<ChunkData> = square(outer).par_iter().map(|p| oxide.terrain(*p)).collect();
+    let terrain_ms = started.elapsed().as_millis() as u64;
+    let at = |x: i32, z: i32| &terrain[(z + outer) as usize * width + (x + outer) as usize];
+
+    let inner = square(radius);
+    let started = std::time::Instant::now();
+    let writes: Vec<Vec<oxide_chunkgen::BlockWrite>> = inner
+        .par_iter()
+        .map(|c| {
+            let refs: [&ChunkData; 9] =
+                std::array::from_fn(|i| at(c.x + (i % 3) as i32 - 1, c.z + (i / 3) as i32 - 1));
+            let mut region = DecorationRegion::new(*c, refs, oxide.decorator.facts());
+            oxide.decorator.decorate(&mut region);
+            region.into_writes()
+        })
+        .collect();
+    let decoration_ms = started.elapsed().as_millis() as u64;
+
+    let chunks = (2 * radius + 1) as usize;
+    let mut world: Vec<ChunkData> = inner.iter().map(|c| at(c.x, c.z).clone()).collect();
+    let (min_y, height) = (world[0].min_y, world[0].height);
+    for (at, state) in writes.into_iter().flatten() {
+        let cp = at.chunk_pos();
+        let y = at.y - min_y;
+        if cp.x.abs() > radius || cp.z.abs() > radius || y < 0 || y >= height {
+            continue;
+        }
+        let i = (cp.z + radius) as usize * chunks + (cp.x + radius) as usize;
+        set_block_at(&mut world[i], (at.x & 15) as usize, y as usize, (at.z & 15) as usize, state);
+    }
+
+    if let Some((dir, data_version)) = save {
+        save_world(dir, data_version, &world)
+            .with_context(|| format!("writing the world to {}", dir.display()))?;
+    }
+
+    let side = chunks * 16;
+    let mut blocks = Interner::default();
+    let mut biomes = Interner::default();
+    let mut top = Vec::with_capacity(side * side);
+    let mut ys = Vec::with_capacity(side * side);
+    let mut biome = Vec::with_capacity(side * side / 16);
+    for gz in 0..side {
+        for gx in 0..side {
+            let chunk = &world[(gz / 16) * chunks + gx / 16];
+            let (x, z) = (gx & 15, gz & 15);
+            // Below the first air from the top, so a roofed dimension shows its floor, not its lid.
+            let found = (0..height as usize)
+                .rev()
+                .find(|y| is_air(block_at(chunk, x, *y, z)))
+                .and_then(|air| (0..air).rev().find(|y| !is_air(block_at(chunk, x, *y, z))));
+            let y = found.unwrap_or(0);
+            top.push(blocks.id(match found {
+                Some(y) => block_at(chunk, x, y, z).name.to_string(),
+                None => "minecraft:air".to_string(),
+            }));
+            ys.push(found.map_or(min_y - 1, |y| min_y + y as i32));
+            if gx & 3 == 0 && gz & 3 == 0 {
+                let cell = (((y & 15) >> 2) * 4 + (z >> 2)) * 4 + (x >> 2);
+                biome.push(biomes.id(chunk.sections[y >> 4].biomes.get(cell).to_string()));
+            }
+        }
+    }
+    Ok(WorldMap {
+        radius,
+        side,
+        min_y,
+        height,
+        palette: blocks.names,
+        biomes: biomes.names,
+        top: rle(&top),
+        y: ys,
+        biome: rle(&biome),
+        threads: rayon::current_num_threads(),
+        terrain_chunks: terrain.len(),
+        terrain_ms,
+        decoration_ms,
+    })
+}
+
+#[derive(Serialize)]
+struct SiteRun<'a> {
+    dimension: &'a str,
+    seed: i64,
+    commit: &'a str,
+    generated_unix: u64,
+    /// True when the views of the game's own world were left out.
+    public: bool,
+    /// Absent when the comparison could not run; `error` then says why.
+    report: Option<&'a Report>,
+    error: Option<String>,
+    map: WorldMap,
+}
+
+/// `run`, plus `<out>/run_<seed>_<dimension>.json` for the website and a refreshed
+/// `<out>/manifest.json` naming every run file there. A comparison that fails still leaves a
+/// run file, carrying the error and Oxide's map.
+pub fn site(
+    datapack: &Path,
+    root: &Path,
+    dimension: &str,
+    seed: i64,
+    radius: i32,
+    out: &Path,
+    commit: &str,
+    public: bool,
+    world: Option<&Path>,
+) -> Result<Report> {
+    // The DataVersion comes from the game's own export, never from memory.
+    let save = match world {
+        Some(dir) => {
+            let path = datapack.join("version.json");
+            let version: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?,
+            )?;
+            let data_version = version["data_version"]
+                .as_i64()
+                .ok_or_else(|| anyhow!("{} has no data_version", path.display()))?;
+            Some((dir, data_version as i32))
+        }
+        None => None,
+    };
+    let oxide = Oxide::open(datapack, dimension, seed)?;
+    let mut report = report(&oxide, root, dimension, seed);
+    if let (true, Ok(report)) = (public, report.as_mut()) {
+        report.chunks.iter_mut().for_each(|c| c.views.strip_game());
+    }
+    let dim_path = dimension.rsplit(':').next().unwrap_or(dimension);
+    std::fs::create_dir_all(out)?;
+    let run = SiteRun {
+        dimension,
+        seed,
+        commit,
+        public,
+        generated_unix: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs()),
+        report: report.as_ref().ok(),
+        error: report.as_ref().err().map(|e| format!("{e:#}")),
+        map: world_map(&oxide, radius, save)?,
+    };
+    std::fs::write(out.join(format!("run_{seed}_{dim_path}.json")), serde_json::to_string(&run)?)?;
+    let mut runs: Vec<String> = std::fs::read_dir(out)?
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+        .filter(|name| name.starts_with("run_") && name.ends_with(".json"))
+        .collect();
+    runs.sort();
+    std::fs::write(out.join("manifest.json"), serde_json::to_string(&runs)?)?;
+    report
 }
 
 // ------------------------------------------------------------------------------- render
