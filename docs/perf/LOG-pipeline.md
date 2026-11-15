@@ -51,3 +51,43 @@ guessed. So the non-terrain win in this track is decoration, which lives in
 **Kept: lock discipline** (d5f0505, 813333c). New bench-vps.sh from feat/native-decoration;
 vps-cargo.sh holds the lock shared with nice 10; bench-pregen-vps.sh builds shared and
 times exclusive.
+
+**Track item 4, light: scoped, not started (report before starting, as the track file asks).**
+Chunks go out with `isLightOn: 0`, Status `features`, no `SkyLight`/`BlockLight`, so the
+server runs initialize_light and light on load. That keeps it correct, but it means the server
+pays the light cost on first load. Doing it natively needs:
+1. New data: per-state light opacity (`getLightBlock`), emission, and the occlusion faces
+   for `useShapeForLightOcclusion` states (slabs, stairs and so on). `block_facts.tsv` (32,366
+   states) has none of these, so `BlockFactsExporter.java` needs three more columns and a
+   re-export on the server. That is user work on the server, not ours.
+2. Sky light: per column, full light down to the first opaque block, then a BFS through
+   transparent blocks with opacity cost. It crosses chunk borders, so a finished chunk needs
+   the decorated 3x3 around it. The pregen pipeline already has that window, one stage later
+   (decoration writes for radius+1, so terrain at radius+3).
+3. Block light: BFS from emitters (lava, glow lichen, magma and so on), 15 blocks of reach, so
+   at most one neighbour ring.
+4. Output: 2048-byte nibble arrays for every section plus the one below and the one above the
+   world, `isLightOn: 1`, Status `light` or later. The server must accept it without
+   relighting. That needs the load test in item 5, plus a check that no lighting engine
+   rejects it. The parity gate would be a vanilla light dump compared nibble for nibble; no
+   such oracle exists yet.
+Estimate: 2 to 3 sessions plus an exporter change. Recommend we do it only after the load test
+(item 5) passes with unlit chunks.
+
+**Track item 5, load test: steps for the user** (nothing here touches the server; I have
+not run any of it):
+1. On the bench box: `cd ~/oxide-perf/pipeline && ./target/release/oxide-pregen --datapack
+   reference --seed 12345 --world out/loadtest --center-x 0 --center-z 0 --radius 16
+   --threads 8`. That writes `out/loadtest/region/r.{-1,0}.{-1,0}.mca`, each with a
+   `.mca.oxide` provenance sidecar. DataVersion 4903 comes from `reference/version.json`.
+2. Make a fresh 26.2 world with **seed 12345** on a stopped test server (not `oxide-bench`),
+   start it once, stop it. Then delete its `world/region/r.{-1,0}.{-1,0}.mca` and copy the four
+   region files from step 1 into its place (leave out the `.oxide` sidecars). Run it without
+   the Oxide module, so the server cannot regenerate anything.
+3. Start the server and check the log for `Chunk ... is in the wrong location`, `Failed to
+   read chunk`, or a `DataFixer` upgrade warning; there should be none. Join and fly over 0,0:
+   terrain and trees should appear, light should come on in a few seconds (the server
+   relights), and the chunk edges at ±16 chunks should meet the server's own chunks.
+4. Report back: any of those log lines, and a screenshot at 0,0. If Status `features` is
+   refused (26.2 might want `minecraft:features`), the fix is one line in
+   `oxide-anvil/src/nbt.rs`.
