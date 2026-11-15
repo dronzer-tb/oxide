@@ -1841,3 +1841,17 @@ once. Round 8:
 - `datapath-34` sub-agent, the fill loop self plus the ore veins' own loop (10.0%).
 - The master retries E30 (aquifer anchor slab and -y column run) on the new base, against the 9.3% + 3.4%
   aquifer slices. It was below the floor on the old base.
+
+### Noise landed the scratch pool (b889079); merged as 365ebeb
+
+Noise landed `noise-12` as b889079 on two independent generation-CPU holds. Its `crates/oxide-noise`
+is byte-identical to the patch in my working-base scratch tree (`diff -rq` empty), so the base builds
+`datapath-nb1` and `datapath-nb2` are this real base. Merged; tests on the box: chunkgen 192, noise
+40, all passed.
+
+**Hold etiquette (auditor):** 1-thread holds are cut to 4 rounds (8-thread holds stay at 6). Queue
+the next hold only after the previous one has released, so pipeline gets through between them.
+The three holds queued back to back (E30, E34, E35, each 6 rounds of 3 binaries at 1 thread, ~11
+min exclusive) are cancelled. One of them had just taken the lock when its waiting `flock` was
+killed, and was stopped within a minute; nothing from it counts. They now run one at a time,
+with a 90-second gap after each, so another holder can take the lock.
