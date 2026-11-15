@@ -23,7 +23,7 @@ use oxide_datapack::{BlockFact, BlockFacts, TagSet};
 use super::context::{block_in, Environment, FeatureContext};
 use super::provider::next_bounded;
 use super::state_provider::state_from_spec;
-use crate::region::DecorationRegion;
+use crate::region::{DecorationRegion, StateKey};
 
 /// `RuleTest`: what a replacement target matches.
 #[derive(Debug, Clone)]
@@ -67,18 +67,61 @@ impl RuleTest {
         random: &mut impl RandomSource,
         tags: &TagSet,
     ) -> bool {
+        self.matches(state, tags) && self.roll(random)
+    }
+
+    /// The part of [`Self::test`] that depends only on the state: no random draw.
+    fn matches(&self, state: &BlockState, tags: &TagSet) -> bool {
         match self {
             Self::AlwaysTrue => true,
-            Self::BlockMatch(name) => state.name == *name,
-            Self::BlockStateMatch(expected) => state == expected,
-            Self::TagMatch(tag) => tags.contains(tag, &state.name),
-            Self::RandomBlockMatch(name, probability) => {
-                state.name == *name && random.next_float() < *probability
+            Self::BlockMatch(name) | Self::RandomBlockMatch(name, _) => state.name == *name,
+            Self::BlockStateMatch(expected) | Self::RandomBlockStateMatch(expected, _) => {
+                state == expected
             }
-            Self::RandomBlockStateMatch(expected, probability) => {
-                state == expected && random.next_float() < *probability
+            Self::TagMatch(tag) => tags.contains(tag, &state.name),
+        }
+    }
+
+    /// The rest of [`Self::test`] once [`Self::matches`] holds: the random variants' draw.
+    fn roll(&self, random: &mut impl RandomSource) -> bool {
+        match self {
+            Self::RandomBlockMatch(_, probability) | Self::RandomBlockStateMatch(_, probability) => {
+                random.next_float() < *probability
+            }
+            _ => true,
+        }
+    }
+}
+
+/// Per `place()`, which targets' rules match a state, by [`StateKey`]: an ore blob reads
+/// thousands of cells but only a handful of distinct states (stone, deepslate, ...), so each
+/// rule's state-only part is worked out once per state rather than hashed per cell.
+/// Direct-mapped, 8 slots; bit `i` of the mask is target `i`'s answer.
+#[derive(Default)]
+struct MatchCache([Option<(StateKey, u64)>; 8]);
+
+impl MatchCache {
+    fn mask(
+        &mut self,
+        key: StateKey,
+        state: &BlockState,
+        targets: &[Target],
+        tags: &TagSet,
+    ) -> u64 {
+        let slot = &mut self.0[key.slot() & 7];
+        if let Some((cached, mask)) = *slot {
+            if cached == key {
+                return mask;
             }
         }
+        let mask = targets
+            .iter()
+            .enumerate()
+            .fold(0u64, |mask, (index, target)| {
+                mask | (u64::from(target.rule.matches(state, tags)) << index)
+            });
+        *slot = Some((key, mask));
+        mask
     }
 }
 
@@ -241,6 +284,13 @@ impl OreFeature {
 
         let mut tested = BitSet::default();
         let mut placed = 0;
+        // Masks hold one bit per target; more than 64 targets falls back to the plain path.
+        let ids: Vec<u32> = self
+            .targets
+            .iter()
+            .map(|target| cx.region.intern(&target.state))
+            .collect();
+        let mut matches = MatchCache::default();
         for [sx, sy, sz, radius] in spheres {
             if radius < 0.0 {
                 continue;
@@ -276,7 +326,13 @@ impl OreFeature {
                         if !tested.insert(index) {
                             continue;
                         }
-                        if self.place_at(cx, BlockPos::new(x, y, z)) {
+                        let pos = BlockPos::new(x, y, z);
+                        let done = if self.targets.len() <= 64 {
+                            self.place_at_cached(cx, pos, &ids, &mut matches)
+                        } else {
+                            self.place_at(cx, pos)
+                        };
+                        if done {
                             placed += 1;
                         }
                     }
@@ -307,6 +363,44 @@ impl OreFeature {
         }
         match chosen {
             Some(index) => cx.region.set_block_ref(pos, &self.targets[index].state),
+            None => false,
+        }
+    }
+
+    /// [`Self::place_at`] with the targets' states pre-interned (`ids`, one per target) and the
+    /// rules' state-only answers cached per state. Same draws in the same order: a rule's roll
+    /// happens exactly when its state part matches, then the discard roll, as in `can_place`.
+    fn place_at_cached(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        pos: BlockPos,
+        ids: &[u32],
+        matches: &mut MatchCache,
+    ) -> bool {
+        if !cx.ensure_can_write(pos) {
+            return false;
+        }
+        let mut chosen = None;
+        {
+            let region: &DecorationRegion<'_> = &*cx.region;
+            let Some((key, state)) = region.block_keyed(pos) else {
+                return false;
+            };
+            let mask = matches.mask(key, state, &self.targets, &cx.env.block_tags);
+            for (index, target) in self.targets.iter().enumerate() {
+                if mask >> index & 1 == 0 || !target.rule.roll(&mut *cx.random) {
+                    continue;
+                }
+                if skip_air_check(&mut *cx.random, self.discard_chance_on_air_exposure)
+                    || !is_adjacent_to_air(region, pos)
+                {
+                    chosen = Some(index);
+                    break;
+                }
+            }
+        }
+        match chosen {
+            Some(index) => cx.region.set_block_id(pos, ids[index]),
             None => false,
         }
     }

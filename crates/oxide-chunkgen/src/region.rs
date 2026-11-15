@@ -69,6 +69,20 @@ impl InternedWrites {
     }
 }
 
+/// Names the state at a position for the life of a region: two positions with equal keys hold
+/// equal states. A written position's key is its interned id; a terrain position's key is its
+/// section and palette entry (terrain is read-only during decoration, so its palettes never
+/// change). Lets a feature cache an answer about a state without hashing the state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StateKey(u64);
+
+impl StateKey {
+    /// A small hash of the key, for direct-mapped caches.
+    pub fn slot(self) -> usize {
+        (self.0 ^ self.0 >> 29) as usize
+    }
+}
+
 pub struct DecorationRegion<'a> {
     center: ChunkPos,
     /// Row-major from the north-west: index `(dz + 1) * 3 + (dx + 1)`.
@@ -192,6 +206,38 @@ impl<'a> DecorationRegion<'a> {
         }
     }
 
+    /// [`Self::block`] together with a [`StateKey`] for the state, or `None` outside the window.
+    pub fn block_keyed(&self, pos: BlockPos) -> Option<(StateKey, &BlockState)> {
+        if let Some(&i) = self.overlay.get(&pos) {
+            let id = self.writes[i].1;
+            return Some((StateKey(1 << 63 | u64::from(id)), &self.states[id as usize]));
+        }
+        if pos.y < self.min_y || pos.y >= self.max_y() {
+            return None;
+        }
+        let dx = (pos.x >> 4) - self.center.x;
+        let dz = (pos.z >> 4) - self.center.z;
+        if !(-1..=1).contains(&dx) || !(-1..=1).contains(&dz) {
+            return None;
+        }
+        let chunk_index = ((dz + 1) * 3 + (dx + 1)) as usize;
+        let chunk = self.chunks[chunk_index];
+        let section_index = ((pos.y - self.min_y) >> 4) as usize;
+        let section = chunk.sections.get(section_index)?;
+        let slot = local_index(
+            (pos.x & 15) as usize,
+            ((pos.y - self.min_y) & 15) as usize,
+            (pos.z & 15) as usize,
+        );
+        let states = &section.block_states;
+        let entry = states.indices()[slot] as usize;
+        let section_key = (chunk_index * chunk.sections.len() + section_index) as u64;
+        Some((
+            StateKey(section_key << 32 | entry as u64),
+            &states.palette()[entry],
+        ))
+    }
+
     /// Whether `fact` holds at `pos`. Outside the window nothing holds.
     pub fn is(&self, pos: BlockPos, fact: BlockFact) -> bool {
         self.fact_at(pos, fact).unwrap_or(false)
@@ -253,6 +299,26 @@ impl<'a> DecorationRegion<'a> {
             Some(&id) => id,
             None => self.add_state(state.clone()),
         };
+        self.write_id(pos, id);
+        true
+    }
+
+    /// The id [`Self::set_block_id`] writes `state` with. Interning a state that is then never
+    /// written leaves it in the table unused; the writes are unaffected.
+    pub fn intern(&mut self, state: &BlockState) -> u32 {
+        match self.state_ids.get(state) {
+            Some(&id) => id,
+            None => self.add_state(state.clone()),
+        }
+    }
+
+    /// [`Self::set_block`] for a state already interned with [`Self::intern`]: no hashing of the
+    /// state per write.
+    pub fn set_block_id(&mut self, pos: BlockPos, id: u32) -> bool {
+        debug_assert!((id as usize) < self.states.len());
+        if !self.contains(pos) {
+            return false;
+        }
         self.write_id(pos, id);
         true
     }
@@ -576,6 +642,38 @@ mod tests {
             .map(|(pos, state)| (pos, state.clone()))
             .collect();
         assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn state_keys_name_states_and_ids_write_them() {
+        let facts = facts();
+        let chunks = flat_ring(ChunkPos::new(0, 0), 64);
+        let mut region = DecorationRegion::new(ChunkPos::new(0, 0), refs(&chunks), &facts);
+        let stone_a = BlockPos::new(1, 10, 1);
+        let stone_b = BlockPos::new(20, 30, -7);
+        let air = BlockPos::new(1, 100, 1);
+        let key = |region: &DecorationRegion<'_>, pos| region.block_keyed(pos).unwrap().0;
+        assert_eq!(region.block_keyed(stone_a).unwrap().1, &block("stone"));
+        assert_ne!(key(&region, stone_a), key(&region, air));
+        assert!(region.block_keyed(BlockPos::new(100, 10, 1)).is_none());
+
+        let log = region.intern(&block("oak_log"));
+        assert_eq!(region.intern(&block("oak_log")), log);
+        assert!(region.set_block_id(stone_a, log));
+        assert!(region.set_block_id(stone_b, log));
+        assert!(!region.set_block_id(BlockPos::new(100, 10, 1), log));
+        assert_eq!(key(&region, stone_a), key(&region, stone_b));
+        assert_eq!(region.block_keyed(stone_b).unwrap().1, &block("oak_log"));
+        assert_eq!(region.height(HeightmapType::WorldSurface, 1, 1), Some(64));
+        let writes: Vec<BlockWrite> = region
+            .into_interned()
+            .iter()
+            .map(|(pos, state)| (pos, state.clone()))
+            .collect();
+        assert_eq!(
+            writes,
+            vec![(stone_a, block("oak_log")), (stone_b, block("oak_log"))]
+        );
     }
 
     #[test]
