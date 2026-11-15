@@ -39,7 +39,7 @@ Inside Oxide: `oxide_noise::compiled::Program::run` 14%, `ImprovedNoise::noise_w
 |---|---|---|---|
 | noise | `~/oxide-wt/noise` | `perf/noise` | `crates/oxide-noise` |
 | datapath | `~/oxide-wt/datapath` | `perf/datapath` | `crates/oxide-core`, `crates/oxide-biome`, `crates/oxide-chunkgen` except `decorator/` |
-| pipeline | `~/oxide-wt/pipeline` | `perf/pipeline` | `crates/oxide-pregen`, `crates/oxide-anvil`, `scripts/` |
+| pipeline | `~/oxide-wt/pipeline` | `perf/pipeline` | `crates/oxide-pregen`, `crates/oxide-anvil`, `scripts/`, decoration (`crates/oxide-chunkgen/src/decorator/`, `decorate.rs`, `region.rs`) |
 
 Stay inside what you own. If you need a change elsewhere, make the smallest additive one and
 say so in your log; never rename or reshape another track's public items.
