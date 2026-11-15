@@ -89,3 +89,20 @@ From here on: all 8 cores are free (both Minecraft servers stopped), the bench s
 one (builds under `flock -s` at nice 10, only the timed run is exclusive), and every other
 build, test or profile on the box uses `flock -s ~/oxide-perf/.lock nice -n 10`. Earlier numbers
 need a quiet re-bench before they can be compared with new ones.
+
+### In flight (Opus sub-agents, one scratch worktree and bench name each)
+
+| Bench name | Experiment |
+|---|---|
+| `noise-1` | Corner grid evaluated a column (49 corners) at a time: `Program::run_lanes`, lane-batched `NormalNoise`/`PerlinNoise`/`BlendedNoise` with octave-outer loops |
+| `noise-2` | `preliminary_surface_level` / `find_top_surface`: one exact speedup of the per-step scan |
+| `noise-3` | Scalar `ImprovedNoise` micro-optimisations, `improved_noise.rs` only |
+
+Each experiment gets one interleaved A/B pair, run on top of a merge of `perf/datapath`. The
+auditor's scratch merge of this branch with datapath benched 401 and 421 cps
+(`bench-audit-combined.tsv` on `perf/audit`), and datapath's E1 changed what `fill` asks of this
+crate. Gate: on the merged tree, the patched digest equals the baseline digest.
+
+OmniRoute is no longer used, at the user's direction (too slow). It was also down for every
+listed model when tried: gemini flash over quota, `auto/kimi` without tool calls, kimi-web's
+upstream token expired, deepseek and gemini-pro returning empty answers.
