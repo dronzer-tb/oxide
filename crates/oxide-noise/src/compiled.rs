@@ -208,43 +208,250 @@ pub(crate) struct RunCtx<'a> {
 const INLINE_REGISTERS: usize = 16;
 
 impl Program {
-    /// One line per instruction, for diagnosing why a shortcut does or does not apply.
-    pub(crate) fn dump(&self) -> Vec<String> {
-        self.ops
-            .iter()
-            .enumerate()
-            .map(|(i, op)| {
-                let name = match op {
-                    Op::Const(v) => return format!("{i:3}: Const({v})"),
-                    Op::Noise(_) => "Noise",
-                    Op::ShiftedNoise(_) => "ShiftedNoise",
-                    Op::Add(..) => "Add",
-                    Op::Mul(..) => "Mul",
-                    Op::Min(..) => "Min",
-                    Op::Max(..) => "Max",
-                    Op::Squeeze(_) => "Squeeze",
-                    Op::Clamp(_) => "Clamp",
-                    Op::Spline(_) => "Spline",
-                    Op::RangeChoice(_) => "RangeChoice",
-                    Op::Shift { .. } => "Shift",
-                    Op::OldBlendedNoise(_) => "OldBlendedNoise",
-                    Op::WeirdScaledSampler(_) => "WeirdScaledSampler",
-                    Op::YClampedGradient(_) => "YClampedGradient",
-                    Op::Abs(_) => "Abs",
-                    Op::Square(_) => "Square",
-                    Op::Cube(_) => "Cube",
-                    Op::HalfNegative(_) => "HalfNegative",
-                    Op::QuarterNegative(_) => "QuarterNegative",
-                    Op::Invert(_) => "Invert",
-                    Op::IntervalSelect(_) => "IntervalSelect",
-                    Op::FindTopSurface(_) => "FindTopSurface",
-                    Op::Cache { kind, slot, .. } => {
-                        return format!("{i:3}: Cache(kind={kind:?}, slot={slot})")
+    /// Appends a byte string that is equal for two programs exactly when they are structurally
+    /// identical: same instructions, same constants bit for bit, same noises, same nested
+    /// programs. Nested cache nodes contribute their `(kind, slot)`, which is already canonical
+    /// because slots are themselves assigned by fingerprint, bottom up.
+    fn fingerprint(&self, out: &mut Vec<u8>) {
+        fn u(out: &mut Vec<u8>, v: u32) {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        fn f(out: &mut Vec<u8>, v: f64) {
+            out.extend_from_slice(&v.to_bits().to_le_bytes());
+        }
+        fn spline(out: &mut Vec<u8>, s: &CompiledSpline) {
+            s.coordinate.fingerprint(out);
+            u(out, s.points.len() as u32);
+            for p in &s.points {
+                u(out, p.location.to_bits());
+                u(out, p.derivative.to_bits());
+                match &p.value {
+                    CompiledSplineValue::Constant(c) => {
+                        out.push(0);
+                        u(out, c.to_bits());
                     }
-                };
-                format!("{i:3}: {name}")
-            })
-            .collect()
+                    CompiledSplineValue::Spline(inner) => {
+                        out.push(1);
+                        spline(out, inner);
+                    }
+                }
+            }
+        }
+
+        u(out, self.ops.len() as u32);
+        for op in &self.ops {
+            match op {
+                Op::Const(v) => {
+                    out.push(0);
+                    f(out, *v);
+                }
+                Op::Noise(n) => {
+                    out.push(1);
+                    u(out, n.noise);
+                    f(out, n.xz_scale);
+                    f(out, n.y_scale);
+                }
+                Op::ShiftedNoise(n) => {
+                    out.push(2);
+                    u(out, n.noise);
+                    f(out, n.xz_scale);
+                    f(out, n.y_scale);
+                    u(out, n.shift_x);
+                    u(out, n.shift_y);
+                    u(out, n.shift_z);
+                }
+                Op::Shift { noise, kind } => {
+                    out.push(3);
+                    u(out, *noise);
+                    out.push(*kind as u8);
+                }
+                Op::OldBlendedNoise(p) => {
+                    out.push(4);
+                    f(out, p.xz_scale);
+                    f(out, p.y_scale);
+                    f(out, p.xz_factor);
+                    f(out, p.y_factor);
+                    f(out, p.smear_scale_multiplier);
+                }
+                Op::WeirdScaledSampler(w) => {
+                    out.push(5);
+                    u(out, w.input);
+                    u(out, w.noise);
+                    out.extend_from_slice(format!("{:?};", w.mapper).as_bytes());
+                }
+                Op::YClampedGradient(g) => {
+                    out.push(6);
+                    u(out, g.from_y as u32);
+                    u(out, g.to_y as u32);
+                    f(out, g.from_value);
+                    f(out, g.to_value);
+                }
+                Op::Add(a, b) | Op::Mul(a, b) | Op::Min(a, b) | Op::Max(a, b) => {
+                    out.push(match op {
+                        Op::Add(..) => 7,
+                        Op::Mul(..) => 8,
+                        Op::Min(..) => 9,
+                        _ => 10,
+                    });
+                    u(out, *a);
+                    u(out, *b);
+                }
+                Op::Abs(a)
+                | Op::Square(a)
+                | Op::Cube(a)
+                | Op::HalfNegative(a)
+                | Op::QuarterNegative(a)
+                | Op::Squeeze(a)
+                | Op::Invert(a) => {
+                    out.push(match op {
+                        Op::Abs(_) => 11,
+                        Op::Square(_) => 12,
+                        Op::Cube(_) => 13,
+                        Op::HalfNegative(_) => 14,
+                        Op::QuarterNegative(_) => 15,
+                        Op::Squeeze(_) => 16,
+                        _ => 17,
+                    });
+                    u(out, *a);
+                }
+                Op::Clamp(c) => {
+                    out.push(18);
+                    u(out, c.input);
+                    f(out, c.min);
+                    f(out, c.max);
+                }
+                Op::Spline(s) => {
+                    out.push(19);
+                    spline(out, s);
+                }
+                Op::RangeChoice(r) => {
+                    out.push(20);
+                    u(out, r.input);
+                    f(out, r.min_inclusive);
+                    f(out, r.max_exclusive);
+                    r.when_in_range.fingerprint(out);
+                    r.when_out_of_range.fingerprint(out);
+                }
+                Op::IntervalSelect(s) => {
+                    out.push(21);
+                    u(out, s.input);
+                    u(out, s.thresholds.len() as u32);
+                    for t in &s.thresholds {
+                        f(out, *t);
+                    }
+                    u(out, s.functions.len() as u32);
+                    for program in &s.functions {
+                        program.fingerprint(out);
+                    }
+                }
+                Op::FindTopSurface(t) => {
+                    out.push(22);
+                    u(out, t.cell_height as u32);
+                    u(out, t.lower_bound as u32);
+                    u(out, t.upper_bound);
+                    t.density.fingerprint(out);
+                }
+                Op::Cache { kind, slot, .. } => {
+                    out.push(23);
+                    out.push(*kind as u8);
+                    u(out, *slot);
+                }
+            }
+        }
+    }
+
+    /// One line per instruction, for diagnosing why a shortcut does or does not apply. Nested
+    /// programs (lazy branches, cache arguments, spline coordinates) are listed indented under
+    /// the instruction that owns them.
+    pub(crate) fn dump(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        self.dump_into(0, &mut out);
+        out
+    }
+
+    fn dump_into(&self, depth: usize, out: &mut Vec<String>) {
+        let pad = "  ".repeat(depth);
+        for (i, op) in self.ops.iter().enumerate() {
+            let mut nested: Vec<(&str, &Program)> = Vec::new();
+            let text = match op {
+                Op::Const(v) => format!("Const({v})"),
+                Op::Noise(n) => format!("Noise(#{} xz={} y={})", n.noise, n.xz_scale, n.y_scale),
+                Op::ShiftedNoise(n) => format!(
+                    "ShiftedNoise(#{} xz={} y={} shift=r{},r{},r{})",
+                    n.noise, n.xz_scale, n.y_scale, n.shift_x, n.shift_y, n.shift_z
+                ),
+                Op::Add(a, b) => format!("Add(r{a}, r{b})"),
+                Op::Mul(a, b) => format!("Mul(r{a}, r{b})"),
+                Op::Min(a, b) => format!("Min(r{a}, r{b})"),
+                Op::Max(a, b) => format!("Max(r{a}, r{b})"),
+                Op::Squeeze(a) => format!("Squeeze(r{a})"),
+                Op::Clamp(c) => format!("Clamp(r{}, {}, {})", c.input, c.min, c.max),
+                Op::Spline(s) => {
+                    fn walk<'a>(s: &'a CompiledSpline, nested: &mut Vec<(&'static str, &'a Program)>) {
+                        nested.push(("coordinate", &s.coordinate));
+                        for p in &s.points {
+                            if let CompiledSplineValue::Spline(inner) = &p.value {
+                                walk(inner, nested);
+                            }
+                        }
+                    }
+                    let mut all = Vec::new();
+                    walk(s, &mut all);
+                    let text = format!("Spline({} coordinate programs)", all.len());
+                    // Listing every nested coordinate drowns the output; the first is enough to
+                    // see what kind of program a spline coordinate is.
+                    nested.extend(all.into_iter().take(1));
+                    text
+                }
+                Op::RangeChoice(r) => {
+                    nested.push(("in_range", &r.when_in_range));
+                    nested.push(("out_of_range", &r.when_out_of_range));
+                    format!(
+                        "RangeChoice(r{} in [{}, {}))",
+                        r.input, r.min_inclusive, r.max_exclusive
+                    )
+                }
+                Op::Shift { noise, kind } => format!("Shift(#{noise} {kind:?})"),
+                Op::OldBlendedNoise(_) => "OldBlendedNoise".to_string(),
+                Op::WeirdScaledSampler(_) => "WeirdScaledSampler".to_string(),
+                Op::YClampedGradient(g) => format!(
+                    "YClampedGradient({}..{} -> {}..{})",
+                    g.from_y, g.to_y, g.from_value, g.to_value
+                ),
+                Op::Abs(a) => format!("Abs(r{a})"),
+                Op::Square(a) => format!("Square(r{a})"),
+                Op::Cube(a) => format!("Cube(r{a})"),
+                Op::HalfNegative(a) => format!("HalfNegative(r{a})"),
+                Op::QuarterNegative(a) => format!("QuarterNegative(r{a})"),
+                Op::Invert(a) => format!("Invert(r{a})"),
+                Op::IntervalSelect(s) => {
+                    for f in &s.functions {
+                        nested.push(("function", f));
+                    }
+                    format!("IntervalSelect(r{} {:?})", s.input, s.thresholds)
+                }
+                Op::FindTopSurface(f) => {
+                    nested.push(("density", &f.density));
+                    format!(
+                        "FindTopSurface(upper=r{} lower={} step={})",
+                        f.upper_bound, f.lower_bound, f.cell_height
+                    )
+                }
+                Op::Cache {
+                    kind,
+                    slot,
+                    argument,
+                } => {
+                    nested.push(("argument", argument));
+                    format!("Cache(kind={kind:?}, slot={slot})")
+                }
+            };
+            out.push(format!("{pad}{i:3}: {text}"));
+            for (label, program) in nested {
+                out.push(format!("{pad}     {label}:"));
+                program.dump_into(depth + 3, out);
+            }
+        }
     }
 
     /// A conservative bound on this program's value across one whole cell, computed from the
@@ -647,9 +854,13 @@ pub struct CacheSlotCounts {
 pub(crate) struct Compiler<'a> {
     registry: &'a Registry<DensityFunction>,
     noise_index: &'a HashMap<ResourceLocation, u32>,
-    /// Cache node address -> slot within its kind. Addresses are stable: the registry owns
-    /// every node for the router's lifetime and never mutates it.
-    slots: HashMap<usize, u32>,
+    /// `(kind, argument fingerprint)` -> slot within its kind. Keyed by structure rather than
+    /// by node address: a datapack reaches the same subtree (`sloped_cheese`, most expensively)
+    /// through several distinct `cache_once` nodes, and vanilla's `NoiseChunk.wrap` shares one
+    /// cache between structurally equal markers. Sharing never changes a value -- equal
+    /// arguments are equal functions of position -- it only stops the subtree, blended noise
+    /// and all, being evaluated once per marker at every cell corner.
+    slots: HashMap<Vec<u8>, u32>,
     counts: CacheSlotCounts,
     /// `Reference` nodes currently being inlined, so a cyclic pack cannot recurse forever.
     resolving: Vec<usize>,
@@ -711,11 +922,12 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// A cache node's slot, assigned once per distinct node so that a node reached through two
-    /// references shares one cache entry.
-    fn slot_for(&mut self, obj: &DensityFunctionObject, kind: CacheKind) -> u32 {
-        let address = obj as *const DensityFunctionObject as usize;
-        if let Some(slot) = self.slots.get(&address) {
+    /// A cache node's slot, assigned once per distinct `(kind, argument)` so that equal cache
+    /// nodes share one entry however the datapack reached them.
+    fn slot_for(&mut self, kind: CacheKind, argument: &Program) -> u32 {
+        let mut key = vec![kind as u8];
+        argument.fingerprint(&mut key);
+        if let Some(slot) = self.slots.get(&key) {
             return *slot;
         }
         let counter = match kind {
@@ -725,19 +937,18 @@ impl<'a> Compiler<'a> {
         };
         let slot = *counter as u32;
         *counter += 1;
-        self.slots.insert(address, slot);
+        self.slots.insert(key, slot);
         slot
     }
 
     fn emit_cache(
         &mut self,
-        obj: &DensityFunctionObject,
         kind: CacheKind,
         argument: &DensityFunction,
         ops: &mut Vec<Op>,
     ) -> u32 {
-        let slot = self.slot_for(obj, kind);
         let argument = Box::new(self.compile(argument));
+        let slot = self.slot_for(kind, &argument);
         push(
             ops,
             Op::Cache {
@@ -870,12 +1081,12 @@ impl<'a> Compiler<'a> {
             }
 
             Interpolated { argument } => {
-                self.emit_cache(obj, CacheKind::Interpolated, argument, ops)
+                self.emit_cache(CacheKind::Interpolated, argument, ops)
             }
-            FlatCache { argument } => self.emit_cache(obj, CacheKind::FlatCache, argument, ops),
-            Cache2d { argument } => self.emit_cache(obj, CacheKind::Cache2d, argument, ops),
+            FlatCache { argument } => self.emit_cache(CacheKind::FlatCache, argument, ops),
+            Cache2d { argument } => self.emit_cache(CacheKind::Cache2d, argument, ops),
             CacheOnce { argument } | CacheAllInCell { argument } => {
-                self.emit_cache(obj, CacheKind::Once, argument, ops)
+                self.emit_cache(CacheKind::Once, argument, ops)
             }
 
             Add {
