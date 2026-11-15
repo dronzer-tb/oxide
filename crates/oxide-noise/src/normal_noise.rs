@@ -53,6 +53,11 @@ impl NormalNoise {
         }
     }
 
+    /// An upper bound on `|get_value(..)|` at any finite position; see `PerlinNoise::max_abs`.
+    pub(crate) fn max_abs(&self) -> f64 {
+        (self.first.max_abs() + self.second.max_abs()) * self.value_factor.abs() * 1.001
+    }
+
     pub fn get_value(&self, x: f64, y: f64, z: f64) -> f64 {
         let x2 = x * INPUT_FACTOR;
         let y2 = y * INPUT_FACTOR;

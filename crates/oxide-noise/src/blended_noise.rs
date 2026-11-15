@@ -107,6 +107,47 @@ impl BlendedNoise {
     }
 }
 
+/// An upper bound on `|BlendedNoise::compute(params, ..)|` at any block position (|x|, |y|,
+/// |z| < 2^31), or `None` when the parameters could overflow or divide by zero.
+///
+/// One limit-stack octave with smear `y_scale` is at most `4 + |y_scale|` in magnitude: the y
+/// offset fed to the dot products is `dy - dy_faded` with `dy` in `[0, 1)` and
+/// `|dy_faded| <= |clamped| + |y_scale|`, `|clamped| <= 1`, while the y fade still uses `dy`,
+/// so the lerps stay convex. The limit sums divide each octave by `pow = 2^-i`, and the final
+/// `clamped_lerp` either picks one sum or blends the two, so it never exceeds the larger.
+pub(crate) fn blended_max_abs(params: &BlendedNoiseParams) -> Option<f64> {
+    let all = [
+        params.xz_scale,
+        params.y_scale,
+        params.xz_factor,
+        params.y_factor,
+        params.smear_scale_multiplier,
+    ];
+    if all.iter().any(|v| !v.is_finite() || v.abs() > 1e100)
+        || params.xz_factor.abs() < 1e-100
+        || params.y_factor.abs() < 1e-100
+    {
+        return None;
+    }
+    let limit_smear = (684.412 * params.y_scale * params.smear_scale_multiplier).abs();
+    let main_smear = limit_smear / params.y_factor.abs();
+    // A smear that is nonzero but tiny at the deepest octave would let `clamped / y_scale`
+    // overflow, and infinity times a tiny `y_scale` is not finite.
+    let deepest = 2f64.powi(-15);
+    for smear in [limit_smear, main_smear] {
+        if smear != 0.0 && smear * deepest < 1e-200 {
+            return None;
+        }
+    }
+    let mut sum = 0.0;
+    let mut pow = 1.0f64;
+    for _ in 0..16 {
+        sum += (4.0 + limit_smear * pow) / pow;
+        pow /= 2.0;
+    }
+    Some(sum / 512.0 / 128.0 * 1.001)
+}
+
 /// `Mth.clampedLerp(factor, min, max)` as of 26.2 -- factor first.
 fn clamped_lerp(factor: f64, min: f64, max: f64) -> f64 {
     if factor < 0.0 {

@@ -87,6 +87,9 @@ pub(crate) enum Op {
     IntervalSelect(Box<IntervalSelectOp>),
     FindTopSurface(Box<FindTopSurfaceOp>),
 
+    /// `c + g * body`, with `body` run only when `g` is not zero. See [`GatedAddOp`].
+    GatedAdd(Box<GatedAddOp>),
+
     /// A cache boundary: `argument` is what the cache fills itself from, and is deliberately
     /// not part of this program's linear sweep.
     Cache {
@@ -132,6 +135,26 @@ pub(crate) struct YClampedGradientOp {
     pub to_y: i32,
     pub from_value: f64,
     pub to_value: f64,
+}
+
+/// `add(c, mul(g, body))` (either operand order in each node) where `c` is a nonzero finite
+/// constant, `g` a `y_clamped_gradient` that reaches exactly 0.0, and `body` is proven finite.
+///
+/// When `g` is +/-0.0 the product is +/-0.0 (finite `body`), and `c + (+/-0.0)` is exactly `c`
+/// for any nonzero `c`. So the result is `c` without evaluating `body`, bit for bit what the
+/// plain `add`/`mul` pair computes. Otherwise `body` runs and the original expression is
+/// evaluated with the original operand order. This is the overworld's top and bottom slides
+/// around `final_density`'s interpolated argument: above y=256 and at y=-64, the whole
+/// `sloped_cheese` and cave computation cannot change the value.
+pub(crate) struct GatedAddOp {
+    pub c: f64,
+    /// `c` was `add`'s first operand.
+    pub c_first: bool,
+    /// Register holding the gradient's value.
+    pub g: u32,
+    /// The gradient was `mul`'s first operand.
+    pub g_first: bool,
+    pub body: Program,
 }
 
 pub(crate) struct ClampOp {
@@ -394,6 +417,14 @@ impl Program {
                     u(out, t.upper_bound);
                     t.density.fingerprint(out);
                 }
+                Op::GatedAdd(g) => {
+                    out.push(24);
+                    f(out, g.c);
+                    out.push(g.c_first as u8);
+                    u(out, g.g);
+                    out.push(g.g_first as u8);
+                    g.body.fingerprint(out);
+                }
                 Op::Cache { kind, slot, .. } => {
                     out.push(23);
                     out.push(*kind as u8);
@@ -479,6 +510,10 @@ impl Program {
                         "FindTopSurface(upper=r{} lower={} step={})",
                         f.upper_bound, f.lower_bound, f.cell_height
                     )
+                }
+                Op::GatedAdd(g) => {
+                    nested.push(("body", &g.body));
+                    format!("GatedAdd({} + r{} * body)", g.c, g.g)
                 }
                 Op::Cache {
                     kind,
@@ -923,6 +958,21 @@ fn eval_op(op: &Op, regs: &[f64], ctx: FunctionContext, cx: &RunCtx) -> f64 {
             f.lower_bound as f64
         }
 
+        Op::GatedAdd(g) => {
+            let gv = regs[g.g as usize];
+            if gv == 0.0 {
+                g.c
+            } else {
+                let bv = g.body.run(ctx, cx);
+                let product = if g.g_first { gv * bv } else { bv * gv };
+                if g.c_first {
+                    g.c + product
+                } else {
+                    product + g.c
+                }
+            }
+        }
+
         Op::Cache {
             kind,
             slot,
@@ -1000,6 +1050,9 @@ pub(crate) struct Compiler<'a> {
     counts: CacheSlotCounts,
     /// `Reference` nodes currently being inlined, so a cyclic pack cannot recurse forever.
     resolving: Vec<usize>,
+    /// Indexed like the noises: an upper bound on each noise's `|value|`. Empty means unknown,
+    /// which makes every noise leaf unbounded and so disables [`GatedAddOp`].
+    noise_bounds: Vec<f64>,
 }
 
 impl<'a> Compiler<'a> {
@@ -1013,7 +1066,216 @@ impl<'a> Compiler<'a> {
             slots: HashMap::new(),
             counts: CacheSlotCounts::default(),
             resolving: Vec::new(),
+            noise_bounds: Vec::new(),
         }
+    }
+
+    /// Supplies per-noise magnitude bounds (see `NormalNoise::max_abs`), indexed like the
+    /// noise indices this compiler assigns.
+    pub(crate) fn with_noise_bounds(mut self, bounds: Vec<f64>) -> Self {
+        self.noise_bounds = bounds;
+        self
+    }
+
+    /// `df` with `Reference`s followed, as long as they resolve and do not cycle.
+    fn resolved<'d>(&self, mut df: &'d DensityFunction) -> &'d DensityFunction
+    where
+        'a: 'd,
+    {
+        for _ in 0..64 {
+            match df {
+                DensityFunction::Reference(id) => match self.registry.get(id) {
+                    Some(inner) => df = inner,
+                    None => return df,
+                },
+                _ => return df,
+            }
+        }
+        df
+    }
+
+    fn constant_of(&self, df: &DensityFunction) -> Option<f64> {
+        match self.resolved(df) {
+            DensityFunction::Constant(v) => Some(*v),
+            DensityFunction::Object(obj) => match obj.as_ref() {
+                DensityFunctionObject::Constant { argument } => Some(*argument),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Emits `add(a1, a2)` as a [`GatedAddOp`] when its shape and a finiteness proof allow;
+    /// `None` leaves it to the plain lowering.
+    fn try_emit_gated_add(
+        &mut self,
+        a1: &DensityFunction,
+        a2: &DensityFunction,
+        ops: &mut Vec<Op>,
+    ) -> Option<u32> {
+        let (c, c_first, mul) = match (self.constant_of(a1), self.constant_of(a2)) {
+            (Some(c), _) => (c, true, a2),
+            (_, Some(c)) => (c, false, a1),
+            _ => return None,
+        };
+        if c == 0.0 || !c.is_finite() {
+            return None;
+        }
+        let DensityFunction::Object(mul_obj) = self.resolved(mul) else {
+            return None;
+        };
+        let DensityFunctionObject::Mul {
+            argument1,
+            argument2,
+        } = mul_obj.as_ref()
+        else {
+            return None;
+        };
+        let reaches_zero = |df: &DensityFunction| match self.resolved(df) {
+            DensityFunction::Object(o) => matches!(
+                o.as_ref(),
+                DensityFunctionObject::YClampedGradient { from_value, to_value, .. }
+                    if *from_value == 0.0 || *to_value == 0.0
+            ),
+            _ => false,
+        };
+        let (gradient, body, g_first) = if reaches_zero(argument1) {
+            (argument1, argument2, true)
+        } else if reaches_zero(argument2) {
+            (argument2, argument1, false)
+        } else {
+            return None;
+        };
+
+        // Emitted in the plain lowering's order (the constant has no cache slots, so where it
+        // goes does not matter; the gradient and the body keep their relative order unless the
+        // body came first, and the gradient has no slots either).
+        let body = self.compile(body);
+        if !self.max_abs(&body).is_some_and(|b| b < 1e290) {
+            // Unprovable: lower plainly. The body was compiled for nothing, but its cache slots
+            // are keyed by structure, so re-emitting it reuses exactly the same ones.
+            return None;
+        }
+        let g = self.emit(gradient, ops);
+        Some(push(
+            ops,
+            Op::GatedAdd(Box::new(GatedAddOp {
+                c,
+                c_first,
+                g,
+                g_first,
+                body,
+            })),
+        ))
+    }
+
+    /// A conservative bound on `|value|` of `program` at any block position, or `None` when it
+    /// may not be finite. Exact arithmetic is not needed: only finiteness is used, and every
+    /// bound here is far above what it bounds.
+    fn max_abs(&self, program: &Program) -> Option<f64> {
+        // Block coordinates are i32.
+        const COORD: f64 = 2.2e9;
+        let noise = |index: u32| self.noise_bounds.get(index as usize).copied();
+        let scaled_ok = |scale: f64| scale.is_finite() && scale.abs() < 1e100;
+        let mut b: Vec<Option<f64>> = Vec::with_capacity(program.ops.len());
+        for op in &program.ops {
+            let r = |i: &u32| b.get(*i as usize).copied().flatten();
+            let v: Option<f64> = match op {
+                Op::Const(v) => v.is_finite().then(|| v.abs()),
+                Op::Noise(n) => {
+                    if scaled_ok(n.xz_scale) && scaled_ok(n.y_scale) {
+                        noise(n.noise)
+                    } else {
+                        None
+                    }
+                }
+                Op::ShiftedNoise(n) => {
+                    let shifts = r(&n.shift_x)
+                        .zip(r(&n.shift_y))
+                        .zip(r(&n.shift_z))
+                        .map(|((x, y), z)| x.max(y).max(z));
+                    match shifts {
+                        Some(s) if scaled_ok(n.xz_scale) && scaled_ok(n.y_scale) && s < 1e200 => {
+                            noise(n.noise)
+                        }
+                        _ => None,
+                    }
+                }
+                Op::Shift { noise: n, .. } => noise(*n).map(|v| v * 4.0),
+                Op::OldBlendedNoise(p) => crate::blended_noise::blended_max_abs(p),
+                Op::WeirdScaledSampler(_) | Op::Invert(_) => None,
+                Op::YClampedGradient(g) => (g.from_value.is_finite() && g.to_value.is_finite())
+                    .then(|| g.from_value.abs().max(g.to_value.abs())),
+                Op::Add(x, y) => r(x).zip(r(y)).map(|(x, y)| x + y),
+                Op::Mul(x, y) => r(x).zip(r(y)).map(|(x, y)| x * y),
+                Op::Min(x, y) | Op::Max(x, y) => r(x).zip(r(y)).map(|(x, y)| x.max(y)),
+                Op::Abs(x) | Op::HalfNegative(x) | Op::QuarterNegative(x) => r(x),
+                Op::Square(x) => r(x).map(|x| x * x),
+                Op::Cube(x) => r(x).map(|x| x * x * x),
+                // Clamped to [-1, 1] first (a finite input is never NaN), then
+                // |v/2 - v^3/24| <= 1/2 + 1/24.
+                Op::Squeeze(x) => r(x).map(|_| 0.6),
+                Op::Clamp(c) => r(&c.input).and_then(|_| {
+                    (c.min.is_finite() && c.max.is_finite())
+                        .then(|| c.min.abs().max(c.max.abs()))
+                }),
+                Op::Spline(s) => self.spline_max_abs(s),
+                Op::RangeChoice(c) => self
+                    .max_abs(&c.when_in_range)
+                    .zip(self.max_abs(&c.when_out_of_range))
+                    .map(|(x, y)| x.max(y)),
+                Op::IntervalSelect(s) => s
+                    .functions
+                    .iter()
+                    .try_fold(0.0f64, |acc, f| self.max_abs(f).map(|v| acc.max(v))),
+                // A height: an i32 (saturating `floor() as i32` of the bound) or the lower bound.
+                Op::FindTopSurface(_) => Some(COORD),
+                Op::GatedAdd(g) => self.max_abs(&g.body).zip(r(&g.g)).map(|(body, gv)| {
+                    g.c.abs() + gv * body
+                }),
+                // Every cache returns its argument's value at some position (`interpolated`: a
+                // convex blend of such values).
+                Op::Cache { argument, .. } => self.max_abs(argument).map(|v| v * 1.001),
+            };
+            b.push(v.filter(|v| v.is_finite() && *v < 1e290));
+        }
+        b.last().copied().flatten()
+    }
+
+    /// Bound on a spline's `f32` value, from its coordinate's bound. Outside the points it
+    /// extends linearly (`v + d * (pos - loc)`); inside, `t` is in `[0, 1)`, so
+    /// `lerp(t, v0, v1)` stays within the values and `t * (1 - t) <= 1/4`.
+    fn spline_max_abs(&self, s: &CompiledSpline) -> Option<f64> {
+        let coordinate = self.max_abs(&s.coordinate)?;
+        if coordinate > 1e30 {
+            return None; // `as f32` could overflow to infinity.
+        }
+        let mut values = 0.0f64;
+        let mut derivatives = 0.0f64;
+        let mut locations = 0.0f64;
+        for p in &s.points {
+            if !p.location.is_finite() || !p.derivative.is_finite() {
+                return None;
+            }
+            let v = match &p.value {
+                CompiledSplineValue::Constant(c) => {
+                    if !c.is_finite() {
+                        return None;
+                    }
+                    c.abs() as f64
+                }
+                CompiledSplineValue::Spline(inner) => self.spline_max_abs(inner)?,
+            };
+            values = values.max(v);
+            derivatives = derivatives.max(p.derivative.abs() as f64);
+            locations = locations.max(p.location.abs() as f64);
+        }
+        let reach = coordinate + locations;
+        let outside = values + derivatives * reach;
+        let inside = values + 0.25 * (derivatives * 2.0 * locations + 2.0 * values);
+        let bound = outside.max(inside) * 1.01;
+        // Kept well inside f32 so no intermediate (`v1 - v0`, `d * span`) can overflow.
+        (bound < 1e30).then_some(bound)
     }
 
     pub(crate) fn counts(&self) -> CacheSlotCounts {
@@ -1232,7 +1494,10 @@ impl<'a> Compiler<'a> {
             Add {
                 argument1,
                 argument2,
-            } => binary!(Op::Add, argument1, argument2),
+            } => match self.try_emit_gated_add(argument1, argument2, ops) {
+                Some(reg) => reg,
+                None => binary!(Op::Add, argument1, argument2),
+            },
             Mul {
                 argument1,
                 argument2,

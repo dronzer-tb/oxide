@@ -179,3 +179,97 @@ is re-running it against 18bb0f9 for AUDIT.md. This log adds hit/miss/eviction a
 contention counters for the shared column cache, plus an 8-thread vs 1-thread comparison, so
 contention is ruled out rather than assumed.
 | 11 (noise-6) | AVX2 `ImprovedNoise`, 4 independent octave samples per call through a sample queue (Perlin, Normal and Blended), accumulated in the original order. Add/sub/mul/div only, no FMA; range guard to scalar at 2^30; `dx = d - cvtepi32(i)` so -0.0 matches; 6 new bit-identity tests (800k lanes plus verbatim copies of the old callers) | 657.0, 723.0 (A/B baselines at d2433fb) | 608.5, 625.9 | a977961a58122047 all four | **rejected**: behind in both pairs, about -10%. Zen 1 splits 256-bit ops in two; building the gradient vectors from ~96 scalar loads per 4 samples, plus the queue's array traffic, outweighs the float work. Patch kept at `docs/perf/wip/noise-6-avx2-octaves.patch`. A retry should build the gradients with table permutes and keep the hashes in SIMD registers, and profile before benching |
+
+### Hold 1: 1 thread, 4 alternating rounds, one exclusive hold (load 1.25 at start, 1.77 at end)
+
+Radius 16, `--threads 1`, ms of core time per chunk. All 16 runs `digest=a977961a58122047`.
+
+| Build | r1 | r2 | r3 | r4 | Mean |
+|---|---|---|---|---|---|
+| head d2433fb (noise-4 on) | 10.29 | 10.35 | 10.71 | 10.90 | 10.56 |
+| head + `INLINE_REGISTERS` 64 (10) | 10.45 | 10.27 | 11.12 | 10.48 | 10.58 |
+| head + cache counters | 10.03 | 9.97 | 10.24 | 10.65 | 10.22 |
+| 18bb0f9 (noise-4 off) | 11.19 | 11.16 | 12.41 | 11.46 | 11.56 |
+
+- **10 rejected**: level with the head (10.58 vs 10.56). It was behind in both 8-thread pairs too.
+- **9 (noise-4) on 1 thread: -8.6% core time per chunk**, ahead in every round. The auditor's
+  own hold confirms it independently (`bench-audit-noise.tsv` on `perf/audit`): ahead in all
+  four 8-thread rounds, +17% on the means (673.0, 669.4, 721.8, 686.9 against 491.3, 649.3,
+  613.2, 591.5 cps), and 10.37/10.58 against 11.41/12.07 ms per chunk on 1 thread. Kept.
+- The counters (hits, misses and evictions under the lock, contention via `try_lock` failing)
+  cost nothing measurable.
+
+Shared column cache counters, 1 thread, radius 16 (identical in every round, since generation
+order is deterministic on one thread): **hits 63,296, misses 53,728, hit rate 0.541, evictions
+22,220, contended acquisitions 0 of 170,752.** The hit rate is near its ceiling. A chunk looks
+up its 16 edge columns per grid, but only 7 of them are new on average (12 non-corner columns
+shared by 2 chunks, 4 corners shared by 4), so the most it can reach is 9/16 = 0.5625, less a
+little at the region's edge. The evictions do not cost hits.
+
+### Hold 2: 8 threads, 4 alternating rounds, one exclusive hold (load 2.68 at start, 2.14 at end)
+
+Radius 16, `--threads 8`, cps. All 8 runs `digest=a977961a58122047`.
+
+| Build | r1 | r2 | r3 | r4 | Mean |
+|---|---|---|---|---|---|
+| head d2433fb + counters (noise-4 on) | 611.1 | 781.7 | 739.0 | 588.1 | 680.0 |
+| 18bb0f9 (noise-4 off) | 630.4 | 682.9 | 642.5 | 597.6 | 638.4 |
+
+Shared column cache counters per 8-thread run:
+
+| Round | Hits | Misses | Hit rate | Evictions | Contended | Acquisitions | Contended rate |
+|---|---|---|---|---|---|---|---|
+| 1 | 59,404 | 57,620 | 0.508 | 26,100 | 189 | 174,644 | 0.00108 |
+| 2 | 58,717 | 58,307 | 0.502 | 26,797 | 175 | 175,331 | 0.00100 |
+| 3 | 58,552 | 58,472 | 0.500 | 26,952 | 209 | 175,496 | 0.00119 |
+| 4 | 57,696 | 59,328 | 0.493 | 27,809 | 145 | 176,352 | 0.00082 |
+
+**Lock contention is ruled out.** About 0.1% of acquisitions had to wait (145-209 per run out of
+~175k), and each wait is one short critical section (a 49-value copy). The 8-thread gain is
++6.5% on these means: ahead in three rounds, behind in the first. The auditor's hold had +17%.
+On 1 thread it is -8.6% core time per chunk. The 8-thread hit rate (0.49-0.51) is a little
+under the 1-thread one (0.541), because chunks finish out of neighbour order and a few more
+shared columns are evicted before their neighbour asks for them.
+
+Possible follow-up, small: the cache has 32,768 column slots and evicts ~27k columns per
+radius-16 run. A pregen order that walks neighbours (the pipeline's choice), or a larger cache,
+could take the hit rate to its 0.5625 ceiling, which is worth at most a few % more of the
+corner grid.
+
+| # | What | Hold | Base (ms core/chunk) | Patched | Digest | Verdict |
+|---|---|---|---|---|---|---|
+| 12 | Gated add: `add(c, mul(gradient, body))` with c a nonzero finite constant, the gradient a `y_clamped_gradient` reaching exactly 0, and `body` proven finite is lowered to `Op::GatedAdd`, which runs `body` (now a nested program) only where the gradient is nonzero. With g = +/-0 and a finite body the product is +/-0, and c + (+/-0) = c bit for bit. Finiteness comes from a conservative magnitude analysis over the program: noise bounds from the real amplitudes (`ImprovedNoise` <= 2 without smear, <= 4 + \|y_scale\| with it), blended noise from its params, splines from coordinate and point bounds, and `None` for `invert`, `weird_scaled_sampler` or anything unbounded. On the overworld it gates both slides around `final_density`'s interpolated argument: above y=256 and at y=-64, `sloped_cheese` and every cave noise are skipped at 10 of 49 corner levels | 1 thread, 5 rounds, one exclusive hold (load 5.24 at start, 1.14 at end) | 10.28, 10.74, 10.06, 10.99, 10.08 (mean 10.43) | 9.88, 9.62, 9.68, 9.88, 9.81 (mean 9.77) | a977961a58122047 all ten | **kept**: -6.3% core time per chunk, ahead in all five rounds |
+
+Tests on the combined tree (12 + the cache counters): oxide-noise 34 passed (new
+`gated_add_is_bit_identical_and_skips_where_the_gradient_is_zero`, all four operand orders, every
+y from -64 to 320 against the plain formula, with the gate exercised; `gated_add_needs_a_finite_body`,
+where `invert` keeps the plain lowering and its NaN), oxide-chunkgen 190 + 1 + 1 + 1 passed.
+The load average of 5.24 at the start of hold 3 means something ran outside the lock at that
+moment. Both builds alternated through it, and the gate wins every round.
+
+### Corner-grid cost model at 8a85270 (instrumented scratch build, radius 16, 8 threads)
+
+Profile: the corner grid is now **27.6% of generation** (33% before 9 and 12; datapath's profile
+had it at 44.5%). Inside it, the noise leaves are ~57% and the interpreter and caches ~41%;
+`eval_op`'s own dispatch is ~5%.
+
+Noise evaluations during corner-grid builds, per noise:
+- `old_blended_noise` (inside `sloped_cheese`): 708,942, up to 40 octaves each (8 main plus 16
+  per limit stack, one stack skipped when saturated). Roughly half of all `ImprovedNoise` work.
+- Cave noises (`spaghetti_3d_*`, `spaghetti_roughness*`, `cave_entrance`): 708,942 each, the
+  same count as blended. The cave branch runs at every corner where `sloped_cheese` runs, so
+  there is no further branch to skip in slot 0.
+- `cave_cheese`, `spaghetti_2d*`, `pillar*`, `cave_layer`: 272,154 each.
+- Noodle (`noodle`, `noodle_thickness`, `noodle_ridge_a`/`_b`, interpolated slots 1-4):
+  855-873k each, one octave.
+
+Per cell (`run_cell`): 372,209 cells evaluated (342 of 768 per chunk; the rest culled). Noodle
+slots 2-4 were needed in 248,251 of them (67%), slot 0 and 1 in all of them.
+
+**Lazy noodle grids not pursued**: building slots 2-4's corners only for the cells that need
+them would save well under half of three single-octave noises, under 1% of generation. Slot 0
+cannot be lazy, because the culling bounds read every one of its corners.
+
+What is left in this crate is the per-sample cost of `ImprovedNoise`. `noise-7` (in flight) tries
+SIMD within one sample: the 8 corner dot products and 7 lerps across lanes, gradients from a
+per-hash `[gx, gy, gz, 0]` table, no cross-sample queue (the cost that sank 11).

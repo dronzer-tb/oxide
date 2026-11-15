@@ -105,6 +105,24 @@ impl PerlinNoise {
             .and_then(|level| level.as_ref())
     }
 
+    /// An upper bound on `|get_value(..)|` at any finite position.
+    ///
+    /// Each octave's `ImprovedNoise` sample with no y-smear is at most 2 in magnitude: the
+    /// eight corner dot products use a gradient with two components of +/-1 against offsets in
+    /// `[-1, 1]`, and smoothstep weights in `[0, 1]` make every lerp a convex combination. The
+    /// small factor covers rounding.
+    pub(crate) fn max_abs(&self) -> f64 {
+        let mut bound = 0.0;
+        let mut amp = self.lowest_freq_value_factor;
+        for (i, level) in self.noise_levels.iter().enumerate() {
+            if level.is_some() {
+                bound += self.amplitudes[i].abs() * amp * 2.0;
+            }
+            amp /= 2.0;
+        }
+        bound * 1.001
+    }
+
     pub fn get_value(&self, x: f64, y: f64, z: f64) -> f64 {
         self.get_value_with_scale(x, y, z, 0.0, 0.0)
     }

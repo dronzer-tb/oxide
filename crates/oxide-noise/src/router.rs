@@ -186,7 +186,8 @@ impl NoiseRouterEvaluator {
         // One compiler across all sixteen slots: they reach the same registry nodes, and a node
         // shared between two of them has to share one cache slot the way vanilla's shared
         // instances do.
-        let mut compiler = Compiler::new(df_registry, &noise_index);
+        let mut compiler = Compiler::new(df_registry, &noise_index)
+            .with_noise_bounds(noises.iter().map(NormalNoise::max_abs).collect());
         let programs = RouterSlot::ALL
             .iter()
             .map(|slot| compiler.compile(slot_df(&settings.noise_router, *slot)))
@@ -620,5 +621,122 @@ mod tests {
             assert_eq!(hits, expected_hits, "hits after chunk {chunk_x} {chunk_z}");
             assert_eq!(hits + misses, expected_lookups, "lookups after {chunk_x} {chunk_z}");
         }
+    }
+
+    /// `add(c, mul(gradient, body))` is lowered to a gated add that skips `body` where the
+    /// gradient is exactly zero; every y must still give the plain expression's exact bits, in
+    /// every operand order.
+    #[test]
+    fn gated_add_is_bit_identical_and_skips_where_the_gradient_is_zero() {
+        use oxide_datapack::DensityFunctionObject as O;
+        fn obj(o: O) -> DensityFunction {
+            DensityFunction::Object(Box::new(o))
+        }
+        let params = crate::blended_noise::BlendedNoiseParams {
+            xz_scale: 0.25,
+            y_scale: 0.125,
+            xz_factor: 80.0,
+            y_factor: 160.0,
+            smear_scale_multiplier: 8.0,
+        };
+        let blended = || {
+            obj(O::OldBlendedNoise {
+                xz_scale: params.xz_scale,
+                y_scale: params.y_scale,
+                xz_factor: params.xz_factor,
+                y_factor: params.y_factor,
+                smear_scale_multiplier: params.smear_scale_multiplier,
+            })
+        };
+        let gradient = || {
+            obj(O::YClampedGradient {
+                from_y: 240,
+                to_y: 256,
+                from_value: 1.0,
+                to_value: 0.0,
+            })
+        };
+        let body = || {
+            obj(O::Add {
+                argument1: DensityFunction::Constant(0.078125),
+                argument2: blended(),
+            })
+        };
+        for (c_first, g_first) in [(true, true), (true, false), (false, true), (false, false)] {
+            let mul = if g_first {
+                obj(O::Mul { argument1: gradient(), argument2: body() })
+            } else {
+                obj(O::Mul { argument1: body(), argument2: gradient() })
+            };
+            let c = DensityFunction::Constant(-0.078125);
+            let add = if c_first {
+                obj(O::Add { argument1: c, argument2: mul })
+            } else {
+                obj(O::Add { argument1: mul, argument2: c })
+            };
+            let mut settings = minimal_settings();
+            settings.noise_router.final_density = add;
+            let router = NoiseRouterEvaluator::new(
+                9,
+                &settings,
+                &Registry::default(),
+                &Registry::default(),
+            );
+            assert!(
+                router.dump_program(RouterSlot::FinalDensity).iter().any(|l| l.contains("GatedAdd")),
+                "not gated: {:?}",
+                router.dump_program(RouterSlot::FinalDensity)
+            );
+            let mut skipped = 0;
+            for y in -64..=320 {
+                for (x, z) in [(0, 0), (-37, 211), (1234, -999)] {
+                    let g = crate::density::clamped_lerp(y, 240, 256, 1.0, 0.0);
+                    let b = 0.078125 + router.blended.compute(&params, x as f64, y as f64, z as f64);
+                    let product = if g_first { g * b } else { b * g };
+                    let expected = if c_first { -0.078125 + product } else { product + -0.078125 };
+                    let got = router.sample(RouterSlot::FinalDensity, x, y, z);
+                    assert_eq!(got.to_bits(), expected.to_bits(), "{c_first} {g_first} at {x} {y} {z}");
+                    if g == 0.0 {
+                        skipped += 1;
+                    }
+                }
+            }
+            assert!(skipped > 100, "the gate must have been exercised: {skipped}");
+        }
+    }
+
+    /// No finiteness proof, no gate: `invert` can produce an infinity, and `0 * inf` is NaN.
+    #[test]
+    fn gated_add_needs_a_finite_body() {
+        use oxide_datapack::DensityFunctionObject as O;
+        fn obj(o: O) -> DensityFunction {
+            DensityFunction::Object(Box::new(o))
+        }
+        let mut settings = minimal_settings();
+        settings.noise_router.final_density = obj(O::Add {
+            argument1: DensityFunction::Constant(-0.5),
+            argument2: obj(O::Mul {
+                argument1: obj(O::YClampedGradient {
+                    from_y: 0,
+                    to_y: 10,
+                    from_value: 1.0,
+                    to_value: 0.0,
+                }),
+                argument2: obj(O::Invert {
+                    argument: obj(O::YClampedGradient {
+                        from_y: 0,
+                        to_y: 10,
+                        from_value: 1.0,
+                        to_value: 0.0,
+                    }),
+                }),
+            }),
+        });
+        let router =
+            NoiseRouterEvaluator::new(9, &settings, &Registry::default(), &Registry::default());
+        let dump = router.dump_program(RouterSlot::FinalDensity);
+        assert!(!dump.iter().any(|l| l.contains("GatedAdd")), "{dump:?}");
+        // y = 20: gradient 0, invert(0) = inf, 0 * inf = NaN; the plain lowering keeps it.
+        assert!(router.sample(RouterSlot::FinalDensity, 0, 20, 0).is_nan());
     }
 }
