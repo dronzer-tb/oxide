@@ -847,3 +847,30 @@ chunkgen 194 pass (1 ignored), pregen pass.
 gain inside noise). Digest df701ee858e2bdd3 held on every row. Next: a timed profile of this tree to
 see whether the lush time is before the gate (count/height_range draws) or in the features
 themselves on the lush columns.
+
+## Hold script: CPU seconds per run and java CPU per run (auditor, while the Java server is on s5)
+
+`bench-ab-pregen-vps.sh` (0ad50d7) wraps each run in `/usr/bin/time -f '%U %S'` and reads the java
+processes' utime+stime from `/proc/<pid>/stat` before and after each run (read only). Each row gains
+`cpu_user_s= cpu_sys_s= java_n= java_cpu_s= java_cpu_s_per_10s=`. Rounds above about 2 java CPU-s per
+10 s are dropped from decisions. A radius-2 smoke run just now read java at 8.6 CPU-s per 10 s, so the
+server is busy; holds go on, and the rows say which rounds count.
+
+## Feature-time-only profile (timer bias check), 1 thread, branch with sculk, datapath c38344f
+
+The full timer patch counts every region call, which inflates read-heavy features: the lush tree's
+timed profile showed its four features 0.72 s cheaper, the hold only 0.1 s. A sampling profiler is not
+available (`perf_event_paranoid=4`, no sudo). So this profile keeps only the per-feature wall time
+(`prof::start` returns `None`, no call counting). Tree: b36dcf1 + sculk 5dcb571 + lite timers,
+shared lock, digest df701ee858e2bdd3, decorate CPU 9328 ms.
+
+| feature group | ms | share |
+|---|---|---|
+| stone ores: clay 538, granite 478, tuff 456, diorite 443, andesite 438 | 2353 | 25.2% |
+| lush: ceiling_vegetation 667, vegetation 492, clay 448, cave_vines 385 | 1992 | 21.4% |
+| sculk_patch_deep_dark (was 28.8% under full timers, before the sculk change) | 1060 | 11.4% |
+| dark_forest_vegetation | 658 | 7.1% |
+| glow_lichen 326, ore_gravel 287, amethyst_geode 259, ore_dirt 210 | 1082 | 11.6% |
+
+Lush features and ore_clay make almost no block reads per run yet cost 0.3-0.56 ms per run, so the
+time is not in reads. Next profile splits each feature into placement-chain time and feature-body time.
