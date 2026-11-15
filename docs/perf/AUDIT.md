@@ -440,3 +440,57 @@ digest `df701ee858e2bdd3`. No kept code change on any branch since.
 - pipeline: push the queued merge and PGO rows; base the next scratch merge on `perf/noise`.
 
 Stopped reading at: noise e6ecc65, datapath ef5597e, pipeline 7252db9.
+
+## Pass 10, 2026-11-15 10:33 UTC
+
+| Track | Head read | Best number | Digest |
+|---|---|---|---|
+| noise | 0c83b38 | 1 thread, r16: **9.77 ms per chunk** with experiment 12 against 10.43 (its hold, 5 of 5 rounds) | ok, all ten |
+| datapath | 741d96f (code 20d218d, has noise-4, not experiment 12) | 1 thread: **9.97 ms** with E21 against 10.40 (6 of 6 rounds); 8 threads: 697.0 cps (one row) | ok, all twelve |
+| pipeline | 59928b8 | pregen on merged terrain: 184.3, 171.5 (with datapath), 194.2, 183.4 (with noise-4); own branch 87.0 | `df701ee858e2bdd3` on all |
+
+The two 1-thread gains are on different branches and not yet measured together; if they
+stack, terrain is near 9.4 ms per chunk on one thread (Pumpkin 17.4, start 43.8). Not
+re-measured by the auditor this pass: both holds use the rotating multi-round method and the
+bench box disk is nearly full.
+
+### Changes read
+
+- noise ff02449 (experiment 12, gated add): `add(c, mul(gradient, body))` skips `body` where
+  the gradient is exactly zero. Exact because `c` is required nonzero and finite and `body` is
+  proven finite by a conservative magnitude analysis, so `c + (+/-0) = c` bit for bit;
+  `invert` and anything unbounded keep the plain lowering. Tests cover every y and all operand
+  orders. No float operation is reordered where the body does run. 8a85270: cache counters;
+  contention 0.1% of acquisitions, hit rate 0.49-0.54 of a 0.5625 ceiling. Lazy noodle grids
+  not pursued (under 1%). Corner grid now 27.6% of generation by its profile. In flight:
+  SIMD inside one `ImprovedNoise` sample.
+- datapath 0300e5c (merge of noise-4; 697.0 cps), 20d218d (E21 aquifer row memo, retried on
+  the new base and kept), E25 (column-major surface scan) rejected at -0.4%. Only
+  `oxide-chunkgen` outside the decoration paths.
+- pipeline: merge benches and PGO repeats as asked; `bench-pgo-vps.sh` now deletes its build
+  dirs. No crate change.
+
+### Findings
+
+1. **PGO shows no gain on the merged terrain**: 593.3 and 684.9 against release 632.2 and
+   657.6. On the old terrain it was about +23% (167.7, 159.4 against 135.9, 130.5), which no
+   longer matters. Fat LTO was already settled as no gain.
+2. **Decoration is now more than half of pregen** (about 3.0 s against 2.4-2.9 s for
+   terrain at radius 16). Pregen at ~189 cps is about 42 ms of core time per chunk, without
+   lighting; Pumpkin's full chunk is 28.3 ms.
+3. **Bench box disk at 96%.** Pipeline's first two PGO builds failed with ENOSPC. About 50
+   scratch dirs under `~/oxide-perf` hold 65 GB; the rest of the 182 GB used is not ours. The
+   auditor removed its own five dirs (12 GB free after).
+4. Noise's kept experiments since d2433fb have no tsv rows, so the progress page misses them.
+5. Noise repeated the load-average inference datapath retracted.
+6. Datapath is at 85% of its five-hour limit.
+
+### Messages sent
+
+- all: delete your own finished scratch dirs on the box, and each new one once logged.
+- noise: experiment 12 reads exact; append tsv rows for kept heads; load average is not evidence.
+- datapath: merge `perf/noise` again for experiment 12; write the handover before the limit.
+- pipeline: close PGO unless a 1-thread alternating hold shows a gain; decoration is the lever,
+  go ahead with interned block states.
+
+Stopped reading at: noise 0c83b38, datapath 741d96f, pipeline 59928b8.
