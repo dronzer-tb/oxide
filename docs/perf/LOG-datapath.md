@@ -1729,3 +1729,22 @@ All forty-eight `digest=a977961a58122047`.
 The two base builds differ by 2.3-4.6%. The stack's ~9% is the first change since E21 to clear the
 build floor. noise-12 is the noise track's patch, so E32 + E33 are held next without it, to
 attribute the gain before anything lands here.
+
+### E32 + E33 without noise-12: not landed
+
+Tests: chunkgen 194 passed. The same two bases, rotating, CPU-seconds method; java under 3% of wall in
+every run, so all runs are kept. All digests `a977961a58122047`.
+
+| | base 1 cps / CPU-s | base 2 cps / CPU-s | E32+E33 cps / CPU-s | E32+E33 ahead of both |
+|---|---|---|---|---|
+| 1 thread, 6 rounds | 113.1 / 34.84 | 114.3 / 34.54 | 110.7 / 34.23 | 1 of 6 |
+| 8 threads, 6 rounds | 725.1 / 36.89 | 781.1 / 35.92 | 817.2 / 34.76 | 4 of 6 (wall and CPU, the same rounds) |
+
+- At 1 thread E32+E33 is ~2.6% slower, so **the stack's 1-thread gain comes from noise-12.**
+- At 8 threads, +8.5% mean cps and -3.3% CPU-s, but ahead of both bases in only 4 of 6 rounds. That fits
+  E32's purpose (cross-thread duplication) but is not a consistent lead.
+
+Not landed on this evidence. The deciding test is whether E32+E33 add anything on top of noise-12,
+the code the noise track will actually land: base+noise-12 against base+noise-12+E32+E33 (the
+`datapath-28` stack), at 8 threads and 1. Running it now. **For the noise track: noise-12 (scratch
+pool) is the clear win here: +9% at 1 thread inside the stack, 7 of 8 rounds.**
