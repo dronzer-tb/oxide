@@ -82,3 +82,76 @@ is logged; `cargo test -p oxide-chunkgen` runs with `oxide-noise` before every c
 | # | What | Before (cps) | After (cps) | Digest | Verdict |
 |---|---|---|---|---|---|
 | 4 | Memoise `cell_bounds` per cell, keyed by how many corner grids exist | 163.8 | 168.9, 156.6 | ok | **reverted**: inside the noise, and datapath E1 already cuts the calls from ~24k to 768 per chunk in `fill.rs` |
+| 2 (repeat) | 3a1b789 benched again | | 154.6, 169.8 | ok | a 10% spread on identical code: the original 157.4 is not distinguishable from 1's 152.0 at this noise |
+| 3b (repeat) | 4abb9a3 benched again | | 189.1, 181.4 | ok | not comparable: the Minecraft servers on the box were stopped between these runs and the earlier ones |
+
+From here on: all 8 cores are free (both Minecraft servers stopped), the bench script is the new
+one (builds under `flock -s` at nice 10, only the timed run is exclusive), and every other
+build, test or profile on the box uses `flock -s ~/oxide-perf/.lock nice -n 10`. Earlier numbers
+need a quiet re-bench before they can be compared with new ones.
+
+### In flight (Opus sub-agents, one scratch worktree and bench name each)
+
+| Bench name | Experiment |
+|---|---|
+| `noise-1` | Corner grid evaluated a column (49 corners) at a time: `Program::run_lanes`, lane-batched `NormalNoise`/`PerlinNoise`/`BlendedNoise` with octave-outer loops |
+| `noise-2` | `preliminary_surface_level` / `find_top_surface`: one exact speedup of the per-step scan |
+| `noise-3` | Scalar `ImprovedNoise` micro-optimisations, `improved_noise.rs` only |
+
+Each experiment gets one interleaved A/B pair, run on top of a merge of `perf/datapath`. The
+auditor's scratch merge of this branch with datapath benched 401 and 421 cps
+(`bench-audit-combined.tsv` on `perf/audit`), and datapath's E1 changed what `fill` asks of this
+crate. Gate: on the merged tree, the patched digest equals the baseline digest.
+
+OmniRoute is no longer used, at the user's direction (too slow). It was also down for every
+listed model when tried: gemini flash over quota, `auto/kimi` without tool calls, kimi-web's
+upstream token expired, deepseek and gemini-pro returning empty answers.
+
+| # | What | Before (cps) | After (cps) | Digest | Verdict |
+|---|---|---|---|---|---|
+| 5 (noise-1) | Corner grid a column at a time: `Program::run_lanes` + lane-batched Perlin/Normal/Blended noise with octave-outer loops, bit-identity test added | 415.0 (merged with datapath b7e9f59, A/B baseline) | 401.1 | a977961a58122047 both | **rejected**: exact, but no gain. Overlapping lanes did not pay for the extra lane arrays and `Vec` traffic. Interleaving lanes in scalar code is not enough; real SIMD (AVX2 gathers, which are slow on Zen 1) would be needed, or less noise work per corner |
+
+Merged-tree baseline (this branch + `perf/datapath`): **415.0 cps**, digest a977961a58122047.
+New experiments are judged against that.
+| 6 (noise-2) | `find_top_surface` keeps the density registers between steps and re-runs only the y-dependent ops (16 of 25). The offset/factor splines are recomputed at every 8-block step because the aquifer samples outside the chunk's 17x17 2D cache. Exact, with a bit-identity test | 438.3 (merged 447defb) | 410.0 | a977961a58122047 both | **not landed**: no visible gain in one pair. Patch kept at `/tmp/noise-2-final.patch` while that tree exists. Untried follow-up: the upper bound (ops 0-12) and step 1 compute the same splines once per call |
+| 7 (noise-3) | `ImprovedNoise`: doubled `[u8; 512]` permutation (mask each coordinate once, no masking on the nested lookups), `#[inline(always)]` on the hot helpers. Float work untouched. Old implementation kept as a bit-identity reference test over 64 seeds x 4000 points, with negative and saturated coordinates | 385.7 (merged 367bb13) | 443.5 | a977961a58122047 both | **kept**: exact and strictly fewer instructions. Gain not yet separated from noise (see below) |
+
+The three merged-tree baselines so far are 385.7, 415.0 and 438.3 on identical code, a 13% spread.
+A single A/B pair cannot resolve anything under ~15% at that noise, even on the quiet box.
+
+### Profile of this branch merged with datapath (before 7), generation only
+
+Noise crate is 55.6% inclusive. Corner-grid build 33% (`once` caches inside it 23%, 2D column
+caches 11%). `ImprovedNoise` 25.6%. `preliminary_surface_level` from the aquifer 9.9%; most of
+its calls land outside the chunk's 2D caches. Per-block `final_density` through the cell memo is
+no longer visible.
+
+In flight: `noise-4`, corner columns shared across chunks (9 of a chunk's 25 corner columns are
+its neighbours' edge columns). `noise-5`, a shared per-column memo of `preliminary_surface_level`,
+gated on a compile-time proof that the program does not depend on y. Both caches store the
+full key with each entry, so a hit is exact.
+
+## Handover, session 2 (stopped at the usage limit)
+
+Head of `perf/noise`: 6dfa05a plus log commits. Kept this session: 7 (doubled permutation table).
+On this branch merged with datapath: patched 443.5 against baseline 385.7. Baselines on identical
+merged code spread from 385.7 to 438.3, so the size of the gain is unconfirmed. Digest unchanged:
+`a977961a58122047`.
+
+**In flight when stopped.** Both were stopped mid-bench, with no BENCH line recorded. Diffs are
+committed under `docs/perf/wip/` and apply on top of 6dfa05a merged with `origin/perf/datapath`:
+- `noise-4-shared-corner-columns.patch`: corner columns shared across chunks through a
+  direct-mapped, sharded cache on `NoiseRouterEvaluator` that stores full keys. The agent
+  reported both crates' tests passing before it queued its patched bench.
+- `noise-5-shared-surface-memo.patch`: a shared per-column memo of slots proven y-independent
+  at compile time (`preliminary_surface_level`). `oxide-noise` tests passed; `oxide-chunkgen`
+  test status was not reported before it stopped.
+
+**Next three things to try:**
+1. Finish noise-4 and noise-5: re-run both crates' tests on the merged tree, then one A/B pair
+   each. These target the two largest costs left in this crate: the corner-grid build (33%) and
+   the surface level outside the chunk (10%).
+2. To measure gains under ~15%: bench A and B back to back two or three times. Single pairs on
+   this box spread 13% even with all 8 cores free.
+3. Real AVX2 `ImprovedNoise` across a column of corners (gathers on the doubled table). Scalar
+   lane interleaving (5) gave nothing, so this only pays with SIMD arithmetic.
