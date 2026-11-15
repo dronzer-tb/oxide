@@ -246,3 +246,30 @@ y from -64 to 320 against the plain formula, with the gate exercised; `gated_add
 where `invert` keeps the plain lowering and its NaN), oxide-chunkgen 190 + 1 + 1 + 1 passed.
 The load average of 5.24 at the start of hold 3 means something ran outside the lock at that
 moment. Both builds alternated through it, and the gate wins every round.
+
+### Corner-grid cost model at 8a85270 (instrumented scratch build, radius 16, 8 threads)
+
+Profile: the corner grid is now **27.6% of generation** (33% before 9 and 12; datapath's profile
+had it at 44.5%). Inside it, the noise leaves are ~57% and the interpreter and caches ~41%;
+`eval_op`'s own dispatch is ~5%.
+
+Noise evaluations during corner-grid builds, per noise:
+- `old_blended_noise` (inside `sloped_cheese`): 708,942, up to 40 octaves each (8 main plus 16
+  per limit stack, one stack skipped when saturated). Roughly half of all `ImprovedNoise` work.
+- Cave noises (`spaghetti_3d_*`, `spaghetti_roughness*`, `cave_entrance`): 708,942 each, the
+  same count as blended. The cave branch runs at every corner where `sloped_cheese` runs, so
+  there is no further branch to skip in slot 0.
+- `cave_cheese`, `spaghetti_2d*`, `pillar*`, `cave_layer`: 272,154 each.
+- Noodle (`noodle`, `noodle_thickness`, `noodle_ridge_a`/`_b`, interpolated slots 1-4):
+  855-873k each, one octave.
+
+Per cell (`run_cell`): 372,209 cells evaluated (342 of 768 per chunk; the rest culled). Noodle
+slots 2-4 were needed in 248,251 of them (67%), slot 0 and 1 in all of them.
+
+**Lazy noodle grids not pursued**: building slots 2-4's corners only for the cells that need
+them would save well under half of three single-octave noises, under 1% of generation. Slot 0
+cannot be lazy, because the culling bounds read every one of its corners.
+
+What is left in this crate is the per-sample cost of `ImprovedNoise`. `noise-7` (in flight) tries
+SIMD within one sample: the 8 corner dot products and 7 lerps across lanes, gradients from a
+per-hash `[gx, gy, gz, 0]` table, no cross-sample queue (the cost that sank 11).
