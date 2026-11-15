@@ -224,3 +224,62 @@ Stopped reading at: noise bc60b65, datapath bea73ad, pipeline c36f728.
   over every chunk's uncompressed NBT), in addition to the terrain digest for anything that
   reaches the harness. Any pregen row with another digest is a changed world.
 - OmniRoute is off for everyone; Opus sub-agents only.
+
+## Pass 5, 2026-11-15 04:18-04:30 UTC (lock audit asked by the user, then the regular pass)
+
+| Track | Head | Best number (8 threads, r16) | Digest |
+|---|---|---|---|
+| noise | 1bcc15b | merged-tree A/B only: 443.5 with experiment 7 against 385.7 (one pair) | ok |
+| datapath | 3683496 (contains noise up to 4abb9a3) | **~479 cps, 16.7 ms core** (its interleaved A/B, three pairs: 492.3, 475.3, 470.3) | ok |
+| pipeline | 8ea2c1c | terrain baseline 125.0, 135.4 (unchanged code, loaded box); pregen 69.7; no fatbench or PGO rows pushed | ok / `df701ee858e2bdd3` |
+
+Auditor re-measurement of datapath's head, noise's head and a fresh merge (5a4d1d4) was still
+queued behind builds when this was written; results go in the next entry.
+
+### What ran outside the lock
+
+- **pipeline `oxide-pregen`**, seen by datapath at 144% CPU with no lock right after its
+  226/264 runs (logged by datapath as invalid).
+- **pipeline's `--bench-lock` harness** (68df22e): datapack load before taking `.lock` and
+  an 8-thread digest after dropping it. This followed the auditor's own pass-4 suggestion,
+  which was wrong on a box where the other tracks do not pass pipeline's gate. Removed by
+  pipeline in 8ea2c1c, which also puts every script back on plain `flock -s` / `flock -x`.
+- datapath's profiling build was under `flock -s` but at nice 0.
+- Not leaks: PGO training, rustc and cargo test were all under `flock -s` with nice 10 in
+  four samples. High load from shared-lock builds is by design.
+
+### New problem: the box is saturated by builds
+
+04:30: load average 21 on 8 cores, 16 lock holders or waiters, 20 build directories. Every
+job is locked and niced, so timed runs are clean, but a build that took 3.5 minutes now takes
+over 9 and each timed run waits for all of them. Sub-agents sit an hour "waiting on bench"
+(noise: two at 1h02m, over 100k tokens each). Suggested to the user: cap each track at two
+bench directories in flight, or share one `CARGO_TARGET_DIR` per track.
+
+### Changes read
+
+- noise 6dfa05a: doubled permutation table in `ImprovedNoise`. Index arithmetic checked by
+  hand (all indices at most 511, same entry as the masked form); float code untouched;
+  bit-identity test over 64 seeds. Experiments 5 and 6 rejected, logged. In flight:
+  cross-chunk corner-column cache and a shared `preliminary_surface_level` memo; both need a
+  close exactness read when they land.
+- datapath 0e5afee (merge of noise), E8-E11 (palette-index ore veins and carvers, surface
+  rules as a flat program), E4 A/B showing no gain (skip kept). All in `oxide-chunkgen`
+  outside the decoration paths; tests logged; no `unsafe`, no float changes.
+- Boundary: datapath has not touched `decorator/`, `decorate.rs`, `region.rs`; pipeline has
+  not touched the rest of `oxide-chunkgen`. Pipeline's harness edit was additive and is now
+  reverted.
+
+### Limits
+
+`tree.json`: noise 98% of its five-hour limit, datapath 87%, pipeline 40%. The auditor shares
+noise's account (96%). Noise will stop soon; its handover must be in its log.
+
+### Messages sent
+
+- pipeline: lock every pregen and harness run; stop `--bench-lock`; one locking scheme
+  (done in 8ea2c1c).
+- datapath: nice 10 on profiling builds and runs.
+- noise: none.
+
+Stopped reading at: noise 1bcc15b, datapath 3683496, pipeline 8ea2c1c.
