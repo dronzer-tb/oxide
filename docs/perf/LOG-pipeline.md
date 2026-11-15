@@ -767,3 +767,28 @@ bf577ba). It counts terrain generations and feature runs per finished chunk.
   flat terrain; Chunky's 8 workers interleave neighbouring requests, which may cost more.
 - (2a) reduces to raising `TERRAIN_CACHE_CHUNKS` from 256 to about 1024 (oxide-ffi, not this track).
   (2b) matters only for memory at that size.
+
+## Decoration profile on the branch head, 1 thread (merged with datapath 00b456d)
+
+Tree: this branch at 92d353d merged with origin/perf/datapath **00b456d** (scratch merge de747f2,
+bench-vps.sh conflict resolved with ours), plus the timer patch v3 (not committed).
+`oxide-pregen --radius 16 --threads 1 --no-write`, shared lock at nice 10, digest **df701ee858e2bdd3**.
+
+    BENCH secs=31.620 generate_ms=16788 decorate_ms=13439
+    decorate() calls=1225 cpu_ms=11378 (in features 11143); first profile (28286bb) was 21.5 s CPU
+
+Primitives now: `block` 19.9M calls (15.0%), `set_block` 2.27M at 449 ns (9.0%), `is` 9.7M (6.7%),
+`height` 1.8M (2.2%). Ore writes and reads now go through `set_block_id`/`block_keyed`, which the
+timers do not wrap, so ore rows show set_block=0 and their cost is in the feature total only.
+
+| feature group | cpu share |
+|---|---|
+| sculk_patch_deep_dark (505 runs, 7.19M `block`, 1.15M `is`, 0.52M `set_block`) | 28.8% |
+| lush caves: ceiling_vegetation 6.1, vegetation 4.5, clay 4.2, cave_vines 3.7 | 18.5% |
+| stone ores: clay 4.2, granite 3.8, diorite 3.6, tuff 3.5, andesite 3.4 (was 28.1%) | 18.5% |
+| dark_forest_vegetation | 5.9% |
+| glow_lichen | 2.7% |
+| amethyst_geode | 2.4% |
+
+Next targets in order: sculk's 14k `block` reads per run, then the four lush-cave features (they
+read about 1.3-1.6M cells each, mostly `is` + `block` on the same cave ceilings and floors).
