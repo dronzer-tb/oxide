@@ -678,6 +678,19 @@ impl Program {
         self.cell_batchable
     }
 
+    /// Whether this program's value is a function of x and z alone: bit-identical at every
+    /// `ctx.y`, through any chunk's caches in any state, or through none.
+    ///
+    /// [`cache_pure`] makes every cache node return exactly its argument's value (no
+    /// `interpolated` node, which would read this chunk's corner grid; 2D caches only over
+    /// y-independent arguments, so the y they were first filled at cannot matter). Under that,
+    /// [`y_independent_ops`] holds for the result: `ctx.y` only enters through the leaves it
+    /// rejects. Floating point is deterministic for identical inputs, so identical inputs at
+    /// every instruction give identical bits, NaN payloads included.
+    pub(crate) fn y_independent(&self) -> bool {
+        cache_pure(&self.ops) && y_independent_ops(&self.ops).last().copied().unwrap_or(false)
+    }
+
     /// Evaluates this program at every block of one cell of `caches`, writing `out` in the
     /// lane order [`ChunkCaches::fill_cell_interpolated`] defines. Only valid when
     /// [`Program::cell_batchable`] is true.
@@ -1629,6 +1642,127 @@ impl<'a> Compiler<'a> {
         }
     }
 }
+
+/// For each instruction of `ops`, whether its value is provably the same at every `ctx.y` for
+/// a fixed x and z -- bit for bit, not merely mathematically. Stated for evaluation through a
+/// chunk's caches of a program that [`cache_pure`] accepts (see [`Program::column_invariant`]
+/// for the whole argument).
+///
+/// Conservative: anything not listed reads y (gradients, 3D noise, blended noise,
+/// `interpolated`) or is not worth proving (`weird_scaled_sampler`).
+///
+/// The one subtle leaf is `shifted_noise` with `y_scale == 0`: its y input is
+/// `block_y * 0.0 + shift_y`, and `block_y * 0.0` is `+0.0` or `-0.0` depending on the sign of
+/// `block_y`. Adding `shift_y` erases that sign exactly when `shift_y` is not `-0.0` and not NaN
+/// (`-0.0 + 0.0 == +0.0` in round-to-nearest; any nonzero or infinite value absorbs a zero), so
+/// that is only accepted with a constant `shift_y` known to be neither. Vanilla's 2D noises
+/// (`continents`, `erosion`, `ridges`) are all of this shape with `shift_y` = 0. A plain `noise`
+/// with `y_scale == 0` would pass the signed zero straight through and is not accepted.
+///
+/// `find_top_surface` reads `ctx.x`, `ctx.z` and its upper-bound register, never `ctx.y`: its
+/// density program runs at the scan's own heights. So it is y-independent when its upper bound
+/// is, whatever its density program reads.
+///
+/// Cache nodes are accepted when their whole argument is: `cache_2d`/`flat_cache` return the
+/// argument at the caller's y and the (possibly snapped) column, or a value it gave at that
+/// column at some other y; `cache_once` returns the argument at exactly the caller's position.
+pub(crate) fn y_independent_ops(ops: &[Op]) -> Vec<bool> {
+    fn whole(p: &Program) -> bool {
+        y_independent_ops(&p.ops).iter().all(|v| *v)
+    }
+    fn spline(s: &CompiledSpline) -> bool {
+        whole(&s.coordinate)
+            && s.points.iter().all(|p| match &p.value {
+                CompiledSplineValue::Constant(_) => true,
+                CompiledSplineValue::Spline(inner) => spline(inner),
+            })
+    }
+    let mut indep = vec![false; ops.len()];
+    for (i, op) in ops.iter().enumerate() {
+        let r = |a: &u32| indep.get(*a as usize).copied().unwrap_or(false);
+        indep[i] = match op {
+            Op::Const(_) => true,
+            Op::Shift { kind, .. } => *kind != ShiftKind::Xyz,
+            Op::ShiftedNoise(n) => {
+                let sign_safe_y = match ops.get(n.shift_y as usize) {
+                    Some(Op::Const(c)) => !c.is_nan() && c.to_bits() != (-0.0f64).to_bits(),
+                    _ => false,
+                };
+                n.y_scale == 0.0 && sign_safe_y && r(&n.shift_x) && r(&n.shift_z)
+            }
+            Op::Add(a, b) | Op::Mul(a, b) | Op::Min(a, b) | Op::Max(a, b) => r(a) && r(b),
+            Op::Abs(a)
+            | Op::Square(a)
+            | Op::Cube(a)
+            | Op::HalfNegative(a)
+            | Op::QuarterNegative(a)
+            | Op::Squeeze(a)
+            | Op::Invert(a) => r(a),
+            Op::Clamp(c) => r(&c.input),
+            Op::Spline(s) => spline(s),
+            Op::RangeChoice(c) => {
+                r(&c.input) && whole(&c.when_in_range) && whole(&c.when_out_of_range)
+            }
+            Op::IntervalSelect(s) => r(&s.input) && s.functions.iter().all(whole),
+            Op::FindTopSurface(f) => r(&f.upper_bound),
+            // The gradient never qualifies, so in practice this is false; stated in full so a
+            // future y-independent gate would still be judged correctly.
+            Op::GatedAdd(g) => r(&g.g) && whole(&g.body),
+            Op::Cache { kind, argument, .. } => {
+                *kind != CacheKind::Interpolated && whole(argument)
+            }
+            Op::Noise(_)
+            | Op::OldBlendedNoise(_)
+            | Op::WeirdScaledSampler(_)
+            | Op::YClampedGradient(_) => false,
+        };
+    }
+    indep
+}
+
+/// Whether every value `ops` computes through a chunk's caches is independent of which chunk's
+/// caches they are and of what those caches already hold: the program gives the same bits
+/// through any `ChunkCaches`, fresh or used, as it would through a fresh one.
+///
+/// Requires, at every depth (lazy branches, spline coordinates, `find_top_surface` densities,
+/// cache arguments):
+/// - no `interpolated` node: its value is a blend of *this chunk's* cell corners, and a
+///   position outside the chunk is clamped into the chunk's corner grid;
+/// - every `cache_2d`/`flat_cache` argument y-independent and itself pure: a column slot is
+///   filled at whichever y first asks for it, and read back at every other y;
+/// - every `cache_once` argument pure: its slot is keyed by the full position, so a hit
+///   returns the argument at exactly that position.
+///
+/// Slot sharing between programs does not break this: two cache nodes share a slot only when
+/// their arguments' fingerprints are equal, which is a full structural serialisation, so
+/// whichever program filled a slot computed it with an identical argument.
+pub(crate) fn cache_pure(ops: &[Op]) -> bool {
+    fn spline(s: &CompiledSpline) -> bool {
+        cache_pure(&s.coordinate.ops)
+            && s.points.iter().all(|p| match &p.value {
+                CompiledSplineValue::Constant(_) => true,
+                CompiledSplineValue::Spline(inner) => spline(inner),
+            })
+    }
+    ops.iter().all(|op| match op {
+        Op::Cache { kind, argument, .. } => match kind {
+            CacheKind::Interpolated => false,
+            CacheKind::Cache2d | CacheKind::FlatCache => {
+                cache_pure(&argument.ops) && y_independent_ops(&argument.ops).iter().all(|v| *v)
+            }
+            CacheKind::Once => cache_pure(&argument.ops),
+        },
+        Op::Spline(s) => spline(s),
+        Op::RangeChoice(c) => {
+            cache_pure(&c.when_in_range.ops) && cache_pure(&c.when_out_of_range.ops)
+        }
+        Op::IntervalSelect(s) => s.functions.iter().all(|p| cache_pure(&p.ops)),
+        Op::FindTopSurface(f) => cache_pure(&f.density.ops),
+        Op::GatedAdd(g) => cache_pure(&g.body.ops),
+        _ => true,
+    })
+}
+
 
 fn push(ops: &mut Vec<Op>, op: Op) -> u32 {
     ops.push(op);

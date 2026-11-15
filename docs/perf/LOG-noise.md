@@ -349,3 +349,23 @@ builds. If the session ends first, its diff will be at `/tmp/noise-8-final.patch
 3. With the noise leaves near their Zen 1 floor, the remaining large costs are datapath's
    (surface, aquifer, fill). Help there through narrow additive APIs in this crate, like the
    y-independence predicate datapath's E27 needs, rather than with more leaf micro-work.
+
+### API for datapath's E27: `NoiseRouterEvaluator::is_y_independent(slot)`
+
+A predicate on the compiled program, replacing the parse of `dump_program` text. It is true
+when the slot's value is a function of x and z alone: `sample_in_chunk` gives bit-identical
+values at every y through any chunk's caches, and `sample` is likewise y-independent. The two
+entry points can differ from each other: with caches a `flat_cache` node samples at the quart
+origin, without them at the exact position. The analysis comes from noise-5 (`y_independent_ops`
+plus `cache_pure`, extended for `GatedAdd`). A 2D `shifted_noise` qualifies only with a constant
+`shift_y` that is neither -0.0 nor NaN, a plain `noise` with `y_scale` 0 does not (`y * 0.0`
+keeps the sign of y), and any `interpolated` node disqualifies the program.
+
+On the real overworld (radius-16 harness datapack): temperature, vegetation, continents,
+erosion, ridges and preliminary_surface_level are **true**; depth, final_density, barrier and
+lava are **false**. That matches E27's hand-made argument. The new test
+`y_independence_predicate` covers 8 shapes: the climate shape, nonzero and -0.0 `shift_y`, 3D
+noise, plain 2D noise, interpolated, a gradient, and a sum. Where the predicate is true it
+checks bit identity at 7 y values, through two chunks' caches and without caches. Tests:
+oxide-noise 35, oxide-chunkgen 190 + 1 + 1 + 1, all passed. This is an API, not a speed change,
+so there is no hold.
