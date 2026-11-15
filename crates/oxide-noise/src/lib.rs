@@ -23,6 +23,7 @@ mod normal_noise;
 mod perlin_noise;
 mod random;
 mod router;
+mod scratch;
 
 pub use blended_noise::{BlendedNoise, BlendedNoiseParams};
 pub use cache::ChunkCaches;

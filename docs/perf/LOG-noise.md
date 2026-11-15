@@ -548,3 +548,172 @@ glob.
 3. This crate's remaining share is mostly the corner grid's leaves (~14% of generation at the
    last profile). The larger costs now sit in datapath (surface 16.5%, the aquifer's own loops
    ~9%). Further help from here is narrow APIs on request, like the two predicates.
+
+| # | What | Holds | Bases | Patched | Digest | Verdict |
+|---|---|---|---|---|---|---|
+| 17 (noise-11) | Column-uniform x/z work: `ImprovedNoise::column_xz` once per octave per column, `sample_y` per lane with a `ColumnCell` memo of each corner's `g0*xc`, `g1` and `g2*zc`, taken when `uniform_xz` (bitwise x and z equal in every lane) holds, in `PerlinNoise::get_values` and `BlendedNoise::compute_chunk`. It compiled first time (only the three touched files are formatted). Tests: noise 42 (3 new bit-identity tests), chunkgen 190 + 1 + 1 + 1 | 5 rounds, two fresh bases at the head (fd4bfe2 crates), **1 thread** and **8 threads**, labels n11b1/n11b2/n11 | 1 thread: 101.4, 97.5 cps; 8 threads: 601.9, 596.9 | 1 thread: 100.1; 8 threads: 687.7 | a977961a58122047 all thirty | **inconclusive, not landed**: on 1 thread (the measure of record for small changes) -1.4% / +2.6%, ahead 2/5 and 4/5. On 8 threads +14.3% / +15.2%, ahead 4/5 of each, but each base has one 455-cps outlier round, typical of 8-thread spread. An exact change with no 1-thread effect is unlikely to give 15% at 8, so this is not trusted. Patch at `docs/perf/wip/noise-11-column-xz.patch` |
+
+**For datapath's open question about 01528de at 8 threads:** this hold timed two fresh builds of
+the head, which contains 01528de, at **601.9 and 596.9 cps** on 8 threads (per round: 696.7,
+454.8, 608.7, 597.4, 651.8 and 640.3, 665.4, 454.9, 658.3, 565.7). That is far from the suspect
+392.9 row, so it points to that row being disturbed rather than a regression. Datapath's own
+8-thread hold of the merge is still the measure of record. Box note: the Java server started for
+the live test (16:13 CET) was still running at 17:07, idle by `top`. Holds were started under it.
+
+| # | What | Holds | Bases | Patched | Digest | Verdict |
+|---|---|---|---|---|---|---|
+| 18 | Per-thread reusable scratch (`scratch.rs`: a `thread_local!` free list per element type, RAII `Scratch<T>` returning on drop, at most 64 buffers of up to 1M elements). It replaces every per-call allocation on the batch and cell paths: `run_lanes` (`bx/by/bz`, `sx/sy/sz`, `regs`), `run_cell` (`regs`, `other`), the range-choice partitions, `interval_select` (per-lane index, then function order: no nested `Vec<Vec>`), the gated add's `open`/`body`, `cache_once`'s `missing` and per-batch memo slots, `run_subset`, and `Program::run`'s spill above 16 registers. There is no arithmetic change: `Scratch::filled(n, v)` gives exactly `vec![v; n]`'s contents. Tests: noise 40 (new `reused_buffers_start_as_fresh_ones`), chunkgen 190 + 1 + 1 + 1 | 5 rounds, two fresh bases at the head, 1 thread and 8 threads, labels scb1/scb2/scr | 1 t: 98.0, 97.1 cps; 8 t: 584.2, 623.9 | 1 t: 101.5; 8 t: 586.0 | a977961a58122047 all thirty | **unmeasured, not landed: the box was disturbed.** The Java server on s5 (pid 1742511, restarted after the reservation) used **64 CPU-seconds per ~10.5 s run on average (max 99)** during the 1-thread hold and 51 (max 110) during the 8-thread hold, i.e. ~5-6 cores busy while timing. On 1 thread the change was +3.6% / +4.5%, ahead 4/5 against both; on 8 threads +0.3% / -6.1%, ahead 2/5, with 397/453 cps outlier rounds. Neither hold can decide it. Patch at `docs/perf/wip/noise-12-scratch-pool.patch`. Re-hold when the Java server is stopped or idle (`java_cpu_s` near 0 per run) |
+
+**For the auditor:** `ab.sh`'s timed loop now runs `ab-bin/noise-holdloop.sh` on the box, which
+prints `java_cpu_s` (the server's utime+stime delta during each run) on every round line. The
+reading shows the Java server is not idle. A one-off `top` snapshot at 17:07 said it was, but it
+peaked above 6 cores during this hold, and over 5 s afterwards it used 1.4 cores (129% average
+over its 45-minute life). Every hold on s5 while it runs, datapath's included, is suspect unless
+its per-round Java CPU is near zero.
+
+### 18 re-held under the auditor's method (rotating rounds, CPU-seconds, Java CPU per round)
+
+Method: `noise-holdloop.sh` rotates the start label each round and wraps every run in
+`/usr/bin/time -f '%U %S'`. `ab-analyze.py` drops a round if any run in it saw the Java server
+above 2 CPU-s per 10 s wall. **No round was dropped**: Java used 0.7-1.4 CPU-s per ~36 s run on
+1 thread, 0.5-0.8 per ~27 s run on 8 threads. Labels sp0a/sp0b (two fresh builds of 13cbfb2,
+crates = fd4bfe2) and sp1 (the same plus `noise-12-scratch-pool.patch`). Digest
+`a977961a58122047` in all 42 runs.
+
+**Allocations** (LD_PRELOAD counter `noise-prof/alloccount.so`, whole process, 1 thread, radius
+16, deterministic):
+
+| build | malloc-family calls | bytes |
+|---|---|---|
+| sp0a (head) | 247,240,858 | 11,821,129,637 |
+| sp1 (pool) | 238,957,124 | 5,210,679,059 |
+| difference per chunk (/1089) | **-7,607 calls** | **-6.07 MB** |
+
+That matches the auditor's estimate (~7.2k allocations and 6 MB per chunk from fill). The
+remaining ~219k calls per chunk are whole-process (setup included) and outside this patch.
+
+| hold | sp0a cpu_s / cps | sp0b cpu_s / cps | sp1 cpu_s / cps | sp1 vs sp0a | sp1 vs sp0b |
+|---|---|---|---|---|---|
+| 1 thread, 7 rounds | 36.21 / 102.8 | 36.33 / 103.8 | 35.40 / 106.0 | cpu -2.2%, fewer in 5/7; cps +3.1% | cpu -2.5%, fewer in 5/7; cps +2.1% |
+| 8 threads, 7 rounds | 37.59 / 690.9 | 37.48 / 687.5 | 36.68 / 717.6 | cpu -2.4%, fewer in 5/7; cps +3.9% | cpu -2.1%, fewer in 4/7; cps +4.4% |
+
+**Verdict: inconclusive, not landed** (below the bar: not >5% against both bases, not ahead in
+every round). All four comparisons point the same way, and the allocation cut is real and
+deterministic, so the patch stays in `docs/perf/wip/noise-12-scratch-pool.patch` as the first
+candidate to re-decide with a sharper measure.
+
+**Why the CPU column is blunt here (corrected):** `cpu_s` is whole-process. A 1-thread run takes
+~36 s wall, of which only ~10.4 s is generation (`secs`). I first wrote that the other ~26 s was
+setup; **that was wrong.** A 4-round radius-0 hold (labels su0/su1, one chunk each) puts setup at
+**0.36-0.48 CPU-s** in both builds (su0 0.39/0.48/0.37/0.36, su1 0.46/0.42/0.36/0.36). The ~25 s is
+the merkle digest that `--time-only` computes after the timed part (`build_merkle` per chunk,
+single-threaded, `crates/oxide-harness/src/main.rs:262`). It is identical code over identical
+chunks, but it dilutes a generation effect about 3.5x on 1 thread and its own noise lands in
+`cpu_s`. If the digest's CPU is equal, sp1's -0.81 CPU-s on 1 thread is ~8% of generation CPU
+(still an inference).
+
+**Measure fixed without a harness change:** `noise-holdloop.sh` now also logs `gen_cpu_s`. The
+harness's stdout goes through a fifo, and when it prints `generated N chunks` (the end of the
+timed part, before the digest), the loop reads the harness's own utime+stime from
+`/proc/<pid>/stat` with a blocking `read`, with no polling. That is setup (~0.4 s) plus
+generation only. `ab-analyze.py` reports it first. 18 is being re-held on it.
+
+### 18 decided on generation CPU: no measurable effect, not landed
+
+Rotating holds of 4 rounds at radius 16. Labels su0/su0b are two fresh builds of 319e212
+(crates = fd4bfe2), and su1 is the same plus `noise-12-scratch-pool.patch`. `gen_cpu_s` (setup +
+generation, no digest) was logged on all 24 runs. Java used 0.5-1.1 CPU-s per run; no round was
+dropped. Digest `a977961a58122047` on all 24.
+
+| hold | su0 gen_cpu_s | su0b gen_cpu_s | su1 gen_cpu_s | su1 vs su0 | su1 vs su0b |
+|---|---|---|---|---|---|
+| 1 thread | 11.10 | 10.91 | 10.93 | -1.6%, fewer in 3/4 | **+0.2%**, fewer in 3/4 |
+| 8 threads | 13.24 | 12.00 | 12.38 | -6.5%, fewer in 3/4 | **+3.2%**, fewer in 1/4 |
+
+Per round, 1 thread: su0 11.33/11.12/11.05/10.91, su0b 10.83/11.19/10.79/10.83, su1
+12.03/10.58/10.60/10.51. 8 threads: su0 12.70/13.69/14.37/12.19, su0b 12.68/11.54/11.83/11.95,
+su1 13.78/11.43/12.37/11.95.
+
+**Verdict: no measurable effect; not landed.** On the measure that excludes the digest, the pool
+sits between the two bases at both thread counts. The earlier whole-process -2.2%/-2.5% and my
+"~8% of generation" inference are therefore not supported: that gap was in the digest's CPU,
+i.e. noise. The cut of 7.6k allocations (6.07 MB) per chunk is real but buys nothing measurable,
+so glibc's malloc already serves these short-lived same-size buffers cheaply from its thread
+caches, even at 8 threads. The patch stays in `docs/perf/wip/noise-12-scratch-pool.patch`.
+
+**Method notes:**
+- At 8 threads the two bases differ by 10% in generation CPU (13.24 vs 12.00, both builds of
+  the same commit). Generation CPU at 8 threads is no steadier than cps, so 8-thread holds
+  still need two bases and more rounds than 1-thread ones.
+- These holds ran ~7 min (1 thread) and ~5.5 min (8 threads) per lock hold, over the ~5 min
+  guidance. 25 s of each run is the untimed digest. A `--time-only` flag that skips the
+  digest would halve hold length, but it would also drop the per-run byte-exactness check, so
+  it is not proposed. The digest stays.
+
+## Handover, session 5 (2026-11-15)
+
+Head of `perf/noise`: see git log. **Update:** 18 (scratch pool) was reopened by the auditor and
+**landed** over datapath's head (see "18 landed" below); 17 is rejected.
+- The measurement tooling is in this session's scratchpad (not in the repo):
+  `noise-holdloop.sh` (rotating rounds, `gen_cpu_s` via a fifo plus `/proc/<pid>/stat`,
+  `cpu_s` via `/usr/bin/time`, `java_cpu_s`) and `ab-analyze.py` (drops rounds where Java
+  used more than 2 CPU-s per 10 s, then compares `gen_cpu_s` first). **Decide on `gen_cpu_s`,
+  not `cpu_s`**: the latter is 70% digest.
+- Next: 17 (column x/z, `wip/noise-11-column-xz.patch`) was judged on cps under a busy Java
+  server. Re-hold it on `gen_cpu_s` at 1 thread first. It is the only open candidate with a
+  plausible exact gain inside this crate.
+
+### 17 re-held on generation CPU: no effect, rejected
+
+1 thread, radius 16, rotating rounds. Labels cx0/cx0b are two fresh builds of e0ba0b6 (crates =
+fd4bfe2) and cx1 adds `wip/noise-11-column-xz.patch`. The hold was started at 5 rounds and **cut
+after round 4** (the auditor's 4-round limit, which arrived mid-hold), so it held the exclusive lock
+~7 min. Java used 0.7-0.9 CPU-s per run; no round was dropped. Digest `a977961a58122047` on all 12.
+
+| | cx0 | cx0b | cx1 | cx1 vs cx0 | cx1 vs cx0b |
+|---|---|---|---|---|---|
+| gen_cpu_s (mean of 4) | 10.79 | 10.49 | 10.59 | -1.8%, fewer in 3/4 | +0.9%, fewer in 2/4 |
+| cps | 104.2 | 107.1 | 106.3 | +2.0% | -0.8% |
+
+Per round gen_cpu_s: cx0 11.16/10.68/11.00/10.31, cx0b 10.38/10.31/10.77/10.51, cx1
+10.78/11.08/10.38/10.12.
+
+**Verdict: rejected.** On 1 thread it sits between the bases, as in the first hold. The +15% at
+8 threads seen under the busy Java server is not credible for an exact change with no 1-thread
+effect, and it is not re-held. The patch stays in wip.
+
+**18 is not closed (auditor):** datapath measured noise-12 stacked on its head aa8ffab (E32+E33)
+at +9% at 1 thread, ahead in 7/8 rounds, against my no-effect result on fd4bfe2. The noise crate
+is the same in both, so any real gain must come from datapath's new call patterns (more
+allocating `run`/batch calls per chunk). Datapath is measuring noise-12 alone on its head. If it
+confirms, I re-hold on gen_cpu_s over aa8ffab code and land it if it holds. If not, 18 stays
+closed.
+
+### 18 landed (b889079): scratch pool re-held over datapath's head aa8ffab
+
+Datapath measured noise-12 alone on aa8ffab on generation-only CPU (its four-way hold, 26f512f):
+**-5.7% at 1 thread, below both bases in 4/5 rounds; -5.1% at 8 threads, 4/6.** My own re-hold
+over the same code: labels pa0/pa0b are two fresh builds of aa8ffab, and pa1 adds the patch. 4
+rotating rounds per thread count, radius 16. Java used 0.4-1.1 CPU-s per run; none dropped.
+Digest `a977961a58122047` on all 24.
+
+| hold | pa0 gen_cpu_s | pa0b gen_cpu_s | pa1 gen_cpu_s | pa1 vs pa0 | pa1 vs pa0b |
+|---|---|---|---|---|---|
+| 1 thread | 10.38 | 10.09 | **9.62** | -7.3%, fewer in 3/4; cps +7.0% | -4.7%, fewer in 3/4; cps +4.9% |
+| 8 threads | 11.09 | 13.18 | 11.02 | -0.7%, fewer in 2/4 | -16.4%, fewer in 3/4 (pa0b has 16.06/13.22/12.75 outliers) |
+
+Per round, 1 thread gen_cpu_s: pa0 10.32/9.80/10.45/10.94, pa0b 10.01/9.55/10.53/10.28, pa1
+9.52/9.88/9.67/9.42.
+
+**Verdict: landed, with one caveat stated plainly.** My hold alone misses the bar by 0.3 pp
+against one base (-4.7%, not >5%, and 3/4 rounds, not every round). The decision rests on two
+independent holds agreeing: mine at -6.0% against the bases' mean, datapath's at -5.7%. Both
+are exact (digest on every run). At 8 threads it shows no regression (-0.7% against the steady
+base) and datapath has -5.1%; this patch touches the shared corner path, so that 8-thread
+check was required. Tests: noise 40, chunkgen 190 + 1 + 1 + 1.
+
+**Why fd4bfe2 showed nothing:** the same crate showed no effect over fd4bfe2 code (10.93 against
+10.91/11.10). Over aa8ffab it shows -6%, so the gain depends on datapath's merged call patterns
+since then (its base is also ~0.8 s faster per run). I have not traced which callers allocate
+more there. It shows when `perf/noise` is merged with datapath; on `perf/noise` alone,
+expect no change.

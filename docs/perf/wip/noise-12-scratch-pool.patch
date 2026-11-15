@@ -1,0 +1,327 @@
+diff --git a/crates/oxide-noise/src/compiled.rs b/crates/oxide-noise/src/compiled.rs
+index e7de0d2..9b8d57d 100644
+--- a/crates/oxide-noise/src/compiled.rs
++++ b/crates/oxide-noise/src/compiled.rs
+@@ -26,6 +26,7 @@ use oxide_datapack::{
+ };
+ 
+ use crate::blended_noise::{BlendedNoise, BlendedNoiseParams};
++use crate::scratch::Scratch;
+ use crate::cache::ChunkCaches;
+ use crate::density::{clamped_lerp, lerp_f32, map_rarity, FunctionContext};
+ use crate::normal_noise::NormalNoise;
+@@ -235,8 +236,9 @@ fn is_lane_batchable(ops: &[Op]) -> bool {
+ /// argument run once for all lanes that miss.
+ pub(crate) struct Batch<'a> {
+     pub ctxs: &'a [FunctionContext],
+-    /// `cache_once` slot -> one value per batch lane, [`UNSET`] bits when not taken.
+-    once: RefCell<Vec<Vec<u64>>>,
++    /// `cache_once` slot -> one value per batch lane, [`UNSET`] bits when not taken. The
++    /// per-slot buffers come from the thread's scratch pool and go back to it with the batch.
++    once: RefCell<Vec<Scratch<u64>>>,
+ }
+ 
+ /// Marks a `Batch::once` entry as not yet computed. A signalling-NaN payload no density
+@@ -769,7 +771,7 @@ impl Program {
+ 
+         let lanes = out.len();
+         let n = self.ops.len();
+-        let mut regs = vec![0.0f64; n * lanes];
++        let mut regs = Scratch::filled(n * lanes, 0.0f64);
+         for i in 0..n {
+             let (done, rest) = regs.split_at_mut(i * lanes);
+             let dst = &mut rest[..lanes];
+@@ -810,7 +812,7 @@ impl Program {
+                     if any_out && !any_in {
+                         r.when_out_of_range.run_cell(caches, cell, cx, dst);
+                     } else if any_out {
+-                        let mut other = vec![0.0f64; lanes];
++                        let mut other = Scratch::filled(lanes, 0.0f64);
+                         r.when_out_of_range.run_cell(caches, cell, cx, &mut other);
+                         for ((d, o), v) in dst.iter_mut().zip(&other).zip(input) {
+                             if !inside(*v) {
+@@ -870,13 +872,20 @@ impl Program {
+         let k = lanes.len();
+         let n = self.ops.len();
+         let pos = |i: usize| batch.ctxs[lanes[i] as usize];
+-        let bx: Vec<f64> = (0..k).map(|i| pos(i).x as f64).collect();
+-        let by: Vec<f64> = (0..k).map(|i| pos(i).y as f64).collect();
+-        let bz: Vec<f64> = (0..k).map(|i| pos(i).z as f64).collect();
+-        let mut sx = vec![0.0f64; k];
+-        let mut sy = vec![0.0f64; k];
+-        let mut sz = vec![0.0f64; k];
+-        let mut regs = vec![0.0f64; n * k];
++        // Same values as collecting `pos(i).x as f64` and friends; only the storage is reused.
++        let mut bx = Scratch::filled(k, 0.0f64);
++        let mut by = Scratch::filled(k, 0.0f64);
++        let mut bz = Scratch::filled(k, 0.0f64);
++        for i in 0..k {
++            let p = pos(i);
++            bx[i] = p.x as f64;
++            by[i] = p.y as f64;
++            bz[i] = p.z as f64;
++        }
++        let mut sx = Scratch::filled(k, 0.0f64);
++        let mut sy = Scratch::filled(k, 0.0f64);
++        let mut sz = Scratch::filled(k, 0.0f64);
++        let mut regs = Scratch::filled(n * k, 0.0f64);
+ 
+         for i in 0..n {
+             let (done, rest) = regs.split_at_mut(i * k);
+@@ -945,7 +954,7 @@ impl Program {
+ 
+                 Op::RangeChoice(r) => {
+                     let input = reg(r.input);
+-                    let (mut inside, mut outside) = (Vec::new(), Vec::new());
++                    let (mut inside, mut outside) = (Scratch::empty(), Scratch::empty());
+                     for (j, &v) in input.iter().enumerate() {
+                         if v >= r.min_inclusive && v < r.max_exclusive {
+                             inside.push(j);
+@@ -958,24 +967,34 @@ impl Program {
+                 }
+                 Op::IntervalSelect(s) => {
+                     let input = reg(s.input);
+-                    let mut groups: Vec<Vec<usize>> = vec![Vec::new(); s.functions.len()];
+-                    for (j, &v) in input.iter().enumerate() {
+-                        let index = s.thresholds.partition_point(|threshold| v >= *threshold);
+-                        if s.functions.is_empty() {
+-                            dst[j] = 0.0;
+-                        } else {
+-                            groups[index.min(s.functions.len() - 1)].push(j);
++                    if s.functions.is_empty() {
++                        dst.fill(0.0);
++                    } else {
++                        // Each lane's function index once; then each function, in function order,
++                        // over its lanes in ascending order -- the same runs as one group per
++                        // function, without a nested allocation per call.
++                        let last = s.functions.len() - 1;
++                        let mut index = Scratch::filled(k, 0usize);
++                        for (j, &v) in input.iter().enumerate() {
++                            index[j] = s
++                                .thresholds
++                                .partition_point(|threshold| v >= *threshold)
++                                .min(last);
++                        }
++                        let mut group = Scratch::empty();
++                        for (f, function) in s.functions.iter().enumerate() {
++                            group.clear();
++                            group.extend((0..k).filter(|&j| index[j] == f));
++                            run_subset(function, &group, lanes, batch, cx, dst);
+                         }
+-                    }
+-                    for (function, group) in s.functions.iter().zip(&groups) {
+-                        run_subset(function, group, lanes, batch, cx, dst);
+                     }
+                 }
+ 
+                 Op::GatedAdd(g) => {
+                     let gate = reg(g.g);
+-                    let open: Vec<usize> = (0..k).filter(|&j| gate[j] != 0.0).collect();
+-                    let mut body = vec![0.0f64; k];
++                    let mut open = Scratch::empty();
++                    open.extend((0..k).filter(|&j| gate[j] != 0.0));
++                    let mut body = Scratch::filled(k, 0.0f64);
+                     run_subset(&g.body, &open, lanes, batch, cx, &mut body);
+                     for j in 0..k {
+                         let gv = gate[j];
+@@ -999,14 +1018,14 @@ impl Program {
+                     argument,
+                 } if cx.caches.is_some() => {
+                     let slot = *slot as usize;
+-                    let mut missing = Vec::new();
++                    let mut missing = Scratch::empty();
+                     {
+                         let mut memo = batch.once.borrow_mut();
+-                        if memo.len() <= slot {
+-                            memo.resize(slot + 1, Vec::new());
++                        while memo.len() <= slot {
++                            memo.push(Scratch::empty());
+                         }
+                         if memo[slot].is_empty() {
+-                            memo[slot] = vec![UNSET; batch.ctxs.len()];
++                            memo[slot] = Scratch::filled(batch.ctxs.len(), UNSET);
+                         }
+                         for (j, &l) in lanes.iter().enumerate() {
+                             match memo[slot][l as usize] {
+@@ -1054,7 +1073,7 @@ impl Program {
+         let regs: &mut [f64] = if n <= INLINE_REGISTERS {
+             &mut inline[..n]
+         } else {
+-            spilled = vec![0.0; n];
++            spilled = Scratch::filled(n, 0.0f64);
+             &mut spilled
+         };
+ 
+@@ -2107,11 +2126,12 @@ fn run_subset(
+         program.run_lanes(lanes, batch, cx, dst);
+         return;
+     }
+-    let sub_lanes: Vec<u32> = subset.iter().map(|&j| lanes[j]).collect();
+-    let mut values = vec![0.0f64; subset.len()];
++    let mut sub_lanes = Scratch::empty();
++    sub_lanes.extend(subset.iter().map(|&j| lanes[j]));
++    let mut values = Scratch::filled(subset.len(), 0.0f64);
+     program.run_lanes(&sub_lanes, batch, cx, &mut values);
+-    for (&j, v) in subset.iter().zip(values) {
+-        dst[j] = v;
++    for (&j, v) in subset.iter().zip(values.iter()) {
++        dst[j] = *v;
+     }
+ }
+ 
+diff --git a/crates/oxide-noise/src/lib.rs b/crates/oxide-noise/src/lib.rs
+index c846de9..bc988f4 100644
+--- a/crates/oxide-noise/src/lib.rs
++++ b/crates/oxide-noise/src/lib.rs
+@@ -23,6 +23,7 @@ mod normal_noise;
+ mod perlin_noise;
+ mod random;
+ mod router;
++mod scratch;
+ 
+ pub use blended_noise::{BlendedNoise, BlendedNoiseParams};
+ pub use cache::ChunkCaches;
+diff --git a/crates/oxide-noise/src/scratch.rs b/crates/oxide-noise/src/scratch.rs
+new file mode 100644
+index 0000000..8ff0fdc
+--- /dev/null
++++ b/crates/oxide-noise/src/scratch.rs
+@@ -0,0 +1,138 @@
++//! Per-thread reusable scratch buffers for the batched evaluators (`Program::run_lanes`,
++//! `Program::run_cell`, `Program::run`'s register spill).
++//!
++//! Those paths used to allocate several short-lived `Vec`s per call (lane coordinates, shifted
++//! coordinates, registers, branch partitions, the per-batch `cache_once` memo): about 7.2k
++//! allocations and 6 MB per chunk of fill. That is cheap on one thread but costs scaling on
++//! eight, where the allocator is shared. A [`Scratch`] takes a buffer from this thread's free
++//! list instead and hands it back when dropped.
++//!
++//! No value changes: [`Scratch::filled`] yields exactly the contents `vec![value; n]` would
++//! (the buffer is cleared, then resized with `value`), so every reader sees the same initial
++//! data as before, and the arithmetic that fills the buffers is untouched.
++
++use std::cell::RefCell;
++use std::ops::{Deref, DerefMut};
++
++/// Buffers kept per thread and element type; more are simply freed.
++const MAX_POOLED: usize = 64;
++/// Larger buffers are not kept, so one huge request cannot pin memory for the thread's life.
++const MAX_POOLED_LEN: usize = 1 << 20;
++
++/// An element type with its own per-thread free list.
++pub(crate) trait Pooled: Copy + 'static {
++    /// Runs `f` on this thread's free list; `None` while the thread is being torn down.
++    fn with_pool<R>(f: impl FnOnce(&RefCell<Vec<Vec<Self>>>) -> R) -> Option<R>;
++}
++
++macro_rules! pooled {
++    ($t:ty, $pool:ident) => {
++        thread_local! {
++            static $pool: RefCell<Vec<Vec<$t>>> = const { RefCell::new(Vec::new()) };
++        }
++        impl Pooled for $t {
++            #[inline]
++            fn with_pool<R>(f: impl FnOnce(&RefCell<Vec<Vec<Self>>>) -> R) -> Option<R> {
++                $pool.try_with(f).ok()
++            }
++        }
++    };
++}
++
++pooled!(f64, POOL_F64);
++pooled!(usize, POOL_USIZE);
++pooled!(u32, POOL_U32);
++pooled!(u64, POOL_U64);
++
++/// A `Vec<T>` borrowed from this thread's free list, returned to it on drop.
++pub(crate) struct Scratch<T: Pooled>(Vec<T>);
++
++impl<T: Pooled> Scratch<T> {
++    /// `n` copies of `value`: the same contents as `vec![value; n]`.
++    #[inline]
++    pub(crate) fn filled(n: usize, value: T) -> Self {
++        let mut v = T::with_pool(|p| p.borrow_mut().pop())
++            .flatten()
++            .unwrap_or_default();
++        v.clear();
++        v.resize(n, value);
++        Scratch(v)
++    }
++
++    /// An empty buffer to push into: the same contents as `Vec::new()`.
++    #[inline]
++    pub(crate) fn empty() -> Self {
++        let mut v = T::with_pool(|p| p.borrow_mut().pop())
++            .flatten()
++            .unwrap_or_default();
++        v.clear();
++        Scratch(v)
++    }
++}
++
++impl<T: Pooled> Drop for Scratch<T> {
++    #[inline]
++    fn drop(&mut self) {
++        let v = std::mem::take(&mut self.0);
++        if v.capacity() == 0 || v.capacity() > MAX_POOLED_LEN {
++            return;
++        }
++        let _ = T::with_pool(|p| {
++            let mut p = p.borrow_mut();
++            if p.len() < MAX_POOLED {
++                p.push(v);
++            }
++        });
++    }
++}
++
++impl<T: Pooled> Deref for Scratch<T> {
++    type Target = Vec<T>;
++    #[inline]
++    fn deref(&self) -> &Vec<T> {
++        &self.0
++    }
++}
++
++impl<'a, T: Pooled> IntoIterator for &'a Scratch<T> {
++    type Item = &'a T;
++    type IntoIter = std::slice::Iter<'a, T>;
++    #[inline]
++    fn into_iter(self) -> Self::IntoIter {
++        self.0.iter()
++    }
++}
++
++impl<T: Pooled> DerefMut for Scratch<T> {
++    #[inline]
++    fn deref_mut(&mut self) -> &mut Vec<T> {
++        &mut self.0
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    /// A reused buffer starts exactly as a fresh `vec![value; n]`, whatever it held before.
++    #[test]
++    fn reused_buffers_start_as_fresh_ones() {
++        {
++            let mut a = Scratch::filled(7, 0.0f64);
++            for (i, v) in a.iter_mut().enumerate() {
++                *v = i as f64 + 0.5;
++            }
++        }
++        let b = Scratch::filled(5, 0.0f64);
++        assert_eq!(b.len(), 5);
++        assert!(b.iter().all(|v| v.to_bits() == 0.0f64.to_bits()));
++        let c = Scratch::filled(9, -0.0f64);
++        assert!(c.iter().all(|v| v.to_bits() == (-0.0f64).to_bits()));
++        drop((b, c));
++        let mut e = Scratch::<usize>::empty();
++        assert!(e.is_empty());
++        e.push(3);
++        drop(e);
++        assert!(Scratch::<usize>::empty().is_empty());
++    }
++}
