@@ -1,0 +1,420 @@
+diff --git a/crates/oxide-chunkgen/src/surface.rs b/crates/oxide-chunkgen/src/surface.rs
+index 957a45c..da28d81 100644
+--- a/crates/oxide-chunkgen/src/surface.rs
++++ b/crates/oxide-chunkgen/src/surface.rs
+@@ -63,9 +63,6 @@ struct Cursor {
+ 
+ const BAND_COUNT: usize = 64;
+ 
+-/// Block positions per section, in [`local_index`] order.
+-const SECTION_SLOTS: usize = 16 * 16 * 16;
+-
+ fn generate_clay_bands(random: &mut impl RandomSource) -> [BlockState; BAND_COUNT] {
+     let terracotta = BlockState::new(ResourceLocation::minecraft("terracotta"));
+     let orange = BlockState::new(ResourceLocation::minecraft("orange_terracotta"));
+@@ -342,6 +339,74 @@ fn fold<'a>(
+     false
+ }
+ 
++/// The shape of one below-surface band's program, as far as the column scan cares.
++#[derive(Clone, Copy)]
++enum BandShape {
++    /// No ops: evaluation places nothing and has no side effect, so the position needs no
++    /// cursor and no evaluation.
++    Empty,
++    /// The first op is a `block`: evaluation returns it without testing, reading or drawing
++    /// anything.
++    Const(usize),
++    /// Evaluated as usual; `reads_biome` says whether a test reads the position's biome.
++    Eval { reads_biome: bool },
++}
++
++impl BandShape {
++    fn of(ops: &[Op<'_>]) -> Self {
++        match ops.first() {
++            None => BandShape::Empty,
++            Some(Op::Block(result)) => BandShape::Const(*result),
++            Some(_) => BandShape::Eval {
++                reads_biome: reads_biome(ops),
++            },
++        }
++    }
++}
++
++/// Whether evaluating `ops` can read [`Cursor::biome`]: only the `biome` and `temperature`
++/// conditions do, and [`flatten`] leaves no `not` around a test's condition.
++fn reads_biome(ops: &[Op<'_>]) -> bool {
++    ops.iter().any(|op| {
++        matches!(
++            op,
++            Op::Test {
++                condition: CompiledCondition::Biome(_) | CompiledCondition::Temperature,
++                ..
++            }
++        )
++    })
++}
++
++/// [`BlockKind`]s as the bytes of the per-chunk, column-major kind array the scan walks. Air
++/// is 0 so an all-air stretch reads as zero words, and air and fluid -- the two kinds that end
++/// a run -- are the two lowest.
++const KIND_AIR: u8 = BlockKind::Air as u8;
++const KIND_FLUID: u8 = BlockKind::DefaultFluid as u8;
++const KIND_BLOCK: u8 = BlockKind::DefaultBlock as u8;
++
++/// Index of the highest non-air entry of `column`, eight entries at a time over the air.
++fn top_non_air(column: &[u8]) -> Option<usize> {
++    let mut end = column.len();
++    while end >= 8 {
++        let word = u64::from_ne_bytes(column[end - 8..end].try_into().unwrap());
++        if word != 0 {
++            break;
++        }
++        end -= 8;
++    }
++    column[..end].iter().rposition(|&kind| kind != KIND_AIR)
++}
++
++/// Index of the lowest entry of the run of non-air, non-fluid entries of `column` that holds
++/// index `i`.
++fn run_bottom_index(column: &[u8], i: usize) -> usize {
++    match column[..i].iter().rposition(|&kind| kind <= KIND_FLUID) {
++        Some(end) => end + 1,
++        None => 0,
++    }
++}
++
+ #[derive(Clone)]
+ enum CompiledCondition<'a> {
+     /// Index into [`SurfaceSystem::biome_sets`], and so into each chunk's biome masks.
+@@ -434,6 +499,10 @@ pub struct SurfaceSystem<'a> {
+     /// which a test the fold settles from y alone changes its answer.
+     below_programs: Vec<Vec<Op<'a>>>,
+     below_band_of_y: Vec<u16>,
++    /// What each of `below_programs` does, read once so the scan can skip or shortcut it.
++    below_shapes: Vec<BandShape>,
++    /// Whether `program` has a test that reads the position's biome.
++    program_reads_biome: bool,
+     /// The state each `Block` rule places, by the index the compiled rule carries.
+     results: Vec<&'a BlockState>,
+     /// The id list of each `biome` condition, by the index the compiled condition carries.
+@@ -503,6 +572,11 @@ impl<'a> SurfaceSystem<'a> {
+                 band_lo = y + 1;
+             }
+         }
++        let below_shapes = below_programs
++            .iter()
++            .map(|ops| BandShape::of(ops))
++            .collect();
++        let program_reads_biome = reads_biome(&program);
+         let memo = (0..compiler.memo_slots)
+             .map(|_| std::cell::Cell::new(MEMO_UNKNOWN))
+             .collect();
+@@ -525,6 +599,8 @@ impl<'a> SurfaceSystem<'a> {
+             program,
+             below_programs,
+             below_band_of_y,
++            below_shapes,
++            program_reads_biome,
+             results: compiler.results,
+             biome_sets: compiler.biome_sets,
+             memo,
+@@ -587,126 +663,173 @@ impl<'a> SurfaceSystem<'a> {
+         // once it has been written there. `u32::MAX` = not interned yet.
+         let result_count = self.results.len() + BAND_COUNT;
+         let mut result_index = vec![u32::MAX; chunk.sections.len() * result_count];
+-        // Every position's kind, read off the chunk once, in slot order per section. The scan
+-        // of a column only ever reads positions it has not written yet (the current one, and
+-        // the run below it), and each column reads only itself, so reading the kinds before
+-        // any write is the same as reading them as the scan goes.
+-        let mut kinds: Vec<BlockKind> = Vec::with_capacity(chunk.sections.len() * SECTION_SLOTS);
+-        for (section, class) in chunk.sections.iter().zip(&classes) {
+-            let start = kinds.len();
++        // Every position's kind, read off the chunk once, column-major: column
++        // `local_z * 16 + local_x` holds `column_height` bytes, index `y - min_y`. The scan of a
++        // column only ever reads positions it has not written yet (the current one, and the run
++        // below it), and each column reads only itself, so reading the kinds before any write
++        // is the same as reading them as the scan goes. All-air sections stay zero (air).
++        let section_count = chunk.sections.len();
++        let column_height = section_count * 16;
++        let mut kinds = vec![KIND_AIR; 256 * column_height];
++        for (section_index, (section, class)) in chunk.sections.iter().zip(&classes).enumerate() {
+             if class.all_air {
+-                kinds.resize(start + SECTION_SLOTS, BlockKind::Air);
+-            } else {
+-                kinds.extend(
+-                    section
+-                        .block_states
+-                        .indices()
+-                        .iter()
+-                        .map(|&index| class.kind(index)),
+-                );
++                continue;
+             }
+-            debug_assert_eq!(kinds.len(), start + SECTION_SLOTS);
++            let base = section_index * 16;
++            for (slot, &index) in section.block_states.indices().iter().enumerate() {
++                kinds[(slot & 255) * column_height + base + (slot >> 8)] = class.kind(index) as u8;
++            }
++        }
++        // Chunk biome number per (section, quart), read once rather than per offered position.
++        let mut biome_of_quart: Vec<u16> = Vec::with_capacity(section_count * 64);
++        for (section_index, section) in chunk.sections.iter().enumerate() {
++            let map = &biomes.section_maps[section_index];
++            let indices = section.biomes.indices();
++            debug_assert_eq!(indices.len(), 64);
++            biome_of_quart.extend(indices.iter().map(|&index| map[index as usize]));
+         }
++        // The scan visits every section whose lowest y is at or below the world top.
++        let visit_len = if top_y < self.min_y {
++            0
++        } else {
++            (((top_y - self.min_y) / 16 + 1) as usize).min(section_count) * 16
++        };
+ 
+         for local_z in 0..16usize {
+             let z = pos.min_block_z() + local_z as i32;
+             for local_x in 0..16usize {
+                 let x = pos.min_block_x() + local_x as i32;
+                 let column = self.column_state(x, z);
+-                let column_slot = local_index(local_x, 0, local_z);
+                 for slot in &self.memo {
+                     slot.set(MEMO_UNKNOWN);
+                 }
+                 self.band_offset.set(None);
+                 self.temperature_offset.set(None);
+ 
++                let column_start = (local_z * 16 + local_x) * column_height;
++                let col = &kinds[column_start..column_start + column_height];
++                // Air above the highest non-air position leaves the scan state as it starts
++                // (air resets all three), so the walk can start there.
++                let Some(top) = top_non_air(&col[..visit_len]) else {
++                    continue;
++                };
++                let quart_xz = (local_z / 4) * 4 + local_x / 4;
++
+                 let mut stone_depth_above = 0;
+                 let mut water_height = i32::MIN;
+-                // Start of the current run of stone, tracked so stone_depth_below can be
+-                // derived without rescanning for every y.
++                // Start of the current run of stone, `i32::MAX` until first needed in a run. It
++                // is a function of the run alone, so finding it at any position of the run gives
++                // the same answer.
+                 let mut run_bottom = i32::MAX;
+ 
+-                for section_index in (0..chunk.sections.len()).rev() {
+-                    let section_min_y = self.min_y + section_index as i32 * 16;
+-                    if section_min_y > top_y {
++                for i in (0..=top).rev() {
++                    let kind = col[i];
++                    let y = self.min_y + i as i32;
++
++                    if kind == KIND_AIR {
++                        stone_depth_above = 0;
++                        water_height = i32::MIN;
++                        run_bottom = i32::MAX;
+                         continue;
+                     }
+-                    if classes[section_index].all_air {
+-                        // Sixteen air positions: exactly what the per-block arm below does.
++                    if kind == KIND_FLUID {
++                        // PARITY-CHECK: vanilla records the position *above* the fluid
++                        // column.
++                        water_height = y + 1;
+                         stone_depth_above = 0;
+-                        water_height = i32::MIN;
+                         run_bottom = i32::MAX;
+                         continue;
+                     }
+-                    for local_y in (0..16usize).rev() {
+-                        let y = section_min_y + local_y as i32;
+-                        let slot = local_index(local_x, local_y, local_z);
+-                        let kind = kinds[section_index * SECTION_SLOTS + slot];
+-
+-                        if kind == BlockKind::Air {
+-                            stone_depth_above = 0;
+-                            water_height = i32::MIN;
+-                            run_bottom = i32::MAX;
+-                            continue;
+-                        }
+-                        if kind == BlockKind::DefaultFluid {
+-                            // PARITY-CHECK: vanilla records the position *above* the fluid
+-                            // column.
+-                            water_height = y + 1;
+-                            stone_depth_above = 0;
+-                            run_bottom = i32::MAX;
+-                            continue;
+-                        }
+ 
+-                        if run_bottom > y {
+-                            run_bottom = self.run_bottom(&kinds, column_slot, y);
+-                        }
+-                        stone_depth_above += 1;
+-                        let stone_depth_below = y - run_bottom + 1;
++                    stone_depth_above += 1;
+ 
+-                        if kind != BlockKind::DefaultBlock {
+-                            continue;
+-                        }
++                    if kind != KIND_BLOCK {
++                        continue;
++                    }
+ 
+-                        let quart = ((local_y / 4) * 4 + local_z / 4) * 4 + local_x / 4;
+-                        let biome_palette_index =
+-                            chunk.sections[section_index].biomes.indices()[quart];
+-                        let cursor = Cursor {
+-                            x,
+-                            y,
+-                            z,
+-                            stone_depth_above,
+-                            stone_depth_below,
+-                            water_height,
+-                            biome: biomes.section_maps[section_index][biome_palette_index as usize]
+-                                as usize,
+-                        };
+-                        let program = if y >= column.min_surface_level {
+-                            &self.program[..]
+-                        } else {
+-                            let band = self.below_band_of_y[(y - self.min_y) as usize];
+-                            &self.below_programs[band as usize][..]
+-                        };
+-                        let Some(result) = self.eval_program(program, &cursor, &column, &biomes)
+-                        else {
+-                            continue;
+-                        };
+-                        let cached = &mut result_index[section_index * result_count + result];
+-                        let block_states = &mut chunk.sections[section_index].block_states;
+-                        if *cached == u32::MAX {
+-                            // Interning can add a palette entry this section did not have. No
+-                            // classification needs it: kinds were read up front, and a written
+-                            // position is never read again.
+-                            *cached =
+-                                block_states.index_of_or_insert(self.result_state(result).clone());
++                    let section_index = i / 16;
++                    let local_y = i % 16;
++                    let (program, program_reads_biome) = if y >= column.min_surface_level {
++                        (&self.program[..], self.program_reads_biome)
++                    } else {
++                        let band = self.below_band_of_y[i] as usize;
++                        match self.below_shapes[band] {
++                            BandShape::Empty => continue,
++                            BandShape::Const(result) => {
++                                self.write_result(
++                                    chunk,
++                                    &mut result_index,
++                                    section_index * result_count + result,
++                                    result,
++                                    section_index,
++                                    local_index(local_x, local_y, local_z),
++                                );
++                                continue;
++                            }
++                            BandShape::Eval { reads_biome } => {
++                                (&self.below_programs[band][..], reads_biome)
++                            }
+                         }
+-                        block_states.set_index(slot, *cached);
++                    };
++
++                    if run_bottom > y {
++                        run_bottom = self.min_y + run_bottom_index(col, i) as i32;
+                     }
++                    let stone_depth_below = y - run_bottom + 1;
++
++                    let cursor = Cursor {
++                        x,
++                        y,
++                        z,
++                        stone_depth_above,
++                        stone_depth_below,
++                        water_height,
++                        // Read only by `biome` and `temperature` tests.
++                        biome: if program_reads_biome {
++                            biome_of_quart[section_index * 64 + (local_y / 4) * 16 + quart_xz]
++                                as usize
++                        } else {
++                            0
++                        },
++                    };
++                    let Some(result) = self.eval_program(program, &cursor, &column, &biomes) else {
++                        continue;
++                    };
++                    self.write_result(
++                        chunk,
++                        &mut result_index,
++                        section_index * result_count + result,
++                        result,
++                        section_index,
++                        local_index(local_x, local_y, local_z),
++                    );
+                 }
+             }
+         }
+     }
+ 
++    /// Writes rule result `result` at `slot` of section `section_index`, interning it into
++    /// that section's palette the first time the section receives it (`result_index[cached]`).
++    #[inline]
++    fn write_result(
++        &self,
++        chunk: &mut ChunkData,
++        result_index: &mut [u32],
++        cached: usize,
++        result: usize,
++        section_index: usize,
++        slot: usize,
++    ) {
++        let cached = &mut result_index[cached];
++        let block_states = &mut chunk.sections[section_index].block_states;
++        if *cached == u32::MAX {
++            // Interning can add a palette entry this section did not have. No classification
++            // needs it: kinds were read up front, and a written position is never read again.
++            *cached = block_states.index_of_or_insert(self.result_state(result).clone());
++        }
++        block_states.set_index(slot, *cached);
++    }
++
+     /// Numbers the distinct biomes of `chunk` and answers every biome question the rule tree
+     /// can ask about them, once.
+     fn chunk_biomes(&self, chunk: &ChunkData) -> ChunkBiomes {
+@@ -787,24 +910,6 @@ impl<'a> SurfaceSystem<'a> {
+         }
+     }
+ 
+-    /// Lowest y of the contiguous non-air, non-fluid run containing `y`, read off the chunk's
+-    /// up-front `kinds` for the column whose slot at local y 0 is `column_slot`.
+-    fn run_bottom(&self, kinds: &[BlockKind], column_slot: usize, y: i32) -> i32 {
+-        let mut bottom = y;
+-        while bottom > self.min_y {
+-            let below = (bottom - 1 - self.min_y) as usize;
+-            let section_index = below / 16;
+-            let local_y = below % 16;
+-            match kinds.get(section_index * SECTION_SLOTS + local_y * 256 + column_slot) {
+-                Some(&kind) if kind != BlockKind::Air && kind != BlockKind::DefaultFluid => {
+-                    bottom -= 1;
+-                }
+-                _ => break,
+-            }
+-        }
+-        bottom
+-    }
+-
+     /// The result index of the first `block` rule whose enclosing conditions all hold.
+     fn eval_program(
+         &self,
+@@ -1214,10 +1319,11 @@ fn is_air(state: &BlockState) -> bool {
+ /// The only three block distinctions the surface column scan makes. Everything the rule tree
+ /// needs to know about a position reduces to one of these.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[repr(u8)]
+ enum BlockKind {
+-    Air,
+-    DefaultFluid,
+-    DefaultBlock,
++    Air = 0,
++    DefaultFluid = 1,
++    DefaultBlock = 2,
+     /// Anything else -- already-surfaced ground, ore, deepslate. Counts toward stone depth but
+     /// is never offered to the rule tree, matching the old `&state != default_block` guard.
+     Other,

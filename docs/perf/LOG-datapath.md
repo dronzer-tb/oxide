@@ -990,3 +990,39 @@ All twelve `digest=a977961a58122047`. Ahead in 6 of 6 rounds, with the order rot
 Kept. Before noise-4 it was +2.4% with 3 of 5; with the corner grid cheaper, the aquifer is a
 larger slice, and the rotating 1-thread method resolves it. The rejected-diff file is removed,
 since the change is now in the tree.
+
+### E25: surface per-block scan (column-major kinds, band shapes, top start) -- rejected
+
+Sub-agent experiment in `/tmp/datapath-19` on 11ccdeb. Split profile: `apply` 14.7% inclusive, of which:
+- interpreter 6.4%;
+- own body 3.2%;
+- `column_state` 2.0%;
+- biome lookup 0.9%;
+- kinds build 0.7%;
+- writes 0.9%;
+- `run_bottom` 0.6%.
+
+Change:
+- kinds as one column-major `u8` array;
+- each column's walk starts at its top non-air byte, found 8 bytes at a time;
+- below-surface bands classed Empty, Const or Eval: Empty is skipped, Const written directly;
+- the biome looked up only when the program has a `biome` or `temperature` test, from a per-chunk
+  section×quart table;
+- `run_bottom` found lazily with one `rposition`.
+
+Exactness reviewed by the master: air resets all scan state, empty and leading-block programs
+have no side effects, and `flatten` leaves no nested `not` around a biome test. Tests: chunkgen
+190 passed.
+
+Rotating 1-thread A/B, 6 rounds, against 11ccdeb (ms core per chunk):
+
+| | r1 | r2 | r3 | r4 | r5 | r6 | mean |
+|---|---|---|---|---|---|---|---|
+| head 11ccdeb | 10.52 | 11.22 | 10.25 | 10.10 | 9.92 | 10.85 | 10.48 |
+| + E25 | 10.44 | 10.20 | 9.97 | 10.87 | 10.40 | 10.71 | 10.43 |
+
+All twelve `digest=a977961a58122047`. Ahead in 3 of 6, behind in 3, mean -0.4%: no gain. Rejected; the diff is
+at `docs/perf/rejected-E25-surface-column-major-scan.diff`. If anyone retries, try the band
+shapes without the column-major transpose.
+
+Head is now 20d218d (with E21): about 10.0 ms core per chunk on 1 thread from the E21 hold.
