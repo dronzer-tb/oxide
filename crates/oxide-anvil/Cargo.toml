@@ -9,6 +9,6 @@ oxide-core.workspace = true
 fastnbt.workspace = true
 fastanvil.workspace = true
 serde.workspace = true
-flate2.workspace = true
+flate2 = { workspace = true, features = ["zlib-rs"] }
 anyhow.workspace = true
 thiserror.workspace = true
