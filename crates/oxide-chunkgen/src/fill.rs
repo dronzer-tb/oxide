@@ -18,6 +18,17 @@ use oxide_noise::{NoiseRouterEvaluator, RouterSlot};
 
 use crate::biome_grid::fill_biomes;
 
+/// Slack applied to a cell's corner bounds before a skip trusts them.
+///
+/// The bounds are the min and max of a cell's eight corners pushed through interval
+/// arithmetic, while the value at a block is a trilinear blend of those corners and then the
+/// same ops in floating point. In exact arithmetic a blend never leaves its corners' range; in
+/// floating point the rounding of the blend and of each op can land a few ulp outside it. A
+/// skip that compares against the threshold with no slack would then rest on that never
+/// happening at a value on the edge. Terrain values are O(1), so 1e-9 is far above any
+/// rounding these few ops can accumulate and far below anything that changes which cells skip.
+pub(crate) const CELL_BOUND_MARGIN: f64 = 1e-9;
+
 /// `(y*16+z)*16+x` — vanilla's flattened section block-array order. Matches the convention
 /// already used by `oxide-pregen`'s `local_index` (see its own `// PARITY-CHECK`); kept
 /// consistent across both crates deliberately rather than each picking its own.
@@ -112,7 +123,8 @@ pub fn fill_chunk_culling(
     // `min(squeeze(interpolated(..)), noodle_caves)` in a real overworld router: the `min`
     // means an unbounded cave term can pull any position down, so a positive lower bound on
     // the interpolated part would NOT prove the cell is solid. An upper bound of <= 0 is safe
-    // in spite of the `min`, because `min` only ever lowers the value further.
+    // in spite of the `min`, because `min` only ever lowers the value further. The bound must
+    // clear zero by [`CELL_BOUND_MARGIN`].
     let cells_xz = (16 / cell_width).max(1) as usize;
     let cells_y = (height / cell_height).max(0) as usize;
     let mut air_cells = vec![false; cells_xz * cells_xz * cells_y];
@@ -137,7 +149,7 @@ pub fn fill_chunk_culling(
                         }
                     }
                     air_cells[(cell_y * cells_xz + cell_z) * cells_xz + cell_x] =
-                        bounds.is_some_and(|(_, hi)| hi <= 0.0);
+                        bounds.is_some_and(|(_, hi)| hi <= -CELL_BOUND_MARGIN);
                 }
             }
         }

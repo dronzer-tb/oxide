@@ -170,3 +170,21 @@ The log had no handover list yet; this is what is pending, in order:
 2. Merge `origin/perf/noise` (whole-cell `final_density` via `sample_cell`, cell-bounds
    fixes) and bench the merge as the first combined number, with a repeat.
 3. Auditor ask: confirm or refute E4's gain on a quiet box, by A/B against E4 reverted.
+
+Auditor's ruling on E5: kept as a memory win only; its speed gain is not established
+(309/278/258).
+
+### E6 (next-three #1): margin on the strict-bound skips -- kept (correctness)
+
+`fill.rs` now skips a cell as all air only when its `final_density` upper bound is
+`<= -1e-9` (was `<= 0`); `ore_veins.rs` skips a cell only when `vein_toggle` is inside
+`+-(0.4 - 1e-9)` (was `+-0.4`). The constant is `fill::CELL_BOUND_MARGIN`, documented there:
+the bounds come from corner min/max through interval arithmetic, the per-block value from a
+floating-point blend of the corners, and the rounding of the latter can land a few ulp
+outside the former. With the margin, each skip holds whatever the rounding does, instead of
+relying on no value ever landing on the edge. It can only make fewer cells skip.
+
+`BENCH chunks=1089 threads=8 secs=3.576 cps=304.6 ms_per_chunk_core=26.27 digest=a977961a58122047`
+`BENCH chunks=1089 threads=8 secs=4.214 cps=258.4 ms_per_chunk_core=30.95 digest=a977961a58122047`
+
+Same digest and the same spread as E5's runs: no measurable cost. Tests: chunkgen 189 passed.

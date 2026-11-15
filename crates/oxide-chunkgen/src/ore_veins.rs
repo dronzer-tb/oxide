@@ -12,7 +12,7 @@ use oxide_core::{BlockState, ChunkData, ChunkPos, RandomSource, ResourceLocation
 use oxide_datapack::NoiseGeneratorSettings;
 use oxide_noise::{ChunkCaches, NoiseRouterEvaluator, RouterSlot};
 
-use crate::fill::local_index;
+use crate::fill::{local_index, CELL_BOUND_MARGIN};
 
 const VEININESS_THRESHOLD: f64 = 0.4;
 const EDGE_ROUNDOFF_BEGIN: f64 = 20.0;
@@ -94,7 +94,8 @@ pub fn apply_ore_veins(
     // Cells that provably hold no vein. `vein_state` gives up when
     // `|vein_toggle| + edge_roundoff < VEININESS_THRESHOLD`, and `edge_roundoff` is never
     // positive, so a cell whose `vein_toggle` stays strictly inside +-threshold cannot place
-    // anything -- and veins are rare, so that is most cells. The bounds come from the
+    // anything -- and veins are rare, so that is most cells. The bounds must clear the
+    // threshold by [`CELL_BOUND_MARGIN`]; see there for why. The bounds come from the
     // slot's cell-corner grid, which exists once the slot has been sampled in this chunk;
     // where none can be proven the cell is evaluated block by block as before.
     let cell_width = caches.cell_width();
@@ -124,7 +125,10 @@ pub fn apply_ore_veins(
                         cell_y as i32,
                         cell_z as i32,
                     )
-                    .is_some_and(|(lo, hi)| lo > -VEININESS_THRESHOLD && hi < VEININESS_THRESHOLD);
+                    .is_some_and(|(lo, hi)| {
+                        lo > -VEININESS_THRESHOLD + CELL_BOUND_MARGIN
+                            && hi < VEININESS_THRESHOLD - CELL_BOUND_MARGIN
+                    });
             }
         }
     }
