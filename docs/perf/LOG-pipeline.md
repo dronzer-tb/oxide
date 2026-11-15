@@ -1037,3 +1037,26 @@ pass. **Kept**, cherry-picked onto the branch.
 -12.3% decorate ahead 3/3; -3.5% user CPU (round 3 even). Java quiet. df701ee858e2bdd3 on every row;
 tests chunkgen 194 pass. Larger than dark forest's ~7% share; confirming on a second base (branch
 head with the dense overlay, merged with datapath) before landing.
+
+## Glow lichen search stop + geode interned layers; base 1 +6.8% (losing)
+
+**Change** (sub-agent commit 963b4f9; `decorator/vegetation/multiface.rs`, `decorator/cave/geode.rs`):
+- glow lichen: vanilla's search re-tests the same neighbour `search_range` (20) times per direction;
+  when `place_growth` finds no supporting face it has only read (no write, draw or tally), so the
+  remaining passes are identical and the loop stops; a refusal keeps looping. One `probe` per cell
+  test; `can_be_placed_on` cached per `StateKey` (8 slots); fixed direction arrays.
+- geode: fixed layer providers and crack air interned once per run and written by id;
+  `cannot_replace` answered from one keyed read cached per `StateKey`. Noise and float order untouched.
+
+**Hold, base 1** (pipeline-b2 = branch b84621e + datapath **26f512f**; pipeline-gl2 adds 05548b7):
+
+| | run 1 | run 2 | run 3 | mean |
+|---|---|---|---|---|
+| base decorate_ms | 9073 | 9102 | 9111 | 9095 |
+| lichen/geode decorate_ms | 9983 | 9089 | 10054 | 9709 |
+| base / change cpu_user_s | 26.03 / 26.56 | 25.77 / 26.74 | 25.88 / 26.21 | 25.89 / 26.50 |
+| java_cpu_s_per_10s | 0.35 / 0.24 | 0.22 / 0.27 | 0.21 / 0.30 | |
+
++6.8% decorate (behind 2/3, one even), +2.4% user CPU (behind 3/3). Java quiet; digest held; tests 194
+pass. A second hold on base 2 (branch head with the overlay + datapath 80add17) is queued; unless it
+reverses clearly, this is rejected.
