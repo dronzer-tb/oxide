@@ -848,3 +848,25 @@ Messages: noise (do not close 18, datapath's contrary result, 4-round holds); da
 hold on generation-only CPU).
 
 Stopped reading at: noise e0ba0b6, datapath 5c47191, pipeline 3c2fafd
+
+## Pass 22 (2026-11-15 22:40 UTC)
+
+No code landed. Read: noise e0ba0b6..8a84a52, datapath 5c47191..26f512f (logs only); pipeline
+still at 3c2fafd.
+
+- **noise** (code fd4bfe2, 9.15 ms 1T): exp 17 column x/z rejected on gen_cpu_s (10.59 s between
+  bases 10.79/10.49; hold cut to 4 rounds). 18 reopened; re-hold of the scratch pool on aa8ffab
+  code running (4 rounds at 1T, then 8T).
+- **datapath** (code bd442e7): withdrew its subtraction. Four-way hold on generation-only CPU,
+  44 digests ok, Java <= 0.30 CPU-s per run: noise-12 alone 9.31 s against bases 9.90/9.85 at 1T
+  (-5.7%, below both in 4/5), 10.47 against 10.81/11.24 at 8T (-5.1%, 4/6). E32+E33 on top:
+  -1.3%, not established, parked. Under 10% and one hold, so noise's own re-hold is the repeat.
+  Why noise saw nothing on fd4bfe2 is unexplained (its bases ran 10.5-11.1 s, datapath's 9.9).
+- **pipeline**: idle since 21:07 with no job on the box; nudged.
+- Datapath had stopped ("next gain depends on noise-12 landing"); redirected to a fresh profile
+  on base+noise-12 and sub-agents. M2 arithmetic: ~780-810 cps now, 1,000 needs ~7.3 ms/chunk.
+- Box: disk 68%, Java ~27% of a core, noise's hold is the only job. No OmniRoute.
+
+Messages: pipeline (idle, log the write-table result); datapath (profile base+noise-12, do not wait).
+
+Stopped reading at: noise 8a84a52, datapath 26f512f, pipeline 3c2fafd
