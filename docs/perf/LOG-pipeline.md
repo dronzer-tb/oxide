@@ -643,3 +643,65 @@ in 1-thread holds. Once the box is free again:
    together) and dark_forest_vegetation (direct `BlockFacts::is` calls, 0.8M) are next in line.
 
 Holds stay on the datapath merge, under about 5 minutes each.
+
+## Live-server finding: native-decoration=true, Chunky 115 -> about 10 cps (analysis only)
+
+Reported by the user (laptop session): oxide-bench on perf/datapath bf577ba via CI, Vertex
+Engine. With `native-decoration=true`, Chunky dropped from 115 to about 10 chunks/s. jcmd shows worker
+time almost entirely in `OxideNative.generateChunk` under the generateBiomes stage, and Java
+`Feature.place` / `OreFeature` still run afterwards. Read from the code at bf577ba; no server or
+box action taken.
+
+**1. Features run twice: the Vertex path never turns vanilla decoration off.**
+- **Bukkit path:** `native-decoration` is honoured only by the Bukkit generator,
+  `OxideChunkGenerator.shouldGenerateDecorations()` (returns `!service.nativeDecoration()`).
+- **Vertex path:** `OxideVertexModule` registers `OxideChunkHook` for
+  `EnumSet.of(ChunkStage.BIOMES, ChunkStage.SURFACE, ChunkStage.CARVERS)` and nothing reads the flag
+  there. `GeneratorService.openHandle` does call `handle.setDecoration(true)`, so the native call
+  returns decorated chunks, but the engine still owns the FEATURES stage and runs vanilla's features on
+  top. The result is double ores and trees, a wrong world, and all of vanilla's feature cost on top of
+  Oxide's.
+- **Why it shows under generateBiomes:** the hook is registered at BIOMES (its lowest claimed
+  stage), so the whole native call, decoration included, lands there. That part is expected.
+- **Fix (plugin owner):** when native decoration is on, the module must also take the FEATURES stage
+  (or whatever the Vertex API offers to skip vanilla features). If the API cannot do that, refuse
+  `native-decoration` under Vertex at startup instead of running both.
+
+**2. Neighbour terrain is regenerated per chunk: the decoration cache is far smaller than Chunky's
+working set, and FIFO rather than LRU.**
+- **What one finished chunk costs:** `Handle::generate_chunk` with decoration on calls
+  `decorated_chunk`. One finished chunk needs the 9 write lists of its 3x3 neighbours, and each write
+  list needs the 3x3 undecorated terrain around its source: 5x5 = 25 terrain chunks and 9 feature runs
+  per finished chunk, unless cached.
+- **The cache:** `DecorationCache` holds 256 terrain chunks and 1024 write lists. `Bounded::get` does not
+  refresh an entry's age, so it is FIFO: a chunk every neighbour keeps asking for is still evicted
+  first.
+- **Chunky:** it walks a spiral. At ring r the 5x5 needs rings r-2..r+2, and the inner rings were last
+  touched a whole ring earlier, about 8r chunks ago. Past r of about 8-10 that exceeds 256, so those are gone.
+- **Estimated cost:** in steady state each finished chunk regenerates about 5 terrain chunks (a new
+  5-wide column) and runs about 3 sources' features (a new 3-wide column), against 1 terrain and no
+  native features with decoration off. That is in line with the 11x drop. The single global `Mutex` per
+  cache adds contention across the 8 workers, but it is secondary.
+- **bf577ba also predates this branch's decoration work:** writes are `Vec<BlockWrite>` with a
+  `BlockState` clone per write, and applying them clones again. Interning (-23%), the ore scan skip (-5%)
+  and the sculk neighbourhood (-8.9%) are not in it.
+
+**What would fix the cost.** (2b) and (2c) touch decorate.rs, which this track owns. (2a) and the
+handle constants are oxide-ffi.
+- **(2a) Cheapest:** make `Bounded` LRU (refresh on get) and size the caches from the generation order
+  instead of a constant. A spiral needs about 3 rings of terrain and 3 rings of write lists live:
+  `terrain >= ~24 * r_max`, `writes >= ~24 * r_max`. Memory is the limit: an undecorated `ChunkData` is a
+  few hundred KB.
+- **(2b) Shrink what is cached:**
+  - Keep write lists as `InternedWrites` (this branch). With those cached, terrain is needed only to
+    make a new write list, plus the finished chunk's own.
+  - Keep cached terrain as palette indices rather than `ChunkData` with owned states, so a few
+    thousand chunks fit.
+- **(2c) Structural:** decorate in batches the way `oxide-pregen` does. It generates each terrain chunk
+  and each write list exactly once over a square (terrain at r+2, writes at r+1). For a live
+  pregeneration the fastest route is to run `oxide-pregen` offline and let Chunky load, not generate.
+
+**Next, when the box is free:** a counting test, with no server. Drive `decorated_chunk` in Chunky's
+spiral order over r=32 with the bf577ba cache sizes and count terrain generations and feature runs per
+finished chunk. Then repeat with LRU and with larger caches. That turns the estimate above into a
+number before anyone changes the live config.
