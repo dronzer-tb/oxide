@@ -1156,3 +1156,31 @@ this session has had that floor. The E21 keep (6 of 6, -4.2%) should then be con
      compiled program (ask the noise track) instead of parsing `dump_program` text.
   3. Re-profile 0823fd8 on 1 thread with `#[inline(never)]` splits of surface and aquifer,
      and pick the next target from it.
+
+### Variance hold: two head builds against the variants -- E22 and E27 kept
+
+Rotating 1-thread hold, 4 rounds. `datapath` and `datapath-h2` are two separate builds of the
+identical head source (20d218d). On the box, the sources differ only by each variant's intended
+files (checked with `diff -rq`). ms core per chunk:
+
+| | r1 | r2 | r3 | r4 | mean |
+|---|---|---|---|---|---|
+| head build 1 | 10.27 | 11.04 | 10.44 | 10.22 | 10.49 |
+| head build 2 | 10.42 | 9.71 | 10.55 | 10.32 | 10.25 |
+| noise merge 0823fd8 | 10.00 | 8.64 | 9.95 | 10.00 | 9.65 |
+| E27 biomes | 9.51 | 8.98 | 10.02 | 9.71 | 9.56 |
+| E22 carvers | 9.80 | 9.88 | 9.73 | 9.99 | 9.85 |
+
+All twenty `digest=a977961a58122047`.
+- The two head builds differ by 2.3%, mostly in one round, so build variance does not explain the
+  four-way hold. The suspicion about it was wrong.
+- **E27** beats both head builds in all 8 comparisons, mean -7.8%. That is more than its 4.1% profile
+  share, so part of it is probably layout or profile under-count. It is exact and has three new tests. Kept.
+- **E22** beats both head builds in 7 of 8, mean -5.0%. Kept. It was neutral on the pre-noise-4
+  head, where carvers were a smaller slice.
+- The noise merge: -7%, matching the noise track's hold.
+
+Both are applied onto 0823fd8; they touch different files from each other and from the merge.
+Combined tests: biome 7, chunkgen 193, noise 34, all passed. The combined head itself has not yet
+been through a hold against 0823fd8. That is the first thing for the next session, together
+with moving E27's y-independence check into `oxide-noise`.

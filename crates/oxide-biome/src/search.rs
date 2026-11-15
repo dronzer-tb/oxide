@@ -332,6 +332,8 @@ pub struct BiomeSearchTree {
     nodes: Vec<FlatNode>,
     /// Leaf biomes, indexed by a leaf's [`FlatNode::first`].
     biomes: Vec<BiomeId>,
+    /// For each leaf biome index, the index of its leaf in `nodes`, so a hint can be measured.
+    leaf_nodes: Vec<u32>,
 }
 
 impl BiomeSearchTree {
@@ -362,10 +364,17 @@ impl BiomeSearchTree {
             );
             flatten(root, &mut biomes)
         };
+        let mut leaf_nodes = vec![0u32; biomes.len()];
+        for (index, node) in nodes.iter().enumerate() {
+            if node.count == 0 {
+                leaf_nodes[node.first as usize] = index as u32;
+            }
+        }
         Self {
             entries,
             nodes,
             biomes,
+            leaf_nodes,
         }
     }
 
@@ -374,6 +383,23 @@ impl BiomeSearchTree {
     }
 
     pub fn nearest(&self, sample: ClimateSample) -> Option<&BiomeId> {
+        let mut hint = u32::MAX;
+        self.nearest_with_hint(sample, &mut hint)
+    }
+
+    /// [`Self::nearest`], with `hint` naming a leaf (as left by an earlier call; `u32::MAX`
+    /// for none) that is probably close to `sample`. Returns the very same leaf as
+    /// [`Self::nearest`] -- ties included -- and leaves the answer's leaf in `hint`.
+    ///
+    /// Why the answer cannot change: the unseeded search returns the first leaf, in visit
+    /// order, at the minimum distance `m` (an earlier leaf at `m` would have been kept, a later
+    /// one never replaces it, and until that first one is found the incumbent is farther than
+    /// `m`, so its subtree is never pruned). Starting instead from "nothing found, but a
+    /// distance bound of `d + 1`", with `d` the hint leaf's distance and `m <= d`, the same
+    /// argument holds word for word: the incumbent is above `m` until the first leaf at `m` is
+    /// reached, and nothing strictly below `m` exists to replace it. The bound only prunes
+    /// subtrees whose every leaf is farther than `d`, which could never have been the answer.
+    pub fn nearest_with_hint(&self, sample: ClimateSample, hint: &mut u32) -> Option<&BiomeId> {
         let target = [
             quantize(sample.temperature as f32),
             quantize(sample.humidity as f32),
@@ -388,8 +414,15 @@ impl BiomeSearchTree {
             // A one-entry tree is its own leaf, which vanilla returns without measuring.
             return self.biomes.get(root.first as usize);
         }
-        let mut best = (u32::MAX, i64::MAX);
+        let bound = match self.leaf_nodes.get(*hint as usize) {
+            Some(&node) => self.nodes[node as usize]
+                .distance(&target)
+                .saturating_add(1),
+            None => i64::MAX,
+        };
+        let mut best = (u32::MAX, bound);
         search(&self.nodes, root, &target, &mut best);
+        *hint = best.0;
         self.biomes.get(best.0 as usize)
     }
 }
@@ -629,6 +662,56 @@ mod tests {
                             std::ptr::eq(picked, &tree.biomes[expected_index]),
                             "climate {sample:?}"
                         );
+                    }
+                }
+            }
+        }
+    }
+
+    /// A hint only bounds the search; it must never change which leaf comes back, whether it
+    /// names the answer, a near miss, a far leaf, or nothing.
+    #[test]
+    fn hinted_search_returns_the_unhinted_leaf() {
+        let entries = oxide_datapack::preset_entries(&ResourceLocation::minecraft("overworld"))
+            .expect("overworld preset is known");
+        let tree = BiomeSearchTree::from_entries(entries);
+        let leaves = tree.biomes.len() as u32;
+        let axis = [
+            -1.2, -0.8, -0.45, -0.2, -0.11, 0.0, 0.03, 0.2, 0.3, 0.55, 0.8, 1.1,
+        ];
+        let depth = [-0.3, 0.0, 0.1, 0.2, 0.9, 1.1];
+        let mut index = 0usize;
+        let mut chained = u32::MAX;
+        for &t in &axis {
+            for &h in &axis {
+                for &c in &axis {
+                    for &d in &depth {
+                        let sample = ClimateSample {
+                            temperature: t,
+                            humidity: h,
+                            continentalness: c,
+                            erosion: axis[index % axis.len()],
+                            depth: d,
+                            weirdness: axis[(index / 7) % axis.len()],
+                        };
+                        index += 1;
+                        let expected = tree.nearest(sample).unwrap();
+                        let mut answer = u32::MAX;
+                        tree.nearest_with_hint(sample, &mut answer);
+                        for mut hint in [
+                            u32::MAX,
+                            chained,
+                            answer,
+                            (index as u32 * 7919) % leaves,
+                            0,
+                            leaves - 1,
+                            leaves + 5,
+                        ] {
+                            let picked = tree.nearest_with_hint(sample, &mut hint).unwrap();
+                            assert!(std::ptr::eq(picked, expected), "climate {sample:?}");
+                            assert_eq!(hint, answer);
+                        }
+                        tree.nearest_with_hint(sample, &mut chained);
                     }
                 }
             }
