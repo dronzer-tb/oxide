@@ -1094,3 +1094,27 @@ chunkgen 190, core 57, biome 6, all passed. Release build in `~/oxide-perf/datap
 before its own A/B so the branch carries it. The 1-thread re-reference (head 20d218d against this
 merge, rotating hold) runs after the E22 A/B frees the lock queue. The noise track's own hold for
 experiment 12 was 9.77 against 10.43 ms, ahead in 5 of 5.
+
+### E22 retry lost to the full disk; E27 (biomes) reviewed; four-way hold queued
+
+- The E22 rebuild in `datapath-20` failed with "No space left on device" before the cleanup above.
+  Its A/B timed only the head (1 thread: 10.36, 10.81, 10.25, 10.70, 10.51, 10.80 ms). E22 is
+  unmeasured, not rejected. It is being rebuilt now that the disk is at 77%.
+- E27 (`datapath-21`, sub-agent). `fill_biomes` is ~4.1% of generation: climate ~2.0% (half of it the bare
+  `shifted_noise` temperature and vegetation, evaluated per quart), search ~1.9%.
+  - Change: the five non-depth climate slots are sampled once per quart column per chunk, in a
+    thread-local keyed by `(router.id(), chunk pos)`. A hinted biome search seeds each column's
+    search with the previous y's leaf, as a distance bound only.
+  - Exactness: temperature and vegetation are `ShiftedNoise` with `y_scale` 0 and a shift
+    `Const(0)`, so the noise y is `y*0.0 + 0.0 = +0.0` for every finite y. `Shift Xz`/`Zx`
+    read no y. The other three slots are `FlatCache` over the same shape. Depth is still per quart.
+    The hint bound `d_hint + 1` prunes only subtrees farther than the hint leaf, so the search
+    returns the same first leaf at the minimum distance.
+  - New tests: the hinted search against the plain one, for all hint kinds; the column fill against per-quart
+    sampling on 5 chunks of the real pack; the proof rejecting y-dependent shapes.
+  - **Caveat:** the y-independence proof parses `dump_program`'s text listing. It fails closed,
+    but it belongs inside `oxide-noise` as a predicate on the compiled program (noise track's
+    file). Expected gain is ~1-2%, so it is kept only on a clear win.
+  - Sub-agent's run: 9.71 ms, 1 thread. Tests: biome 7, chunkgen 192 passed.
+- One rotating 1-thread hold, 4 rounds, decides three things at once: the head (20d218d), the
+  noise merge (0823fd8, `datapath-22`), E27 (`datapath-21`) and E22 (`datapath-20`).
