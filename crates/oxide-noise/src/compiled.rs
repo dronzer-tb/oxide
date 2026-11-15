@@ -26,6 +26,7 @@ use oxide_datapack::{
 };
 
 use crate::blended_noise::{BlendedNoise, BlendedNoiseParams};
+use crate::scratch::Scratch;
 use crate::cache::ChunkCaches;
 use crate::density::{clamped_lerp, lerp_f32, map_rarity, FunctionContext};
 use crate::normal_noise::NormalNoise;
@@ -235,8 +236,9 @@ fn is_lane_batchable(ops: &[Op]) -> bool {
 /// argument run once for all lanes that miss.
 pub(crate) struct Batch<'a> {
     pub ctxs: &'a [FunctionContext],
-    /// `cache_once` slot -> one value per batch lane, [`UNSET`] bits when not taken.
-    once: RefCell<Vec<Vec<u64>>>,
+    /// `cache_once` slot -> one value per batch lane, [`UNSET`] bits when not taken. The
+    /// per-slot buffers come from the thread's scratch pool and go back to it with the batch.
+    once: RefCell<Vec<Scratch<u64>>>,
 }
 
 /// Marks a `Batch::once` entry as not yet computed. A signalling-NaN payload no density
@@ -769,7 +771,7 @@ impl Program {
 
         let lanes = out.len();
         let n = self.ops.len();
-        let mut regs = vec![0.0f64; n * lanes];
+        let mut regs = Scratch::filled(n * lanes, 0.0f64);
         for i in 0..n {
             let (done, rest) = regs.split_at_mut(i * lanes);
             let dst = &mut rest[..lanes];
@@ -810,7 +812,7 @@ impl Program {
                     if any_out && !any_in {
                         r.when_out_of_range.run_cell(caches, cell, cx, dst);
                     } else if any_out {
-                        let mut other = vec![0.0f64; lanes];
+                        let mut other = Scratch::filled(lanes, 0.0f64);
                         r.when_out_of_range.run_cell(caches, cell, cx, &mut other);
                         for ((d, o), v) in dst.iter_mut().zip(&other).zip(input) {
                             if !inside(*v) {
@@ -870,13 +872,20 @@ impl Program {
         let k = lanes.len();
         let n = self.ops.len();
         let pos = |i: usize| batch.ctxs[lanes[i] as usize];
-        let bx: Vec<f64> = (0..k).map(|i| pos(i).x as f64).collect();
-        let by: Vec<f64> = (0..k).map(|i| pos(i).y as f64).collect();
-        let bz: Vec<f64> = (0..k).map(|i| pos(i).z as f64).collect();
-        let mut sx = vec![0.0f64; k];
-        let mut sy = vec![0.0f64; k];
-        let mut sz = vec![0.0f64; k];
-        let mut regs = vec![0.0f64; n * k];
+        // Same values as collecting `pos(i).x as f64` and friends; only the storage is reused.
+        let mut bx = Scratch::filled(k, 0.0f64);
+        let mut by = Scratch::filled(k, 0.0f64);
+        let mut bz = Scratch::filled(k, 0.0f64);
+        for i in 0..k {
+            let p = pos(i);
+            bx[i] = p.x as f64;
+            by[i] = p.y as f64;
+            bz[i] = p.z as f64;
+        }
+        let mut sx = Scratch::filled(k, 0.0f64);
+        let mut sy = Scratch::filled(k, 0.0f64);
+        let mut sz = Scratch::filled(k, 0.0f64);
+        let mut regs = Scratch::filled(n * k, 0.0f64);
 
         for i in 0..n {
             let (done, rest) = regs.split_at_mut(i * k);
@@ -945,7 +954,7 @@ impl Program {
 
                 Op::RangeChoice(r) => {
                     let input = reg(r.input);
-                    let (mut inside, mut outside) = (Vec::new(), Vec::new());
+                    let (mut inside, mut outside) = (Scratch::empty(), Scratch::empty());
                     for (j, &v) in input.iter().enumerate() {
                         if v >= r.min_inclusive && v < r.max_exclusive {
                             inside.push(j);
@@ -958,24 +967,34 @@ impl Program {
                 }
                 Op::IntervalSelect(s) => {
                     let input = reg(s.input);
-                    let mut groups: Vec<Vec<usize>> = vec![Vec::new(); s.functions.len()];
-                    for (j, &v) in input.iter().enumerate() {
-                        let index = s.thresholds.partition_point(|threshold| v >= *threshold);
-                        if s.functions.is_empty() {
-                            dst[j] = 0.0;
-                        } else {
-                            groups[index.min(s.functions.len() - 1)].push(j);
+                    if s.functions.is_empty() {
+                        dst.fill(0.0);
+                    } else {
+                        // Each lane's function index once; then each function, in function order,
+                        // over its lanes in ascending order -- the same runs as one group per
+                        // function, without a nested allocation per call.
+                        let last = s.functions.len() - 1;
+                        let mut index = Scratch::filled(k, 0usize);
+                        for (j, &v) in input.iter().enumerate() {
+                            index[j] = s
+                                .thresholds
+                                .partition_point(|threshold| v >= *threshold)
+                                .min(last);
                         }
-                    }
-                    for (function, group) in s.functions.iter().zip(&groups) {
-                        run_subset(function, group, lanes, batch, cx, dst);
+                        let mut group = Scratch::empty();
+                        for (f, function) in s.functions.iter().enumerate() {
+                            group.clear();
+                            group.extend((0..k).filter(|&j| index[j] == f));
+                            run_subset(function, &group, lanes, batch, cx, dst);
+                        }
                     }
                 }
 
                 Op::GatedAdd(g) => {
                     let gate = reg(g.g);
-                    let open: Vec<usize> = (0..k).filter(|&j| gate[j] != 0.0).collect();
-                    let mut body = vec![0.0f64; k];
+                    let mut open = Scratch::empty();
+                    open.extend((0..k).filter(|&j| gate[j] != 0.0));
+                    let mut body = Scratch::filled(k, 0.0f64);
                     run_subset(&g.body, &open, lanes, batch, cx, &mut body);
                     for j in 0..k {
                         let gv = gate[j];
@@ -999,14 +1018,14 @@ impl Program {
                     argument,
                 } if cx.caches.is_some() => {
                     let slot = *slot as usize;
-                    let mut missing = Vec::new();
+                    let mut missing = Scratch::empty();
                     {
                         let mut memo = batch.once.borrow_mut();
-                        if memo.len() <= slot {
-                            memo.resize(slot + 1, Vec::new());
+                        while memo.len() <= slot {
+                            memo.push(Scratch::empty());
                         }
                         if memo[slot].is_empty() {
-                            memo[slot] = vec![UNSET; batch.ctxs.len()];
+                            memo[slot] = Scratch::filled(batch.ctxs.len(), UNSET);
                         }
                         for (j, &l) in lanes.iter().enumerate() {
                             match memo[slot][l as usize] {
@@ -1054,7 +1073,7 @@ impl Program {
         let regs: &mut [f64] = if n <= INLINE_REGISTERS {
             &mut inline[..n]
         } else {
-            spilled = vec![0.0; n];
+            spilled = Scratch::filled(n, 0.0f64);
             &mut spilled
         };
 
@@ -2107,11 +2126,12 @@ fn run_subset(
         program.run_lanes(lanes, batch, cx, dst);
         return;
     }
-    let sub_lanes: Vec<u32> = subset.iter().map(|&j| lanes[j]).collect();
-    let mut values = vec![0.0f64; subset.len()];
+    let mut sub_lanes = Scratch::empty();
+    sub_lanes.extend(subset.iter().map(|&j| lanes[j]));
+    let mut values = Scratch::filled(subset.len(), 0.0f64);
     program.run_lanes(&sub_lanes, batch, cx, &mut values);
-    for (&j, v) in subset.iter().zip(values) {
-        dst[j] = v;
+    for (&j, v) in subset.iter().zip(values.iter()) {
+        dst[j] = *v;
     }
 }
 
