@@ -511,3 +511,40 @@ both limit stacks) branch on `uniform` with a plain if/else, so the per-octave
 `get_values_column_path_matches_get_value` (uniform and mixed batches) and
 `compute_lanes_column_path_matches_compute` (overworld, nether and end parameters). Next: once
 the box is free, `cargo fmt`, both crates' tests, then the two-base hold.
+
+## Handover, session 4 (2026-11-15 ~16:10 CET, at ~76% of the usage limit)
+
+Head of `perf/noise`: **33fc192** (code head fd4bfe2). Kept this session, digest
+`a977961a58122047` throughout:
+- **14** (01528de): corner columns evaluated lane-batched, with lattice-hash reuse. 1 thread:
+  -6.4% / -8.6% against two fresh bases, ahead in 6 of 7 rounds.
+  **Open question:** datapath's one 8-thread row after merging it is 392.9 cps against ~700,
+  timed just before the s5 reservation, so it may be an artefact. Datapath's sub-agent runs the
+  8-thread hold of that merge after 15:55 UTC; read it rather than duplicating it. If the drop
+  is real, the first suspect is allocation inside the batch path. `run_lanes` allocates
+  `bx/by/bz`, `sx/sy/sz` and `regs` per call (and `run_subset` per branch), and `Batch::new`'s
+  `cache_once` memo allocates per column. That is harmless on 1 thread but can contend in the
+  allocator on 8. Fix: reuse per-thread scratch buffers (a `thread_local!` or a scratch arena
+  owned by `ChunkCaches`). Fallback: gate the batch path off with a single switch in
+  `build_corner_grid_shared` (go back to per-corner `run`). **From now on, every keep in the
+  shared corner-cache path also needs an 8-thread hold.**
+- APIs for datapath: `is_y_independent(slot)` (b1e4a5c) and `is_quart_invariant(slot)`
+  (fd4bfe2), each with tests and a real-overworld table above.
+- Rejected or inconclusive, patches in `docs/perf/wip/`: 13 (SIMD within a sample), 15 (2D
+  fast path), 16 (aquifer point memo; its profile shows the aquifer is 83.5% datapath logic).
+
+**In flight:** 17 (noise-11, column-uniform x/z work). It is drafted but not compiled, in
+`/tmp/noise-11` and `docs/perf/wip/noise-11-column-xz-DRAFT.patch`. A session cron fires at
+17:07 CET to resume it once the s5 reservation ends. Steps: `cargo fmt -p oxide-noise`, both
+crates' tests, then a 5-round hold with two fresh bases on **1 thread and on 8 threads** (labels
+`n11b1`/`n11b2`/`n11`), each hold under ~5 minutes. Delete box dirs by exact label, never by
+glob.
+
+**Next three things to try:**
+1. Settle 14 at 8 threads (above), then 17.
+2. If 17 lands, the per-lane remainder is the y half and 7 lerps. The next exact cut is
+   per-cell reuse of `dy`-independent lerp terms where `u` repeats (only when consecutive lanes
+   share `dy`, which is rare). Probably not worth it; re-profile first.
+3. This crate's remaining share is mostly the corner grid's leaves (~14% of generation at the
+   last profile). The larger costs now sit in datapath (surface 16.5%, the aquifer's own loops
+   ~9%). Further help from here is narrow APIs on request, like the two predicates.
