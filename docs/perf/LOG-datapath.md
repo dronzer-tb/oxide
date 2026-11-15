@@ -614,3 +614,16 @@ Next three:
    (~1.6% in neighbour caches).
 
 PR into `feat/native-decoration` is not open: no `gh` on this host.
+
+### Additive change in `oxide-noise` (noise track's crate): `NoiseRouterEvaluator::id()`
+
+The round-4 aquifer sub-agent (`datapath-11`) found no safe cross-chunk memo key within
+chunkgen, and stopped without changing anything. Chunkgen only sees `&NoiseRouterEvaluator`:
+- addresses are reused after a drop (the FFI frees and builds worlds);
+- a seed does not identify a datapack;
+- the router's contents cannot be fingerprinted cheaply through its public API.
+
+So, as PLAN.md allows ("the smallest additive change, say so in your log"): a private
+`id: u64` field set in `new` from a process-wide `AtomicU64`, and `pub fn id(&self) -> u64`.
+Nothing renamed or reshaped. The router is not `Clone`, so ids are never shared. One field and one
+accessor; if the noise track changes `new`, the merge conflict is two lines.

@@ -114,9 +114,25 @@ pub struct NoiseRouterEvaluator {
     /// `"minecraft:terrain"` random, so the stacks are identical and only the per-node scaling
     /// constants differ -- those travel with the node and are applied at evaluation.
     blended: BlendedNoise,
+    /// Unique per evaluator for the life of the process; see [`Self::id`].
+    id: u64,
 }
 
+/// Source of [`NoiseRouterEvaluator::id`]. 64 bits never wrap in practice, so no two
+/// evaluators built in one process share an id, even after one is dropped and another is
+/// built at the same address.
+static NEXT_ROUTER_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 impl NoiseRouterEvaluator {
+    /// An identity no other evaluator in this process has had or will have. A cache that
+    /// outlives one chunk (for example, per thread, across chunks) keys on this so it can never
+    /// hand one router's values to another. An address cannot do that, since it is reused
+    /// after a drop, and a seed cannot either, since two routers can share a seed with
+    /// different datapacks.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
     /// Instruction count of each router slot's compiled program, in `RouterSlot::ALL` order.
     /// Used to size the register budget in `Program::run` against real datapacks rather than
     /// against a guess.
@@ -181,6 +197,7 @@ impl NoiseRouterEvaluator {
             positional_factory: factory,
             noise: settings.noise.clone(),
             blended,
+            id: NEXT_ROUTER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         }
     }
 
