@@ -1,0 +1,645 @@
+diff --git a/crates/oxide-noise/src/blended_noise.rs b/crates/oxide-noise/src/blended_noise.rs
+index 78a48ff..793d0ad 100644
+--- a/crates/oxide-noise/src/blended_noise.rs
++++ b/crates/oxide-noise/src/blended_noise.rs
+@@ -107,6 +107,81 @@ impl BlendedNoise {
+     }
+ }
+ 
++impl BlendedNoise {
++    /// [`Self::compute`] at every `(xs[i], ys[i], zs[i])`, bit-identical per lane: the same
++    /// per-lane expressions in the same octave order, with each octave's lanes in an inner loop.
++    pub fn compute_lanes(
++        &self,
++        params: &BlendedNoiseParams,
++        xs: &[f64],
++        ys: &[f64],
++        zs: &[f64],
++        out: &mut [f64],
++    ) {
++        let k = out.len();
++        let xz_multiplier = 684.412 * params.xz_scale;
++        let y_multiplier = 684.412 * params.y_scale;
++        let limit_x: Vec<f64> = xs.iter().map(|x| x * xz_multiplier).collect();
++        let limit_y: Vec<f64> = ys.iter().map(|y| y * y_multiplier).collect();
++        let limit_z: Vec<f64> = zs.iter().map(|z| z * xz_multiplier).collect();
++        let main_x: Vec<f64> = limit_x.iter().map(|x| x / params.xz_factor).collect();
++        let main_y: Vec<f64> = limit_y.iter().map(|y| y / params.y_factor).collect();
++        let main_z: Vec<f64> = limit_z.iter().map(|z| z / params.xz_factor).collect();
++        let limit_smear = y_multiplier * params.smear_scale_multiplier;
++        let main_smear = limit_smear / params.y_factor;
++
++        let mut main_value = vec![0.0f64; k];
++        let mut pow = 1.0;
++        for i in 0..8 {
++            if let Some(noise) = self.main.get_octave_noise(i) {
++                for j in 0..k {
++                    main_value[j] += noise.noise_with_scale(
++                        wrap(main_x[j] * pow),
++                        wrap(main_y[j] * pow),
++                        wrap(main_z[j] * pow),
++                        main_smear * pow,
++                        main_y[j] * pow,
++                    ) / pow;
++                }
++            }
++            pow /= 2.0;
++        }
++
++        let factor: Vec<f64> = main_value.iter().map(|v| (v / 10.0 + 1.0) / 2.0).collect();
++        let mut blend_min = vec![0.0f64; k];
++        let mut blend_max = vec![0.0f64; k];
++        pow = 1.0;
++        for i in 0..16 {
++            let y_scale_pow = limit_smear * pow;
++            let min_noise = self.min_limit.get_octave_noise(i);
++            let max_noise = self.max_limit.get_octave_noise(i);
++            for j in 0..k {
++                let wx = wrap(limit_x[j] * pow);
++                let wy = wrap(limit_y[j] * pow);
++                let wz = wrap(limit_z[j] * pow);
++                // Negated as the scalar path tests them, so a NaN factor behaves the same.
++                if !(factor[j] >= 1.0) {
++                    if let Some(noise) = min_noise {
++                        blend_min[j] +=
++                            noise.noise_with_scale(wx, wy, wz, y_scale_pow, limit_y[j] * pow) / pow;
++                    }
++                }
++                if !(factor[j] <= 0.0) {
++                    if let Some(noise) = max_noise {
++                        blend_max[j] +=
++                            noise.noise_with_scale(wx, wy, wz, y_scale_pow, limit_y[j] * pow) / pow;
++                    }
++                }
++            }
++            pow /= 2.0;
++        }
++
++        for j in 0..k {
++            out[j] = clamped_lerp(factor[j], blend_min[j] / 512.0, blend_max[j] / 512.0) / 128.0;
++        }
++    }
++}
++
+ /// `Mth.clampedLerp(factor, min, max)` as of 26.2 -- factor first.
+ fn clamped_lerp(factor: f64, min: f64, max: f64) -> f64 {
+     if factor < 0.0 {
+diff --git a/crates/oxide-noise/src/cache.rs b/crates/oxide-noise/src/cache.rs
+index bce2f4a..0fbe4fb 100644
+--- a/crates/oxide-noise/src/cache.rs
++++ b/crates/oxide-noise/src/cache.rs
+@@ -15,7 +15,7 @@
+ 
+ use std::cell::RefCell;
+ 
+-use crate::compiled::{CacheKind, CacheSlotCounts, Program, RunCtx};
++use crate::compiled::{Batch, CacheKind, CacheSlotCounts, Program, RunCtx};
+ use crate::density::FunctionContext;
+ 
+ /// A remembered sample: the position it was taken at, and the value there.
+@@ -445,16 +445,31 @@ impl ChunkCaches {
+         )
+     }
+ 
++    /// Evaluated a column of corners at a time (see `Program::run_lanes`). Every corner gets
++    /// the value a per-corner `run` would give: the only state shared between corners is the
++    /// caches, which are pure, and the 2D ones are still first filled from each column's lowest
++    /// corner, as the y-outermost order did.
+     fn build_corner_grid(&self, argument: &Program, cx: &RunCtx) -> Vec<f64> {
+-        let mut grid =
+-            Vec::with_capacity((self.cells_x + 1) * (self.cells_y + 1) * (self.cells_z + 1));
+-        for cy in 0..=self.cells_y {
+-            let y = self.min_y + cy as i32 * self.cell_height;
+-            for cz in 0..=self.cells_z {
+-                let z = self.origin_z + cz as i32 * self.cell_width;
+-                for cx_index in 0..=self.cells_x {
+-                    let x = self.origin_x + cx_index as i32 * self.cell_width;
+-                    grid.push(argument.run(FunctionContext { x, y, z }, cx));
++        let x_stride = 1usize;
++        let z_stride = self.cells_x + 1;
++        let y_stride = z_stride * (self.cells_z + 1);
++        let mut grid = vec![0.0f64; y_stride * (self.cells_y + 1)];
++        let lanes: Vec<u32> = (0..=self.cells_y as u32).collect();
++        let mut column = vec![0.0f64; lanes.len()];
++        let mut ctxs = Vec::with_capacity(lanes.len());
++        for cz in 0..=self.cells_z {
++            let z = self.origin_z + cz as i32 * self.cell_width;
++            for cx_index in 0..=self.cells_x {
++                let x = self.origin_x + cx_index as i32 * self.cell_width;
++                ctxs.clear();
++                ctxs.extend((0..=self.cells_y).map(|cy| FunctionContext {
++                    x,
++                    y: self.min_y + cy as i32 * self.cell_height,
++                    z,
++                }));
++                argument.run_lanes(&lanes, &Batch::new(&ctxs), cx, &mut column);
++                for (cy, value) in column.iter().enumerate() {
++                    grid[cy * y_stride + cz * z_stride + cx_index * x_stride] = *value;
+                 }
+             }
+         }
+diff --git a/crates/oxide-noise/src/compiled.rs b/crates/oxide-noise/src/compiled.rs
+index 2454080..bb5bb9e 100644
+--- a/crates/oxide-noise/src/compiled.rs
++++ b/crates/oxide-noise/src/compiled.rs
+@@ -17,6 +17,7 @@
+ //! it: two implementations of the same per-node semantics is how a generator quietly stops
+ //! matching itself, and the node semantics below are the parity-critical part.
+ 
++use std::cell::RefCell;
+ use std::collections::HashMap;
+ 
+ use oxide_datapack::{
+@@ -187,6 +188,45 @@ pub(crate) struct Program {
+     /// `final_density` in every vanilla-shaped router, which is the program a chunk fill runs
+     /// once per block.
+     cell_batchable: bool,
++    /// Whether [`Program::run_lanes`] evaluates this program an instruction at a time across
++    /// all its lanes. False only for the two nodes that read a register per lane in a way the
++    /// lane sweep does not model (`find_top_surface`, `weird_scaled_sampler`); such a program
++    /// runs per lane instead, which is what it did before.
++    lane_batchable: bool,
++}
++
++/// See [`Program::lane_batchable`].
++fn is_lane_batchable(ops: &[Op]) -> bool {
++    ops.iter().all(|op| match op {
++        Op::FindTopSurface(_) | Op::WeirdScaledSampler(_) => false,
++        // Nested programs are checked when they run: each falls back on its own.
++        _ => true,
++    })
++}
++
++/// A set of positions evaluated together by [`Program::run_lanes`], and the batch's own
++/// `cache_once` memo.
++///
++/// `cache_once` is a pure cache -- it returns its argument's value at the position -- so a
++/// memo per batch lane gives exactly the values the per-position one does, while letting the
++/// argument run once for all lanes that miss.
++pub(crate) struct Batch<'a> {
++    pub ctxs: &'a [FunctionContext],
++    /// `cache_once` slot -> one value per batch lane, `NaN` bits of [`UNSET`] when not taken.
++    once: RefCell<Vec<Vec<u64>>>,
++}
++
++/// Marks a `Batch::once` entry as not yet computed. A signalling-NaN payload no density
++/// computation produces; compared as bits, so a real NaN value is still stored faithfully.
++const UNSET: u64 = 0x7ff4_dead_beef_0001;
++
++impl<'a> Batch<'a> {
++    pub(crate) fn new(ctxs: &'a [FunctionContext]) -> Self {
++        Self {
++            ctxs,
++            once: RefCell::new(Vec::new()),
++        }
++    }
+ }
+ 
+ /// See [`Program::cell_batchable`]. Requires at least one `interpolated` leaf: a program
+@@ -643,6 +683,201 @@ impl Program {
+         self.cell_batchable
+     }
+ 
++    /// Evaluates this program at `batch.ctxs[l]` for every `l` in `lanes`, writing `out[i]` for
++    /// `lanes[i]`. Bit-identical to calling [`Program::run`] at each position: every lane sees
++    /// the same operations on the same operands in the same order. What changes is that
++    /// dispatch is paid per instruction rather than per instruction per position, and that the
++    /// noise leaves loop over lanes inside their octave loops, so independent lanes overlap in
++    /// the CPU instead of each position being one long dependent chain.
++    ///
++    /// Lazy nodes stay lazy per lane: a `range_choice` or `interval_select` branch runs only for
++    /// the lanes that select it.
++    pub(crate) fn run_lanes(&self, lanes: &[u32], batch: &Batch, cx: &RunCtx, out: &mut [f64]) {
++        debug_assert_eq!(lanes.len(), out.len());
++        if !self.lane_batchable {
++            for (o, &l) in out.iter_mut().zip(lanes) {
++                *o = self.run(batch.ctxs[l as usize], cx);
++            }
++            return;
++        }
++        fn unary(dst: &mut [f64], a: &[f64], f: impl Fn(f64) -> f64) {
++            for (d, a) in dst.iter_mut().zip(a) {
++                *d = f(*a);
++            }
++        }
++        fn binary(dst: &mut [f64], a: &[f64], b: &[f64], f: impl Fn(f64, f64) -> f64) {
++            for ((d, a), b) in dst.iter_mut().zip(a).zip(b) {
++                *d = f(*a, *b);
++            }
++        }
++        fn noise_lanes(cx: &RunCtx, noise: u32, xs: &[f64], ys: &[f64], zs: &[f64], dst: &mut [f64]) {
++            match cx.noises.get(noise as usize) {
++                Some(n) => n.get_values(xs, ys, zs, dst),
++                None => dst.fill(0.0),
++            }
++        }
++
++        let k = lanes.len();
++        let n = self.ops.len();
++        let pos = |i: usize| batch.ctxs[lanes[i] as usize];
++        let bx: Vec<f64> = (0..k).map(|i| pos(i).x as f64).collect();
++        let by: Vec<f64> = (0..k).map(|i| pos(i).y as f64).collect();
++        let bz: Vec<f64> = (0..k).map(|i| pos(i).z as f64).collect();
++        let mut sx = vec![0.0f64; k];
++        let mut sy = vec![0.0f64; k];
++        let mut sz = vec![0.0f64; k];
++        let mut regs = vec![0.0f64; n * k];
++
++        for i in 0..n {
++            let (done, rest) = regs.split_at_mut(i * k);
++            let dst = &mut rest[..k];
++            let reg = |r: u32| &done[r as usize * k..(r as usize + 1) * k];
++            match &self.ops[i] {
++                Op::Const(v) => dst.fill(*v),
++
++                Op::Noise(o) => {
++                    for j in 0..k {
++                        sx[j] = bx[j] * o.xz_scale;
++                        sy[j] = by[j] * o.y_scale;
++                        sz[j] = bz[j] * o.xz_scale;
++                    }
++                    noise_lanes(cx, o.noise, &sx, &sy, &sz, dst);
++                }
++                Op::ShiftedNoise(o) => {
++                    let (rx, ry, rz) = (reg(o.shift_x), reg(o.shift_y), reg(o.shift_z));
++                    for j in 0..k {
++                        sx[j] = bx[j] * o.xz_scale + rx[j];
++                        sy[j] = by[j] * o.y_scale + ry[j];
++                        sz[j] = bz[j] * o.xz_scale + rz[j];
++                    }
++                    noise_lanes(cx, o.noise, &sx, &sy, &sz, dst);
++                }
++                Op::Shift { noise, kind } => {
++                    for j in 0..k {
++                        (sx[j], sy[j], sz[j]) = match kind {
++                            ShiftKind::Xyz => (bx[j] * 0.25, by[j] * 0.25, bz[j] * 0.25),
++                            ShiftKind::Xz => (bx[j] * 0.25, 0.0, bz[j] * 0.25),
++                            ShiftKind::Zx => (bz[j] * 0.25, bx[j] * 0.25, 0.0),
++                        };
++                    }
++                    noise_lanes(cx, *noise, &sx, &sy, &sz, dst);
++                    for d in dst.iter_mut() {
++                        *d *= 4.0;
++                    }
++                }
++                Op::OldBlendedNoise(params) => cx.blended.compute_lanes(params, &bx, &by, &bz, dst),
++                Op::YClampedGradient(g) => {
++                    for (j, d) in dst.iter_mut().enumerate() {
++                        *d = clamped_lerp(pos(j).y, g.from_y, g.to_y, g.from_value, g.to_value);
++                    }
++                }
++
++                Op::Add(a, b) => binary(dst, reg(*a), reg(*b), |a, b| a + b),
++                Op::Mul(a, b) => binary(dst, reg(*a), reg(*b), |a, b| a * b),
++                Op::Min(a, b) => binary(dst, reg(*a), reg(*b), |a, b| a.min(b)),
++                Op::Max(a, b) => binary(dst, reg(*a), reg(*b), |a, b| a.max(b)),
++                Op::Abs(a) => unary(dst, reg(*a), |v| v.abs()),
++                Op::Square(a) => unary(dst, reg(*a), |v| v * v),
++                Op::Cube(a) => unary(dst, reg(*a), |v| v * v * v),
++                Op::HalfNegative(a) => unary(dst, reg(*a), half_negative),
++                Op::QuarterNegative(a) => unary(dst, reg(*a), quarter_negative),
++                Op::Squeeze(a) => unary(dst, reg(*a), squeeze),
++                Op::Invert(a) => unary(dst, reg(*a), |v| 1.0 / v),
++                Op::Clamp(c) => unary(dst, reg(c.input), |v| v.clamp(c.min, c.max)),
++
++                // Spline coordinates are themselves cached 2D lookups in every vanilla router;
++                // the per-lane walk is the scalar one.
++                Op::Spline(s) => {
++                    for (j, d) in dst.iter_mut().enumerate() {
++                        *d = eval_spline(s, pos(j), cx) as f64;
++                    }
++                }
++
++                Op::RangeChoice(r) => {
++                    let input = reg(r.input);
++                    let (mut inside, mut outside) = (Vec::new(), Vec::new());
++                    for j in 0..k {
++                        let v = input[j];
++                        if v >= r.min_inclusive && v < r.max_exclusive {
++                            inside.push(j);
++                        } else {
++                            outside.push(j);
++                        }
++                    }
++                    run_subset(&r.when_in_range, &inside, lanes, batch, cx, dst);
++                    run_subset(&r.when_out_of_range, &outside, lanes, batch, cx, dst);
++                }
++                Op::IntervalSelect(s) => {
++                    let input = reg(s.input);
++                    let mut groups: Vec<Vec<usize>> = vec![Vec::new(); s.functions.len()];
++                    for j in 0..k {
++                        let v = input[j];
++                        let index = s.thresholds.partition_point(|threshold| v >= *threshold);
++                        if s.functions.is_empty() {
++                            dst[j] = 0.0;
++                        } else {
++                            groups[index.min(s.functions.len() - 1)].push(j);
++                        }
++                    }
++                    for (function, group) in s.functions.iter().zip(&groups) {
++                        run_subset(function, group, lanes, batch, cx, dst);
++                    }
++                }
++
++                Op::Cache {
++                    kind: CacheKind::Once,
++                    slot,
++                    argument,
++                } if cx.caches.is_some() => {
++                    let slot = *slot as usize;
++                    let mut missing = Vec::new();
++                    {
++                        let mut memo = batch.once.borrow_mut();
++                        if memo.len() <= slot {
++                            memo.resize(slot + 1, Vec::new());
++                        }
++                        if memo[slot].is_empty() {
++                            memo[slot] = vec![UNSET; batch.ctxs.len()];
++                        }
++                        for (j, &l) in lanes.iter().enumerate() {
++                            match memo[slot][l as usize] {
++                                UNSET => missing.push(j),
++                                bits => dst[j] = f64::from_bits(bits),
++                            }
++                        }
++                    }
++                    if !missing.is_empty() {
++                        // Not borrowed across the run: the argument may reach other once slots.
++                        run_subset(argument, &missing, lanes, batch, cx, dst);
++                        let mut memo = batch.once.borrow_mut();
++                        for &j in &missing {
++                            memo[slot][lanes[j] as usize] = dst[j].to_bits();
++                        }
++                    }
++                }
++                Op::Cache {
++                    kind,
++                    slot,
++                    argument,
++                } => {
++                    for (j, d) in dst.iter_mut().enumerate() {
++                        *d = match cx.caches {
++                            Some(caches) => {
++                                caches.cached(*kind, *slot as usize, argument, pos(j), cx)
++                            }
++                            None => argument.run(pos(j), cx),
++                        };
++                    }
++                }
++
++                Op::FindTopSurface(_) | Op::WeirdScaledSampler(_) => {
++                    unreachable!("run_lanes on a program that is not lane_batchable")
++                }
++            }
++        }
++        out.copy_from_slice(&regs[(n - 1) * k..]);
++    }
++
+     /// Evaluates this program at every block of one cell of `caches`, writing `out` in the
+     /// lane order [`ChunkCaches::fill_cell_interpolated`] defines. Only valid when
+     /// [`Program::cell_batchable`] is true.
+@@ -1027,9 +1262,11 @@ impl<'a> Compiler<'a> {
+             ops.push(Op::Const(0.0));
+         }
+         let cell_batchable = is_cell_batchable(&ops);
++        let lane_batchable = is_lane_batchable(&ops);
+         Program {
+             ops,
+             cell_batchable,
++            lane_batchable,
+         }
+     }
+ 
+@@ -1365,6 +1602,31 @@ impl<'a> Compiler<'a> {
+     }
+ }
+ 
++/// Runs `program` for the lanes `subset` (indices into `lanes`) and scatters the results into
++/// `dst` at those indices.
++fn run_subset(
++    program: &Program,
++    subset: &[usize],
++    lanes: &[u32],
++    batch: &Batch,
++    cx: &RunCtx,
++    dst: &mut [f64],
++) {
++    if subset.is_empty() {
++        return;
++    }
++    if subset.len() == lanes.len() {
++        program.run_lanes(lanes, batch, cx, dst);
++        return;
++    }
++    let sub_lanes: Vec<u32> = subset.iter().map(|&j| lanes[j]).collect();
++    let mut values = vec![0.0f64; subset.len()];
++    program.run_lanes(&sub_lanes, batch, cx, &mut values);
++    for (&j, v) in subset.iter().zip(values) {
++        dst[j] = v;
++    }
++}
++
+ fn push(ops: &mut Vec<Op>, op: Op) -> u32 {
+     ops.push(op);
+     (ops.len() - 1) as u32
+diff --git a/crates/oxide-noise/src/improved_noise.rs b/crates/oxide-noise/src/improved_noise.rs
+index f628153..d461574 100644
+--- a/crates/oxide-noise/src/improved_noise.rs
++++ b/crates/oxide-noise/src/improved_noise.rs
+@@ -95,6 +95,7 @@ impl ImprovedNoise {
+     /// `y_scale`/`y_max` implement vanilla's Y-axis "smear" used by terrain-shaping density
+     /// functions to flatten noise variation below a threshold height; pass `0.0`/`0.0` for
+     /// plain 3D noise.
++    #[inline]
+     pub fn noise_with_scale(&self, x: f64, y: f64, z: f64, y_scale: f64, y_max: f64) -> f64 {
+         let d0 = x + self.xo;
+         let d1 = y + self.yo;
+diff --git a/crates/oxide-noise/src/normal_noise.rs b/crates/oxide-noise/src/normal_noise.rs
+index 9e9b441..7eae339 100644
+--- a/crates/oxide-noise/src/normal_noise.rs
++++ b/crates/oxide-noise/src/normal_noise.rs
+@@ -59,6 +59,20 @@ impl NormalNoise {
+         let z2 = z * INPUT_FACTOR;
+         (self.first.get_value(x, y, z) + self.second.get_value(x2, y2, z2)) * self.value_factor
+     }
++
++    /// [`Self::get_value`] at every `(xs[i], ys[i], zs[i])`, bit-identical per lane.
++    pub fn get_values(&self, xs: &[f64], ys: &[f64], zs: &[f64], out: &mut [f64]) {
++        let k = out.len();
++        let mut second = vec![0.0f64; k];
++        let x2: Vec<f64> = xs.iter().map(|x| x * INPUT_FACTOR).collect();
++        let y2: Vec<f64> = ys.iter().map(|y| y * INPUT_FACTOR).collect();
++        let z2: Vec<f64> = zs.iter().map(|z| z * INPUT_FACTOR).collect();
++        self.first.get_values(xs, ys, zs, out);
++        self.second.get_values(&x2, &y2, &z2, &mut second);
++        for (o, s) in out.iter_mut().zip(second) {
++            *o = (*o + s) * self.value_factor;
++        }
++    }
+ }
+ 
+ #[cfg(test)]
+diff --git a/crates/oxide-noise/src/perlin_noise.rs b/crates/oxide-noise/src/perlin_noise.rs
+index b999118..8aecd77 100644
+--- a/crates/oxide-noise/src/perlin_noise.rs
++++ b/crates/oxide-noise/src/perlin_noise.rs
+@@ -109,6 +109,32 @@ impl PerlinNoise {
+         self.get_value_with_scale(x, y, z, 0.0, 0.0)
+     }
+ 
++    /// [`Self::get_value`] at every `(xs[i], ys[i], zs[i])`, bit-identical per lane: each lane
++    /// accumulates its octaves in the same order with the same expression. Octave-outer, so the
++    /// lanes of one octave are independent work the CPU can overlap.
++    pub fn get_values(&self, xs: &[f64], ys: &[f64], zs: &[f64], out: &mut [f64]) {
++        out.fill(0.0);
++        let mut freq = self.lowest_freq_input_factor;
++        let mut amp = self.lowest_freq_value_factor;
++        for (i, level) in self.noise_levels.iter().enumerate() {
++            if let Some(noise) = level {
++                let amplitude = self.amplitudes[i];
++                for (((o, x), y), z) in out.iter_mut().zip(xs).zip(ys).zip(zs) {
++                    let sample = noise.noise_with_scale(
++                        wrap_coordinate(x * freq),
++                        wrap_coordinate(y * freq),
++                        wrap_coordinate(z * freq),
++                        0.0 * freq,
++                        0.0 * freq,
++                    );
++                    *o += amplitude * sample * amp;
++                }
++            }
++            freq *= 2.0;
++            amp /= 2.0;
++        }
++    }
++
+     /// Verified 2026-08-22 against decompiled `PerlinNoise.getValue(x, y, z, yScale, yFudge)`:
+     /// `x`/`y`/`z` are each wrapped before scaling into the octave's `ImprovedNoise.noise`
+     /// call; `yScale`/`yFudge` are passed through scaled but *not* wrapped. There is no
+diff --git a/crates/oxide-noise/src/router.rs b/crates/oxide-noise/src/router.rs
+index db88ceb..2b49b44 100644
+--- a/crates/oxide-noise/src/router.rs
++++ b/crates/oxide-noise/src/router.rs
+@@ -536,4 +536,122 @@ mod tests {
+             );
+         }
+     }
++
++    /// `Program::run_lanes` must give every lane exactly the bits `Program::run` gives that
++    /// position, with and without chunk caches, over a program that reaches blended noise, a
++    /// normal noise (plain, shifted and shift_a), both `range_choice` branches, a `cache_once`
++    /// hit (the same subtree behind two markers shares one slot) and a 2D cache.
++    #[test]
++    fn run_lanes_is_bit_identical_to_run() {
++        use crate::compiled::Batch;
++        use oxide_datapack::DensityFunctionObject as O;
++        fn obj(o: O) -> DensityFunction {
++            DensityFunction::Object(Box::new(o))
++        }
++        let noise_id = Rl::new("minecraft", "lanes_test");
++        let noise = |xz_scale: f64, y_scale: f64| {
++            obj(O::Noise {
++                noise: noise_id.clone(),
++                xz_scale,
++                y_scale,
++            })
++        };
++        let once_blended = || {
++            obj(O::CacheOnce {
++                argument: obj(O::OldBlendedNoise {
++                    xz_scale: 0.25,
++                    y_scale: 0.125,
++                    xz_factor: 80.0,
++                    y_factor: 160.0,
++                    smear_scale_multiplier: 8.0,
++                }),
++            })
++        };
++        let mut settings = minimal_settings();
++        settings.noise_router.final_density = obj(O::Add {
++            argument1: once_blended(),
++            argument2: obj(O::RangeChoice {
++                input: noise(1.0, 1.0),
++                min_inclusive: 0.0,
++                max_exclusive: 1000.0,
++                when_in_range: obj(O::Add {
++                    argument1: DensityFunction::Constant(64.0),
++                    argument2: obj(O::ShiftedNoise {
++                        noise: noise_id.clone(),
++                        xz_scale: 0.5,
++                        y_scale: 0.25,
++                        shift_x: obj(O::ShiftA {
++                            argument: noise_id.clone(),
++                        }),
++                        shift_y: DensityFunction::Constant(0.0),
++                        shift_z: obj(O::ShiftB {
++                            argument: noise_id.clone(),
++                        }),
++                    }),
++                }),
++                when_out_of_range: obj(O::Add {
++                    argument1: once_blended(),
++                    argument2: obj(O::Cache2d {
++                        argument: noise(0.75, 0.0),
++                    }),
++                }),
++            }),
++        });
++        let df_registry = Registry::default();
++        let noise_registry: Registry<NormalNoiseParameters> = [(
++            noise_id.clone(),
++            NormalNoiseParameters {
++                first_octave: -5,
++                amplitudes: vec![1.0, 1.0, 0.5, 0.0, 0.25],
++            },
++        )]
++        .into_iter()
++        .collect();
++        let router = NoiseRouterEvaluator::new(11, &settings, &df_registry, &noise_registry);
++        let program = &router.programs[RouterSlot::FinalDensity.index()];
++
++        let (mut in_range, mut out_of_range) = (0, 0);
++        for with_caches in [false, true] {
++            for (chunk_x, chunk_z) in [(0, 0), (-3, 5)] {
++                let lane_caches = router.chunk_caches(chunk_x, chunk_z);
++                let plain_caches = router.chunk_caches(chunk_x, chunk_z);
++                let lane_cx = RunCtx {
++                    noises: &router.noises,
++                    blended: &router.blended,
++                    caches: with_caches.then_some(&lane_caches),
++                };
++                let plain_cx = RunCtx {
++                    noises: &router.noises,
++                    blended: &router.blended,
++                    caches: with_caches.then_some(&plain_caches),
++                };
++                for (local_x, local_z) in [(0, 0), (4, 12), (16, 16), (7, 3)] {
++                    let (x, z) = (chunk_x * 16 + local_x, chunk_z * 16 + local_z);
++                    let ctxs: Vec<FunctionContext> =
++                        (0..49).map(|cy| FunctionContext { x, y: -64 + cy * 8, z }).collect();
++                    let lanes: Vec<u32> = (0..49).collect();
++                    let mut out = vec![0.0; 49];
++                    program.run_lanes(&lanes, &Batch::new(&ctxs), &lane_cx, &mut out);
++                    for (ctx, value) in ctxs.iter().zip(&out) {
++                        let expected = program.run(*ctx, &plain_cx);
++                        assert_eq!(expected.to_bits(), value.to_bits(), "at {ctx:?}");
++                        if expected > 32.0 {
++                            in_range += 1;
++                        } else {
++                            out_of_range += 1;
++                        }
++                    }
++                    // A strided subset of the column, so the lanes are not 0..k.
++                    let sub: Vec<u32> = (0..49).step_by(3).collect();
++                    let mut out = vec![0.0; sub.len()];
++                    program.run_lanes(&sub, &Batch::new(&ctxs), &lane_cx, &mut out);
++                    for (&l, value) in sub.iter().zip(&out) {
++                        let expected = program.run(ctxs[l as usize], &plain_cx);
++                        assert_eq!(expected.to_bits(), value.to_bits(), "subset lane {l}");
++                    }
++                }
++            }
++        }
++        assert!(in_range > 20 && out_of_range > 20, "{in_range} / {out_of_range}");
++    }
+ }
