@@ -41,5 +41,5 @@ only. Never relax the digest gate.
 - Edit code on the track branches or in their worktrees (`~/oxide-wt/<track>`).
 - Merge anything. Integration waits for the user.
 - Touch the live servers or anything on the VPS outside the bench user's `oxide-perf/`.
-- Use sub-agents for what a `git diff` answers. For a long log or a big diff, a cheap read is
-  `scripts/omni-agent.sh auto/kimi "<question>"` in a scratch worktree.
+- Use sub-agents for what a `git diff` answers. Do not use OmniRoute; the user dropped it as too
+  slow.
