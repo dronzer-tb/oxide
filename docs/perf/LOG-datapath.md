@@ -1026,3 +1026,63 @@ at `docs/perf/rejected-E25-surface-column-major-scan.diff`. If anyone retries, t
 shapes without the column-major transpose.
 
 Head is now 20d218d (with E21): about 10.0 ms core per chunk on 1 thread from the E21 hold.
+
+### Disk cleanup (auditor's request)
+
+The bench box was at 95%. Deleted my finished scratch dirs `~/oxide-perf/datapath-{1..19}`,
+`datapath-ab` and `datapath-m` (~35 GB); the disk is now at 77%. Kept `datapath` (head),
+`datapath-20` (E22 retry, in flight) and `datapath-21` (biomes sub-agent, in flight). From now
+on each `datapath-<n>` is deleted when its experiment is logged.
+
+## Handover, session 1 (written at ~85% of the usage limit)
+
+**Head: 20d218d** (741d96f with logs): datapath E1-E13, E16, E18, E21, plus noise merged up to
+d2433fb (noise-4). Every kept change leaves `digest=a977961a58122047`.
+- 1-thread reference: **~10.0 ms core per chunk** (E21 hold: 9.47-10.26, mean 9.97).
+- 8 threads: 697.0 cps at 321c6eb, the head before E21; a fresh 8-thread row for 20d218d is in flight.
+- Session start: 138.2 cps on 8 threads, 43.8 ms on 1 thread (PLAN.md).
+- Pumpkin's terrain, per the auditor: 17.4 ms.
+
+**In flight at handover:**
+- `datapath-20`: E22 (carver LCG jump-ahead, ellipsoid tables) rebased onto 20d218d, followed by
+  one `bench-vps.sh` 8-thread row of the head, then a rotating 1-thread 6-round A/B, head
+  against E22. Keep E22 only if it is ahead in at least 5 of 6 rounds.
+- `datapath-21`: sub-agent on `fill_biomes` (5.3%). The main idea is sampling y-independent
+  climate slots once per quart column, which needs a bit-exact y-independence argument from
+  this pack's programs. It only builds; the master A/Bs.
+- **Not yet done:** merge `origin/perf/noise` at ff02449 (noise experiment 12: a gated add
+  that skips the slide bodies where the gradient is exactly zero; the noise track's 1-thread hold
+  was 9.77 against 10.43 ms, ahead in 5 of 5), run the tests, and re-reference on 1 thread. It
+  waits for the E22 job, which rsyncs the main tree.
+
+**Method that works** (scripts in the session scratchpad; recreate them from this description):
+- Builds and tests on the box run as `flock -s ~/oxide-perf/.lock nice -n 10 sh -c '...'`.
+- Each variant gets its own `~/oxide-perf/datapath-<n>` dir.
+- A/B: one `flock -x` hold, 1 thread, radius 16, 5-6 rounds, order rotated each round, `ps`
+  sampled inside the hold. A single 8-thread run spreads 15-25%; this spreads ~5-8%.
+- Judge a hold by `ps`, never by load average.
+- Kept heads get a `bench-vps.sh` 8-thread row in `bench-datapath.tsv` for the progress page.
+
+**Profile on top of noise-4** (11ccdeb, before E21, generation only):
+- noise crate ~48%: corner grid 37.4%, per-block density 7.0%, ore density 3.6%;
+- surface 16.5%; aquifer 12.9% (now lower with E21); carvers 8.0%; fill loop 5.5%;
+  biomes 5.3%; ore 3.3%.
+
+**Rejected after A/B, diffs in `docs/perf/rejected-*.diff`:**
+- surface folding and reuse: E14, E19, E23, E25;
+- E15 (branch-free aquifer top-3);
+- E17 (tunnel replay cache);
+- E22 (pending its retry above).
+The surface interpreter has resisted four attempts. Gains there need a different idea, not more folding.
+
+**Next three:**
+1. Merge noise at ff02449, test, and re-reference on 1 thread with a rotating hold, head before
+   against head after. Then decide E22 and the biomes result against the merged head.
+2. Re-profile the merged head, splitting surface and aquifer with temporary `#[inline(never)]`,
+   to see what E21 left in the aquifer and whether `column_state` (2.4%, preliminary surface plus
+   the surface noise per column) can share neighbour columns as E18 does.
+3. Carvers (8%): E22 is the last cheap idea. If it fails again, the remaining cost is the
+   tunnel walk itself, which is tied to `LegacyRandom`'s sequential draws.
+   Leave carvers until the surface and aquifer shares are re-measured.
+
+The PR into `feat/native-decoration` is still not opened: no `gh` on this host.

@@ -46,3 +46,4 @@
 1794729677	0e3cf61	16	chunks=1089 threads=8 secs=1.695 cps=642.5 ms_per_chunk_core=12.45 digest=a977961a58122047
 1794729727	0e3cf61	16	chunks=1089 threads=8 secs=1.651 cps=659.5 ms_per_chunk_core=12.13 digest=a977961a58122047
 1794736596	321c6eb	16	chunks=1089 threads=8 secs=1.562 cps=697.0 ms_per_chunk_core=11.48 digest=a977961a58122047
+1794738418	741d96f	16	chunks=1089 threads=8 secs=1.552 cps=701.5 ms_per_chunk_core=11.40 digest=a977961a58122047
