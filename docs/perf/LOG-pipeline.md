@@ -705,3 +705,18 @@ handle constants are oxide-ffi.
 spiral order over r=32 with the bf577ba cache sizes and count terrain generations and feature runs per
 finished chunk. Then repeat with LRU and with larger caches. That turns the estimate above into a
 number before anyone changes the live config.
+
+## Merged-tree provenance (auditor: the pregen digest is the only check of palette order, biomes, heightmaps)
+
+The terrain digest a977961a58122047 hashes block states only. The pregen digest df701ee858e2bdd3
+hashes every chunk's whole NBT, so on merged trees it is the only check of palette order, biomes and
+heightmaps. Every merged-tree row names its merge:
+
+| scratch merge | this branch | merged with | pregen digest |
+|---|---|---|---|
+| bf28e89 (`bench-pipeline-merge.tsv`) | 4aca951 | origin/perf/datapath 0e3cf61 | df701ee858e2bdd3 |
+| a1f3a32 (`bench-pipeline-merge2.tsv`) | 27e2f9b | origin/perf/noise e6ecc65 (holds datapath's kept work) | df701ee858e2bdd3 |
+| e327327 = `pipeline-mb` in `bench-pipeline-ab.tsv`, plus the -mo and -6 rows | a1d75b1 | origin/perf/datapath 2127bd7 | df701ee858e2bdd3 |
+
+df701ee858e2bdd3 has held on every pregen row so far, merged or not. Any change is reported to the
+auditor at once.
