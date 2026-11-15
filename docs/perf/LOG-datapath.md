@@ -935,3 +935,17 @@ The diff is kept at `docs/perf/rejected-E23-surface-column-reuse.diff`.
 
 Next-three status: item 1 done (E21 and E22 stay rejected), item 2 done (E23 rejected), item 3
 waits on the auditor's confirmation of noise-4 (d2433fb) before merging and re-profiling.
+
+### E24 (next-three item 3): merge `origin/perf/noise` with noise-4 (d2433fb, shared corner columns)
+
+Confirmed by the auditor's A/B against 18bb0f9, one exclusive hold (rows in
+`bench-audit-noise.tsv` on `perf/audit`):
+- 8 threads: 673.0, 669.4, 721.8, 686.9 against 491.3, 649.3, 613.2, 591.5. Ahead in all four
+  rounds, +17% on the means.
+- 1 thread: 10.37 and 10.58 ms per chunk against 11.41 and 12.07.
+- `digest=a977961a58122047` on every run.
+
+Merged clean. The merge tree is identical to the trial merge in `/tmp/datapath-17`, which passed
+on the box: chunkgen 190, noise 32, all passed. Merged on top of noise-4: the shared
+corner-column cache is noise's, keyed and owned in `oxide-noise`, and `NoiseRouterEvaluator::id()`
+is untouched. Re-profiling on 1 thread next, to plan round 6.
