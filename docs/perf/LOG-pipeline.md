@@ -874,3 +874,30 @@ shared lock, digest df701ee858e2bdd3, decorate CPU 9328 ms.
 
 Lush features and ore_clay make almost no block reads per run yet cost 0.3-0.56 ms per run, so the
 time is not in reads. Next profile splits each feature into placement-chain time and feature-body time.
+
+## Split profile: placement chain vs feature body (same tree, lite timers + outermost-place timer)
+
+Feature body = time inside the outermost `place_configured_feature` of each chain; chain = the rest
+(modifiers: count, in_square, height_range, environment_scan, biome...). Decorate CPU 8761 ms,
+digest df701ee858e2bdd3.
+
+| feature | total ms | body ms | chain ms |
+|---|---|---|---|
+| sculk_patch_deep_dark | 1001 | 961 | 40 |
+| lush_caves_ceiling_vegetation | 705 | 444 | 261 |
+| dark_forest_vegetation | 618 | 610 | 8 |
+| ore_clay | 472 | 449 | 23 |
+| lush_caves_vegetation | 468 | 230 | 238 |
+| ore_granite_lower | 428 | 425 | 3 |
+| lush_caves_clay | 415 | 287 | 128 |
+| ore_andesite/diorite/tuff | ~400 each | ~395 each | ~5 |
+| cave_vines | 381 | 16 | **365** |
+| classic_vines_cave_feature | 115 | 30 | 85 |
+
+- The lush chains are `count, in_square, height_range, environment_scan, random_offset(y), biome`:
+  ~1.1 s of chain time across five features, almost all in the scans (cave_vines draws 188
+  positions per chunk, each scanning up to 12 cells).
+- The rejected change's column gate barely fired: lush_caves sits somewhere under nearly every
+  column near spawn (1188 of 1225 decorate calls run the lush features), so "no lush quart in the
+  whole column" is rare. Next: gate on only the quarts the scan can reach (y + span of the quiet run).
+- Stone ores are all body: the remaining cost is the ore shape loop itself.
