@@ -166,3 +166,15 @@ two pairs each. Datapath's profile puts the corner-grid build at 44.5% of genera
 |---|---|---|
 | 8 (noise-5) | Shared per-column memo of `preliminary_surface_level`, gated on a compile-time y-independence proof (34 noise + 192 chunkgen tests passed) | **dropped unbenched**: datapath landed the same idea as E18 (a6c1fcd, a per-thread memo keyed by `NoiseRouterEvaluator::id()`, +3.8%), and two memos of one value must not both land. The patch is kept at `docs/perf/wip/noise-5-shared-surface-memo.patch` for its `y_independent_ops`/`cache_pure` analysis |
 | 9 (noise-4) | Corner columns shared across chunks: a set-associative cache (64 sharded `Mutex`es x 128 sets x 4 ways, about 13 MB) on `NoiseRouterEvaluator` stores full `(slot, x, z)` keys. `build_corner_grid` reads a chunk's 16 edge columns from it and computes the rest as before. Geometry is checked before it is attached. The bit-identity test asserts the expected hit counts on shared edges | 571.0, 636.2 (A/B baselines at 18bb0f9) | 686.2, 641.8 | a977961a58122047 all four | **kept**: mean +10% (664.0 vs 603.6). The pairs disagree (+20%, +1%), but patched is higher in both |
+| 10 | `INLINE_REGISTERS` 16 -> 64: nested programs inside `final_density`'s interpolated argument reach 40 instructions, so 16 meant a heap `Vec` per corner evaluation | 682.0, 622.0 (A/B baselines at d2433fb) | 623.5, 614.6 | a977961a58122047 all four | behind in both pairs; the 1-thread verdict is in the next section. Likely cause: 512 bytes of stack per nesting level costs more than the allocation it saves |
+
+### Method from here on (auditor, after 9)
+
+Every experiment is judged by datapath's method: four or more alternating rounds of prebuilt
+binaries in ONE exclusive hold (`scratchpad/ab.sh` builds each tree under `flock -s` at nice 10,
+then runs A B A B under `flock -x` and records the load average at the start and end of the
+hold). Small changes run on `--threads 1`, where the same binary spreads ~8% instead of 15-25%.
+Noise-4's gain was kept on two disagreeing 8-thread pairs, which is below that bar. The auditor
+is re-running it against 18bb0f9 for AUDIT.md. This log adds hit/miss/eviction and lock
+contention counters for the shared column cache, plus an 8-thread vs 1-thread comparison, so
+contention is ruled out rather than assumed.
