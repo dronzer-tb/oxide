@@ -313,3 +313,16 @@ Run 2: `BENCH chunks=1089 threads=8 secs=2.343 cps=464.8 ms_per_chunk_core=17.21
 
 Both runs above the head's best (459) in the E4 A/B: ~12% less core time per chunk. Tests:
 chunkgen 189 passed.
+
+### Combined head after E8-E11 (1da3c44): first runs invalid
+
+Tests on the box: chunkgen 189, core 57 and the rest passed.
+`BENCH chunks=1089 threads=8 secs=4.815 cps=226.2 ms_per_chunk_core=35.37 digest=a977961a58122047`
+`BENCH chunks=1089 threads=8 secs=4.119 cps=264.4 ms_per_chunk_core=30.26 digest=a977961a58122047`
+
+Invalid as speed numbers: right after them `ps` showed `oxide-pregen` (pipeline track) at
+144% CPU, outside the bench lock. Only `oxide-harness` timed runs take the lock
+exclusively, so a pregen run competes with whatever is being timed. The earlier E9 207 run
+was most likely the same. Flagged for the auditor: pregen runs on the box need
+`flock -x ~/oxide-perf/.lock` if they are timed, or `flock -s` with `nice` if not. Remeasuring with an
+interleaved A/B (combined vs E11-only) in one exclusive hold.
