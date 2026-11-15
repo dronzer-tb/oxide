@@ -9,3 +9,8 @@ oxide-core.workspace = true
 oxide-datapack.workspace = true
 anyhow.workspace = true
 ahash.workspace = true
+
+[features]
+# Counts lattice-hash reuse in the lane-batched noise paths (see `improved_noise::hash_stats`).
+# Measurement only: adds an atomic increment per octave sample.
+hash-stats = []

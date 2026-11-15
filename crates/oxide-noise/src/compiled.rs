@@ -17,6 +17,7 @@
 //! it: two implementations of the same per-node semantics is how a generator quietly stops
 //! matching itself, and the node semantics below are the parity-critical part.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use oxide_datapack::{
@@ -210,6 +211,45 @@ pub(crate) struct Program {
     /// `final_density` in every vanilla-shaped router, which is the program a chunk fill runs
     /// once per block.
     cell_batchable: bool,
+    /// Whether [`Program::run_lanes`] evaluates this program an instruction at a time across
+    /// all its lanes. False only for the two nodes that read a register per lane in a way the
+    /// lane sweep does not model (`find_top_surface`, `weird_scaled_sampler`); such a program
+    /// runs per lane instead, which is what it did before.
+    lane_batchable: bool,
+}
+
+/// See [`Program::lane_batchable`].
+fn is_lane_batchable(ops: &[Op]) -> bool {
+    ops.iter().all(|op| match op {
+        Op::FindTopSurface(_) | Op::WeirdScaledSampler(_) => false,
+        // Nested programs are checked when they run: each falls back on its own.
+        _ => true,
+    })
+}
+
+/// A set of positions evaluated together by [`Program::run_lanes`], and the batch's own
+/// `cache_once` memo.
+///
+/// `cache_once` is a pure cache -- it returns its argument's value at the position -- so a
+/// memo per batch lane gives exactly the values the per-position one does, while letting the
+/// argument run once for all lanes that miss.
+pub(crate) struct Batch<'a> {
+    pub ctxs: &'a [FunctionContext],
+    /// `cache_once` slot -> one value per batch lane, [`UNSET`] bits when not taken.
+    once: RefCell<Vec<Vec<u64>>>,
+}
+
+/// Marks a `Batch::once` entry as not yet computed. A signalling-NaN payload no density
+/// computation produces; compared as bits, so a real NaN value is still stored faithfully.
+const UNSET: u64 = 0x7ff4_dead_beef_0001;
+
+impl<'a> Batch<'a> {
+    pub(crate) fn new(ctxs: &'a [FunctionContext]) -> Self {
+        Self {
+            ctxs,
+            once: RefCell::new(Vec::new()),
+        }
+    }
 }
 
 /// See [`Program::cell_batchable`]. Requires at least one `interpolated` leaf: a program
@@ -780,6 +820,226 @@ impl Program {
         out.copy_from_slice(&regs[(n - 1) * lanes..]);
     }
 
+    /// Evaluates this program at `batch.ctxs[l]` for every `l` in `lanes`, writing `out[i]` for
+    /// `lanes[i]`. Bit-identical to calling [`Program::run`] at each position: every lane sees
+    /// the same operations on the same operands in the same order. What changes is that
+    /// dispatch is paid per instruction rather than per instruction per position, and that the
+    /// noise leaves loop over lanes inside their octave loops (reusing lattice hashes between
+    /// lanes that share a cell).
+    ///
+    /// Lazy nodes stay lazy per lane: a `range_choice`, `interval_select` or gated-add body
+    /// runs only for the lanes that select it.
+    pub(crate) fn run_lanes(&self, lanes: &[u32], batch: &Batch, cx: &RunCtx, out: &mut [f64]) {
+        debug_assert_eq!(lanes.len(), out.len());
+        if !self.lane_batchable {
+            for (o, &l) in out.iter_mut().zip(lanes) {
+                *o = self.run(batch.ctxs[l as usize], cx);
+            }
+            return;
+        }
+        fn unary(dst: &mut [f64], a: &[f64], f: impl Fn(f64) -> f64) {
+            for (d, a) in dst.iter_mut().zip(a) {
+                *d = f(*a);
+            }
+        }
+        fn binary(dst: &mut [f64], a: &[f64], b: &[f64], f: impl Fn(f64, f64) -> f64) {
+            for ((d, a), b) in dst.iter_mut().zip(a).zip(b) {
+                *d = f(*a, *b);
+            }
+        }
+        fn noise_lanes(
+            cx: &RunCtx,
+            noise: u32,
+            xs: &[f64],
+            ys: &[f64],
+            zs: &[f64],
+            dst: &mut [f64],
+        ) {
+            match cx.noises.get(noise as usize) {
+                Some(n) => n.get_values(xs, ys, zs, dst),
+                None => dst.fill(0.0),
+            }
+        }
+
+        let k = lanes.len();
+        let n = self.ops.len();
+        let pos = |i: usize| batch.ctxs[lanes[i] as usize];
+        let bx: Vec<f64> = (0..k).map(|i| pos(i).x as f64).collect();
+        let by: Vec<f64> = (0..k).map(|i| pos(i).y as f64).collect();
+        let bz: Vec<f64> = (0..k).map(|i| pos(i).z as f64).collect();
+        let mut sx = vec![0.0f64; k];
+        let mut sy = vec![0.0f64; k];
+        let mut sz = vec![0.0f64; k];
+        let mut regs = vec![0.0f64; n * k];
+
+        for i in 0..n {
+            let (done, rest) = regs.split_at_mut(i * k);
+            let dst = &mut rest[..k];
+            let reg = |r: u32| &done[r as usize * k..(r as usize + 1) * k];
+            match &self.ops[i] {
+                Op::Const(v) => dst.fill(*v),
+
+                Op::Noise(o) => {
+                    for j in 0..k {
+                        sx[j] = bx[j] * o.xz_scale;
+                        sy[j] = by[j] * o.y_scale;
+                        sz[j] = bz[j] * o.xz_scale;
+                    }
+                    noise_lanes(cx, o.noise, &sx, &sy, &sz, dst);
+                }
+                Op::ShiftedNoise(o) => {
+                    let (rx, ry, rz) = (reg(o.shift_x), reg(o.shift_y), reg(o.shift_z));
+                    for j in 0..k {
+                        sx[j] = bx[j] * o.xz_scale + rx[j];
+                        sy[j] = by[j] * o.y_scale + ry[j];
+                        sz[j] = bz[j] * o.xz_scale + rz[j];
+                    }
+                    noise_lanes(cx, o.noise, &sx, &sy, &sz, dst);
+                }
+                Op::Shift { noise, kind } => {
+                    for j in 0..k {
+                        (sx[j], sy[j], sz[j]) = match kind {
+                            ShiftKind::Xyz => (bx[j] * 0.25, by[j] * 0.25, bz[j] * 0.25),
+                            ShiftKind::Xz => (bx[j] * 0.25, 0.0, bz[j] * 0.25),
+                            ShiftKind::Zx => (bz[j] * 0.25, bx[j] * 0.25, 0.0),
+                        };
+                    }
+                    noise_lanes(cx, *noise, &sx, &sy, &sz, dst);
+                    for d in dst.iter_mut() {
+                        *d *= 4.0;
+                    }
+                }
+                Op::OldBlendedNoise(params) => cx.blended.compute_lanes(params, &bx, &by, &bz, dst),
+                Op::YClampedGradient(g) => {
+                    for (j, d) in dst.iter_mut().enumerate() {
+                        *d = clamped_lerp(pos(j).y, g.from_y, g.to_y, g.from_value, g.to_value);
+                    }
+                }
+
+                Op::Add(a, b) => binary(dst, reg(*a), reg(*b), |a, b| a + b),
+                Op::Mul(a, b) => binary(dst, reg(*a), reg(*b), |a, b| a * b),
+                Op::Min(a, b) => binary(dst, reg(*a), reg(*b), |a, b| a.min(b)),
+                Op::Max(a, b) => binary(dst, reg(*a), reg(*b), |a, b| a.max(b)),
+                Op::Abs(a) => unary(dst, reg(*a), |v| v.abs()),
+                Op::Square(a) => unary(dst, reg(*a), |v| v * v),
+                Op::Cube(a) => unary(dst, reg(*a), |v| v * v * v),
+                Op::HalfNegative(a) => unary(dst, reg(*a), half_negative),
+                Op::QuarterNegative(a) => unary(dst, reg(*a), quarter_negative),
+                Op::Squeeze(a) => unary(dst, reg(*a), squeeze),
+                Op::Invert(a) => unary(dst, reg(*a), |v| 1.0 / v),
+                Op::Clamp(c) => unary(dst, reg(c.input), |v| v.clamp(c.min, c.max)),
+
+                // Spline coordinates are themselves cached 2D lookups in every vanilla router;
+                // the per-lane walk is the scalar one.
+                Op::Spline(s) => {
+                    for (j, d) in dst.iter_mut().enumerate() {
+                        *d = eval_spline(s, pos(j), cx) as f64;
+                    }
+                }
+
+                Op::RangeChoice(r) => {
+                    let input = reg(r.input);
+                    let (mut inside, mut outside) = (Vec::new(), Vec::new());
+                    for (j, &v) in input.iter().enumerate() {
+                        if v >= r.min_inclusive && v < r.max_exclusive {
+                            inside.push(j);
+                        } else {
+                            outside.push(j);
+                        }
+                    }
+                    run_subset(&r.when_in_range, &inside, lanes, batch, cx, dst);
+                    run_subset(&r.when_out_of_range, &outside, lanes, batch, cx, dst);
+                }
+                Op::IntervalSelect(s) => {
+                    let input = reg(s.input);
+                    let mut groups: Vec<Vec<usize>> = vec![Vec::new(); s.functions.len()];
+                    for (j, &v) in input.iter().enumerate() {
+                        let index = s.thresholds.partition_point(|threshold| v >= *threshold);
+                        if s.functions.is_empty() {
+                            dst[j] = 0.0;
+                        } else {
+                            groups[index.min(s.functions.len() - 1)].push(j);
+                        }
+                    }
+                    for (function, group) in s.functions.iter().zip(&groups) {
+                        run_subset(function, group, lanes, batch, cx, dst);
+                    }
+                }
+
+                Op::GatedAdd(g) => {
+                    let gate = reg(g.g);
+                    let open: Vec<usize> = (0..k).filter(|&j| gate[j] != 0.0).collect();
+                    let mut body = vec![0.0f64; k];
+                    run_subset(&g.body, &open, lanes, batch, cx, &mut body);
+                    for j in 0..k {
+                        let gv = gate[j];
+                        dst[j] = if gv == 0.0 {
+                            g.c
+                        } else {
+                            let bv = body[j];
+                            let product = if g.g_first { gv * bv } else { bv * gv };
+                            if g.c_first {
+                                g.c + product
+                            } else {
+                                product + g.c
+                            }
+                        };
+                    }
+                }
+
+                Op::Cache {
+                    kind: CacheKind::Once,
+                    slot,
+                    argument,
+                } if cx.caches.is_some() => {
+                    let slot = *slot as usize;
+                    let mut missing = Vec::new();
+                    {
+                        let mut memo = batch.once.borrow_mut();
+                        if memo.len() <= slot {
+                            memo.resize(slot + 1, Vec::new());
+                        }
+                        if memo[slot].is_empty() {
+                            memo[slot] = vec![UNSET; batch.ctxs.len()];
+                        }
+                        for (j, &l) in lanes.iter().enumerate() {
+                            match memo[slot][l as usize] {
+                                UNSET => missing.push(j),
+                                bits => dst[j] = f64::from_bits(bits),
+                            }
+                        }
+                    }
+                    if !missing.is_empty() {
+                        // Not borrowed across the run: the argument may reach other once slots.
+                        run_subset(argument, &missing, lanes, batch, cx, dst);
+                        let mut memo = batch.once.borrow_mut();
+                        for &j in &missing {
+                            memo[slot][lanes[j] as usize] = dst[j].to_bits();
+                        }
+                    }
+                }
+                Op::Cache {
+                    kind,
+                    slot,
+                    argument,
+                } => match cx.caches {
+                    Some(caches) => {
+                        for (j, d) in dst.iter_mut().enumerate() {
+                            *d = caches.cached(*kind, *slot as usize, argument, pos(j), cx);
+                        }
+                    }
+                    // Uncached, each node is its argument at the position.
+                    None => argument.run_lanes(lanes, batch, cx, dst),
+                },
+
+                Op::FindTopSurface(_) | Op::WeirdScaledSampler(_) => {
+                    unreachable!("run_lanes on a program that is not lane_batchable")
+                }
+            }
+        }
+        out.copy_from_slice(&regs[(n - 1) * k..]);
+    }
+
     pub(crate) fn run(&self, ctx: FunctionContext, cx: &RunCtx) -> f64 {
         let n = self.ops.len();
         debug_assert!(n > 0, "a compiled program always ends in its result");
@@ -1302,9 +1562,11 @@ impl<'a> Compiler<'a> {
             ops.push(Op::Const(0.0));
         }
         let cell_batchable = is_cell_batchable(&ops);
+        let lane_batchable = is_lane_batchable(&ops);
         Program {
             ops,
             cell_batchable,
+            lane_batchable,
         }
     }
 
@@ -1763,6 +2025,31 @@ pub(crate) fn cache_pure(ops: &[Op]) -> bool {
     })
 }
 
+
+/// Runs `program` for the lanes `subset` (indices into `lanes`) and scatters the results into
+/// `dst` at those indices.
+fn run_subset(
+    program: &Program,
+    subset: &[usize],
+    lanes: &[u32],
+    batch: &Batch,
+    cx: &RunCtx,
+    dst: &mut [f64],
+) {
+    if subset.is_empty() {
+        return;
+    }
+    if subset.len() == lanes.len() {
+        program.run_lanes(lanes, batch, cx, dst);
+        return;
+    }
+    let sub_lanes: Vec<u32> = subset.iter().map(|&j| lanes[j]).collect();
+    let mut values = vec![0.0f64; subset.len()];
+    program.run_lanes(&sub_lanes, batch, cx, &mut values);
+    for (&j, v) in subset.iter().zip(values) {
+        dst[j] = v;
+    }
+}
 
 fn push(ops: &mut Vec<Op>, op: Op) -> u32 {
     ops.push(op);

@@ -64,7 +64,36 @@ impl NormalNoise {
         let z2 = z * INPUT_FACTOR;
         (self.first.get_value(x, y, z) + self.second.get_value(x2, y2, z2)) * self.value_factor
     }
+
+    /// [`Self::get_value`] at every `(xs[i], ys[i], zs[i])`, bit-identical per lane. Up to
+    /// [`LANE_CHUNK`] lanes at a time, so the scratch stays on the stack.
+    pub fn get_values(&self, xs: &[f64], ys: &[f64], zs: &[f64], out: &mut [f64]) {
+        for start in (0..out.len()).step_by(LANE_CHUNK) {
+            let end = (start + LANE_CHUNK).min(out.len());
+            let k = end - start;
+            let (xs, ys, zs) = (&xs[start..end], &ys[start..end], &zs[start..end]);
+            let mut x2 = [0.0f64; LANE_CHUNK];
+            let mut y2 = [0.0f64; LANE_CHUNK];
+            let mut z2 = [0.0f64; LANE_CHUNK];
+            for j in 0..k {
+                x2[j] = xs[j] * INPUT_FACTOR;
+                y2[j] = ys[j] * INPUT_FACTOR;
+                z2[j] = zs[j] * INPUT_FACTOR;
+            }
+            let mut second = [0.0f64; LANE_CHUNK];
+            let out = &mut out[start..end];
+            self.first.get_values(xs, ys, zs, out);
+            self.second
+                .get_values(&x2[..k], &y2[..k], &z2[..k], &mut second[..k]);
+            for (o, s) in out.iter_mut().zip(&second[..k]) {
+                *o = (*o + *s) * self.value_factor;
+            }
+        }
+    }
 }
+
+/// Lanes per stack-sized chunk in the lane-batched noise paths: a corner column is 49.
+pub(crate) const LANE_CHUNK: usize = 64;
 
 #[cfg(test)]
 mod tests {

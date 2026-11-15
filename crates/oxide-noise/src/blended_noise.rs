@@ -9,6 +9,8 @@
 //! the factor *first* -- an older signature had it last, which would silently swap the
 //! arguments here.
 
+use crate::improved_noise::HashKind;
+use crate::normal_noise::LANE_CHUNK;
 use crate::perlin_noise::PerlinNoise;
 use crate::random::WorldRandom;
 
@@ -105,6 +107,131 @@ impl BlendedNoise {
 
         clamped_lerp(factor, blend_min / 512.0, blend_max / 512.0) / 128.0
     }
+
+    /// [`Self::compute`] at every `(xs[i], ys[i], zs[i])`, bit-identical per lane: the same
+    /// per-lane expressions in the same octave order, with each octave's lanes in an inner loop
+    /// that reuses the octave's lattice hashes while consecutive lanes stay in one cell.
+    pub fn compute_lanes(
+        &self,
+        params: &BlendedNoiseParams,
+        xs: &[f64],
+        ys: &[f64],
+        zs: &[f64],
+        out: &mut [f64],
+    ) {
+        for start in (0..out.len()).step_by(LANE_CHUNK) {
+            let end = (start + LANE_CHUNK).min(out.len());
+            self.compute_chunk(
+                params,
+                &xs[start..end],
+                &ys[start..end],
+                &zs[start..end],
+                &mut out[start..end],
+            );
+        }
+    }
+
+    /// [`Self::compute_lanes`] for at most [`LANE_CHUNK`] lanes.
+    fn compute_chunk(
+        &self,
+        params: &BlendedNoiseParams,
+        xs: &[f64],
+        ys: &[f64],
+        zs: &[f64],
+        out: &mut [f64],
+    ) {
+        let k = out.len();
+        debug_assert!(k <= LANE_CHUNK);
+        let xz_multiplier = 684.412 * params.xz_scale;
+        let y_multiplier = 684.412 * params.y_scale;
+        let mut limit_x = [0.0f64; LANE_CHUNK];
+        let mut limit_y = [0.0f64; LANE_CHUNK];
+        let mut limit_z = [0.0f64; LANE_CHUNK];
+        let mut main_x = [0.0f64; LANE_CHUNK];
+        let mut main_y = [0.0f64; LANE_CHUNK];
+        let mut main_z = [0.0f64; LANE_CHUNK];
+        for j in 0..k {
+            limit_x[j] = xs[j] * xz_multiplier;
+            limit_y[j] = ys[j] * y_multiplier;
+            limit_z[j] = zs[j] * xz_multiplier;
+            main_x[j] = limit_x[j] / params.xz_factor;
+            main_y[j] = limit_y[j] / params.y_factor;
+            main_z[j] = limit_z[j] / params.xz_factor;
+        }
+        let limit_smear = y_multiplier * params.smear_scale_multiplier;
+        let main_smear = limit_smear / params.y_factor;
+
+        let mut main_value = [0.0f64; LANE_CHUNK];
+        let mut pow = 1.0;
+        for i in 0..8 {
+            if let Some(noise) = self.main.get_octave_noise(i) {
+                let mut memo = noise.cell_hashes(HashKind::Blended);
+                for j in 0..k {
+                    main_value[j] += noise.noise_with_scale_reusing(
+                        wrap(main_x[j] * pow),
+                        wrap(main_y[j] * pow),
+                        wrap(main_z[j] * pow),
+                        main_smear * pow,
+                        main_y[j] * pow,
+                        &mut memo,
+                    ) / pow;
+                }
+            }
+            pow /= 2.0;
+        }
+
+        let mut factor = [0.0f64; LANE_CHUNK];
+        for j in 0..k {
+            factor[j] = (main_value[j] / 10.0 + 1.0) / 2.0;
+        }
+        let mut blend_min = [0.0f64; LANE_CHUNK];
+        let mut blend_max = [0.0f64; LANE_CHUNK];
+        pow = 1.0;
+        for i in 0..16 {
+            let y_scale_pow = limit_smear * pow;
+            let min_noise = self.min_limit.get_octave_noise(i);
+            let max_noise = self.max_limit.get_octave_noise(i);
+            let mut min_memo = min_noise.map(|n| n.cell_hashes(HashKind::Blended));
+            let mut max_memo = max_noise.map(|n| n.cell_hashes(HashKind::Blended));
+            for j in 0..k {
+                let wx = wrap(limit_x[j] * pow);
+                let wy = wrap(limit_y[j] * pow);
+                let wz = wrap(limit_z[j] * pow);
+                // Negated as the scalar path tests them, so a NaN factor behaves the same.
+                let is_max = factor[j] >= 1.0;
+                let is_min = factor[j] <= 0.0;
+                if !is_max {
+                    if let (Some(noise), Some(memo)) = (min_noise, min_memo.as_mut()) {
+                        blend_min[j] += noise.noise_with_scale_reusing(
+                            wx,
+                            wy,
+                            wz,
+                            y_scale_pow,
+                            limit_y[j] * pow,
+                            memo,
+                        ) / pow;
+                    }
+                }
+                if !is_min {
+                    if let (Some(noise), Some(memo)) = (max_noise, max_memo.as_mut()) {
+                        blend_max[j] += noise.noise_with_scale_reusing(
+                            wx,
+                            wy,
+                            wz,
+                            y_scale_pow,
+                            limit_y[j] * pow,
+                            memo,
+                        ) / pow;
+                    }
+                }
+            }
+            pow /= 2.0;
+        }
+
+        for j in 0..k {
+            out[j] = clamped_lerp(factor[j], blend_min[j] / 512.0, blend_max[j] / 512.0) / 128.0;
+        }
+    }
 }
 
 /// An upper bound on `|BlendedNoise::compute(params, ..)|` at any block position (|x|, |y|,
@@ -197,6 +324,77 @@ mod tests {
         let a = BlendedNoise::new(&mut r1).compute(&overworld(), 12.0, 40.0, -8.0);
         let b = BlendedNoise::new(&mut r2).compute(&overworld(), 12.0, 40.0, -8.0);
         assert_eq!(a, b);
+    }
+
+    /// The lane-batched noises over real corner columns (49 corners 8 blocks apart, at chunk
+    /// corner x/z, overworld parameters) must equal the scalar ones bit for bit, and this is
+    /// where the hash-reuse rate is measured rather than assumed.
+    #[test]
+    fn lanes_are_bit_identical_and_reuse_hashes_on_corner_columns() {
+        use crate::improved_noise::hash_stats;
+        use crate::normal_noise::NormalNoise;
+        let mut r = WorldRandom::new(12345, false);
+        let blended = BlendedNoise::new(&mut r);
+        let positional = WorldRandom::new(12345, false).fork_positional();
+        // (first octave, amplitudes, xz scale, y scale) of overworld noises a corner grid reads.
+        let specs: [(i32, Vec<f64>, f64, f64); 6] = [
+            (-8, vec![0.5, 1.0, 2.0, 1.0, 2.0, 1.0, 0.0, 2.0, 0.0], 1.0, 2.0 / 3.0), // cave_cheese
+            (-8, vec![1.0], 1.0, 8.0),                                               // cave_layer
+            (-7, vec![0.4, 0.5, 1.0], 0.75, 0.5),                                    // cave_entrance
+            (-7, vec![1.0, 1.0], 25.0, 0.3),                                         // pillar
+            (-8, vec![1.0], 1.0, 1.0),                                               // noodle
+            (-7, vec![1.0], 2.666_666_666_666_667, 2.666_666_666_666_667),           // noodle_ridge
+        ];
+        let normals: Vec<(NormalNoise, f64, f64)> = specs
+            .iter()
+            .enumerate()
+            .map(|(i, (first, amps, xz, y))| {
+                let mut nr = positional.from_hash_of(&format!("test:{i}"));
+                (NormalNoise::create(&mut nr, *first, amps.clone()), *xz, *y)
+            })
+            .collect();
+
+        let before = hash_stats::local();
+        let mut columns = 0;
+        for chunk in [(0, 0), (-3, 5), (40, -17), (-200, -90)] {
+            for (ix, iz) in [(0, 0), (1, 2), (3, 3), (4, 1)] {
+                let x = (chunk.0 * 16 + ix * 4) as f64;
+                let z = (chunk.1 * 16 + iz * 4) as f64;
+                let ys: Vec<f64> = (0..49).map(|cy| (-64 + cy * 8) as f64).collect();
+                let xs = vec![x; 49];
+                let zs = vec![z; 49];
+                let mut out = vec![0.0; 49];
+                blended.compute_lanes(&overworld(), &xs, &ys, &zs, &mut out);
+                for (j, v) in out.iter().enumerate() {
+                    let expected = blended.compute(&overworld(), x, ys[j], z);
+                    assert_eq!(v.to_bits(), expected.to_bits(), "blended at {x} {} {z}", ys[j]);
+                }
+                for (n, xz, y) in &normals {
+                    let sx: Vec<f64> = xs.iter().map(|v| v * xz).collect();
+                    let sy: Vec<f64> = ys.iter().map(|v| v * y).collect();
+                    let sz: Vec<f64> = zs.iter().map(|v| v * xz).collect();
+                    n.get_values(&sx, &sy, &sz, &mut out);
+                    for j in 0..49 {
+                        let expected = n.get_value(sx[j], sy[j], sz[j]);
+                        assert_eq!(out[j].to_bits(), expected.to_bits(), "normal at lane {j}");
+                    }
+                }
+                columns += 1;
+            }
+        }
+        let after = hash_stats::local();
+        let d: Vec<u64> = (0..4).map(|i| after[i] - before[i]).collect();
+        let rate = |r: u64, c: u64| r as f64 / (r + c) as f64;
+        let (perlin, blended_rate) = (rate(d[0], d[1]), rate(d[2], d[3]));
+        eprintln!(
+            "HASH-REUSE columns={columns} perlin {}/{} = {perlin:.3}, blended {}/{} = {blended_rate:.3}",
+            d[0],
+            d[0] + d[1],
+            d[2],
+            d[2] + d[3]
+        );
+        assert!(perlin > 0.5, "perlin reuse {perlin}");
+        assert!(blended_rate > 0.2, "blended reuse {blended_rate}");
     }
 
     #[test]
