@@ -244,3 +244,11 @@ line. It changes only how the binary is built, so it adds on top of every code t
 the progress page counts `profile=pgo` rows as the headline is the user's call.
 `-Cllvm-args=-pgo-warn-mismatch=false` is not accepted by this LLVM, and no mismatch
 warnings appeared without it.
+
+**PGO, committed script (136e3b0), trained on seed 999 r8:**
+
+    BENCH chunks=1089 threads=8 secs=6.140 cps=177.4 ms_per_chunk_core=45.11 digest=a977961a58122047 profile=pgo build_s=3m39s+3m13s
+
+The best terrain run on this box so far: +27% over this session's release median (139.6), but
+it is one run on a quiet box, so it needs a repeat before it counts on its own. The script works
+from a clean checkout; the build is 6m52s of cargo time.
