@@ -256,6 +256,66 @@ mod tests {
             .clone()
     }
 
+    /// Chunky's order: a square spiral out from the centre, ring by ring.
+    fn spiral(radius: i32) -> Vec<ChunkPos> {
+        let mut order = vec![ChunkPos::new(0, 0)];
+        for r in 1..=radius {
+            for x in -r..r {
+                order.push(ChunkPos::new(x, -r));
+            }
+            for z in -r..r {
+                order.push(ChunkPos::new(r, z));
+            }
+            for x in (-r + 1..=r).rev() {
+                order.push(ChunkPos::new(x, r));
+            }
+            for z in (-r + 1..=r).rev() {
+                order.push(ChunkPos::new(-r, z));
+            }
+        }
+        order
+    }
+
+    /// Counts feature runs.
+    struct Counting<'a>(&'a AtomicUsize);
+
+    impl Decorator for Counting<'_> {
+        fn decorate(&self, _region: &mut DecorationRegion<'_>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Not a check: prints terrain generations and feature runs per finished chunk when chunks
+    /// are requested one by one in Chunky's spiral, for the live server's cache sizes and a few
+    /// others. `cargo test -p oxide-chunkgen --release spiral_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn spiral_cost() {
+        let facts = facts();
+        let radius = 32;
+        let order = spiral(radius);
+        for (terrain_cap, writes_cap) in [(256, 1024), (1024, 1024), (2048, 2048), (4096, 4096)] {
+            let generated = AtomicUsize::new(0);
+            let runs = AtomicUsize::new(0);
+            let terrain = |pos: ChunkPos| {
+                generated.fetch_add(1, Ordering::Relaxed);
+                flat_chunk(pos, 64)
+            };
+            let cache = DecorationCache::new(terrain_cap, writes_cap);
+            for &pos in &order {
+                decorated_chunk(pos, &terrain, &Counting(&runs), &facts, &cache);
+            }
+            let n = order.len() as f64;
+            println!(
+                "SPIRAL r={radius} chunks={} terrain_cache={terrain_cap} write_cache={writes_cap} \
+                 terrain_per_chunk={:.2} feature_runs_per_chunk={:.2}",
+                order.len(),
+                generated.load(Ordering::Relaxed) as f64 / n,
+                runs.load(Ordering::Relaxed) as f64 / n,
+            );
+        }
+    }
+
     #[test]
     fn a_chunk_gets_its_own_writes_and_its_neighbours() {
         let facts = facts();
