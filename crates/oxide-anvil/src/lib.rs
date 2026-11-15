@@ -9,8 +9,10 @@
 //! - [`region`] — `.mca` region file read/write, including in-place single-chunk updates.
 //! - [`lock`] — advisory locking for region files a live Java server may hold open.
 //! - [`provenance`] — per-region sidecar tracking which chunks Oxide generated vs vanilla Java.
+//! - [`compress`] — chunk payload compression schemes.
 //! - [`error`] — [`error::AnvilError`], this crate's error enum.
 
+pub mod compress;
 pub mod error;
 pub mod lock;
 pub mod nbt;
