@@ -142,3 +142,74 @@ Datapath pushed the merge and its numbers agree with ~411; pipeline has LTO/PGO 
 a pregen row; sub-agent counts; noise's sub-10% rule on new experiments.
 
 Stopped reading at: noise bc60b65, datapath bea73ad, pipeline 813333c.
+
+## Pass 4, 2026-11-15 03:30 UTC
+
+| Track | Head | Best clean number (8 threads, r16) | Digest |
+|---|---|---|---|
+| noise | bc60b65 (no new commit) | about 185 cps (189.1, 181.4) | ok |
+| datapath | bea73ad (no new commit) | 282.4 cps | ok |
+| pipeline | c36f728 | terrain: baseline only. Whole pregen path: 69.7 cps on 8 threads (one quiet run; 52.6 on a busy box), 24.6 cps on 3 | terrain ok; pregen digest `df701ee858e2bdd3` |
+| noise + datapath | auditor scratch merge | 401.0, 421.3 cps (pass 3; still not on any branch) | ok |
+
+### Main finding: the bench lock queue has stalled the two code tracks
+
+At 03:30 the bench box had 11 timed runs waiting on `flock -x`, the oldest for 26 minutes,
+with load average falling to 3. Noise and datapath have pushed nothing for 27 minutes; their
+sub-agents are waiting for BENCH lines (one noise sub-agent is past 100k tokens polling).
+There are 13 build directories on the box (`noise-1..3`, `datapath-1..4`, `pipeline-1..2`
+and the mains). Two causes:
+
+1. `flock` has no fairness. Shared-lock builds keep arriving, so exclusive waiters starve
+   until all builds happen to be finished.
+2. The exclusive hold covers the whole harness process: a 3 to 7 s timed section plus the
+   ~25 s single-threaded digest pass. Eleven waiters is about six minutes of lock time even
+   with no builds.
+
+Fixes proposed to pipeline (owner of `scripts/`): a gate lock so builds queue behind a
+waiting timed run, and taking the exclusive lock around generation only (or a parallel
+digest). The harness is owned by no track; the change has to be small and additive.
+
+### Changes read (pipeline, 813333c..c36f728)
+
+- `[profile.fatbench]` in the workspace `Cargo.toml` (inherits release, fat LTO, one codegen
+  unit), selected by `OXIDE_BENCH_PROFILE=fatbench`; additive, default profile untouched.
+  **No A/B rows yet**, and PGO not started.
+- Pregen path measured: generate 61%, decorate 37%, serialise + compress + write about 2%.
+  Its lever outside terrain is decoration, in `oxide-chunkgen/src/decorator/`, which **no
+  track owns** (PLAN excludes it from datapath). Needs a decision from the user.
+- zlib backend micro-bench: zlib-rs 2.4x faster at level 6, at most ~1.5% of the path.
+- Native light scoped, not started; load-test steps written for the user. Nothing touched
+  the server.
+- `bench-vps.sh` now excludes `/out` from `rsync --delete`.
+- Pregen rows share `bench-pipeline.tsv` with terrain rows, marked `pregen=1`, with their own
+  digest. Anything reading that file must not compare the two digests.
+
+### Sub-agents
+
+`tree.json`: noise 8, datapath 5, pipeline 3 spawned in total; 3, 3 and 2 live in the panes.
+All tracks comply. The cost is the queue above.
+
+### OmniRoute
+
+User instruction received during this pass: no more `omni-agent.sh` / `omni-ask.sh`, Opus
+sub-agents only. The auditor has never used either and has nothing running. No OmniRoute
+worker process is running on the agent host. Not relayed (one message per track already sent
+this pass); check next pass that no track calls it. PLAN rules 6a/6b and the last line of
+AUDIT-ROLE.md still describe it and are now out of date.
+
+### Messages sent
+
+- noise, datapath: the queue is the bottleneck; run the bench as one blocking command instead
+  of polling; bench only tested changes, one A/B pair per experiment; the combined number is
+  401/421. Datapath: push the noise merge now and base sub-agents on it. Noise: judge new work
+  on the merged tree.
+- pipeline: fix lock fairness and the length of the exclusive hold, ahead of PGO; log the
+  fatbench A/B rows.
+
+### To verify next pass
+
+Datapath's merge is pushed and agrees with ~411; queue wait times; fatbench and PGO A/B rows;
+no OmniRoute calls; noise and datapath commit again.
+
+Stopped reading at: noise bc60b65, datapath bea73ad, pipeline c36f728.
