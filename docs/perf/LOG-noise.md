@@ -468,3 +468,35 @@ So per quart, continents, erosion, ridges and depth need one sample per (quart, 
 still per y, but its offset part is shared by the whole quart through the flat cache.
 Temperature and vegetation must still be sampled per exact column, which is what E27 already
 does.
+
+### Design (s5 reserved 16:00-17:00 CET; nothing queued): 17, column-uniform x/z work
+
+With 14 landed, a corner-grid column is evaluated as one 49-lane batch whose lanes share `x`
+and `z` exactly. The y-dependent leaves see the same x/z in every lane: `NormalNoise`'s
+`x * INPUT_FACTOR`, `shifted_noise`'s shifts (2D caches), and blended noise's `limit_x`. Yet
+every lane of every octave recomputes the x/z half of the sample. Split per octave:
+
+- **Per column** (identical in all lanes): `wrap(x * freq)` and `wrap(z * freq)`, `x + xo`,
+  `z + zo`, their floors and `as i32`, `dx`, `dz`, `dx - 1.0`, `dz - 1.0`, the fades
+  `t = smoothstep(dx)` and `v = smoothstep(dz)`, `xm`, `zm`, and the first-level hashes
+  `p[xm]`, `p[xm + 1]`.
+- **Per lattice cell** (already shared by 14's reuse): the 8 corner hashes. With them, each
+  corner's `A = g0 * xc` and `C = g2 * zc`, where `xc` is `dx` or `dx - 1`, `zc` likewise and
+  `g = GRADIENT[h & 15]`. `grad_dot` is `g[0]*x + g[1]*y + g[2]*z`, which Rust evaluates as
+  `(g0*x + g1*y) + g2*z`, so `(A + g1*yc) + C` performs the same operations on the same operands
+  in the same order.
+- **Per lane**: y's wrap, `y + yo`, floor, `dy`, `dy - 1`, the smear, the fade `u`, the eight
+  `g1*yc` and two adds per corner, and the 7 lerps.
+
+That is roughly 70 float ops per reused lane instead of ~140. Ceiling: the corner grid's noise
+leaves are ~14% of generation, so a few % of generation.
+
+Exactness: compute each per-column value once with exactly the expression the per-lane code
+uses (the operations are deterministic). The uniform path is taken only when every lane's x and
+z are bitwise equal to lane 0's, checked once per call, with a fallback to today's path.
+Signed zeros: `A`, `C` and the per-lane products are the same IEEE products as before, and the
+two adds keep their order. Tests: bit-identity (`to_bits`) against `noise_with_scale` over
+columns crossing cells, negative and wrapped x/z, `dx == 1.0` exactly, and y-smear; end to end
+against `PerlinNoise::get_value` and `BlendedNoise::compute` per lane, plus the non-uniform
+fallback. To be measured after 17:00 CET with a 5-round 1-thread hold against two fresh bases
+(labels `n11b1`, `n11b2`, `n11`).
