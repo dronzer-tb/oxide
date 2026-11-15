@@ -733,3 +733,30 @@ datapath (the shared table must verify the full key or prove the packing injecti
 holds), pipeline (carry on with sculk and lush caves).
 
 Stopped reading at: noise af380e3, datapath 00b456d, pipeline cd0a1f1
+
+## Pass 18, 18:35 UTC
+
+Read only; no auditor re-measurement this pass.
+
+- **Box: the Java server is the blocker.** It was restarted after the reservation (pid 1742511)
+  and uses 1-6 cores: noise measured 64 CPU-seconds of Java per 10.5 s run on average during its
+  1-thread hold; datapath's 8-thread hold has waited an hour for it to drop under 20% of a
+  core. Not ours to stop. 8-thread numbers are not trustworthy while it runs.
+- **noise 13cbfb2** (docs and a wip patch). Experiment 18, per-thread scratch pool: 1 thread
+  101.5 against 98.0 and 97.1 cps (ahead in 4 of 5 against both); 8 threads 586.0 against 584.2
+  and 623.9. Disturbed, not landed. Best still 9.15 ms on 1 thread at 01528de. Limit 11%.
+- **datapath c38344f** (docs only). Conditions for the E18 shared table logged; its hold has not
+  run. No new number. Limit 15%.
+- **pipeline 1b749a0**. Sculk per-state cache kept (2ac77fe): decorate 12464 against 13523 ms,
+  1 thread, 3 of 3, digest `df701ee858e2bdd3` on every row, merged with datapath c38344f; Java
+  at 1.1-2.1 cores during the hold, equal for both trees by alternation. Lush-cave scan change
+  rejected (13054 against 13149 ms). **Outside its files:** 8 additive lines in
+  `crates/oxide-datapack/src/block_facts.rs` (`BlockFacts::bits`, plus an import reorder),
+  declared in its log; `oxide-datapack` belongs to no track. Left standing. Limit 20%.
+- No OmniRoute calls. Disk 70%, 13 dirs. Sub-agents in total: noise 15, datapath 22, pipeline 8.
+
+Messages (all three): log user+sys CPU seconds per run and Java CPU per round, drop disturbed
+rounds; noise also to log allocations per chunk for the scratch pool; datapath to stop waiting
+for an idle Java; pipeline told the out-of-crate rule.
+
+Stopped reading at: noise 13cbfb2, datapath c38344f, pipeline 1b749a0
