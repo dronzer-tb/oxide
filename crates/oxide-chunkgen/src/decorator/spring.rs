@@ -98,7 +98,7 @@ impl SpringFeature {
         let rocks = neighbours.iter().filter(|p| valid(cx, **p)).count() as i32;
         let holes = neighbours
             .iter()
-            .filter(|p| cx.env.facts.is(block_in(cx.region, **p), BlockFact::Air))
+            .filter(|p| crate::decorator::context::fact_in(cx.region, **p, BlockFact::Air))
             .count() as i32;
         if rocks != self.rock_count || holes != self.hole_count {
             return false;

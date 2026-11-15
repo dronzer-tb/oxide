@@ -7,6 +7,8 @@
 //! function of the terrain around it, which is what lets `crate::decorate` hand out chunks in
 //! any order and still agree (see that module).
 
+use std::cell::{Cell, OnceCell};
+
 use ahash::AHashMap;
 
 use oxide_core::{BiomeId, BlockPos, BlockState, ChunkData, ChunkPos, HeightmapType};
@@ -24,9 +26,16 @@ pub struct DecorationRegion<'a> {
     facts: &'a BlockFacts,
     min_y: i32,
     height: i32,
-    overlay: AHashMap<BlockPos, BlockState>,
-    /// Positions in the order they were first written, so the write list is deterministic.
-    order: Vec<BlockPos>,
+    /// Index into `writes` of each written position.
+    overlay: AHashMap<BlockPos, usize>,
+    /// Every write in the order its position was first written, each with its latest state:
+    /// already the deterministic write list `into_writes` hands back.
+    writes: Vec<BlockWrite>,
+    /// Per write, the facts already answered for its current state (see [`FactCache`]).
+    write_facts: Vec<FactCache>,
+    /// Per terrain section (`chunk * sections + section`), per palette entry, the facts already
+    /// answered for that entry; made on the section's first fact query.
+    terrain_facts: Vec<OnceCell<Box<[FactCache]>>>,
     /// Highest written Y per column: a column with no entry still has its terrain heights.
     written_top: AHashMap<(i32, i32), i32>,
 }
@@ -44,7 +53,11 @@ impl<'a> DecorationRegion<'a> {
             min_y: middle.min_y,
             height: middle.height,
             overlay: AHashMap::new(),
-            order: Vec::new(),
+            writes: Vec::new(),
+            write_facts: Vec::new(),
+            terrain_facts: (0..9 * middle.sections.len())
+                .map(|_| OnceCell::new())
+                .collect(),
             written_top: AHashMap::new(),
         }
     }
@@ -97,15 +110,45 @@ impl<'a> DecorationRegion<'a> {
     /// The block at `pos` as decoration so far left it, or `None` outside the window.
     pub fn block(&self, pos: BlockPos) -> Option<&BlockState> {
         match self.overlay.get(&pos) {
-            Some(state) => Some(state),
+            Some(&i) => Some(&self.writes[i].1),
             None => self.terrain_block(pos),
         }
     }
 
     /// Whether `fact` holds at `pos`. Outside the window nothing holds.
     pub fn is(&self, pos: BlockPos, fact: BlockFact) -> bool {
-        self.block(pos)
-            .is_some_and(|state| self.facts.is(state, fact))
+        self.fact_at(pos, fact).unwrap_or(false)
+    }
+
+    /// Whether `fact` holds for the block at `pos`, or `None` outside the window: the same
+    /// answer as `facts().is(block(pos)?, fact)`, but each palette entry and each written state
+    /// asks the table at most once per fact.
+    pub fn fact_at(&self, pos: BlockPos, fact: BlockFact) -> Option<bool> {
+        if let Some(&i) = self.overlay.get(&pos) {
+            return Some(self.write_facts[i].is(self.facts, &self.writes[i].1, fact));
+        }
+        if pos.y < self.min_y || pos.y >= self.max_y() {
+            return None;
+        }
+        let dx = (pos.x >> 4) - self.center.x;
+        let dz = (pos.z >> 4) - self.center.z;
+        if !(-1..=1).contains(&dx) || !(-1..=1).contains(&dz) {
+            return None;
+        }
+        let chunk_index = ((dz + 1) * 3 + (dx + 1)) as usize;
+        let chunk = self.chunks[chunk_index];
+        let section_index = ((pos.y - self.min_y) >> 4) as usize;
+        let section = chunk.sections.get(section_index)?;
+        let slot = local_index(
+            (pos.x & 15) as usize,
+            ((pos.y - self.min_y) & 15) as usize,
+            (pos.z & 15) as usize,
+        );
+        let states = &section.block_states;
+        let entry = states.indices()[slot] as usize;
+        let cache = self.terrain_facts[chunk_index * chunk.sections.len() + section_index]
+            .get_or_init(|| (0..states.palette().len()).map(|_| FactCache::default()).collect());
+        Some(cache[entry].is(self.facts, &states.palette()[entry], fact))
     }
 
     /// Writes `state` at `pos`. Returns `false`, writing nothing, outside the window -- the
@@ -114,8 +157,17 @@ impl<'a> DecorationRegion<'a> {
         if !self.contains(pos) {
             return false;
         }
-        if self.overlay.insert(pos, state).is_none() {
-            self.order.push(pos);
+        match self.overlay.entry(pos) {
+            std::collections::hash_map::Entry::Occupied(entry) => {
+                let i = *entry.get();
+                self.writes[i].1 = state;
+                self.write_facts[i] = FactCache::default();
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(self.writes.len());
+                self.writes.push((pos, state));
+                self.write_facts.push(FactCache::default());
+            }
         }
         let top = self.written_top.entry((pos.x, pos.z)).or_insert(pos.y);
         *top = (*top).max(pos.y);
@@ -192,14 +244,28 @@ impl<'a> DecorationRegion<'a> {
     }
 
     /// Every write, in the order positions were first written, each with its final state.
-    pub fn into_writes(mut self) -> Vec<BlockWrite> {
-        let mut writes = Vec::with_capacity(self.order.len());
-        for pos in self.order {
-            if let Some(state) = self.overlay.remove(&pos) {
-                writes.push((pos, state));
-            }
+    pub fn into_writes(self) -> Vec<BlockWrite> {
+        self.writes
+    }
+}
+
+/// The facts already looked up for one block state: bit `f` of the low half says fact `f` has
+/// been asked, the same bit of the high half holds the answer. Every `BlockFact` is one bit.
+#[derive(Default)]
+struct FactCache(Cell<u64>);
+
+impl FactCache {
+    #[inline]
+    fn is(&self, facts: &BlockFacts, state: &BlockState, fact: BlockFact) -> bool {
+        let bit = u64::from(fact as u32);
+        let known = self.0.get();
+        if known & bit != 0 {
+            return known & (bit << 32) != 0;
         }
-        writes
+        let answer = facts.is(state, fact);
+        self.0
+            .set(known | bit | if answer { bit << 32 } else { 0 });
+        answer
     }
 }
 

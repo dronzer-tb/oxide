@@ -115,7 +115,7 @@ pub(super) fn shuffle<T>(values: &mut [T], random: &mut impl RandomSource) {
 
 /// Whether the block at `pos` has `fact`; outside the window it is `void_air`.
 pub(super) fn has(cx: &FeatureContext<'_, '_, '_>, pos: BlockPos, fact: BlockFact) -> bool {
-    cx.env.facts.is(block_in(cx.region, pos), fact)
+    crate::decorator::context::fact_in(cx.region, pos, fact)
 }
 
 /// Whether `state` has `fact`.

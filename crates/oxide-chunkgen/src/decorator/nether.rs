@@ -126,7 +126,7 @@ fn is_block_at(cx: &FeatureContext<'_, '_, '_>, pos: BlockPos, name: &ResourceLo
 
 /// Whether the block at `pos` has `fact`; outside the window it is `void_air`.
 fn has(cx: &FeatureContext<'_, '_, '_>, pos: BlockPos, fact: BlockFact) -> bool {
-    cx.env.facts.is(block_in(cx.region, pos), fact)
+    crate::decorator::context::fact_in(cx.region, pos, fact)
 }
 
 /// `LevelReader.isEmptyBlock`: whether the block at `pos` is air.

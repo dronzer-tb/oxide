@@ -35,7 +35,7 @@ use super::support::{
     any_fluid, can_attach_to, dist_manhattan, face_full, has, is_block, offset, relative, shuffle,
     state_has, water_source, waterlogged, Dir,
 };
-use crate::decorator::context::{block_in, FeatureContext};
+use crate::decorator::context::{block_in, fact_in, FeatureContext};
 use crate::decorator::provider::sample_int;
 use crate::decorator::state_provider::state_from_spec;
 
@@ -514,7 +514,9 @@ impl Spreader<'_, '_> {
         let old = block_in(cx.region, pos);
         let base = if self.is_vein(old) {
             old.clone()
-        } else if water_source(cx, old) {
+        } else if fact_in(cx.region, pos, BlockFact::Water)
+            && fact_in(cx.region, pos, BlockFact::FluidSource)
+        {
             waterlogged(self.vein.clone(), true)
         } else {
             self.vein.clone()
@@ -545,16 +547,20 @@ impl Spreader<'_, '_> {
             }
         }
         let existing = block_in(cx.region, target);
-        if any_fluid(cx, existing) && !water_source(cx, existing) {
+        // `fact_in(target)` asks exactly `facts.is(existing)`, through the region's cache.
+        let fact = |fact: BlockFact| fact_in(cx.region, target, fact);
+        let water_source_here = || fact(BlockFact::Water) && fact(BlockFact::FluidSource);
+        let any_fluid_here = fact(BlockFact::Water) || fact(BlockFact::Lava);
+        if any_fluid_here && !water_source_here() {
             return false;
         }
         if Self::member(self.fire, existing) {
             return false;
         }
-        let replaceable = state_has(cx, existing, BlockFact::Replaceable)
-            || state_has(cx, existing, BlockFact::Air)
+        let replaceable = fact(BlockFact::Replaceable)
+            || fact(BlockFact::Air)
             || self.is_vein(existing)
-            || (is_block(existing, "water") && water_source(cx, existing));
+            || (is_block(existing, "water") && water_source_here());
         replaceable && !self.has_vein_face(existing, face) && can_attach_to(cx, target, face)
     }
 

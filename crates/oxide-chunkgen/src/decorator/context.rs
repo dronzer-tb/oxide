@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, LazyLock};
 
 use oxide_core::{BiomeId, BlockPos, BlockState, ResourceLocation, WorldgenRandom};
-use oxide_datapack::{BlockFacts, TagSet};
+use oxide_datapack::{BlockFact, BlockFacts, TagSet};
 
 use super::feature::Placed;
 use super::ground::BiomeClimate;
@@ -128,6 +128,14 @@ static VOID_AIR: LazyLock<BlockState> =
 /// and below the world.
 pub fn block_in<'a>(region: &'a DecorationRegion<'_>, pos: BlockPos) -> &'a BlockState {
     region.block(pos).unwrap_or(&VOID_AIR)
+}
+
+/// Whether `fact` holds for [`block_in`]`(region, pos)`, through the region's per-state fact
+/// cache; outside the window it asks about `void_air`, as `block_in` would answer.
+pub fn fact_in(region: &DecorationRegion<'_>, pos: BlockPos, fact: BlockFact) -> bool {
+    region
+        .fact_at(pos, fact)
+        .unwrap_or_else(|| region.facts().is(&VOID_AIR, fact))
 }
 
 impl FeatureContext<'_, '_, '_> {

@@ -121,7 +121,7 @@ pub(super) fn is_water(cx: &FeatureContext<'_, '_, '_>, pos: BlockPos) -> bool {
 
 /// `isEmptyBlock`: whether the block at `pos` is air; outside the window it is `void_air`.
 pub(super) fn is_air(cx: &FeatureContext<'_, '_, '_>, pos: BlockPos) -> bool {
-    cx.env.facts.is(block_in(cx.region, pos), BlockFact::Air)
+    crate::decorator::context::fact_in(cx.region, pos, BlockFact::Air)
 }
 
 /// Whether the block at `pos` is in the block tag `minecraft:<tag>`.

@@ -28,7 +28,7 @@ use oxide_datapack::placement::PlacedFeature as PlacedFeatureIr;
 use oxide_datapack::{BlockFact, BlockFacts, Datapack, Registry};
 
 use super::cave::CaveFeature;
-use super::context::{block_in, FeatureContext};
+use super::context::FeatureContext;
 use super::end::EndFeature;
 use super::ground::GroundFeature;
 use super::nether::NetherFeature;
@@ -508,13 +508,13 @@ fn place_two_block_plant(
     pos: BlockPos,
 ) -> bool {
     let above = BlockPos::new(pos.x, pos.y + 1, pos.z);
-    if !cx.env.facts.is(block_in(cx.region, above), BlockFact::Air) {
+    if !crate::decorator::context::fact_in(cx.region, above, BlockFact::Air) {
         return false;
     }
     for (at, half) in [(pos, "lower"), (above, "upper")] {
         let mut half_state = state.clone().with_property("half", half);
         if half_state.properties.contains_key("waterlogged") {
-            let in_water = cx.env.facts.is(block_in(cx.region, at), BlockFact::Water);
+            let in_water = crate::decorator::context::fact_in(cx.region, at, BlockFact::Water);
             half_state = half_state.with_property("waterlogged", in_water.to_string());
         }
         cx.region.set_block(at, half_state);

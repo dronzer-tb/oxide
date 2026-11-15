@@ -131,7 +131,7 @@ impl OreFeature {
         if skip_air_check(random, self.discard_chance_on_air_exposure) {
             return true;
         }
-        !is_adjacent_to_air(region, env, pos)
+        !is_adjacent_to_air(region, pos)
     }
 
     /// `OreFeature.place`.
@@ -357,7 +357,7 @@ fn skip_air_check(random: &mut impl RandomSource, chance: f32) -> bool {
 }
 
 /// `OreFeature.isAdjacentToAir`: any of the six neighbours is air. Outside the world is air.
-fn is_adjacent_to_air(region: &DecorationRegion<'_>, env: &Environment, pos: BlockPos) -> bool {
+fn is_adjacent_to_air(region: &DecorationRegion<'_>, pos: BlockPos) -> bool {
     const NEIGHBOURS: [[i32; 3]; 6] = [
         [0, -1, 0],
         [0, 1, 0],
@@ -372,7 +372,7 @@ fn is_adjacent_to_air(region: &DecorationRegion<'_>, env: &Environment, pos: Blo
             pos.y.wrapping_add(d[1]),
             pos.z.wrapping_add(d[2]),
         );
-        env.facts.is(block_in(region, neighbour), BlockFact::Air)
+        crate::decorator::context::fact_in(region, neighbour, BlockFact::Air)
     })
 }
 

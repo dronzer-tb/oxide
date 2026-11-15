@@ -135,7 +135,7 @@ fn is_block(state: &BlockState, path: &str) -> bool {
 
 /// Whether the block at `pos` has `fact`; outside the window it is `void_air`.
 fn has(cx: &FeatureContext<'_, '_, '_>, pos: BlockPos, fact: BlockFact) -> bool {
-    cx.env.facts.is(block_in(cx.region, pos), fact)
+    crate::decorator::context::fact_in(cx.region, pos, fact)
 }
 
 /// Whether the block at `pos` is air (`air`, `cave_air` or `void_air`).

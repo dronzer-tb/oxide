@@ -30,7 +30,7 @@ use oxide_core::{BlockPos, BlockState, ResourceLocation};
 use oxide_datapack::feature::ConfiguredFeature;
 use oxide_datapack::{BlockFact, BlockFacts};
 
-use super::context::{block_in, FeatureContext};
+use super::context::FeatureContext;
 
 use bonus_chest::BonusChestFeature;
 use chorus_plant::ChorusPlantFeature;
@@ -109,7 +109,7 @@ fn is_block(state: &BlockState, path: &str) -> bool {
 /// Whether the block at `pos` is air (`air`, `cave_air` or `void_air`); outside the window it is
 /// `void_air`.
 fn is_air(cx: &FeatureContext<'_, '_, '_>, pos: BlockPos) -> bool {
-    cx.env.facts.is(block_in(cx.region, pos), BlockFact::Air)
+    crate::decorator::context::fact_in(cx.region, pos, BlockFact::Air)
 }
 
 fn offset(pos: BlockPos, dx: i32, dy: i32, dz: i32) -> BlockPos {
