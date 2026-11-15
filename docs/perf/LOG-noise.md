@@ -548,3 +548,14 @@ glob.
 3. This crate's remaining share is mostly the corner grid's leaves (~14% of generation at the
    last profile). The larger costs now sit in datapath (surface 16.5%, the aquifer's own loops
    ~9%). Further help from here is narrow APIs on request, like the two predicates.
+
+| # | What | Holds | Bases | Patched | Digest | Verdict |
+|---|---|---|---|---|---|---|
+| 17 (noise-11) | Column-uniform x/z work: `ImprovedNoise::column_xz` once per octave per column, `sample_y` per lane with a `ColumnCell` memo of each corner's `g0*xc`, `g1` and `g2*zc`, taken when `uniform_xz` (bitwise x and z equal in every lane) holds, in `PerlinNoise::get_values` and `BlendedNoise::compute_chunk`. It compiled first time (only the three touched files are formatted). Tests: noise 42 (3 new bit-identity tests), chunkgen 190 + 1 + 1 + 1 | 5 rounds, two fresh bases at the head (fd4bfe2 crates), **1 thread** and **8 threads**, labels n11b1/n11b2/n11 | 1 thread: 101.4, 97.5 cps; 8 threads: 601.9, 596.9 | 1 thread: 100.1; 8 threads: 687.7 | a977961a58122047 all thirty | **inconclusive, not landed**: on 1 thread (the measure of record for small changes) -1.4% / +2.6%, ahead 2/5 and 4/5. On 8 threads +14.3% / +15.2%, ahead 4/5 of each, but each base has one 455-cps outlier round, typical of 8-thread spread. An exact change with no 1-thread effect is unlikely to give 15% at 8, so this is not trusted. Patch at `docs/perf/wip/noise-11-column-xz.patch` |
+
+**For datapath's open question about 01528de at 8 threads:** this hold timed two fresh builds of
+the head, which contains 01528de, at **601.9 and 596.9 cps** on 8 threads (per round: 696.7,
+454.8, 608.7, 597.4, 651.8 and 640.3, 665.4, 454.9, 658.3, 565.7). That is far from the suspect
+392.9 row, so it points to that row being disturbed rather than a regression. Datapath's own
+8-thread hold of the merge is still the measure of record. Box note: the Java server started for
+the live test (16:13 CET) was still running at 17:07, idle by `top`. Holds were started under it.
