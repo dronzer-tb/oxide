@@ -26,9 +26,10 @@ while :; do
         logged=false
         [ -s "$HOME/.claude-$t/.credentials.json" ] && logged=true
         limited=false
-        printf '%s' "$pane" | tail -n 15 | grep -qiE "usage limit|limit reached|resets (at|in)" && limited=true
-        # Nudge only a logged-in session, so a nudge never types into the login prompt.
-        if $logged && [ "$idle" -ge "$NUDGE_MIN" ]; then
+        printf '%s' "$pane" | tail -n 25 | grep -qiE "usage limit|limit reached|limit resets|continuing automatically" && limited=true
+        # Nudge only a logged-in session, so a nudge never types into the login prompt, and not
+        # one waiting on its usage limit: Claude Code resumes those by itself at the reset.
+        if $logged && ! $limited && [ "$idle" -ge "$NUDGE_MIN" ]; then
             tmux send-keys -t "$t" "Continue the $t track from docs/perf/LOG-$t.md. Push after every experiment." Enter
             echo "$now" >"$state/$t.changed"
             date +%s >"$state/$t.nudged"
