@@ -949,3 +949,28 @@ Merged clean. The merge tree is identical to the trial merge in `/tmp/datapath-1
 on the box: chunkgen 190, noise 32, all passed. Merged on top of noise-4: the shared
 corner-column cache is noise's, keyed and owned in `oxide-noise`, and `NoiseRouterEvaluator::id()`
 is untouched. Re-profiling on 1 thread next, to plan round 6.
+
+### Profile on top of noise-4 (11ccdeb; 1 thread, radius 8, 10.32 ms per chunk with the profiler on)
+
+Shares of generation:
+
+| Share | Where | Owner |
+|---|---|---|
+| 37.4% | corner grid (was 44.5%) | noise |
+| 7.0% | per-block density | noise |
+| 3.6% | ore veins' density sampling | noise |
+| 16.5% | surface (14.1%, plus 2.4% `column_state` noise) | datapath |
+| 12.9% | aquifer: fill 10.5%, carvers 1.5%, surface level 0.9% | datapath |
+| 8.0% | carvers, excluding the aquifer | datapath |
+| 5.5% | fill loop self | datapath |
+| 5.3% | biomes: sampling 2.8%, search 2.5% | datapath |
+| 3.3% | ore veins' own code | datapath |
+
+The datapath share is now ~52%, up from ~45%.
+
+Round 6:
+- E21 retried on 11ccdeb (`datapath-18`): the aquifer is now a bigger slice, and E21 was the weakly
+  positive one (+2.4% mean, 3 of 5).
+- `datapath-19` sub-agent: `SurfaceSystem::apply`'s own per-block work (~4.3%: slot walk,
+  run state, cursor, biome lookup). Not the interpreter, where E14, E19 and E23 all lost.
+- One standard 8-thread `bench-vps.sh` row of 11ccdeb for the progress page.
