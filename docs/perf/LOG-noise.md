@@ -424,3 +424,127 @@ break-even, and the gain is the reuse.
 | # | What | Hold | Bases (cps, mean) | Patched | Digest | Verdict |
 |---|---|---|---|---|---|---|
 | 15 (noise-10) | 2D fast path in `ImprovedNoise`. When `yo != 0`, `ym`, `dy`, `dy - 1` and `smoothstep(dy)` for y = +/-0 are precomputed at construction (`y + yo == yo` exactly for both zeros). `PerlinNoise` takes `noise_2d` when `y == 0.0 && y_scale == 0.0`, checked once per call, and both paths share one `lerp_core` with the same operands in the same order. A forced `yo == 0` instance takes the general path. 42 noise tests (old implementations kept as references, both zeros, `dx == 1.0` forced), 193 + 3 chunkgen | 1 thread, 5 rounds, two fresh bases, on b93770d (b1e4a5c + datapath b55a3b2) | 111.84, 108.94 | 111.74 | a977961a58122047 all fifteen | **inconclusive, not landed**: level with base10, inside the build-to-build spread. It led both only in rounds 1-2, while the load was still falling. The saved work (one floor, subtract, smoothstep and mask per 2D octave sample) is too small to see. Patch kept at `docs/perf/wip/noise-10-flat-y-fast-path.patch` |
+| 16 (noise-9) | `PointMemo` + `sample_with_memo`: with no chunk caches, each cache node remembers its last exact position and value, which is exact for any program (no snapping, no blend; slots shared only by equal fingerprints). The aquifer's `surface_level` uses it for Erosion and Depth (caller diff for datapath). 37 noise tests (34k mixed-slot samples, foreign-router memo ignored), 193 + 3 chunkgen | 1 thread, 5 rounds, two fresh bases (labels n9b1/n9b2), on b93770d | 107.6, 110.9 | 108.3 | a977961a58122047 all fifteen | **rejected**: +0.6% / -2.4%, inside the build spread. Its ceiling was small: see the profile below. Patches kept at `docs/perf/wip/noise-9-point-memo*.patch` |
+
+**For datapath: the aquifer's cost is not noise.** noise-9's split profile (1 thread, radius 16,
+temporary `#[inline(never)]` per slot): the aquifer is 10.78% of generation (entries:
+`compute_kind` from the fill 67%, from `carve_ellipsoid` 25%, the constructor ~4%). Of that,
+**83.5% is the aquifer's own logic** (9.0% of generation; hot spots `note_run`'s per-candidate
+loop, aquifer.rs 529-563, and the nearest-centre loop in `compute_kind`). Depth is 12.4% (1.34%),
+of which 64% is noise under the offset spline and 29% the spline itself. Erosion is 3.6%
+(0.38%), Barrier 0.3% and floodedness 0.2%; lava, spread and preliminary surface level got 0
+samples. No API in this crate can cut the aquifer by more than ~1.7% of generation. The rest is
+in datapath's loops.
+
+**Process error, mine**: the noise-8 confirmation's cleanup ran `rm -f ab-bin/base*`. That glob
+also matches other holds' `base9`, `base9b` and `base10*`, so it deleted noise-9's base binaries
+mid-experiment (its first hold printed only the patched lines and had to be re-run) and very
+likely caused noise-10's first hold to produce nothing. From now on every cleanup deletes exact
+labels only (`ab-bin/<label>` and `ab-bin/<label>.stderr`), never a glob.
+
+### API for datapath's E29: `NoiseRouterEvaluator::is_quart_invariant(slot)`
+
+True when, **through chunk caches**, the slot's value at `(x, y, z)` equals its value at
+`(x & !3, y, z & !3)`, bit for bit. A caller may then sample once per quart and reuse the value
+for the other 15 columns at the same y; with `is_y_independent` as well, once per quart column.
+It holds through `flat_cache`, which samples at the quart origin whatever its argument reads.
+It does not hold through `sample()`, where nothing snaps. `cache_2d`/`cache_once` qualify only
+if their argument does, `interpolated` never does, and noise leaves read the exact x/z. About
+50 lines on top of `is_y_independent` (`quart_invariant_ops`), plus the test
+`quart_invariance_predicate`: 8 shapes, and where true, bit identity at 4 offsets x 3 quarts x
+4 y x 2 chunks. Tests: oxide-noise 39, oxide-chunkgen 190 + 1 + 1 + 1. This is an API, not a
+speed change, so there is no hold.
+
+Real overworld (both predicates):
+
+| Slot | y-independent | quart-invariant |
+|---|---|---|
+| temperature, vegetation | true | **false** (bare `shifted_noise`, sampled at the exact x/z) |
+| continents, erosion, ridges, preliminary_surface_level | true | true |
+| depth | false | **true** (y gradient + `flat_cache`d offset) |
+| final_density, barrier, lava, fluid levels, veins | false | false |
+
+So per quart, continents, erosion, ridges and depth need one sample per (quart, y). Depth is
+still per y, but its offset part is shared by the whole quart through the flat cache.
+Temperature and vegetation must still be sampled per exact column, which is what E27 already
+does.
+
+### Design (s5 reserved 16:00-17:00 CET; nothing queued): 17, column-uniform x/z work
+
+With 14 landed, a corner-grid column is evaluated as one 49-lane batch whose lanes share `x`
+and `z` exactly. The y-dependent leaves see the same x/z in every lane: `NormalNoise`'s
+`x * INPUT_FACTOR`, `shifted_noise`'s shifts (2D caches), and blended noise's `limit_x`. Yet
+every lane of every octave recomputes the x/z half of the sample. Split per octave:
+
+- **Per column** (identical in all lanes): `wrap(x * freq)` and `wrap(z * freq)`, `x + xo`,
+  `z + zo`, their floors and `as i32`, `dx`, `dz`, `dx - 1.0`, `dz - 1.0`, the fades
+  `t = smoothstep(dx)` and `v = smoothstep(dz)`, `xm`, `zm`, and the first-level hashes
+  `p[xm]`, `p[xm + 1]`.
+- **Per lattice cell** (already shared by 14's reuse): the 8 corner hashes. With them, each
+  corner's `A = g0 * xc` and `C = g2 * zc`, where `xc` is `dx` or `dx - 1`, `zc` likewise and
+  `g = GRADIENT[h & 15]`. `grad_dot` is `g[0]*x + g[1]*y + g[2]*z`, which Rust evaluates as
+  `(g0*x + g1*y) + g2*z`, so `(A + g1*yc) + C` performs the same operations on the same operands
+  in the same order.
+- **Per lane**: y's wrap, `y + yo`, floor, `dy`, `dy - 1`, the smear, the fade `u`, the eight
+  `g1*yc` and two adds per corner, and the 7 lerps.
+
+That is roughly 70 float ops per reused lane instead of ~140. Ceiling: the corner grid's noise
+leaves are ~14% of generation, so a few % of generation.
+
+Exactness: compute each per-column value once with exactly the expression the per-lane code
+uses (the operations are deterministic). The uniform path is taken only when every lane's x and
+z are bitwise equal to lane 0's, checked once per call, with a fallback to today's path.
+Signed zeros: `A`, `C` and the per-lane products are the same IEEE products as before, and the
+two adds keep their order. Tests: bit-identity (`to_bits`) against `noise_with_scale` over
+columns crossing cells, negative and wrapped x/z, `dx == 1.0` exactly, and y-smear; end to end
+against `PerlinNoise::get_value` and `BlendedNoise::compute` per lane, plus the non-uniform
+fallback. To be measured after 17:00 CET with a 5-round 1-thread hold against two fresh bases
+(labels `n11b1`, `n11b2`, `n11`).
+
+Draft of 17 written while s5 was reserved: `docs/perf/wip/noise-11-column-xz-DRAFT.patch`
+(worktree `/tmp/noise-11`). It has not been compiled, because this host has no linker. It adds
+`ImprovedNoise::column_xz` and `sample_y`, a `ColumnCell` memo holding each corner's `A`, `g1`
+and `C`, and `uniform_xz`. `PerlinNoise::get_values` and `BlendedNoise::compute_chunk` (main and
+both limit stacks) branch on `uniform` with a plain if/else, so the per-octave
+`freq`/`amp`/`pow` updates stay single. Three new tests: `column_path_is_bit_identical_along_columns`
+(32 seeds, 6 x/z incl. -0.0, tiny and wrapped-large, 3 smear modes, reuse asserted),
+`get_values_column_path_matches_get_value` (uniform and mixed batches) and
+`compute_lanes_column_path_matches_compute` (overworld, nether and end parameters). Next: once
+the box is free, `cargo fmt`, both crates' tests, then the two-base hold.
+
+## Handover, session 4 (2026-11-15 ~16:10 CET, at ~76% of the usage limit)
+
+Head of `perf/noise`: **33fc192** (code head fd4bfe2). Kept this session, digest
+`a977961a58122047` throughout:
+- **14** (01528de): corner columns evaluated lane-batched, with lattice-hash reuse. 1 thread:
+  -6.4% / -8.6% against two fresh bases, ahead in 6 of 7 rounds.
+  **Open question:** datapath's one 8-thread row after merging it is 392.9 cps against ~700,
+  timed just before the s5 reservation, so it may be an artefact. Datapath's sub-agent runs the
+  8-thread hold of that merge after 15:55 UTC; read it rather than duplicating it. If the drop
+  is real, the first suspect is allocation inside the batch path. `run_lanes` allocates
+  `bx/by/bz`, `sx/sy/sz` and `regs` per call (and `run_subset` per branch), and `Batch::new`'s
+  `cache_once` memo allocates per column. That is harmless on 1 thread but can contend in the
+  allocator on 8. Fix: reuse per-thread scratch buffers (a `thread_local!` or a scratch arena
+  owned by `ChunkCaches`). Fallback: gate the batch path off with a single switch in
+  `build_corner_grid_shared` (go back to per-corner `run`). **From now on, every keep in the
+  shared corner-cache path also needs an 8-thread hold.**
+- APIs for datapath: `is_y_independent(slot)` (b1e4a5c) and `is_quart_invariant(slot)`
+  (fd4bfe2), each with tests and a real-overworld table above.
+- Rejected or inconclusive, patches in `docs/perf/wip/`: 13 (SIMD within a sample), 15 (2D
+  fast path), 16 (aquifer point memo; its profile shows the aquifer is 83.5% datapath logic).
+
+**In flight:** 17 (noise-11, column-uniform x/z work). It is drafted but not compiled, in
+`/tmp/noise-11` and `docs/perf/wip/noise-11-column-xz-DRAFT.patch`. A session cron fires at
+17:07 CET to resume it once the s5 reservation ends. Steps: `cargo fmt -p oxide-noise`, both
+crates' tests, then a 5-round hold with two fresh bases on **1 thread and on 8 threads** (labels
+`n11b1`/`n11b2`/`n11`), each hold under ~5 minutes. Delete box dirs by exact label, never by
+glob.
+
+**Next three things to try:**
+1. Settle 14 at 8 threads (above), then 17.
+2. If 17 lands, the per-lane remainder is the y half and 7 lerps. The next exact cut is
+   per-cell reuse of `dy`-independent lerp terms where `u` repeats (only when consecutive lanes
+   share `dy`, which is rare). Probably not worth it; re-profile first.
+3. This crate's remaining share is mostly the corner grid's leaves (~14% of generation at the
+   last profile). The larger costs now sit in datapath (surface 16.5%, the aquifer's own loops
+   ~9%). Further help from here is narrow APIs on request, like the two predicates.

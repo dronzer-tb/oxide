@@ -1,0 +1,427 @@
+diff --git a/crates/oxide-noise/src/blended_noise.rs b/crates/oxide-noise/src/blended_noise.rs
+index d6ab376..18a0e0a 100644
+--- a/crates/oxide-noise/src/blended_noise.rs
++++ b/crates/oxide-noise/src/blended_noise.rs
+@@ -160,21 +160,38 @@ impl BlendedNoise {
+         }
+         let limit_smear = y_multiplier * params.smear_scale_multiplier;
+         let main_smear = limit_smear / params.y_factor;
++        // One column (every lane the same x and z): the per-lane x/z arithmetic above gives the
++        // same bits in every lane, so each octave's x/z half is computed once from lane 0.
++        let uniform = crate::improved_noise::uniform_xz(xs, zs);
+ 
+         let mut main_value = [0.0f64; LANE_CHUNK];
+         let mut pow = 1.0;
+         for i in 0..8 {
+             if let Some(noise) = self.main.get_octave_noise(i) {
+-                let mut memo = noise.cell_hashes(HashKind::Blended);
+-                for j in 0..k {
+-                    main_value[j] += noise.noise_with_scale_reusing(
+-                        wrap(main_x[j] * pow),
+-                        wrap(main_y[j] * pow),
+-                        wrap(main_z[j] * pow),
+-                        main_smear * pow,
+-                        main_y[j] * pow,
+-                        &mut memo,
+-                    ) / pow;
++                if uniform {
++                    let col = noise.column_xz(wrap(main_x[0] * pow), wrap(main_z[0] * pow));
++                    let mut cell = noise.column_cell(&col, HashKind::Blended);
++                    for j in 0..k {
++                        main_value[j] += noise.sample_y(
++                            &col,
++                            wrap(main_y[j] * pow),
++                            main_smear * pow,
++                            main_y[j] * pow,
++                            &mut cell,
++                        ) / pow;
++                    }
++                } else {
++                    let mut memo = noise.cell_hashes(HashKind::Blended);
++                    for j in 0..k {
++                        main_value[j] += noise.noise_with_scale_reusing(
++                            wrap(main_x[j] * pow),
++                            wrap(main_y[j] * pow),
++                            wrap(main_z[j] * pow),
++                            main_smear * pow,
++                            main_y[j] * pow,
++                            &mut memo,
++                        ) / pow;
++                    }
+                 }
+             }
+             pow /= 2.0;
+@@ -191,6 +208,39 @@ impl BlendedNoise {
+             let y_scale_pow = limit_smear * pow;
+             let min_noise = self.min_limit.get_octave_noise(i);
+             let max_noise = self.max_limit.get_octave_noise(i);
++            if uniform {
++                let (wx, wz) = (wrap(limit_x[0] * pow), wrap(limit_z[0] * pow));
++                let min_col = min_noise.map(|n| n.column_xz(wx, wz));
++                let max_col = max_noise.map(|n| n.column_xz(wx, wz));
++                let mut min_cell = min_noise
++                    .zip(min_col.as_ref())
++                    .map(|(n, c)| n.column_cell(c, HashKind::Blended));
++                let mut max_cell = max_noise
++                    .zip(max_col.as_ref())
++                    .map(|(n, c)| n.column_cell(c, HashKind::Blended));
++                for j in 0..k {
++                    let wy = wrap(limit_y[j] * pow);
++                    // Negated as the scalar path tests them, so a NaN factor behaves the same.
++                    let is_max = factor[j] >= 1.0;
++                    let is_min = factor[j] <= 0.0;
++                    if !is_max {
++                        if let (Some(noise), Some(col), Some(cell)) =
++                            (min_noise, min_col.as_ref(), min_cell.as_mut())
++                        {
++                            blend_min[j] +=
++                                noise.sample_y(col, wy, y_scale_pow, limit_y[j] * pow, cell) / pow;
++                        }
++                    }
++                    if !is_min {
++                        if let (Some(noise), Some(col), Some(cell)) =
++                            (max_noise, max_col.as_ref(), max_cell.as_mut())
++                        {
++                            blend_max[j] +=
++                                noise.sample_y(col, wy, y_scale_pow, limit_y[j] * pow, cell) / pow;
++                        }
++                    }
++                }
++            } else {
+             let mut min_memo = min_noise.map(|n| n.cell_hashes(HashKind::Blended));
+             let mut max_memo = max_noise.map(|n| n.cell_hashes(HashKind::Blended));
+             for j in 0..k {
+@@ -225,6 +275,7 @@ impl BlendedNoise {
+                     }
+                 }
+             }
++            }
+             pow /= 2.0;
+         }
+ 
+@@ -411,4 +462,27 @@ mod tests {
+             }
+         }
+     }
++
++    /// `compute_lanes` on a uniform column takes the column path and must equal `compute` per
++    /// lane, for every parameter set the overworld, nether and end use.
++    #[test]
++    fn compute_lanes_column_path_matches_compute() {
++        let mut r = WorldRandom::new(42, false);
++        let n = BlendedNoise::new(&mut r);
++        let sets = [
++            overworld(),
++            BlendedNoiseParams { xz_scale: 0.25, y_scale: 0.375, xz_factor: 80.0, y_factor: 60.0, smear_scale_multiplier: 8.0 },
++            BlendedNoiseParams { xz_scale: 0.25, y_scale: 0.25, xz_factor: 80.0, y_factor: 160.0, smear_scale_multiplier: 4.0 },
++        ];
++        for params in &sets {
++            for &(x, z) in &[(0.0, 0.0), (-17.0, 300.0), (4096.0, -8192.0)] {
++                let ys: Vec<f64> = (0..49).map(|i| -64.0 + 8.0 * i as f64).collect();
++                let mut out = vec![0.0; 49];
++                n.compute_lanes(params, &vec![x; 49], &ys, &vec![z; 49], &mut out);
++                for i in 0..49 {
++                    assert_eq!(out[i].to_bits(), n.compute(params, x, ys[i], z).to_bits(), "{x} {} {z}", ys[i]);
++                }
++            }
++        }
++    }
+ }
+diff --git a/crates/oxide-noise/src/improved_noise.rs b/crates/oxide-noise/src/improved_noise.rs
+index 5b92dd9..e852bd9 100644
+--- a/crates/oxide-noise/src/improved_noise.rs
++++ b/crates/oxide-noise/src/improved_noise.rs
+@@ -277,6 +277,156 @@ impl ImprovedNoise {
+     }
+ }
+ 
++/// The x/z half of a sample at one fixed (x, z) for one instance: everything
++/// [`ImprovedNoise::noise_with_scale`] computes from `x` and `z` alone, computed once per
++/// column instead of once per lane. See [`ImprovedNoise::sample_y`].
++#[derive(Debug, Clone, Copy)]
++pub(crate) struct ColumnXZ {
++    i: i32,
++    k: i32,
++    dx: f64,
++    dz: f64,
++    dx1: f64,
++    dz1: f64,
++    t: f64,
++    v: f64,
++}
++
++/// One lattice cell of a column, with everything about its eight corners that does not depend
++/// on y: the hashes, and each corner's `g0 * xc` and `g2 * zc` products and `g1`.
++#[derive(Debug, Clone, Copy)]
++pub(crate) struct ColumnCell {
++    j: i32,
++    a: [f64; 8],
++    g1: [f64; 8],
++    c: [f64; 8],
++    #[cfg(any(test, feature = "hash-stats"))]
++    kind: HashKind,
++}
++
++impl ImprovedNoise {
++    /// The x/z half of a sample at `(x, z)`: the same expressions `noise_with_scale` evaluates
++    /// for them, in the same order. `x` and `z` are the already-wrapped octave coordinates.
++    #[inline]
++    pub(crate) fn column_xz(&self, x: f64, z: f64) -> ColumnXZ {
++        let d0 = x + self.xo;
++        let d2 = z + self.zo;
++        let i = d0.floor() as i32;
++        let k = d2.floor() as i32;
++        let dx = d0 - i as f64;
++        let dz = d2 - k as f64;
++        ColumnXZ {
++            i,
++            k,
++            dx,
++            dz,
++            dx1: dx - 1.0,
++            dz1: dz - 1.0,
++            t: smoothstep(dx),
++            v: smoothstep(dz),
++        }
++    }
++
++    /// A [`ColumnCell`] for `col`, primed with a real cell so it is always consistent.
++    #[inline]
++    pub(crate) fn column_cell(&self, col: &ColumnXZ, kind: HashKind) -> ColumnCell {
++        let _ = kind;
++        let mut cell = ColumnCell {
++            j: i32::MIN,
++            a: [0.0; 8],
++            g1: [0.0; 8],
++            c: [0.0; 8],
++            #[cfg(any(test, feature = "hash-stats"))]
++            kind,
++        };
++        self.fill_column_cell(col, i32::MIN, &mut cell);
++        cell
++    }
++
++    /// Corner order as [`lerp_corners`]: d0..d7 = (x, y, z), (x-1, y, z), (x, y-1, z),
++    /// (x-1, y-1, z), then the same four at z-1.
++    #[inline(always)]
++    fn fill_column_cell(&self, col: &ColumnXZ, j: i32, cell: &mut ColumnCell) {
++        let h = self.corner_hashes(col.i, j, col.k);
++        let xc = [col.dx, col.dx1, col.dx, col.dx1, col.dx, col.dx1, col.dx, col.dx1];
++        let zc = [col.dz, col.dz, col.dz, col.dz, col.dz1, col.dz1, col.dz1, col.dz1];
++        for n in 0..8 {
++            let g = GRADIENT[(h[n] & 15) as usize];
++            cell.a[n] = g[0] * xc[n];
++            cell.g1[n] = g[1];
++            cell.c[n] = g[2] * zc[n];
++        }
++        cell.j = j;
++    }
++
++    /// [`Self::noise_with_scale`] at `(x, y, z)` where `col` is [`Self::column_xz`] of this
++    /// instance at that sample's `x` and `z`, reusing `cell` while consecutive samples of the
++    /// column stay in one lattice cell.
++    ///
++    /// Bit-identical to `noise_with_scale`: the y half is the same expressions; each corner's dot
++    /// product `g0*x + g1*y + g2*z` is evaluated by Rust as `(g0*x + g1*y) + g2*z`, and here as
++    /// `(A + g1*y) + C` with `A = g0*x` and `C = g2*z` the same IEEE products computed earlier;
++    /// the fades and the seven lerps are `lerp_corners`' own, with `t` and `v` from `col`.
++    #[inline]
++    pub(crate) fn sample_y(
++        &self,
++        col: &ColumnXZ,
++        y: f64,
++        y_scale: f64,
++        y_max: f64,
++        cell: &mut ColumnCell,
++    ) -> f64 {
++        let d1 = y + self.yo;
++        let j = d1.floor() as i32;
++        let dy = d1 - j as f64;
++        let dy_faded = if y_scale != 0.0 {
++            let clamped = if y_max >= 0.0 && y_max < dy {
++                y_max
++            } else {
++                dy
++            };
++            (clamped / y_scale + 1.0e-7).floor() * y_scale
++        } else {
++            0.0
++        };
++        let reused = cell.j == j;
++        if !reused {
++            self.fill_column_cell(col, j, cell);
++        }
++        #[cfg(any(test, feature = "hash-stats"))]
++        hash_stats::record(cell.kind, reused);
++
++        let yv = dy - dy_faded;
++        let yv1 = yv - 1.0;
++        let yc = [yv, yv, yv1, yv1, yv, yv, yv1, yv1];
++        let mut d = [0.0f64; 8];
++        for n in 0..8 {
++            d[n] = (cell.a[n] + cell.g1[n] * yc[n]) + cell.c[n];
++        }
++        let u = smoothstep(dy);
++        let e0 = lerp(col.t, d[0], d[1]);
++        let e1 = lerp(col.t, d[2], d[3]);
++        let e2 = lerp(col.t, d[4], d[5]);
++        let e3 = lerp(col.t, d[6], d[7]);
++        let f0 = lerp(u, e0, e1);
++        let f1 = lerp(u, e2, e3);
++        lerp(col.v, f0, f1)
++    }
++}
++
++/// Whether every lane of a batch has bitwise the same x and the same z, so the column path
++/// ([`ImprovedNoise::column_xz`] / [`ImprovedNoise::sample_y`]) applies.
++#[inline]
++pub(crate) fn uniform_xz(xs: &[f64], zs: &[f64]) -> bool {
++    match (xs.first(), zs.first()) {
++        (Some(x0), Some(z0)) => {
++            xs.iter().all(|x| x.to_bits() == x0.to_bits())
++                && zs.iter().all(|z| z.to_bits() == z0.to_bits())
++        }
++        _ => false,
++    }
++}
++
+ /// `sample_and_lerp`'s float work over already-hashed corners: the same expressions, operands
+ /// and order, so the result is bit-identical to it for the same cell.
+ #[inline(always)]
+@@ -630,6 +780,46 @@ mod tests {
+         assert_eq!(noise.noise(1.5, 2.5, 3.5), -0.2825922132396466);
+     }
+ 
++    /// The column path (`column_xz` once, `sample_y` per lane) gives exactly
++    /// `noise_with_scale`'s bits along 49-lane columns, across lattice cells, for negative,
++    /// near-integer and wrapped-large x/z, with and without y-smear. The cell reuse must
++    /// actually happen.
++    #[test]
++    fn column_path_is_bit_identical_along_columns() {
++        use oxide_core::Xoroshiro128PlusPlus;
++        let before = hash_stats::local();
++        let xzs = [
++            (0.0, 0.0),
++            (-0.0, 5.5),
++            (-37.25, 211.75),
++            (1.0e-300, -1.0e-300),
++            (3.0e7, -2.9e7),
++            (-123.999999999, 64.000000001),
++        ];
++        // (y step, y_scale, y_max shape): plain, and blended-style smear.
++        let modes: [(f64, f64, f64); 3] = [(0.37, 0.0, 0.0), (85.55, 684.412, 1.0), (0.021, 0.85, -1.0)];
++        for seed in 0..32u64 {
++            let mut r = Xoroshiro128PlusPlus::new(seed as i64 * 7919 + 3);
++            let noise = ImprovedNoise::new(&mut r);
++            for &(x, z) in &xzs {
++                for &(step, y_scale, y_max_sign) in &modes {
++                    let col = noise.column_xz(x, z);
++                    let mut cell = noise.column_cell(&col, HashKind::Perlin);
++                    for lane in 0..49 {
++                        let y = -64.0 * step + lane as f64 * step;
++                        let y_max = if y_max_sign >= 0.0 { y * 0.5 } else { -1.0 };
++                        let want = noise.noise_with_scale(x, y, z, y_scale, y_max);
++                        let got = noise.sample_y(&col, y, y_scale, y_max, &mut cell);
++                        assert_eq!(got.to_bits(), want.to_bits(), "seed {seed} at {x} {y} {z} mode {step}");
++                    }
++                }
++            }
++        }
++        let after = hash_stats::local();
++        assert!(after[0] - before[0] > 1000, "cells were reused: {:?} -> {:?}", before, after);
++        assert!(after[1] - before[1] > 1000, "cells were crossed: {:?} -> {:?}", before, after);
++    }
++
+     #[test]
+     fn same_seed_gives_deterministic_noise() {
+         let mut r1 = LegacyRandom::new(1234);
+diff --git a/crates/oxide-noise/src/perlin_noise.rs b/crates/oxide-noise/src/perlin_noise.rs
+index 88b81dc..2224f52 100644
+--- a/crates/oxide-noise/src/perlin_noise.rs
++++ b/crates/oxide-noise/src/perlin_noise.rs
+@@ -133,22 +133,43 @@ impl PerlinNoise {
+     /// lattice cell of an octave (a column's low-frequency octaves) reuse its corner hashes.
+     pub fn get_values(&self, xs: &[f64], ys: &[f64], zs: &[f64], out: &mut [f64]) {
+         out.fill(0.0);
++        let uniform = crate::improved_noise::uniform_xz(xs, zs);
+         let mut freq = self.lowest_freq_input_factor;
+         let mut amp = self.lowest_freq_value_factor;
+         for (i, level) in self.noise_levels.iter().enumerate() {
+             if let Some(noise) = level {
+                 let amplitude = self.amplitudes[i];
+-                let mut memo = noise.cell_hashes(HashKind::Perlin);
+-                for (((o, x), y), z) in out.iter_mut().zip(xs).zip(ys).zip(zs) {
+-                    let sample = noise.noise_with_scale_reusing(
+-                        wrap_coordinate(x * freq),
+-                        wrap_coordinate(y * freq),
+-                        wrap_coordinate(z * freq),
+-                        0.0 * freq,
+-                        0.0 * freq,
+-                        &mut memo,
++                if uniform {
++                    // One column: the x/z half of every sample is the same, so it is computed
++                    // once. Same wrap expressions as the per-lane path below.
++                    let col = noise.column_xz(
++                        wrap_coordinate(xs[0] * freq),
++                        wrap_coordinate(zs[0] * freq),
+                     );
+-                    *o += amplitude * sample * amp;
++                    let mut cell = noise.column_cell(&col, HashKind::Perlin);
++                    for (o, y) in out.iter_mut().zip(ys) {
++                        let sample = noise.sample_y(
++                            &col,
++                            wrap_coordinate(y * freq),
++                            0.0 * freq,
++                            0.0 * freq,
++                            &mut cell,
++                        );
++                        *o += amplitude * sample * amp;
++                    }
++                } else {
++                    let mut memo = noise.cell_hashes(HashKind::Perlin);
++                    for (((o, x), y), z) in out.iter_mut().zip(xs).zip(ys).zip(zs) {
++                        let sample = noise.noise_with_scale_reusing(
++                            wrap_coordinate(x * freq),
++                            wrap_coordinate(y * freq),
++                            wrap_coordinate(z * freq),
++                            0.0 * freq,
++                            0.0 * freq,
++                            &mut memo,
++                        );
++                        *o += amplitude * sample * amp;
++                    }
+                 }
+             }
+             freq *= 2.0;
+@@ -226,4 +247,31 @@ mod tests {
+         let p = PerlinNoise::create(&mut r, -4, vec![1.0, 0.5]);
+         assert!(p.get_value(0.0, 0.0, 0.0).is_finite());
+     }
++
++    /// `get_values` on a uniform column (every lane the same x and z) takes the column path and
++    /// must equal `get_value` per lane; a batch whose x varies must take the general path and
++    /// equal it too.
++    #[test]
++    fn get_values_column_path_matches_get_value() {
++        for seed in [3i64, 77, 2026] {
++            let mut r = WorldRandom::new(seed, false);
++            let n = PerlinNoise::create(&mut r, -7, vec![1.0, 0.0, 1.0, 0.5, 1.0]);
++            for &(x, z) in &[(12.0, -40.0), (-0.0, 0.0), (1.0e6 + 0.5, -3.0e6)] {
++                let ys: Vec<f64> = (0..49).map(|i| -64.0 + 8.0 * i as f64).collect();
++                let xs = vec![x; 49];
++                let zs = vec![z; 49];
++                let mut out = vec![0.0; 49];
++                n.get_values(&xs, &ys, &zs, &mut out);
++                for i in 0..49 {
++                    assert_eq!(out[i].to_bits(), n.get_value(x, ys[i], z).to_bits(), "uniform {seed} {i}");
++                }
++                let mut xs2 = xs.clone();
++                xs2[7] += 1.0;
++                n.get_values(&xs2, &ys, &zs, &mut out);
++                for i in 0..49 {
++                    assert_eq!(out[i].to_bits(), n.get_value(xs2[i], ys[i], z).to_bits(), "mixed {seed} {i}");
++                }
++            }
++        }
++    }
+ }

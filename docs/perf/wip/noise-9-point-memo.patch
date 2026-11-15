@@ -1,0 +1,441 @@
+diff --git a/crates/oxide-noise/src/cache.rs b/crates/oxide-noise/src/cache.rs
+index 4578010..f9754e1 100644
+--- a/crates/oxide-noise/src/cache.rs
++++ b/crates/oxide-noise/src/cache.rs
+@@ -603,6 +603,85 @@ impl ChunkCaches {
+     }
+ }
+ 
++/// A last-position memo per cache node, for sampling *without* chunk caches
++/// ([`crate::NoiseRouterEvaluator::sample_with_memo`]). Every `interpolated`, `cache_2d`,
++/// `flat_cache` and `cache_once` node remembers the last exact position its argument ran at
++/// and the value it gave there.
++///
++/// Exact, with no condition on the program: with no chunk caches a cache node's value is its
++/// argument run at the caller's exact `ctx` (no quart snapping, no cell blend), and that run is
++/// a deterministic function of `ctx` -- it reads only `ctx`, the router's seeded noises and,
++/// through nested cache nodes, this same memo, which by induction returns what the nested
++/// argument would compute. Two nodes share a slot only when their kind group and argument
++/// fingerprint (a full structural serialisation) are equal, so whichever node or router slot
++/// stored an entry computed it with an identical argument. A hit therefore returns the very
++/// bits a straight-through evaluation would produce, signed zeros and NaN payloads included.
++///
++/// What it saves: the uncached overworld `depth` re-runs its spline coordinates (`erosion`,
++/// `ridges`) once per nested spline it visits, and every 2D climate noise re-runs the same
++/// `shift_a`/`shift_b` offsets; sampling `erosion` and then `depth` at one position also runs
++/// `erosion` twice. Each of those becomes one evaluation per position.
++///
++/// Bound to the router that made it (see [`crate::NoiseRouterEvaluator::point_memo`]); slot
++/// numbers mean nothing to another router.
++pub struct PointMemo {
++    pub(crate) router_id: u64,
++    interpolated: RefCell<Vec<Option<LastSample>>>,
++    two_d: RefCell<Vec<Option<LastSample>>>,
++    once: RefCell<Vec<Option<LastSample>>>,
++}
++
++impl PointMemo {
++    pub(crate) fn new(router_id: u64, slots: CacheSlotCounts) -> Self {
++        Self {
++            router_id,
++            interpolated: RefCell::new(vec![None; slots.interpolated]),
++            two_d: RefCell::new(vec![None; slots.two_d]),
++            once: RefCell::new(vec![None; slots.once]),
++        }
++    }
++
++    /// The value of the cache node `(kind, slot)` at `ctx` with no chunk caches: `argument` run
++    /// at exactly `ctx`, or the remembered bits of that same run.
++    pub(crate) fn get_or_run(
++        &self,
++        kind: CacheKind,
++        slot: usize,
++        argument: &Program,
++        ctx: FunctionContext,
++        cx: &RunCtx,
++    ) -> f64 {
++        // `cache_2d` and `flat_cache` number their slots from one shared counter, as in
++        // `ChunkCaches`, so one table serves both.
++        let table = match kind {
++            CacheKind::Interpolated => &self.interpolated,
++            CacheKind::Cache2d | CacheKind::FlatCache => &self.two_d,
++            CacheKind::Once => &self.once,
++        };
++        let position = (ctx.x, ctx.y, ctx.z);
++        if let Some(Some((cached_position, value))) = table.borrow().get(slot) {
++            if *cached_position == position {
++                return *value;
++            }
++        }
++        // Not held across the run below, which may consult this same memo.
++        let value = argument.run(ctx, cx);
++        if let Some(entry) = table.borrow_mut().get_mut(slot) {
++            *entry = Some((position, value));
++        }
++        value
++    }
++
++    /// Entries holding a value, for tests that check the memo was exercised.
++    #[cfg(test)]
++    pub(crate) fn filled(&self) -> usize {
++        [&self.interpolated, &self.two_d, &self.once]
++            .iter()
++            .map(|t| t.borrow().iter().filter(|e| e.is_some()).count())
++            .sum()
++    }
++}
++
+ /// Ways per set in [`CornerColumns`].
+ const COLUMN_WAYS: usize = 4;
+ /// Independently locked shards of [`CornerColumns`].
+diff --git a/crates/oxide-noise/src/compiled.rs b/crates/oxide-noise/src/compiled.rs
+index b35fbb9..5680f06 100644
+--- a/crates/oxide-noise/src/compiled.rs
++++ b/crates/oxide-noise/src/compiled.rs
+@@ -25,7 +25,7 @@ use oxide_datapack::{
+ };
+ 
+ use crate::blended_noise::{BlendedNoise, BlendedNoiseParams};
+-use crate::cache::ChunkCaches;
++use crate::cache::{ChunkCaches, PointMemo};
+ use crate::density::{clamped_lerp, lerp_f32, map_rarity, FunctionContext};
+ use crate::normal_noise::NormalNoise;
+ 
+@@ -267,6 +267,9 @@ pub(crate) struct RunCtx<'a> {
+     /// straight through -- which is the right value for every node except `interpolated`, whose
+     /// value *is* the blend between cell corners. See `cache.rs`.
+     pub caches: Option<&'a ChunkCaches>,
++    /// Only consulted when `caches` is `None`: a per-node last-position memo that returns the
++    /// same bits as evaluating each cache node straight through. See [`PointMemo`].
++    pub memo: Option<&'a PointMemo>,
+ }
+ 
+ /// Registers held on the stack up to this many instructions. Every program a real datapack
+@@ -990,9 +993,10 @@ fn eval_op(op: &Op, regs: &[f64], ctx: FunctionContext, cx: &RunCtx) -> f64 {
+             kind,
+             slot,
+             argument,
+-        } => match cx.caches {
+-            Some(caches) => caches.cached(*kind, *slot as usize, argument, ctx, cx),
+-            None => argument.run(ctx, cx),
++        } => match (cx.caches, cx.memo) {
++            (Some(caches), _) => caches.cached(*kind, *slot as usize, argument, ctx, cx),
++            (None, Some(memo)) => memo.get_or_run(*kind, *slot as usize, argument, ctx, cx),
++            (None, None) => argument.run(ctx, cx),
+         },
+     }
+ }
+diff --git a/crates/oxide-noise/src/density.rs b/crates/oxide-noise/src/density.rs
+index 395ceaa..c24bcc3 100644
+--- a/crates/oxide-noise/src/density.rs
++++ b/crates/oxide-noise/src/density.rs
+@@ -101,6 +101,7 @@ mod tests {
+                 noises: &[],
+                 blended: test_blended(),
+                 caches: None,
++                memo: None,
+             },
+         )
+     }
+@@ -262,6 +263,7 @@ mod tests {
+                     noises: &[],
+                     blended: test_blended(),
+                     caches: None,
++                    memo: None,
+                 }
+             ),
+             3.0
+diff --git a/crates/oxide-noise/src/lib.rs b/crates/oxide-noise/src/lib.rs
+index c846de9..9c99bb5 100644
+--- a/crates/oxide-noise/src/lib.rs
++++ b/crates/oxide-noise/src/lib.rs
+@@ -25,7 +25,7 @@ mod random;
+ mod router;
+ 
+ pub use blended_noise::{BlendedNoise, BlendedNoiseParams};
+-pub use cache::ChunkCaches;
++pub use cache::{ChunkCaches, PointMemo};
+ pub use density::FunctionContext;
+ pub use improved_noise::ImprovedNoise;
+ pub use normal_noise::NormalNoise;
+diff --git a/crates/oxide-noise/src/router.rs b/crates/oxide-noise/src/router.rs
+index 8ca2a37..9e7c77c 100644
+--- a/crates/oxide-noise/src/router.rs
++++ b/crates/oxide-noise/src/router.rs
+@@ -11,7 +11,7 @@ use oxide_datapack::{
+ };
+ 
+ use crate::blended_noise::BlendedNoise;
+-use crate::cache::{ChunkCaches, CornerColumns};
++use crate::cache::{ChunkCaches, CornerColumns, PointMemo};
+ use crate::compiled::{CacheSlotCounts, Compiler, Program, RunCtx};
+ use crate::density::FunctionContext;
+ use crate::normal_noise::NormalNoise;
+@@ -233,6 +233,39 @@ impl NoiseRouterEvaluator {
+             noises: &self.noises,
+             blended: &self.blended,
+             caches: None,
++            memo: None,
++        };
++        self.programs[slot.index()].run(FunctionContext { x, y, z }, &cx)
++    }
++
++    /// A fresh [`PointMemo`] for [`Self::sample_with_memo`], sized for this router's cache
++    /// slots and bound to this router.
++    pub fn point_memo(&self) -> PointMemo {
++        PointMemo::new(self.id, self.cache_slots)
++    }
++
++    /// [`Self::sample`], bit for bit, but each cache node remembers the last exact position it
++    /// ran at, so a subtree reached several times at one position -- within one slot's program
++    /// or across slots sampled one after another at the same position -- runs once. See
++    /// [`PointMemo`] for why the value cannot differ from [`Self::sample`] in any bit.
++    ///
++    /// Pays off when one position is sampled through programs that share cache nodes, such as
++    /// the overworld `erosion` then `depth` (whose offset spline re-reads `erosion` and
++    /// `ridges` per nested spline). A `memo` made by another router is ignored and this
++    /// degrades to [`Self::sample`].
++    pub fn sample_with_memo(
++        &self,
++        memo: &PointMemo,
++        slot: RouterSlot,
++        x: i32,
++        y: i32,
++        z: i32,
++    ) -> f64 {
++        let cx = RunCtx {
++            noises: &self.noises,
++            blended: &self.blended,
++            caches: None,
++            memo: (memo.router_id == self.id).then_some(memo),
+         };
+         self.programs[slot.index()].run(FunctionContext { x, y, z }, &cx)
+     }
+@@ -253,6 +286,7 @@ impl NoiseRouterEvaluator {
+             noises: &self.noises,
+             blended: &self.blended,
+             caches: Some(caches),
++            memo: None,
+         };
+         let program = &self.programs[slot.index()];
+         let ctx = FunctionContext { x, y, z };
+@@ -295,6 +329,7 @@ impl NoiseRouterEvaluator {
+             noises: &self.noises,
+             blended: &self.blended,
+             caches: Some(caches),
++            memo: None,
+         };
+         program.run_cell(caches, (cell_x, cell_y, cell_z), &cx, out);
+         true
+@@ -511,6 +546,7 @@ mod tests {
+                 noises: &router.noises,
+                 blended: &router.blended,
+                 caches: Some(&plain_caches),
++                memo: None,
+             };
+             let lanes = router.cell_len(&cell_caches);
+             assert_eq!(lanes, 4 * 8 * 4);
+@@ -573,6 +609,7 @@ mod tests {
+             noises: &router.noises,
+             blended: &router.blended,
+             caches: Some(&plain),
++            memo: None,
+         };
+         for (x, y, z) in [(16, 0, 3), (-1, 10, 0), (4, 320, 4), (4, -65, 4), (5, 9, 16)] {
+             assert_eq!(
+@@ -758,6 +795,195 @@ mod tests {
+         assert!(router.sample(RouterSlot::FinalDensity, 0, 20, 0).is_nan());
+     }
+ 
++    /// An overworld-shaped router for the point memo: `erosion` a `flat_cache`d 2D shifted noise,
++    /// `depth` a y gradient plus a `flat_cache(cache_2d(spline))` offset whose spline nests
++    /// continents -> erosion -> ridges (so the coordinates are re-read per nested spline), every
++    /// climate noise over the same cached `shift_a`/`shift_b`. `final_density` adds the cases the
++    /// overworld aquifer does not reach: `cache_once`, `interpolated` over 3D noise, and a 2D
++    /// shifted noise with a `-0.0` `shift_y` (whose noise input keeps the sign of y).
++    fn point_memo_settings(
++    ) -> (NoiseGeneratorSettings, Registry<oxide_datapack::NormalNoiseParameters>) {
++        use oxide_datapack::{
++            CubicSpline, DensityFunctionObject as O, NormalNoiseParameters, SplinePoint,
++            SplineValue,
++        };
++        fn obj(o: O) -> DensityFunction {
++            DensityFunction::Object(Box::new(o))
++        }
++        let rl = |id: &str| Rl::new("minecraft", id);
++        let ids = ["continents", "erosion", "ridges", "offset", "barrier", "cave"];
++        let noises: Registry<NormalNoiseParameters> = ids
++            .iter()
++            .enumerate()
++            .map(|(i, id)| {
++                let params = NormalNoiseParameters {
++                    first_octave: -7 - i as i32,
++                    amplitudes: vec![1.0, 1.0, 0.5, 0.0, 1.0],
++                };
++                (rl(id), params)
++            })
++            .collect();
++        let shift = |o: O| obj(O::FlatCache { argument: obj(O::Cache2d { argument: obj(o) }) });
++        let climate = |id: &str, shift_y: f64| {
++            obj(O::FlatCache {
++                argument: obj(O::ShiftedNoise {
++                    noise: rl(id),
++                    xz_scale: 0.25,
++                    y_scale: 0.0,
++                    shift_x: shift(O::ShiftA { argument: rl("offset") }),
++                    shift_y: DensityFunction::Constant(shift_y),
++                    shift_z: shift(O::ShiftB { argument: rl("offset") }),
++                }),
++            })
++        };
++        let point = |location: f32, value: SplineValue, derivative: f32| SplinePoint {
++            location,
++            value,
++            derivative,
++        };
++        let ridges_spline = |k: f32| {
++            SplineValue::Spline(Box::new(CubicSpline {
++                coordinate: climate("ridges", 0.0),
++                points: vec![
++                    point(-1.0, SplineValue::Constant(-0.2 * k), 0.0),
++                    point(-0.3, SplineValue::Constant(0.1 * k), 0.4),
++                    point(0.4, SplineValue::Constant(0.3), -0.1 * k),
++                    point(1.0, SplineValue::Constant(0.05 * k), 0.0),
++                ],
++            }))
++        };
++        let erosion_spline = |k: f32| {
++            SplineValue::Spline(Box::new(CubicSpline {
++                coordinate: climate("erosion", 0.0),
++                points: vec![
++                    point(-0.8, ridges_spline(k), 0.0),
++                    point(-0.2, ridges_spline(k * 0.5), 0.2),
++                    point(0.3, ridges_spline(-k), 0.0),
++                    point(0.9, SplineValue::Constant(0.0), 0.0),
++                ],
++            }))
++        };
++        let offset = obj(O::FlatCache {
++            argument: obj(O::Cache2d {
++                argument: obj(O::Spline {
++                    spline: CubicSpline {
++                        coordinate: climate("continents", 0.0),
++                        points: vec![
++                            point(-1.1, SplineValue::Constant(0.04), 0.0),
++                            point(-0.4, erosion_spline(1.0), 0.0),
++                            point(0.0, erosion_spline(2.0), 0.1),
++                            point(0.5, erosion_spline(-1.5), 0.0),
++                        ],
++                    },
++                }),
++            }),
++        });
++        let depth = obj(O::Add {
++            argument1: obj(O::YClampedGradient {
++                from_y: -64,
++                to_y: 320,
++                from_value: 1.5,
++                to_value: -1.5,
++            }),
++            argument2: offset.clone(),
++        });
++
++        let mut settings = minimal_settings();
++        let router = &mut settings.noise_router;
++        router.continents = climate("continents", 0.0);
++        router.erosion = climate("erosion", 0.0);
++        router.ridges = climate("ridges", 0.0);
++        router.depth = depth.clone();
++        router.barrier = obj(O::Noise {
++            noise: rl("barrier"),
++            xz_scale: 1.0,
++            y_scale: 0.5,
++        });
++        router.final_density = obj(O::CacheOnce {
++            argument: obj(O::Add {
++                argument1: obj(O::Mul {
++                    argument1: depth,
++                    argument2: obj(O::Interpolated {
++                        argument: obj(O::Noise {
++                            noise: rl("cave"),
++                            xz_scale: 0.5,
++                            y_scale: 1.0,
++                        }),
++                    }),
++                }),
++                argument2: obj(O::Add {
++                    argument1: climate("cave", -0.0),
++                    argument2: obj(O::CacheOnce { argument: offset }),
++                }),
++            }),
++        });
++        (settings, noises)
++    }
++
++    /// `sample_with_memo` returns `sample`'s exact bits for every slot, whatever order the slots
++    /// and positions come in, with one memo reused throughout.
++    #[test]
++    fn point_memo_is_bit_identical_to_sample() {
++        let (settings, noises) = point_memo_settings();
++        let router = NoiseRouterEvaluator::new(31, &settings, &Registry::default(), &noises);
++        let memo = router.point_memo();
++        let slots = [
++            RouterSlot::Erosion,
++            RouterSlot::Depth,
++            RouterSlot::FinalDensity,
++            RouterSlot::Continents,
++            RouterSlot::Barrier,
++            RouterSlot::Ridges,
++        ];
++        let mut checked = 0;
++        for z in (-700i32..700).step_by(53) {
++            for x in (-900i32..900).step_by(37) {
++                for y in [-64i32, -9, -1, 0, 1, 40, 63, 200, 319] {
++                    for i in 0..slots.len() {
++                        // Rotate the slot order per position, and revisit Depth, so hits come
++                        // from the same slot, from another slot, and from an earlier position.
++                        let slot = slots[(i + (x + z + y).rem_euclid(6) as usize) % slots.len()];
++                        for s in [slot, RouterSlot::Depth] {
++                            let expected = router.sample(s, x, y, z);
++                            let got = router.sample_with_memo(&memo, s, x, y, z);
++                            assert_eq!(got.to_bits(), expected.to_bits(), "{s:?} at {x} {y} {z}");
++                            checked += 1;
++                        }
++                    }
++                }
++            }
++        }
++        assert!(checked > 30_000, "{checked}");
++        assert!(memo.filled() > 4, "the memo must have been used: {}", memo.filled());
++    }
++
++    /// The aquifer's pattern -- erosion then depth at a position, never the same position twice --
++    /// and a memo from another router, which must be ignored rather than read.
++    #[test]
++    fn point_memo_aquifer_pattern_and_foreign_memo() {
++        let (settings, noises) = point_memo_settings();
++        let router = NoiseRouterEvaluator::new(31, &settings, &Registry::default(), &noises);
++        let other = NoiseRouterEvaluator::new(32, &settings, &Registry::default(), &noises);
++        let memo = router.point_memo();
++        let foreign = other.point_memo();
++        let mut state = 0x9e37_79b9_7f4a_7c15u64;
++        for _ in 0..20_000 {
++            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
++            let x = (state >> 40) as i32 % 3000 - 1500;
++            let z = (state >> 20) as i32 % 3000 - 1500;
++            let y = (state >> 8) as i32 % 384 - 64;
++            for slot in [RouterSlot::Erosion, RouterSlot::Depth] {
++                let expected = router.sample(slot, x, y, z).to_bits();
++                let got = router.sample_with_memo(&memo, slot, x, y, z).to_bits();
++                assert_eq!(got, expected, "{slot:?} {x} {y} {z}");
++                // Seed 32's memo, warmed at this position by its own router, must not leak in.
++                other.sample_with_memo(&foreign, slot, x, y, z);
++                let got = router.sample_with_memo(&foreign, slot, x, y, z).to_bits();
++                assert_eq!(got, expected, "foreign {slot:?}");
++            }
++        }
++    }
++
+     /// The y-independence predicate accepts the vanilla climate shape (a 2D `shifted_noise`
+     /// over `shift_a`/`shift_b` through 2D caches) and rejects every shape where y can leak in.
+     /// Where it says yes, the values are bit-identical at every y.
