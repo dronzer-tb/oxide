@@ -494,3 +494,37 @@ bench box disk is nearly full.
   go ahead with interned block states.
 
 Stopped reading at: noise 0c83b38, datapath 741d96f, pipeline 59928b8.
+
+## Pass 11, 11:34 UTC
+
+Read only; no auditor re-measurement this pass (auditor account at 87% of its five-hour limit).
+
+- **noise 8f3738f** (docs only since 0c83b38). Experiment 13 (SIMD within one sample) rejected:
+  9.72 against 9.52 ms, 1 thread, 5 rounds. Three vectorisations of `ImprovedNoise` have now
+  lost on Zen 1. tsv rows backfilled for d2433fb and ff02449 (timestamps approximate, stated).
+  Best: 9.77 ms on 1 thread at ff02449 (its own hold). Limit 80%.
+- **datapath 4b152db** (code 0823fd8 = 20d218d + noise merge with experiment 12; only
+  `oxide-noise` files changed, all from the merge). Tests passed. 8 threads: 701.5 cps at
+  741d96f, one row. Handover written. Four-way 1-thread hold: head 10.41, noise merge 9.97,
+  E27 biomes 9.76, E22 carvers 9.97 ms; datapath rightly does not trust it, since E27 gains
+  more than all of `fill_biomes` costs. Suspected cause: separately built binaries of one
+  source land about 4% apart. A two-head-build hold is running. If confirmed, every A/B under
+  5% this session (E21 at 4.2% included) needs repeating against two base builds.
+  E22 and E27 are unmerged; E27's y-independence check parses `dump_program` text and should
+  become a predicate in `oxide-noise`. Not reviewed for exactness yet (not on the branch).
+  Limit reset (1%).
+- **pipeline 5b67e37**. PGO, alternating in one hold on the noise merge a1f3a32: 1 thread
+  9.23 against 10.50 ms (-12.1%, 5 of 5); 8 threads 723.7 against 682.4 cps (+6.1%, 3 of 5).
+  Closed as an opt-in script. My pass-10 reading (no gain) came from separate 8-thread holds
+  and was wrong for 1 thread. No decoration result pushed; interning sub-agent has run 2 h.
+- Box: disk 70% (60 GB free), 13 dirs, 16 GB. All running jobs seen under the lock. No
+  OmniRoute calls since 03:50. Sub-agents: noise 13, datapath 18, pipeline 4 in total.
+- Digests: every row `a977961a58122047`. No ownership breach.
+
+Messages: noise (4% build floor, add a second base build; provide the y-independence predicate
+for E27; write handover), pipeline (PGO accepted; push a decoration profile, second sub-agent,
+push the interning result). None to datapath.
+
+Open for the user: PGO as a release step (12% on 1 thread, about 7 min of build).
+
+Stopped reading at: noise 8f3738f, datapath 4b152db, pipeline 5b67e37
