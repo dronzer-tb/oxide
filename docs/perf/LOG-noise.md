@@ -602,10 +602,18 @@ every round). All four comparisons point the same way, and the allocation cut is
 deterministic, so the patch stays in `docs/perf/wip/noise-12-scratch-pool.patch` as the first
 candidate to re-decide with a sharper measure.
 
-**Why the CPU column is blunt here:** `cpu_s` is whole-process. Each run is ~36 s wall on
-1 thread, of which only ~10.4 s is generation (`secs`). The other ~26 s (datapack load, router
-build) is identical code in both builds, so it dilutes a generation-only effect about 3.5x.
-If setup CPU is equal, sp1's -0.81 CPU-s on 1 thread is ~8% of generation CPU. That is an
-inference, not a measurement. To measure it, the harness would need to print `getrusage` CPU
-around the generation phase only (an additive line in `oxide-harness`, outside this crate's
-ownership; proposed, not done).
+**Why the CPU column is blunt here (corrected):** `cpu_s` is whole-process. A 1-thread run takes
+~36 s wall, of which only ~10.4 s is generation (`secs`). I first wrote that the other ~26 s was
+setup; **that was wrong.** A 4-round radius-0 hold (labels su0/su1, one chunk each) puts setup at
+**0.36-0.48 CPU-s** in both builds (su0 0.39/0.48/0.37/0.36, su1 0.46/0.42/0.36/0.36). The ~25 s is
+the merkle digest that `--time-only` computes after the timed part (`build_merkle` per chunk,
+single-threaded, `crates/oxide-harness/src/main.rs:262`). It is identical code over identical
+chunks, but it dilutes a generation effect about 3.5x on 1 thread and its own noise lands in
+`cpu_s`. If the digest's CPU is equal, sp1's -0.81 CPU-s on 1 thread is ~8% of generation CPU
+(still an inference).
+
+**Measure fixed without a harness change:** `noise-holdloop.sh` now also logs `gen_cpu_s`. The
+harness's stdout goes through a fifo, and when it prints `generated N chunks` (the end of the
+timed part, before the digest), the loop reads the harness's own utime+stime from
+`/proc/<pid>/stat` with a blocking `read`, with no polling. That is setup (~0.4 s) plus
+generation only. `ab-analyze.py` reports it first. 18 is being re-held on it.
