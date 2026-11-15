@@ -1766,3 +1766,49 @@ That gives generation-only CPU seconds, `gen_cpu_s`, with java's CPU over the sa
 One hold, four binaries rotating: base 1, base 2 (two builds of aa8ffab code), base+noise-12
 (`datapath-31`), and the full stack (`datapath-28`). 6 rounds at 8 threads and 5 at 1. Decided on
 gen_cpu_s; noise-12 is reported alone against both bases, for the noise track.
+
+### Four-way hold on generation-only CPU: noise-12 alone -5 to -6%; E32+E33 add ~1.3%, not established
+
+One exclusive hold per thread count, four binaries rotating: base 1 and base 2 (two builds of
+aa8ffab code), base + noise-12 (`datapath-31`), and the full stack (E32 + E33 + noise-12, `datapath-28`). The measure is
+`gen_cpu_s`: harness utime+stime between `carvers in play` and `generated N chunks`. java used at most 0.30
+CPU-s per run, so nothing was dropped. All forty-four `digest=a977961a58122047`.
+
+**8 threads, 6 rounds, gen_cpu_s per run**
+
+| round | base 1 | base 2 | noise-12 | stack |
+|---|---|---|---|---|
+| r1 | 12.26 | 10.09 | 9.57 | 9.44 |
+| r2 | 10.35 | 13.40 | 13.04 | 11.05 |
+| r3 | 10.02 | 10.86 | 9.17 | 9.72 |
+| r4 | 10.72 | 11.82 | 10.51 | 12.15 |
+| r5 | 10.16 | 10.05 | 11.08 | 10.31 |
+| r6 | 11.37 | 11.21 | 9.42 | 9.33 |
+| mean (median) | 10.81 (10.54) | 11.24 (11.04) | **10.47 (10.04)** | 10.33 (10.02) |
+| mean cps | 770.3 | 751.5 | 810.5 | 796.2 |
+
+**1 thread, 5 rounds, gen_cpu_s per run**
+
+| round | base 1 | base 2 | noise-12 | stack |
+|---|---|---|---|---|
+| r1 | 9.84 | 9.71 | 9.34 | 9.01 |
+| r2 | 9.93 | 9.41 | 8.81 | 8.85 |
+| r3 | 9.94 | 9.64 | 10.03 | 9.12 |
+| r4 | 10.03 | 10.76 | 9.06 | 9.36 |
+| r5 | 9.76 | 9.71 | 9.33 | 9.61 |
+| mean | 9.90 | 9.85 | **9.31** | 9.19 |
+
+**For the noise track: noise-12 (scratch pool) alone against both bases:**
+- 1 thread: -5.7% on the bases' mean, below both bases in 4 of 5 rounds;
+- 8 threads: -5.1%, below both in 4 of 6.
+
+This is measured directly against two bases, so it replaces my earlier subtraction. It disagrees with the
+noise track's own no-effect result at fd4bfe2, which was on an older base (before the 3362440 and later
+merges). The decision to land is theirs.
+
+**E32 + E33 on top of noise-12** (the stack against noise-12): -1.3% at 1 thread (below in 2 of 5)
+and -1.3% at 8 threads (4 of 6). Not established; they stay parked
+(`parked-E32-shared-surface-table.diff`, `parked-E33-surface-program-per-thread.diff`). The two
+bases differ by 0.5% at 1 thread and 4% at 8 threads.
+
+Box dirs `datapath-28`, `datapath-31` and `datapath-h2` are deleted; `datapath` (the head build) is kept.
