@@ -1531,3 +1531,14 @@ rotating 1-thread hold should tolerate that, but it is noted. The helper now sam
 from `/proc/<pid>/stat` at each round.
 
 Box dirs `datapath-27` and `datapath-h2` are deleted.
+
+The auditor accepts the 8-thread result: the 392.9 row is struck. The `run_cell` / `run_lanes` scratch
+allocation is passed to the noise track.
+
+On the E18 shared table, the auditor requires, before any hold, a written argument that a lookup can
+never return another column's or another router's level. If the key is truncated to fit beside the
+level in 64 bits, a collision would be a silent wrong value that the digest at one seed may not catch. So:
+either store the full (router id, x, z) and verify it on read, or prove the packing injective over the
+whole reachable coordinate range. Racing writers are fine, since the value is deterministic. Then:
+an 8-thread hold of 6+ rounds with java's current CPU sampled per round (from `/proc`, not
+`ps -o pcpu`), and a 1-thread hold to show the table costs nothing there. Passed to the sub-agent.
