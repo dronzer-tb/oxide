@@ -283,3 +283,16 @@ noise's account (96%). Noise will stop soon; its handover must be in its log.
 - noise: none.
 
 Stopped reading at: noise 1bcc15b, datapath 3683496, pipeline 8ea2c1c.
+
+### Auditor re-measurement after pass 5 (runs between 04:35 and 05:20 UTC, all digest ok)
+
+| Tree | Run 1 | Run 2 |
+|---|---|---|
+| datapath 6b8562f | 473.0 cps, 16.91 ms | 476.9 cps, 16.78 ms |
+| noise + datapath merge 5a4d1d4 (adds noise 6dfa05a) | 414.9 cps, 19.28 ms | 495.0 cps, 16.16 ms |
+| noise 1bcc15b alone | 173.3 cps | 163.2 cps |
+
+Datapath's ~479 claim is confirmed (475 here). The fresh merge is not separable from it: its
+two runs are 19% apart, so noise's experiment 7 gain on the merged tree is not established.
+Noise alone is below its earlier 185. Stopped here: the auditor's usage limit was reached.
+Scratch worktrees /tmp/audit-{combined,datapath,noise} are left in place.
