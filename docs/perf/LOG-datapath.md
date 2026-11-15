@@ -1542,3 +1542,21 @@ either store the full (router id, x, z) and verify it on read, or prove the pack
 whole reachable coordinate range. Racing writers are fine, since the value is deterministic. Then:
 an 8-thread hold of 6+ rounds with java's current CPU sampled per round (from `/proc`, not
 `ps -o pcpu`), and a 1-thread hold to show the table costs nothing there. Passed to the sub-agent.
+
+### Hold method under outside load (auditor, while the java server stays)
+
+The java server on s5 (another user's) has used 1-6 cores for hours and is not ours to stop.
+Until it goes:
+- every timed run is wrapped in `/usr/bin/time -f '%U %S'`, and its user+sys CPU seconds are logged
+  beside the BENCH line;
+- every run also logs java's CPU seconds during that run (utime+stime delta from `/proc/<pid>/stat`);
+- holds rotate the order. Rounds where java used more than ~2 CPU-seconds per 10 s of wall time are
+  dropped, and the decision rests on the rest;
+- the comparison is on CPU seconds, which is steadier than wall cps under outside load and
+  fairer at 8 threads. Wall cps is still recorded.
+
+`/usr/bin/time` covers the whole harness process: datapack load and the single-threaded digest pass
+as well as generation. Those parts are identical work for every variant, so compare absolute CPU-second
+differences between variants; ratios are diluted. The master's helper (`ab2.sh`, scratchpad) does
+this. The scaling sub-agent is switched to it: 8 rounds, no more waiting for java, and the
+key-injectivity argument for the shared table first.
