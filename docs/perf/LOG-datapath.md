@@ -396,3 +396,42 @@ Run 2: `BENCH chunks=1089 threads=8 secs=2.168 cps=502.2 ms_per_chunk_core=15.93
 
 About 5%, inside noise. Kept: less work, digest unchanged. Tests: biome 6 passed (one new),
 chunkgen 189 passed.
+
+### E13: aquifer neighbour-chunk caches and per-anchor candidate centres -- kept
+
+Sub-agent experiment in `/tmp/datapath-5`, bench name `datapath-5`, based on 6b8562f.
+
+Why `preliminary_surface_level` cost 8.5%: in the overworld pack `PreliminarySurfaceLevel`
+is a `find_top_surface` scan, in 8-block steps, over a density built from
+`cache_2d(offset)` and `cache_2d(factor)`. Those are splines over continents, erosion and
+ridges. Nearly every aquifer sample is outside the chunk, because centres reach up to three
+chunks away. `ChunkCaches` only holds the chunk's 17x17 columns, so every step of every scan
+re-ran the whole spline and noise stack.
+
+- Columns in other chunks of the aquifer's memo window are sampled through a private,
+  lazily built `ChunkCaches` for that chunk, owned by this chunk's aquifer and dropped with
+  it. Nothing is shared across chunks or threads.
+- Exactness (checked by the sub-agent against the overworld JSON, reviewed by the master):
+  - the program has no `interpolated` node, the only cache kind that clamps to a chunk's
+    grid;
+  - every `cache_2d` / `flat_cache` argument depends on (x, z) alone, bit for bit:
+    `shifted_noise` with `y_scale` 0 gives `y*0.0 + 0.0 = +0.0` for every y, `shift_a` and
+    `shift_b` ignore y, and `blend_*` are constants;
+  - `cache_once` is keyed on the exact position.
+  So a cached value equals the uncached one. Vanilla's `Cache2D` also ignores y.
+  **Datapack assumption:** a pack that put an `interpolated` node or a y-dependent
+  `cache_2d` argument in this slot would get different values from the old path. This is a
+  correctness boundary for custom packs, not a digest risk for the vanilla one.
+- `compute_kind`: the 12 candidate centres around a horizontal anchor are kept, tagged with
+  the anchor's y, and refilled only when the anchor changes (at most 4 per y layer in the
+  fill's order). `location()` draws are positional, so fill order cannot matter. The
+  per-block work left is the integer distances and the unchanged `>=` top-3 cascade.
+  Anchors whose 12 cells are not all inside the grid use the original per-block loop.
+  Everything after the top-3 search is moved verbatim.
+
+Base: ~479 (interleaved A/B, 6b8562f).
+Run 1: `BENCH chunks=1089 threads=8 secs=2.012 cps=541.2 ms_per_chunk_core=14.78 digest=a977961a58122047`
+Run 2: `BENCH chunks=1089 threads=8 secs=1.907 cps=571.0 ms_per_chunk_core=14.01 digest=a977961a58122047`
+
+Both runs above the base's best (492.3) in the A/B: about 15% less core time per chunk.
+Tests: chunkgen 189 passed.

@@ -34,6 +34,8 @@ const WAY_BELOW_MIN_Y: i32 = -2032;
 /// Side of the preliminary-surface memo, in quarts: 160 blocks, from five chunks before the
 /// chunk's origin to five after.
 const SURFACE_MEMO_SPAN: i32 = 40;
+/// The same window in chunks.
+const SURFACE_MEMO_CHUNKS: i32 = SURFACE_MEMO_SPAN / 4;
 
 /// Chunk-relative offsets, in chunks, at which `computeFluid` samples the preliminary surface.
 const SURFACE_SAMPLING_OFFSETS_IN_CHUNKS: [[i32; 2]; 13] = [
@@ -108,17 +110,40 @@ pub struct Aquifer<'a> {
     min_grid_y: i32,
     min_grid_z: i32,
     grid_size_x: i32,
+    grid_size_y: i32,
     grid_size_z: i32,
     skip_sampling_above_y: i32,
 
     /// Per grid cell: the jittered centre position, and the fluid there once computed.
     locations: Vec<Option<(i32, i32, i32)>>,
     statuses: Vec<Option<FluidStatus>>,
+    /// The twelve candidate centres around one anchor cell, per horizontal anchor
+    /// `(anchor_x, anchor_z)` of the grid, tagged with the `anchor_y` they were drawn for. The
+    /// fill loop walks y, then z, then x, so one row of blocks touches at most two anchors and
+    /// one layer four: rebuilding the candidate list per block was most of `compute_kind`.
+    anchors: Vec<AnchorCandidates>,
     /// Memoised `preliminary_surface_level` on a dense quart grid of [`SURFACE_MEMO_SPAN`]
     /// squared entries starting at the origin below; `i32::MIN` = not sampled yet.
     surface_levels: Vec<i32>,
     surface_origin_x: i32,
     surface_origin_z: i32,
+    /// Private `ChunkCaches` for the other chunks of the surface memo window, built on first
+    /// use, one per chunk (`SURFACE_MEMO_CHUNKS` squared slots). See
+    /// `preliminary_surface_level` for why sampling through them gives the same values.
+    neighbour_caches: Vec<Option<Box<ChunkCaches>>>,
+    surface_origin_chunk_x: i32,
+    surface_origin_chunk_z: i32,
+    own_chunk_x: i32,
+    own_chunk_z: i32,
+}
+
+/// The 12 grid cells `compute_kind` weighs for one anchor, in its `(dx, dy, dz)` loop order:
+/// each one's index into `locations`/`statuses` and its jittered centre.
+#[derive(Clone, Copy)]
+struct AnchorCandidates {
+    anchor_y: i32,
+    index: [usize; 12],
+    centre: [(i32, i32, i32); 12],
 }
 
 impl<'a> Aquifer<'a> {
@@ -164,16 +189,32 @@ impl<'a> Aquifer<'a> {
             min_grid_y,
             min_grid_z,
             grid_size_x,
+            grid_size_y,
             grid_size_z,
             skip_sampling_above_y: i32::MAX,
             locations: vec![None; total],
             statuses: vec![None; total],
+            anchors: vec![
+                AnchorCandidates {
+                    anchor_y: i32::MIN,
+                    index: [0; 12],
+                    centre: [(0, 0, 0); 12],
+                };
+                (grid_size_x * grid_size_z) as usize
+            ],
             // Thirteen offsets per aquifer centre, heavily overlapping between centres. Centres
             // sit within one grid cell (16 blocks) of the chunk and the offsets reach three
             // chunks back and one forward, so five chunks back covers every lookup.
             surface_levels: vec![i32::MIN; (SURFACE_MEMO_SPAN * SURFACE_MEMO_SPAN) as usize],
             surface_origin_x: min_block_x - 80,
             surface_origin_z: min_block_z - 80,
+            neighbour_caches: (0..SURFACE_MEMO_CHUNKS * SURFACE_MEMO_CHUNKS)
+                .map(|_| None)
+                .collect(),
+            surface_origin_chunk_x: chunk_x - 5,
+            surface_origin_chunk_z: chunk_z - 5,
+            own_chunk_x: chunk_x,
+            own_chunk_z: chunk_z,
         };
 
         // Above the highest surface in reach there is nothing to flood, so vanilla stops
@@ -271,6 +312,89 @@ impl<'a> Aquifer<'a> {
         // The three nearest aquifer centres, by squared distance. A candidate that ties an
         // incumbent goes in front of it, as vanilla's cascade of `>=` comparisons does.
         let mut best = [(i32::MAX, 0usize); 3];
+        if let Some(slot) = self.anchor_slot(anchor_x, anchor_y, anchor_z) {
+            if self.anchors[slot].anchor_y != anchor_y {
+                self.fill_anchor(slot, anchor_x, anchor_y, anchor_z);
+            }
+            let candidates = &self.anchors[slot];
+            for i in 0..12 {
+                let (cx, cy, cz) = candidates.centre[i];
+                let ddx = cx - x;
+                let ddy = cy - y;
+                let ddz = cz - z;
+                let distance = ddx * ddx + ddy * ddy + ddz * ddz;
+                let index = candidates.index[i];
+                if best[0].0 >= distance {
+                    best[2] = best[1];
+                    best[1] = best[0];
+                    best[0] = (distance, index);
+                } else if best[1].0 >= distance {
+                    best[2] = best[1];
+                    best[1] = (distance, index);
+                } else if best[2].0 >= distance {
+                    best[2] = (distance, index);
+                }
+            }
+        } else {
+            self.nearest_slow(x, y, z, anchor_x, anchor_y, anchor_z, &mut best);
+        }
+        self.kind_from_nearest(x, y, z, density, &best)
+    }
+
+    /// The `anchors` slot for this anchor, when all twelve candidate cells around it lie
+    /// inside the grid -- which makes every index in range and distinct, so the per-anchor
+    /// list is exactly what the per-block loop in `nearest_slow` would see. `None` otherwise.
+    fn anchor_slot(&self, anchor_x: i32, anchor_y: i32, anchor_z: i32) -> Option<usize> {
+        let rx = anchor_x - self.min_grid_x;
+        let ry = anchor_y - self.min_grid_y;
+        let rz = anchor_z - self.min_grid_z;
+        let inside = rx >= 0
+            && rx + 1 < self.grid_size_x
+            && ry >= 1
+            && ry + 1 < self.grid_size_y
+            && rz >= 0
+            && rz + 1 < self.grid_size_z;
+        inside.then(|| (rz * self.grid_size_x + rx) as usize)
+    }
+
+    /// Draws (or recalls) the twelve candidate centres around an anchor, in the `(dx, dy, dz)`
+    /// order `nearest_slow` visits them, calling `location` for each exactly as it does.
+    fn fill_anchor(&mut self, slot: usize, anchor_x: i32, anchor_y: i32, anchor_z: i32) {
+        let mut entry = AnchorCandidates {
+            anchor_y,
+            index: [0; 12],
+            centre: [(0, 0, 0); 12],
+        };
+        let mut i = 0;
+        for dx in 0..=1 {
+            for dy in -1..=1 {
+                for dz in 0..=1 {
+                    let gx = anchor_x + dx;
+                    let gy = anchor_y + dy;
+                    let gz = anchor_z + dz;
+                    let index = self.index(gx, gy, gz);
+                    entry.index[i] = index;
+                    entry.centre[i] = self.location(index, gx, gy, gz);
+                    i += 1;
+                }
+            }
+        }
+        self.anchors[slot] = entry;
+    }
+
+    /// The candidate loop for an anchor whose neighbourhood leaves the grid: per block, with
+    /// the out-of-range handling of `location` and `status`.
+    #[allow(clippy::too_many_arguments)]
+    fn nearest_slow(
+        &mut self,
+        x: i32,
+        y: i32,
+        z: i32,
+        anchor_x: i32,
+        anchor_y: i32,
+        anchor_z: i32,
+        best: &mut [(i32, usize); 3],
+    ) {
         for dx in 0..=1 {
             for dy in -1..=1 {
                 for dz in 0..=1 {
@@ -296,7 +420,17 @@ impl<'a> Aquifer<'a> {
                 }
             }
         }
+    }
 
+    /// The rest of `compute_kind`, once the three nearest centres are known.
+    fn kind_from_nearest(
+        &mut self,
+        x: i32,
+        y: i32,
+        z: i32,
+        density: f64,
+        best: &[(i32, usize); 3],
+    ) -> Option<FluidKind> {
         let status1 = self.status(best[0].1);
         let similarity12 = similarity(best[0].0, best[1].0);
         let fluid = status1.at_kind(y);
@@ -584,10 +718,39 @@ impl<'a> Aquifer<'a> {
                 return level;
             }
         }
+        // A column of this chunk goes through the chunk's own caches, as it always has. A
+        // column of another chunk in the window goes through a private `ChunkCaches` for that
+        // chunk, so its `cache_2d` nodes hold `offset` and `factor` across the whole
+        // `find_top_surface` scan; through this chunk's caches they miss and are re-evaluated,
+        // noise and splines included, at every 8-block step of the scan.
+        //
+        // Same value either way, for the vanilla `preliminary_surface_level`: its program has
+        // no `interpolated` node (the only kind that clamps to the chunk's cell grid); a
+        // `cache_2d`/`flat_cache` node, hit or miss, yields its argument at the same (x, z) --
+        // the miss path through this chunk's caches runs it at the scan's y, a hit returns it
+        // as run at the first y that column saw; and every cached argument (`offset`, `factor`,
+        // and the continents/erosion/ridges/shift chains under them) is a bit-exact function
+        // of (x, z) alone: `shifted_noise` there has `y_scale` 0 and a constant 0 `shift_y`
+        // (`y * 0.0 + 0.0` is +0.0 for every y), `shift_a`/`shift_b` never read y, and
+        // `blend_alpha`/`blend_offset` compile to constants. `cache_once` remembers exact
+        // positions only. The y-dependent `y_clamped_gradient` terms sit outside every cache.
+        let chunk_x = quart_x >> 4;
+        let chunk_z = quart_z >> 4;
+        let caches: &ChunkCaches = match slot {
+            Some(_) if chunk_x != self.own_chunk_x || chunk_z != self.own_chunk_z => {
+                let neighbour = ((chunk_z - self.surface_origin_chunk_z) * SURFACE_MEMO_CHUNKS
+                    + (chunk_x - self.surface_origin_chunk_x))
+                    as usize;
+                let router = self.router;
+                self.neighbour_caches[neighbour]
+                    .get_or_insert_with(|| Box::new(router.chunk_caches(chunk_x, chunk_z)))
+            }
+            _ => self.caches,
+        };
         let level = self
             .router
             .sample_in_chunk(
-                self.caches,
+                caches,
                 RouterSlot::PreliminarySurfaceLevel,
                 quart_x,
                 0,
