@@ -41,3 +41,5 @@ range_choice`, `min`. So the per-block cost is cache lookups and lerps, not disp
 | 0 | Baseline, 726d38c | - | 142.7 | ok | - |
 | 1 | `cell_bounds`: registers on the stack, not three `Vec`s per call | 142.7 | 151.7, 152.0 | ok | **kept** |
 | 2 | Cache slots keyed by structure, not node address: `sloped_cheese` (with its blended noise) was three `cache_once` slots, evaluated twice per cell corner | 152.0 | 157.4 (one run; strictly less work) | ok | **kept** |
+| 3a | Whole-cell evaluation of cell-batchable programs (`Program::run_cell`) behind `sample_in_chunk`, one shared layer memo | 157.4 | 155.1 | ok | superseded by 3b: fill's per-block share fell 15.4% -> 4.3%, but the ore-vein pass alternates `vein_toggle`/`vein_ridged` per block and evicted the single memo on every call (ore veins 3% -> 11%) |
+| 3b | Same, one layer memo per router slot | 157.4 | 163.8 | ok | **kept** |

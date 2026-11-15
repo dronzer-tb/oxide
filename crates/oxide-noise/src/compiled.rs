@@ -182,6 +182,49 @@ pub(crate) enum CompiledSplineValue {
 /// A lowered density function. The last instruction's register is the result.
 pub(crate) struct Program {
     ops: Vec<Op>,
+    /// Whether [`Program::run_cell`] can evaluate this program for a whole cell at once: its
+    /// only position-dependent leaves are `interpolated` caches and y gradients. True of
+    /// `final_density` in every vanilla-shaped router, which is the program a chunk fill runs
+    /// once per block.
+    cell_batchable: bool,
+}
+
+/// See [`Program::cell_batchable`]. Requires at least one `interpolated` leaf: a program
+/// without one gains nothing from being evaluated a cell at a time.
+fn is_cell_batchable(ops: &[Op]) -> bool {
+    fn all_supported(ops: &[Op]) -> bool {
+        ops.iter().all(|op| match op {
+            Op::Const(_)
+            | Op::YClampedGradient(_)
+            | Op::Add(..)
+            | Op::Mul(..)
+            | Op::Min(..)
+            | Op::Max(..)
+            | Op::Abs(_)
+            | Op::Square(_)
+            | Op::Cube(_)
+            | Op::HalfNegative(_)
+            | Op::QuarterNegative(_)
+            | Op::Squeeze(_)
+            | Op::Invert(_)
+            | Op::Clamp(_) => true,
+            Op::Cache { kind, .. } => *kind == CacheKind::Interpolated,
+            Op::RangeChoice(r) => {
+                all_supported(&r.when_in_range.ops) && all_supported(&r.when_out_of_range.ops)
+            }
+            _ => false,
+        })
+    }
+    fn has_interpolated(ops: &[Op]) -> bool {
+        ops.iter().any(|op| match op {
+            Op::Cache { kind, .. } => *kind == CacheKind::Interpolated,
+            Op::RangeChoice(r) => {
+                has_interpolated(&r.when_in_range.ops) || has_interpolated(&r.when_out_of_range.ops)
+            }
+            _ => false,
+        })
+    }
+    all_supported(ops) && has_interpolated(ops)
 }
 
 impl Program {
@@ -596,6 +639,99 @@ impl Program {
         }
     }
 
+    pub(crate) fn cell_batchable(&self) -> bool {
+        self.cell_batchable
+    }
+
+    /// Evaluates this program at every block of one cell of `caches`, writing `out` in the
+    /// lane order [`ChunkCaches::fill_cell_interpolated`] defines. Only valid when
+    /// [`Program::cell_batchable`] is true.
+    ///
+    /// Each lane sees exactly the arithmetic [`Program::run`] would do at that block -- the
+    /// same operations on the same operands in the same order, no FMA, no reassociation -- so
+    /// the values are bit-identical to per-block evaluation. What changes is that dispatch is
+    /// paid once per instruction per cell, and the trilinear blend shares its x and y stages
+    /// across the cell instead of redoing all seven lerps for every block.
+    ///
+    /// `range_choice` stays lazy at cell granularity: a branch no lane selects is never run, so
+    /// the corner grids only that branch reads are still built only when needed.
+    pub(crate) fn run_cell(
+        &self,
+        caches: &ChunkCaches,
+        cell: (i32, i32, i32),
+        cx: &RunCtx,
+        out: &mut [f64],
+    ) {
+        fn unary(dst: &mut [f64], a: &[f64], f: impl Fn(f64) -> f64) {
+            for (d, a) in dst.iter_mut().zip(a) {
+                *d = f(*a);
+            }
+        }
+        fn binary(dst: &mut [f64], a: &[f64], b: &[f64], f: impl Fn(f64, f64) -> f64) {
+            for ((d, a), b) in dst.iter_mut().zip(a).zip(b) {
+                *d = f(*a, *b);
+            }
+        }
+
+        let lanes = out.len();
+        let n = self.ops.len();
+        let mut regs = vec![0.0f64; n * lanes];
+        for i in 0..n {
+            let (done, rest) = regs.split_at_mut(i * lanes);
+            let dst = &mut rest[..lanes];
+            let reg = |r: u32| &done[r as usize * lanes..(r as usize + 1) * lanes];
+            match &self.ops[i] {
+                Op::Const(v) => dst.fill(*v),
+                Op::Cache {
+                    kind: CacheKind::Interpolated,
+                    slot,
+                    argument,
+                } => caches.fill_cell_interpolated(*slot as usize, argument, cell, cx, dst),
+                Op::YClampedGradient(g) => caches.fill_cell_by_y(cell.1, dst, |y| {
+                    clamped_lerp(y, g.from_y, g.to_y, g.from_value, g.to_value)
+                }),
+
+                Op::Add(a, b) => binary(dst, reg(*a), reg(*b), |a, b| a + b),
+                Op::Mul(a, b) => binary(dst, reg(*a), reg(*b), |a, b| a * b),
+                Op::Min(a, b) => binary(dst, reg(*a), reg(*b), |a, b| a.min(b)),
+                Op::Max(a, b) => binary(dst, reg(*a), reg(*b), |a, b| a.max(b)),
+
+                Op::Abs(a) => unary(dst, reg(*a), |v| v.abs()),
+                Op::Square(a) => unary(dst, reg(*a), |v| v * v),
+                Op::Cube(a) => unary(dst, reg(*a), |v| v * v * v),
+                Op::HalfNegative(a) => unary(dst, reg(*a), half_negative),
+                Op::QuarterNegative(a) => unary(dst, reg(*a), quarter_negative),
+                Op::Squeeze(a) => unary(dst, reg(*a), squeeze),
+                Op::Invert(a) => unary(dst, reg(*a), |v| 1.0 / v),
+                Op::Clamp(c) => unary(dst, reg(c.input), |v| v.clamp(c.min, c.max)),
+
+                Op::RangeChoice(r) => {
+                    let input = reg(r.input);
+                    let inside = |v: f64| v >= r.min_inclusive && v < r.max_exclusive;
+                    let any_in = input.iter().any(|v| inside(*v));
+                    let any_out = input.iter().any(|v| !inside(*v));
+                    if any_in {
+                        r.when_in_range.run_cell(caches, cell, cx, dst);
+                    }
+                    if any_out && !any_in {
+                        r.when_out_of_range.run_cell(caches, cell, cx, dst);
+                    } else if any_out {
+                        let mut other = vec![0.0f64; lanes];
+                        r.when_out_of_range.run_cell(caches, cell, cx, &mut other);
+                        for ((d, o), v) in dst.iter_mut().zip(&other).zip(input) {
+                            if !inside(*v) {
+                                *d = *o;
+                            }
+                        }
+                    }
+                }
+
+                _ => unreachable!("run_cell on a program that is not cell_batchable"),
+            }
+        }
+        out.copy_from_slice(&regs[(n - 1) * lanes..]);
+    }
+
     pub(crate) fn run(&self, ctx: FunctionContext, cx: &RunCtx) -> f64 {
         let n = self.ops.len();
         debug_assert!(n > 0, "a compiled program always ends in its result");
@@ -890,7 +1026,11 @@ impl<'a> Compiler<'a> {
         if ops.is_empty() {
             ops.push(Op::Const(0.0));
         }
-        Program { ops }
+        let cell_batchable = is_cell_batchable(&ops);
+        Program {
+            ops,
+            cell_batchable,
+        }
     }
 
     fn noise(&self, id: &ResourceLocation) -> u32 {
