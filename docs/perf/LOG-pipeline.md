@@ -490,3 +490,29 @@ Reading:
    collide with the interning work in region.rs.
 3. Upper ores spend their time in `height` (about 700 calls per write; vanilla's
    discard-on-air-exposure check probably reads heights per block). This is worth a look after sculk.
+
+## Interned block states in DecorationRegion (pipeline-2 sub-agent)
+
+Commits 535525c + 704fea5 (sub-agent worktree; not on the branch yet, see below):
+- **Region:** writes are `(BlockPos, u32)` plus a per-region state table, and the fact cache is per distinct
+  state. New `set_block_ref(pos, &BlockState)` clones only on a state's first sight in the region,
+  and `into_interned()` returns `InternedWrites { writes, states }`. `into_writes` is built on top
+  and its output is the same.
+- **Call sites:** 69 that passed `x.clone()` now pass `&x`, including both ore paths.
+
+Where `set_block` went (temporary rdtsc counters, r8, `perf` is blocked on the box). The `writes` Vec push of a
+fresh owned 88-byte `BlockState` (plus two heap strings) was 70% of `set_block`, and the
+ore-target clone at the call site was 14% of region CPU. Overwrites, hashing and written_top
+were small.
+
+Alternating hold, r16 x 8, digest df701ee858e2bdd3 on all:
+
+    decorate_ms  before 7252db9: 3497 3510   after 535525c: 3884 2994   (means 3504 / 3439, -2%)
+
+Region-internal cycles dropped about 24%. But the cost moved into `into_writes`, which still
+clones one owned state per write for the `Vec<BlockWrite>` contract (24-26% of region cycles).
+**Neutral on its own.** The win needs oxide-pregen (this track) to take `into_interned()`
+directly. Since `apply_writes` compares by reference, palette order and the digest are unchanged.
+That change is on scratch tree /tmp/pipeline-4 (535525c + 704fea5 + the pregen switch). A
+3-round alternating hold against this branch's HEAD is running.
+Terrain digest after the change: a977961a58122047. Tests: chunkgen 189 and pregen pass.
