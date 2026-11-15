@@ -25,3 +25,4 @@
 1794723494	9accc32	16	chunks=1089 threads=8 secs=15.149 cps=71.9 ms_per_chunk_core=111.29 digest=df701ee858e2bdd3 generate_ms=10585 decorate_ms=4307 serialise_ms=121 compress_ms=92 write_ms=44 compression=zlib6 mb_disk=10.1 pregen=1
 1794725628	c585498	16	chunks=1089 threads=8 secs=13.001 cps=83.8 ms_per_chunk_core=95.50 digest=df701ee858e2bdd3 generate_ms=9530 decorate_ms=3179 serialise_ms=167 compress_ms=97 write_ms=28 compression=zlib6 mb_disk=10.1 pregen=1
 1794725647	c585498	16	chunks=1089 threads=8 secs=14.282 cps=76.2 ms_per_chunk_core=104.92 digest=df701ee858e2bdd3 generate_ms=10266 decorate_ms=3742 serialise_ms=152 compress_ms=99 write_ms=23 compression=zlib6 mb_disk=10.1 pregen=1
+1794727614	4aca951	16	chunks=1089 threads=8 secs=12.970 cps=84.0 ms_per_chunk_core=95.28 digest=df701ee858e2bdd3 generate_ms=9513 decorate_ms=3250 serialise_ms=100 compress_ms=86 write_ms=22 compression=zlib6 mb_disk=10.1 pregen=1

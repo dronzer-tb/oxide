@@ -335,3 +335,27 @@ decoration CPU even with ahash: 72.2M lookups at about 190 ns, each hashing a wh
 Decorate is now about 3.4 s, against about 6.5 s at the start of the day (-48%). The whole
 pregen path runs at about 80 cps, against 65-70. Next: `set_block` (now the top primitive,
 about 570 ns/call) and `height()`'s per-call `HashMap` lookup of the chunk heightmap.
+
+**Kept: dense `written_top` and a per-region heightmap table** (4aca951, pipeline-2 sub-agent;
+region.rs only). `written_top` is now a 48x48 array (i32::MIN = never written); the write
+buffers reserve 8192 entries; `height()` indexes the nine chunks' heightmaps, resolved once in
+`new()`, with no HashMap lookup per call. Same heights and writes; tests 189 pass on this
+exact patch.
+
+    sub-agent: c585498 decorate_ms=3116 3610 -> change 2815 3064 (both runs below both baselines)
+    mine:      4aca951 decorate_ms=3250 (second run queued)
+    digest df701ee858e2bdd3
+
+A small gain, about 0.2-0.4 s, close to the noise; kept because it is exact and simpler.
+
+**Out-of-scope edit, stated plainly (auditor):** bc0265c touched `crates/oxide-datapack`,
+which this track does not own: `Cargo.toml` (+`ahash.workspace = true`) and
+`src/block_facts.rs` (the private `flags` / `defaults` maps go from std `HashMap` to
+`AHashMap`, plus a comment). The change is additive: no public item is renamed or reshaped,
+the API is the same, and nothing iterates those maps, so no output can change. Terrain digest
+after it: a977961a58122047.
+
+**In flight (auditor's three asks):** scratch merge of this branch with perf/datapath
+0e3cf61 (bf28e89 in /tmp/pipeline-merge; one conflict, bench-vps.sh, resolved with ours;
+chunkgen 190 + pregen tests pass). The queue on it: pregen x2 (gate df701ee858e2bdd3),
+terrain release x2, PGO x2. On this branch's HEAD: release x2 and PGO x2, same commit.
