@@ -309,6 +309,24 @@ impl NoiseRouterEvaluator {
     /// exactly one such cache node -- which `final_density` is in every vanilla-shaped router.
     /// Lets a caller read that slot's cell-corner bounds via [`ChunkCaches::cell_bounds`] and
     /// skip per-block evaluation for cells that are uniformly solid or uniformly empty.
+    /// Whether `slot`'s value is a function of x and z alone: for any fixed (x, z),
+    /// [`Self::sample_in_chunk`] returns bit-identical values at every y, through any chunk's
+    /// caches, and so does [`Self::sample`]. A caller may then sample the slot once per column
+    /// and reuse the value for the whole column.
+    ///
+    /// The two entry points are each y-independent, but they need not agree with each other:
+    /// with caches a `flat_cache` node samples at the quart origin, without them at the exact
+    /// position. Reuse values from the one you sample with.
+    ///
+    /// Proven on the compiled program, not assumed. A 2D `shifted_noise` (`y_scale` 0) only
+    /// qualifies when its `shift_y` is a constant that is neither -0.0 nor NaN, since its y
+    /// input is `y * 0.0 + shift_y` and `y * 0.0` keeps the sign of y. A plain `noise` with
+    /// `y_scale` 0 does not qualify, for the same reason. Any `interpolated` node disqualifies
+    /// the program, because it reads this chunk's corner grid.
+    pub fn is_y_independent(&self, slot: RouterSlot) -> bool {
+        self.programs[slot.index()].y_independent()
+    }
+
     /// Instruction listing for one slot's program, for diagnostics.
     pub fn dump_program(&self, slot: RouterSlot) -> Vec<String> {
         self.programs[slot.index()].dump()
@@ -738,5 +756,69 @@ mod tests {
         assert!(!dump.iter().any(|l| l.contains("GatedAdd")), "{dump:?}");
         // y = 20: gradient 0, invert(0) = inf, 0 * inf = NaN; the plain lowering keeps it.
         assert!(router.sample(RouterSlot::FinalDensity, 0, 20, 0).is_nan());
+    }
+
+    /// The y-independence predicate accepts the vanilla climate shape (a 2D `shifted_noise`
+    /// over `shift_a`/`shift_b` through 2D caches) and rejects every shape where y can leak in.
+    /// Where it says yes, the values are bit-identical at every y.
+    #[test]
+    fn y_independence_predicate() {
+        use oxide_core::ResourceLocation as Rl;
+        use oxide_datapack::{DensityFunctionObject as O, NormalNoiseParameters};
+        fn obj(o: O) -> DensityFunction {
+            DensityFunction::Object(Box::new(o))
+        }
+        let noises: Registry<NormalNoiseParameters> = [
+            (Rl::new("minecraft", "t"), NormalNoiseParameters { first_octave: -10, amplitudes: vec![1.5, 0.0, 1.0, 0.0, 0.0, 0.0] }),
+            (Rl::new("minecraft", "offset"), NormalNoiseParameters { first_octave: -3, amplitudes: vec![1.0, 1.0, 1.0, 0.0] }),
+        ]
+        .into_iter()
+        .collect();
+        let shift = |o: O| obj(O::Cache2d { argument: obj(O::FlatCache { argument: obj(o) }) });
+        let climate = |shift_y: f64, y_scale: f64| {
+            obj(O::ShiftedNoise {
+                noise: Rl::new("minecraft", "t"),
+                xz_scale: 0.25,
+                y_scale,
+                shift_x: shift(O::ShiftA { argument: Rl::new("minecraft", "offset") }),
+                shift_y: DensityFunction::Constant(shift_y),
+                shift_z: shift(O::ShiftB { argument: Rl::new("minecraft", "offset") }),
+            })
+        };
+        let cases: Vec<(&str, DensityFunction, bool)> = vec![
+            ("2d shifted noise", climate(0.0, 0.0), true),
+            ("nonzero shift_y", climate(3.5, 0.0), true),
+            ("negative zero shift_y", climate(-0.0, 0.0), false),
+            ("3d shifted noise", climate(0.0, 1.0), false),
+            ("plain noise with y_scale 0", obj(O::Noise { noise: Rl::new("minecraft", "t"), xz_scale: 1.0, y_scale: 0.0 }), false),
+            ("interpolated", obj(O::Interpolated { argument: climate(0.0, 0.0) }), false),
+            ("y gradient", obj(O::YClampedGradient { from_y: -64, to_y: 320, from_value: 1.0, to_value: -1.0 }), false),
+            ("sum of 2d terms", obj(O::Add { argument1: climate(0.0, 0.0), argument2: obj(O::Abs { argument: climate(0.0, 0.0) }) }), true),
+        ];
+        for (name, df, expected) in cases {
+            let mut settings = minimal_settings();
+            settings.noise_router.temperature = df;
+            let router = NoiseRouterEvaluator::new(5, &settings, &Registry::default(), &noises);
+            assert_eq!(router.is_y_independent(RouterSlot::Temperature), expected, "{name}");
+            if expected {
+                for (cx, cz) in [(0, 0), (-2, 7)] {
+                    let caches = router.chunk_caches(cx, cz);
+                    for (x, z) in [(cx * 16, cz * 16 + 3), (cx * 16 + 15, cz * 16 + 16), (cx * 16 - 40, cz * 16 + 99)] {
+                        let first = router.sample_in_chunk(&caches, RouterSlot::Temperature, x, -64, z);
+                        // Another chunk's caches give the same column value.
+                        let other = router.chunk_caches(cx + 1, cz - 1);
+                        assert_eq!(first.to_bits(), router.sample_in_chunk(&other, RouterSlot::Temperature, x, 77, z).to_bits(), "{name}, other chunk");
+                        // Without caches the value differs (no flat_cache snapping) but is
+                        // itself y-independent.
+                        let bare = router.sample(RouterSlot::Temperature, x, -64, z);
+                        assert_eq!(bare.to_bits(), router.sample(RouterSlot::Temperature, x, 200, z).to_bits(), "{name}, no caches");
+                        for y in [-64, -1, 0, 1, 63, 64, 319] {
+                            let v = router.sample_in_chunk(&caches, RouterSlot::Temperature, x, y, z);
+                            assert_eq!(v.to_bits(), first.to_bits(), "{name} at {x} {y} {z}");
+                        }
+                    }
+                }
+            }
+        }
     }
 }

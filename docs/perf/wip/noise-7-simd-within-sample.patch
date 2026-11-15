@@ -1,0 +1,335 @@
+diff --git a/crates/oxide-noise/src/improved_noise.rs b/crates/oxide-noise/src/improved_noise.rs
+index 54fcf6e..9f697ad 100644
+--- a/crates/oxide-noise/src/improved_noise.rs
++++ b/crates/oxide-noise/src/improved_noise.rs
+@@ -47,12 +47,122 @@ fn lerp(t: f64, a: f64, b: f64) -> f64 {
+     a + t * (b - a)
+ }
+ 
++#[cfg(any(test, not(all(target_arch = "x86_64", target_feature = "avx"))))]
+ #[inline(always)]
+ fn grad_dot(gradient_index: u8, x: f64, y: f64, z: f64) -> f64 {
+     let g = GRADIENT[(gradient_index & 15) as usize];
+     g[0] * x + g[1] * y + g[2] * z
+ }
+ 
++/// `GRADIENT` padded to four components (`[g0, g1, g2, 0.0]`) and 32-byte aligned, so each row
++/// is one aligned 32-byte block: its `[g0, g1]` and `[g2, pad]` halves are aligned 16-byte loads.
++/// The pad is never used in arithmetic. The table is 512 bytes and shared by every instance, so
++/// it stays in L1 (a per-instance 512-row table would be 16 KiB per octave).
++#[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
++#[repr(C, align(32))]
++struct Grad4([[f64; 4]; 16]);
++
++#[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
++static GRAD4: Grad4 = {
++    let mut rows = [[0.0f64; 4]; 16];
++    let mut n = 0;
++    while n < 16 {
++        rows[n] = [GRADIENT[n][0], GRADIENT[n][1], GRADIENT[n][2], 0.0];
++        n += 1;
++    }
++    Grad4(rows)
++};
++
++/// The 8 corner dot products and 7 lerps of one sample, four lanes wide (AVX).
++///
++/// Lanes pair corners that differ only in z, so after the x lerps the low half of the vector
++/// is `[e0, e2]` and the high half `[e1, e3]`, and the y lerps need only a 128-bit extract:
++///
++/// | vector | lanes | rows | x offset | y offsets | z offsets |
++/// |---|---|---|---|---|---|
++/// | `a` | d0, d4, d2, d6 | `k, k+1, l, l+1` | dx | dy, dy, dy-1, dy-1 | dz, dz-1, dz, dz-1 |
++/// | `b` | d1, d5, d3, d7 | `i1, i1+1, j1, j1+1` | dx-1 | (same) | (same) |
++///
++/// Each gradient row is loaded as two 16-byte halves (`[g0, g1]`, `[g2, pad]`); rows 0/2 and
++/// 1/3 share a 256-bit register (`vinsertf128` from memory), and in-lane unpacks give
++/// `gx, gy, gz` with no cross-lane shuffle (Zen 1 splits 256-bit ops into 128-bit halves, and
++/// lane-crossing permutes are its slow case).
++///
++/// Exactness: every lane does exactly the scalar IEEE operations on the scalar operands, in
++/// the scalar order, with no FMA (`_mm256_mul_pd`/`add`/`sub` and the `_mm_*` forms lower to
++/// plain `fmul`/`fadd`/`fsub`, which LLVM never contracts without fast-math flags):
++/// - `grad_dot`: `(g0 * x + g1 * y) + g2 * z`, with `g` the real gradient components (±1.0 or
++///   0.0, the same values as `GRADIENT`), so signed zeros come out as in the scalar products.
++///   The pad lane is loaded but never enters arithmetic.
++/// - `lerp(t, a, b) = a + t * (b - a)`: `e0..e3` from the x pairs, `f0 = lerp(u, e0, e1)`,
++///   `f1 = lerp(u, e2, e3)` from the halves, and the last z lerp in scalar code.
++/// - The offsets `dx - 1.0`, `dy - 1.0`, `dz - 1.0` are the same scalar subtractions as before.
++#[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
++#[allow(clippy::too_many_arguments)]
++#[inline(always)]
++fn corners_and_lerp(
++    p: &[u8; 512],
++    k: usize,
++    l: usize,
++    i1: usize,
++    j1: usize,
++    dx: f64,
++    dy: f64,
++    dz: f64,
++    t: f64,
++    u: f64,
++    v: f64,
++) -> f64 {
++    use std::arch::x86_64::*;
++    // SAFETY: AVX is enabled for the build (`cfg` above). `row` points at one of `GRAD4`'s 16
++    // rows (index masked to 0..=15); each row is 32 bytes at a 32-byte-aligned address, so the
++    // 16-byte loads at offsets 0 and 2 are in bounds. The `p` indices are at most
++    // 255 + 255 + 1 = 511 (see `sample_and_lerp`), checked by the slice indexing.
++    unsafe {
++        let base = GRAD4.0.as_ptr() as *const f64;
++        let row = |n: usize| base.add(((p[n] & 15) as usize) * 4);
++
++        #[inline(always)]
++        unsafe fn dot4(r: [*const f64; 4], x: __m256d, y: __m256d, z: __m256d) -> __m256d {
++            let lo02 = _mm256_loadu2_m128d(r[2], r[0]);
++            let lo13 = _mm256_loadu2_m128d(r[3], r[1]);
++            let hi02 = _mm256_loadu2_m128d(r[2].add(2), r[0].add(2));
++            let hi13 = _mm256_loadu2_m128d(r[3].add(2), r[1].add(2));
++            let gx = _mm256_unpacklo_pd(lo02, lo13);
++            let gy = _mm256_unpackhi_pd(lo02, lo13);
++            let gz = _mm256_unpacklo_pd(hi02, hi13);
++            _mm256_add_pd(
++                _mm256_add_pd(_mm256_mul_pd(gx, x), _mm256_mul_pd(gy, y)),
++                _mm256_mul_pd(gz, z),
++            )
++        }
++
++        let dy1 = dy - 1.0;
++        let dz1 = dz - 1.0;
++        let yv = _mm256_setr_pd(dy, dy, dy1, dy1);
++        let zv = _mm256_setr_pd(dz, dz1, dz, dz1);
++        let a = dot4(
++            [row(k), row(k + 1), row(l), row(l + 1)],
++            _mm256_set1_pd(dx),
++            yv,
++            zv,
++        ); // [d0, d4, d2, d6]
++        let b = dot4(
++            [row(i1), row(i1 + 1), row(j1), row(j1 + 1)],
++            _mm256_set1_pd(dx - 1.0),
++            yv,
++            zv,
++        ); // [d1, d5, d3, d7]
++        let e = _mm256_add_pd(a, _mm256_mul_pd(_mm256_set1_pd(t), _mm256_sub_pd(b, a)));
++        let e02 = _mm256_castpd256_pd128(e); // [e0, e2]
++        let e13 = _mm256_extractf128_pd::<1>(e); // [e1, e3]
++        let f = _mm_add_pd(e02, _mm_mul_pd(_mm_set1_pd(u), _mm_sub_pd(e13, e02)));
++        let f0 = _mm_cvtsd_f64(f);
++        let f1 = _mm_cvtsd_f64(_mm_unpackhi_pd(f, f));
++        lerp(v, f0, f1)
++    }
++}
++
+ #[derive(Debug, Clone)]
+ pub struct ImprovedNoise {
+     /// The 256-entry shuffled permutation, stored twice over (`permutation[i + 256] ==
+@@ -157,6 +267,38 @@ impl ImprovedNoise {
+         let i1 = p[b] as usize + zm;
+         let j1 = p[b + 1] as usize + zm;
+ 
++        let t = smoothstep(dx);
++        let u = smoothstep(fade_dy);
++        let v = smoothstep(dz);
++
++        #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
++        {
++            corners_and_lerp(p, k, l, i1, j1, dx, dy, dz, t, u, v)
++        }
++        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx")))]
++        {
++            Self::corners_and_lerp_scalar(p, k, l, i1, j1, dx, dy, dz, t, u, v)
++        }
++    }
++
++    /// The scalar corner and lerp code: the production path without AVX, and the reference the
++    /// SIMD path is tested against bit for bit.
++    #[cfg(any(test, not(all(target_arch = "x86_64", target_feature = "avx"))))]
++    #[allow(clippy::too_many_arguments)]
++    #[inline(always)]
++    fn corners_and_lerp_scalar(
++        p: &[u8; 512],
++        k: usize,
++        l: usize,
++        i1: usize,
++        j1: usize,
++        dx: f64,
++        dy: f64,
++        dz: f64,
++        t: f64,
++        u: f64,
++        v: f64,
++    ) -> f64 {
+         let d0 = grad_dot(p[k], dx, dy, dz);
+         let d1 = grad_dot(p[i1], dx - 1.0, dy, dz);
+         let d2 = grad_dot(p[l], dx, dy - 1.0, dz);
+@@ -166,10 +308,6 @@ impl ImprovedNoise {
+         let d6 = grad_dot(p[l + 1], dx, dy - 1.0, dz - 1.0);
+         let d7 = grad_dot(p[j1 + 1], dx - 1.0, dy - 1.0, dz - 1.0);
+ 
+-        let t = smoothstep(dx);
+-        let u = smoothstep(fade_dy);
+-        let v = smoothstep(dz);
+-
+         let e0 = lerp(t, d0, d1);
+         let e1 = lerp(t, d2, d3);
+         let e2 = lerp(t, d4, d5);
+@@ -372,6 +510,157 @@ mod tests {
+         }
+     }
+ 
++    /// Awkward offsets for the corner kernel: signed zeros, exact 1.0 (what `d - floor(d)`
++    /// gives for a tiny negative `d`), near-integers, and the extremes `noise_with_scale` can
++    /// pass (the smeared `dy - dy_faded` is unbounded when `y_scale` is large or negative).
++    const SPECIAL_OFFSETS: [f64; 18] = [
++        0.0,
++        -0.0,
++        1.0,
++        -1.0,
++        0.5,
++        1.0 - f64::EPSILON / 2.0,
++        f64::EPSILON / 2.0,
++        -f64::EPSILON / 2.0,
++        1.0e-300,
++        -1.0e-300,
++        5.0e-324,
++        2.0,
++        -2.0,
++        1.0e6,
++        -1.0e6,
++        1.0e300,
++        -1.0e300,
++        0.999_999_999_999,
++    ];
++
++    fn pick_offset(rng: &mut LegacyRandom, n: usize) -> f64 {
++        match n % 4 {
++            0 => SPECIAL_OFFSETS[rng.next_int_bounded(SPECIAL_OFFSETS.len() as i32) as usize],
++            1 | 2 => rng.next_double(),
++            _ => (rng.next_double() * 2.0 - 1.0) * 8.0,
++        }
++    }
++
++    /// The SIMD corner kernel against the scalar one, on raw offsets and every index shape the
++    /// hash can produce (each of `k, l, i1, j1` in `0..=510`).
++    #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
++    #[test]
++    fn simd_corners_match_scalar_bit_for_bit() {
++        use oxide_core::Xoroshiro128PlusPlus;
++        let mut rng = LegacyRandom::new(0xc0de);
++        let mut checked = 0u64;
++        for seed in 0..32u64 {
++            let noise = ImprovedNoise::new(&mut Xoroshiro128PlusPlus::new(seed as i64));
++            let p = &noise.permutation;
++            for n in 0..20_000usize {
++                let idx: [usize; 4] = std::array::from_fn(|_| rng.next_int_bounded(511) as usize);
++                let dx = pick_offset(&mut rng, n);
++                let dy = pick_offset(&mut rng, n + 1);
++                let dz = pick_offset(&mut rng, n + 2);
++                let [t, u, v] = [
++                    pick_offset(&mut rng, n + 3),
++                    pick_offset(&mut rng, n),
++                    pick_offset(&mut rng, n + 1),
++                ];
++                let [k, l, i1, j1] = idx;
++                let want =
++                    ImprovedNoise::corners_and_lerp_scalar(p, k, l, i1, j1, dx, dy, dz, t, u, v);
++                let got = corners_and_lerp(p, k, l, i1, j1, dx, dy, dz, t, u, v);
++                assert_eq!(
++                    got.to_bits(),
++                    want.to_bits(),
++                    "seed {seed} idx {idx:?} d ({dx}, {dy}, {dz}) tuv ({t}, {u}, {v})"
++                );
++                checked += 1;
++            }
++        }
++        assert_eq!(checked, 32 * 20_000);
++    }
++
++    /// End to end against the pre-doubling scalar reference, with the instance offsets zeroed
++    /// so that inputs land exactly on lattice points, on signed zeros, and on `dx == 1.0`
++    /// (`x = -1e-20` gives `d0 = -1e-20`, `floor = -1`, `dx = 1.0` after rounding).
++    #[test]
++    fn simd_noise_matches_reference_on_lattice_edges() {
++        use oxide_core::Xoroshiro128PlusPlus;
++        let mut rng = LegacyRandom::new(0xed9e);
++        let edges = [
++            -0.0,
++            0.0,
++            -1.0e-20,
++            1.0e-20,
++            -5.0e-324,
++            1.0,
++            -1.0,
++            -1.0 - f64::EPSILON,
++            1.0 - f64::EPSILON / 2.0,
++            255.0,
++            256.0,
++            -256.0,
++            -257.0 + 1.0e-13,
++            16_777_215.999_999_998,
++            -16_777_216.0,
++            3.355_443_2e7,
++            -3.355_443_2e7,
++            2.0e9,
++            -2.0e9,
++        ];
++        let y_params = [
++            (0.0, 0.0),
++            (1.0, 0.5),
++            (0.5, -1.0),
++            (-2.0, 0.25),
++            (1.0e-300, 1.0),
++            (1.0e300, 0.0),
++            (-0.0, 3.0),
++        ];
++        let mut dx_one = 0u32;
++        for seed in 0..16u64 {
++            let mut noise = ImprovedNoise::new(&mut Xoroshiro128PlusPlus::new(seed as i64));
++            if seed % 2 == 0 {
++                noise.xo = 0.0;
++                noise.yo = 0.0;
++                noise.zo = 0.0;
++            }
++            let reference = reference::Ref {
++                permutation: &noise.permutation[..256],
++                xo: noise.xo,
++                yo: noise.yo,
++                zo: noise.zo,
++            };
++            for &x in &edges {
++                if noise.xo == 0.0 && x - (x.floor() as i32) as f64 == 1.0 {
++                    dx_one += 1;
++                }
++                for &y in &edges {
++                    for &z in &edges[..8] {
++                        for &(ys, ym) in &y_params {
++                            let a = noise.noise_with_scale(x, y, z, ys, ym).to_bits();
++                            let b = reference.noise_with_scale(x, y, z, ys, ym).to_bits();
++                            assert_eq!(a, b, "seed {seed} at ({x}, {y}, {z}) y {ys} {ym}");
++                        }
++                    }
++                }
++            }
++            for n in 0..20_000 {
++                let s = [1.0, 300.0, 1.0e5, 3.0e7, 3.0e9][n % 5];
++                let x = (rng.next_double() * 2.0 - 1.0) * s;
++                let y = (rng.next_double() * 2.0 - 1.0) * s;
++                let z = (rng.next_double() * 2.0 - 1.0) * s;
++                let (ys, ym) = if n % 3 == 0 {
++                    (0.0, 0.0)
++                } else {
++                    (rng.next_double() * 4.0 - 1.0, rng.next_double() * 4.0 - 1.0)
++                };
++                let a = noise.noise_with_scale(x, y, z, ys, ym).to_bits();
++                let b = reference.noise_with_scale(x, y, z, ys, ym).to_bits();
++                assert_eq!(a, b, "seed {seed} at ({x}, {y}, {z}) y {ys} {ym}");
++            }
++        }
++        assert!(dx_one > 0, "no input produced dx == 1.0");
++    }
++
+     /// Captured 2026-08-22 from a standalone Java transcription of the confirmed-correct
+     /// algorithm chain (decompiled from the real Minecraft 26.2 server jar's `ImprovedNoise`/
+     /// `XoroshiroRandomSource`/`RandomSupport`) run on real OpenJDK 25 — see the session's
