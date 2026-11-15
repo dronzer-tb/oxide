@@ -22,6 +22,13 @@ const WINDOW: usize = 48;
 const NEVER_WRITTEN: i32 = i32::MIN;
 /// Writes to reserve room for up front: a region averages about 7.5k at radius 16.
 const RESERVED_WRITES: usize = 8192;
+/// Cells in one 16x16x16 section.
+const SECTION_CELLS: usize = 4096;
+
+/// One written section's overlay: entries `0..4096` hold, per cell (as [`local_index`]), the id
+/// of the state written there plus one (0 for a cell not written); entries `4096..` hold the
+/// written cell's index into `writes`, meaningful only where the id half is nonzero.
+type SectionWrites = Box<[u32; 2 * SECTION_CELLS]>;
 
 /// The six heightmap kinds as indices into a per-chunk table.
 fn kind_index(kind: HeightmapType) -> usize {
@@ -90,8 +97,11 @@ pub struct DecorationRegion<'a> {
     facts: &'a BlockFacts,
     min_y: i32,
     height: i32,
-    /// Index into `writes` of each written position.
-    overlay: AHashMap<BlockPos, usize>,
+    /// Sections across the world's height.
+    sections: usize,
+    /// Per section of the window (`chunk * sections + section`, chunks as `chunks`), its
+    /// written cells, made on the section's first write (see [`SectionWrites`]).
+    overlay: Vec<Option<SectionWrites>>,
     /// Every write in the order its position was first written, each with the id (into
     /// `states`) of its latest state: `into_writes` hands this list back with the ids resolved.
     writes: Vec<(BlockPos, u32)>,
@@ -130,7 +140,10 @@ impl<'a> DecorationRegion<'a> {
             facts,
             min_y: middle.min_y,
             height: middle.height,
-            overlay: AHashMap::with_capacity(RESERVED_WRITES),
+            sections: ((middle.height + 15) >> 4) as usize,
+            overlay: (0..9 * ((middle.height + 15) >> 4) as usize)
+                .map(|_| None)
+                .collect(),
             writes: Vec::with_capacity(RESERVED_WRITES),
             states: Vec::new(),
             state_ids: AHashMap::default(),
@@ -181,54 +194,57 @@ impl<'a> DecorationRegion<'a> {
 
     /// Whether `pos` is inside the window and the world's height.
     pub fn contains(&self, pos: BlockPos) -> bool {
-        pos.y >= self.min_y && pos.y < self.max_y() && self.chunk_at(pos.x, pos.z).is_some()
+        self.locate(pos).is_some()
     }
 
-    fn terrain_block(&self, pos: BlockPos) -> Option<&'a BlockState> {
+    /// `pos` as (chunk index as `chunks`, section index, cell index as [`local_index`]), or
+    /// `None` outside the window and the world's height: the same test as [`Self::contains`].
+    #[inline]
+    fn locate(&self, pos: BlockPos) -> Option<(usize, usize, usize)> {
         if pos.y < self.min_y || pos.y >= self.max_y() {
             return None;
         }
-        let chunk = self.chunk_at(pos.x, pos.z)?;
-        let section = chunk.sections.get(((pos.y - self.min_y) >> 4) as usize)?;
-        let slot = local_index(
-            (pos.x & 15) as usize,
-            ((pos.y - self.min_y) & 15) as usize,
-            (pos.z & 15) as usize,
-        );
-        Some(section.block_states.get(slot))
-    }
-
-    /// The block at `pos` as decoration so far left it, or `None` outside the window.
-    pub fn block(&self, pos: BlockPos) -> Option<&BlockState> {
-        match self.overlay.get(&pos) {
-            Some(&i) => Some(&self.states[self.writes[i].1 as usize]),
-            None => self.terrain_block(pos),
-        }
-    }
-
-    /// [`Self::block`] together with a [`StateKey`] for the state, or `None` outside the window.
-    pub fn block_keyed(&self, pos: BlockPos) -> Option<(StateKey, &BlockState)> {
-        if let Some(&i) = self.overlay.get(&pos) {
-            let id = self.writes[i].1;
-            return Some((StateKey(1 << 63 | u64::from(id)), &self.states[id as usize]));
-        }
-        if pos.y < self.min_y || pos.y >= self.max_y() {
-            return None;
-        }
+        let y = pos.y - self.min_y;
         let dx = (pos.x >> 4) - self.center.x;
         let dz = (pos.z >> 4) - self.center.z;
         if !(-1..=1).contains(&dx) || !(-1..=1).contains(&dz) {
             return None;
         }
         let chunk_index = ((dz + 1) * 3 + (dx + 1)) as usize;
-        let chunk = self.chunks[chunk_index];
-        let section_index = ((pos.y - self.min_y) >> 4) as usize;
-        let section = chunk.sections.get(section_index)?;
         let slot = local_index(
             (pos.x & 15) as usize,
-            ((pos.y - self.min_y) & 15) as usize,
+            (y & 15) as usize,
             (pos.z & 15) as usize,
         );
+        Some((chunk_index, (y >> 4) as usize, slot))
+    }
+
+    /// The id written at a located cell, if decoration wrote one there.
+    #[inline]
+    fn written(&self, chunk_index: usize, section_index: usize, slot: usize) -> Option<u32> {
+        let cells = self.overlay[chunk_index * self.sections + section_index].as_deref()?;
+        let id = cells[slot & (SECTION_CELLS - 1)];
+        (id != 0).then(|| id - 1)
+    }
+
+    /// The block at `pos` as decoration so far left it, or `None` outside the window.
+    pub fn block(&self, pos: BlockPos) -> Option<&BlockState> {
+        let (chunk_index, section_index, slot) = self.locate(pos)?;
+        if let Some(id) = self.written(chunk_index, section_index, slot) {
+            return Some(&self.states[id as usize]);
+        }
+        let section = self.chunks[chunk_index].sections.get(section_index)?;
+        Some(section.block_states.get(slot))
+    }
+
+    /// [`Self::block`] together with a [`StateKey`] for the state, or `None` outside the window.
+    pub fn block_keyed(&self, pos: BlockPos) -> Option<(StateKey, &BlockState)> {
+        let (chunk_index, section_index, slot) = self.locate(pos)?;
+        if let Some(id) = self.written(chunk_index, section_index, slot) {
+            return Some((StateKey(1 << 63 | u64::from(id)), &self.states[id as usize]));
+        }
+        let chunk = self.chunks[chunk_index];
+        let section = chunk.sections.get(section_index)?;
         let states = &section.block_states;
         let entry = states.indices()[slot] as usize;
         let section_key = (chunk_index * chunk.sections.len() + section_index) as u64;
@@ -247,27 +263,13 @@ impl<'a> DecorationRegion<'a> {
     /// answer as `facts().is(block(pos)?, fact)`, but each palette entry and each written state
     /// asks the table at most once per fact.
     pub fn fact_at(&self, pos: BlockPos, fact: BlockFact) -> Option<bool> {
-        if let Some(&i) = self.overlay.get(&pos) {
-            let id = self.writes[i].1 as usize;
+        let (chunk_index, section_index, slot) = self.locate(pos)?;
+        if let Some(id) = self.written(chunk_index, section_index, slot) {
+            let id = id as usize;
             return Some(self.state_facts[id].is(self.facts, &self.states[id], fact));
         }
-        if pos.y < self.min_y || pos.y >= self.max_y() {
-            return None;
-        }
-        let dx = (pos.x >> 4) - self.center.x;
-        let dz = (pos.z >> 4) - self.center.z;
-        if !(-1..=1).contains(&dx) || !(-1..=1).contains(&dz) {
-            return None;
-        }
-        let chunk_index = ((dz + 1) * 3 + (dx + 1)) as usize;
         let chunk = self.chunks[chunk_index];
-        let section_index = ((pos.y - self.min_y) >> 4) as usize;
         let section = chunk.sections.get(section_index)?;
-        let slot = local_index(
-            (pos.x & 15) as usize,
-            ((pos.y - self.min_y) & 15) as usize,
-            (pos.z & 15) as usize,
-        );
         let states = &section.block_states;
         let entry = states.indices()[slot] as usize;
         let cache = self.terrain_facts[chunk_index * chunk.sections.len() + section_index]
@@ -279,8 +281,8 @@ impl<'a> DecorationRegion<'a> {
     /// `None` outside the window: what [`Self::block_keyed`] and [`Self::fact_at`] each answer,
     /// for the price of one lookup.
     pub fn probe(&self, pos: BlockPos) -> Option<Probe<'_>> {
-        if let Some(&i) = self.overlay.get(&pos) {
-            let id = self.writes[i].1;
+        let (chunk_index, section_index, slot) = self.locate(pos)?;
+        if let Some(id) = self.written(chunk_index, section_index, slot) {
             return Some(Probe {
                 key: StateKey(1 << 63 | u64::from(id)),
                 state: &self.states[id as usize],
@@ -288,23 +290,8 @@ impl<'a> DecorationRegion<'a> {
                 facts: self.facts,
             });
         }
-        if pos.y < self.min_y || pos.y >= self.max_y() {
-            return None;
-        }
-        let dx = (pos.x >> 4) - self.center.x;
-        let dz = (pos.z >> 4) - self.center.z;
-        if !(-1..=1).contains(&dx) || !(-1..=1).contains(&dz) {
-            return None;
-        }
-        let chunk_index = ((dz + 1) * 3 + (dx + 1)) as usize;
         let chunk = self.chunks[chunk_index];
-        let section_index = ((pos.y - self.min_y) >> 4) as usize;
         let section = chunk.sections.get(section_index)?;
-        let slot = local_index(
-            (pos.x & 15) as usize,
-            ((pos.y - self.min_y) & 15) as usize,
-            (pos.z & 15) as usize,
-        );
         let states = &section.block_states;
         let entry = states.indices()[slot] as usize;
         let section_key = chunk_index * chunk.sections.len() + section_index;
@@ -346,28 +333,28 @@ impl<'a> DecorationRegion<'a> {
     /// Writes `state` at `pos`. Returns `false`, writing nothing, outside the window -- the
     /// same refusal vanilla's region gives a feature that reaches past its write radius.
     pub fn set_block(&mut self, pos: BlockPos, state: BlockState) -> bool {
-        if !self.contains(pos) {
+        let Some(cell) = self.locate(pos) else {
             return false;
-        }
+        };
         let id = match self.state_ids.get(&state) {
             Some(&id) => id,
             None => self.add_state(state),
         };
-        self.write_id(pos, id);
+        self.write_id(pos, cell, id);
         true
     }
 
     /// [`Self::set_block`] for a state the caller keeps, such as one from a feature's config:
     /// the state is cloned only the first time this region sees it.
     pub fn set_block_ref(&mut self, pos: BlockPos, state: &BlockState) -> bool {
-        if !self.contains(pos) {
+        let Some(cell) = self.locate(pos) else {
             return false;
-        }
+        };
         let id = match self.state_ids.get(state) {
             Some(&id) => id,
             None => self.add_state(state.clone()),
         };
-        self.write_id(pos, id);
+        self.write_id(pos, cell, id);
         true
     }
 
@@ -384,10 +371,10 @@ impl<'a> DecorationRegion<'a> {
     /// state per write.
     pub fn set_block_id(&mut self, pos: BlockPos, id: u32) -> bool {
         debug_assert!((id as usize) < self.states.len());
-        if !self.contains(pos) {
+        let Some(cell) = self.locate(pos) else {
             return false;
-        }
-        self.write_id(pos, id);
+        };
+        self.write_id(pos, cell, id);
         true
     }
 
@@ -400,17 +387,26 @@ impl<'a> DecorationRegion<'a> {
         id
     }
 
-    /// Records the write of state `id` at `pos`, which must be inside the window.
-    fn write_id(&mut self, pos: BlockPos, id: u32) {
-        match self.overlay.entry(pos) {
-            std::collections::hash_map::Entry::Occupied(entry) => {
-                self.writes[*entry.get()].1 = id;
-            }
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(self.writes.len());
-                self.writes.push((pos, id));
-            }
+    /// Records the write of state `id` at `pos`, located by [`Self::locate`] as `cell`. A
+    /// position written before keeps its place in `writes` and takes the new state.
+    fn write_id(&mut self, pos: BlockPos, cell: (usize, usize, usize), id: u32) {
+        let (chunk_index, section_index, slot) = cell;
+        let slot = slot & (SECTION_CELLS - 1);
+        let cells = self.overlay[chunk_index * self.sections + section_index].get_or_insert_with(
+            || {
+                vec![0u32; 2 * SECTION_CELLS]
+                    .into_boxed_slice()
+                    .try_into()
+                    .expect("a section's overlay is two cells per block")
+            },
+        );
+        if cells[slot] != 0 {
+            self.writes[cells[SECTION_CELLS + slot] as usize].1 = id;
+        } else {
+            cells[SECTION_CELLS + slot] = self.writes.len() as u32;
+            self.writes.push((pos, id));
         }
+        cells[slot] = id + 1;
         let column = self.column(pos.x, pos.z);
         let top = &mut self.written_top[column];
         *top = if *top == NEVER_WRITTEN { pos.y } else { (*top).max(pos.y) };
