@@ -900,3 +900,38 @@ aquifer share rises after noise-4, it is the first retry.
 
 Method note: the head always ran first in each round, and round 4 ran faster for both variants,
 so drift within a round is visible. Rotate the order across rounds from now on.
+
+### E23 (next-three item 2): column-wise reuse of the above-surface program -- rejected
+
+Sub-agent experiment in `/tmp/datapath-16`, `surface.rs`. Profile at the base (1 thread, radius 8,
+inline(never) splits):
+- surface 11.48% of generation;
+- the above-surface `eval_program` 4.95% (`eval_condition` 3.23%);
+- below-surface programs 0.33%;
+- `apply` self 4.33%, `column_state` 1.32%.
+
+So the interpreter cost left is almost all above the surface. Change: evaluate the above-surface program at a position, have each test on the decision path
+report how far down the same run its answer is certain to hold, and reuse the outcome down to
+the minimum of those. Reuse is dropped at air, fluid, an all-air section, and a biome change
+when a biome or temperature test was on the path.
+- Per-test spans: `y_above` and `water` with stone depth never change down a run; without it,
+  until the threshold. Floor and ceiling `stone_depth` from the depth arithmetic.
+  `vertical_gradient` gets span 0 inside its draw band. 3D noise, temperature above y 80 and
+  a nested `not` get span 0.
+- Debug builds re-run the full evaluation at every reused position and assert equality. All
+  190 tests pass with that on, including `cell_culling_is_exact` on the reference datapack.
+  Reviewed by the master.
+
+Rotating-order A/B, 1 thread, 5 rounds, one exclusive hold; `ps` showed nothing heavy. ms core per chunk:
+
+| | r1 | r2 | r3 | r4 | r5 | mean |
+|---|---|---|---|---|---|---|
+| head 0e3cf61 | 11.33 | 11.55 | 11.71 | 11.56 | 11.22 | 11.47 |
+| + E23 | 12.03 | 11.55 | 10.91 | 11.23 | 12.21 | 11.59 |
+
+All ten `digest=a977961a58122047`. Ahead in 2 of 5, level in 1, mean 1% slower. Rejected: the ceiling was ~3%,
+and the per-test span work on every remaining evaluation costs about what the reuse saves.
+The diff is kept at `docs/perf/rejected-E23-surface-column-reuse.diff`.
+
+Next-three status: item 1 done (E21 and E22 stay rejected), item 2 done (E23 rejected), item 3
+waits on the auditor's confirmation of noise-4 (d2433fb) before merging and re-profiling.

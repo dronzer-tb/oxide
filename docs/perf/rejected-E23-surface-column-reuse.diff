@@ -1,0 +1,294 @@
+diff --git a/crates/oxide-chunkgen/src/surface.rs b/crates/oxide-chunkgen/src/surface.rs
+index 957a45c..d87eb58 100644
+--- a/crates/oxide-chunkgen/src/surface.rs
++++ b/crates/oxide-chunkgen/src/surface.rs
+@@ -61,6 +61,30 @@ struct Cursor {
+     biome: usize,
+ }
+ 
++/// What a rule program decided for one position.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++enum Outcome {
++    /// No `block` rule matched: the position keeps its block.
++    Keep,
++    /// Index into [`SurfaceSystem::results`].
++    Place(usize),
++    /// The `bandlands` rule matched; its band is a function of y and the column.
++    Badlands,
++}
++
++/// The above-surface program's outcome at one position of a run of ground, and how far down
++/// that run it is known to be the same (see [`SurfaceSystem::eval_above`]).
++#[derive(Clone, Copy)]
++struct Reuse {
++    outcome: Outcome,
++    /// Every position of the same run from the evaluated one down to this y has the same
++    /// outcome, without any test on the path changing its answer or making a draw.
++    lowest_y: i32,
++    /// When a test on the path read the biome: the biome it read, which the reusing position
++    /// must have too.
++    biome: Option<usize>,
++}
++
+ const BAND_COUNT: usize = 64;
+ 
+ /// Block positions per section, in [`local_index`] order.
+@@ -625,6 +649,9 @@ impl<'a> SurfaceSystem<'a> {
+                 // Start of the current run of stone, tracked so stone_depth_below can be
+                 // derived without rescanning for every y.
+                 let mut run_bottom = i32::MAX;
++                // The above-surface program's last answer in the current run, and how far
++                // down it provably holds (see [`Reuse`]). Cleared wherever the run ends.
++                let mut reuse: Option<Reuse> = None;
+ 
+                 for section_index in (0..chunk.sections.len()).rev() {
+                     let section_min_y = self.min_y + section_index as i32 * 16;
+@@ -636,6 +663,7 @@ impl<'a> SurfaceSystem<'a> {
+                         stone_depth_above = 0;
+                         water_height = i32::MIN;
+                         run_bottom = i32::MAX;
++                        reuse = None;
+                         continue;
+                     }
+                     for local_y in (0..16usize).rev() {
+@@ -647,6 +675,7 @@ impl<'a> SurfaceSystem<'a> {
+                             stone_depth_above = 0;
+                             water_height = i32::MIN;
+                             run_bottom = i32::MAX;
++                            reuse = None;
+                             continue;
+                         }
+                         if kind == BlockKind::DefaultFluid {
+@@ -655,6 +684,7 @@ impl<'a> SurfaceSystem<'a> {
+                             water_height = y + 1;
+                             stone_depth_above = 0;
+                             run_bottom = i32::MAX;
++                            reuse = None;
+                             continue;
+                         }
+ 
+@@ -681,15 +711,41 @@ impl<'a> SurfaceSystem<'a> {
+                             biome: biomes.section_maps[section_index][biome_palette_index as usize]
+                                 as usize,
+                         };
+-                        let program = if y >= column.min_surface_level {
+-                            &self.program[..]
++                        let outcome = if y >= column.min_surface_level {
++                            match reuse {
++                                Some(held)
++                                    if y >= held.lowest_y
++                                        && held.biome.map_or(true, |b| b == cursor.biome) =>
++                                {
++                                    // Debug builds check the reuse against the full
++                                    // evaluation. That evaluation's memo fills and draws are
++                                    // pure functions of the column and position, so it
++                                    // changes no output.
++                                    debug_assert_eq!(
++                                        held.outcome,
++                                        self.eval_above(&cursor, &column, &biomes).outcome,
++                                        "reused surface outcome differs at y={y}"
++                                    );
++                                    held.outcome
++                                }
++                                _ => {
++                                    let held = self.eval_above(&cursor, &column, &biomes);
++                                    reuse = Some(held);
++                                    held.outcome
++                                }
++                            }
+                         } else {
+                             let band = self.below_band_of_y[(y - self.min_y) as usize];
+-                            &self.below_programs[band as usize][..]
++                            let program = &self.below_programs[band as usize][..];
++                            match self.eval_program(program, &cursor, &column, &biomes) {
++                                Some(result) => Outcome::Place(result),
++                                None => Outcome::Keep,
++                            }
+                         };
+-                        let Some(result) = self.eval_program(program, &cursor, &column, &biomes)
+-                        else {
+-                            continue;
++                        let result = match outcome {
++                            Outcome::Keep => continue,
++                            Outcome::Place(result) => result,
++                            Outcome::Badlands => self.badlands(&cursor),
+                         };
+                         let cached = &mut result_index[section_index * result_count + result];
+                         let block_states = &mut chunk.sections[section_index].block_states;
+@@ -805,6 +861,176 @@ impl<'a> SurfaceSystem<'a> {
+         bottom
+     }
+ 
++    /// [`Self::eval_program`] over the above-surface program, which also works out how far
++    /// down the current run of ground its answer provably holds.
++    ///
++    /// The program's answer is decided by the answers of the tests on the path it took. Each
++    /// of them is checked by [`Self::eval_condition_span`] for how many positions further down
++    /// the same run (one lower y, one more `stone_depth_above`, one less `stone_depth_below`,
++    /// the same water height and column) its answer stays the same; the minimum over the path
++    /// is how far the whole answer holds. Biome-dependent tests hold only while the biome does.
++    fn eval_above(&self, cursor: &Cursor, column: &Column, biomes: &ChunkBiomes) -> Reuse {
++        let program = &self.program[..];
++        let mut span = i32::MAX;
++        let mut biome_dependent = false;
++        let mut pc = 0;
++        let outcome = loop {
++            let Some(op) = program.get(pc) else {
++                break Outcome::Keep;
++            };
++            match op {
++                Op::Test {
++                    condition,
++                    negate,
++                    skip,
++                } => {
++                    let (value, holds) = self.eval_condition_span(
++                        condition,
++                        cursor,
++                        column,
++                        biomes,
++                        &mut biome_dependent,
++                    );
++                    span = span.min(holds);
++                    if value != *negate {
++                        pc += 1;
++                    } else {
++                        pc = *skip;
++                    }
++                }
++                Op::Block(result) => break Outcome::Place(*result),
++                // The band depends on y: the caller computes it at every position, this one
++                // included, as `eval_program` would have here.
++                Op::Badlands => break Outcome::Badlands,
++            }
++        };
++        Reuse {
++            outcome,
++            lowest_y: cursor.y.saturating_sub(span),
++            biome: biome_dependent.then_some(cursor.biome),
++        }
++    }
++
++    /// `eval_condition`'s answer, evaluated exactly as it would be (same memos, same draws),
++    /// plus the number of positions further down the same run at which the answer is certain
++    /// to be the same and evaluating it would make no draw: `i32::MAX` for "all of them".
++    /// Sets `biome_dependent` when the answer also depends on the position's biome.
++    fn eval_condition_span(
++        &self,
++        condition: &CompiledCondition<'a>,
++        cursor: &Cursor,
++        column: &Column,
++        biomes: &ChunkBiomes,
++        biome_dependent: &mut bool,
++    ) -> (bool, i32) {
++        let value = self.eval_condition(condition, cursor, column, biomes);
++        let holds = match condition {
++            CompiledCondition::Biome(_) => {
++                *biome_dependent = true;
++                i32::MAX
++            }
++            // Column-only.
++            CompiledCondition::Noise2d { .. }
++            | CompiledCondition::Steep { .. }
++            | CompiledCondition::Hole => i32::MAX,
++            CompiledCondition::Noise3d { .. } => 0,
++            // Below `true_y` it is true at every lower y; at or above `false_y` it stays false
++            // down to `false_y`. Neither draws. Inside the band it drew: never reused.
++            CompiledCondition::VerticalGradient {
++                true_y, false_y, ..
++            } => {
++                if cursor.y <= *true_y {
++                    i32::MAX
++                } else if cursor.y >= *false_y {
++                    cursor.y - false_y
++                } else {
++                    0
++                }
++            }
++            // `y + stone_depth_above` does not change down a run. Without the stone depth,
++            // `y >= threshold` stays true down to the threshold and false below it.
++            CompiledCondition::YAbove {
++                anchor_y,
++                surface_depth_multiplier,
++                add_stone_depth,
++            } => {
++                if *add_stone_depth || !value {
++                    i32::MAX
++                } else {
++                    cursor.y - (anchor_y + column.surface_depth * surface_depth_multiplier)
++                }
++            }
++            // The water height is the run's: it only changes where the run ends.
++            CompiledCondition::Water {
++                offset,
++                surface_depth_multiplier,
++                add_stone_depth,
++            } => {
++                if cursor.water_height == i32::MIN || *add_stone_depth || !value {
++                    i32::MAX
++                } else {
++                    cursor.y
++                        - (cursor.water_height
++                            + offset
++                            + column.surface_depth * surface_depth_multiplier)
++                }
++            }
++            // The biome's base temperature at and below y 80, otherwise a function of y too.
++            CompiledCondition::Temperature => {
++                *biome_dependent = true;
++                if cursor.y > 80 {
++                    0
++                } else {
++                    i32::MAX
++                }
++            }
++            CompiledCondition::AbovePreliminarySurface => {
++                if value {
++                    cursor.y - column.min_surface_level
++                } else {
++                    i32::MAX
++                }
++            }
++            // Floor depth grows by one per step down: true holds while it stays within the
++            // bound, false holds for good. Ceiling depth shrinks by one: the reverse.
++            CompiledCondition::StoneDepth {
++                offset,
++                add_surface_depth,
++                secondary_depth_range,
++                ceiling,
++            } => {
++                let surface = if *add_surface_depth {
++                    column.surface_depth
++                } else {
++                    0
++                };
++                let secondary = if *secondary_depth_range == 0 {
++                    0
++                } else {
++                    // Already sampled by the evaluation above: a memo read.
++                    map_range(
++                        self.surface_secondary(column),
++                        -1.0,
++                        1.0,
++                        0.0,
++                        *secondary_depth_range as f64,
++                    ) as i32
++                };
++                let bound = 1 + offset + surface + secondary;
++                match (*ceiling, value) {
++                    (false, true) => bound - cursor.stone_depth_above,
++                    (false, false) => i32::MAX,
++                    (true, true) => i32::MAX,
++                    (true, false) => cursor.stone_depth_below - bound - 1,
++                }
++            }
++            // Not reached for leading `not`s (folded into the test's negate flag); a nested
++            // one is evaluated exactly, and not reused.
++            CompiledCondition::Not(_) => 0,
++        };
++        (value, holds)
++    }
++
+     /// The result index of the first `block` rule whose enclosing conditions all hold.
+     fn eval_program(
+         &self,
