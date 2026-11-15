@@ -1658,3 +1658,22 @@ Not serialised anywhere: the only shared locks are read-only palette `RwLock`s.
 
 Row 4 is datapath-adjacent: `carvers_at`'s per-source climate sampling could use chunk caches or a
 per-source-chunk memo. That is in `oxide-ffi`, not this track's, so it is not acted on here.
+
+### Auditor's next two jobs
+
+**(1) Stack the small exact changes into one measurable change.** E32 (shared surface table), plus
+`SurfaceSystem`'s compiled program built once per router and thread (a per-thread cache keyed
+by `router.id()` inside oxide-chunkgen, with no API change), plus noise's scratch pool
+(`docs/perf/wip/noise-12-scratch-pool.patch` on `origin/perf/noise`), applied in a scratch tree.
+Expected ~5-8% at 8 threads by the profile. Hold it against two base builds with the CPU-seconds
+method, 8 rounds, at 8 threads and at 1.
+- Stack tree `/tmp/datapath-28`: noise-12 and E32 apply clean on aa8ffab. noise-12 touches
+  `oxide-noise/src/compiled.rs` and `lib.rs`; it is applied in the scratch tree only, and lands via the noise track.
+- Sub-agent `datapath-29`: the per-thread cached `SurfaceSystem` program. The cached form must
+  own its data or hold indices, since `CompiledCondition<'a>` borrows `&'a NormalNoise` and
+  `results` borrow `&'a BlockState`. No `unsafe`.
+- Bases: `datapath` and `datapath-h2`, two builds of the bd442e7 code.
+
+**(2) Read-only sub-agent:** why the live server reaches ~115 cps where the harness reaches ~700 on the
+same terrain code: the FFI chunk path, per-chunk JNI conversion and copying, locks, thread count,
+the Vertex stages. Findings go in this log, for the user to assign.
