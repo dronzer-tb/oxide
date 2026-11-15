@@ -316,3 +316,22 @@ has feat/native-decoration merged in (29bec3c) and merges cleanly. Kept wins in 
 - parallel harness digest
 Target from the progress page: PumpkinMC terrain at about 404 cps on this box (17.42 ms/chunk
 single-thread, x7.04 for 8 threads, not byte exact). Our best terrain run is PGO at 177.4.
+
+**Kept: per-state fact cache in the decoration region** (c585498, by the pipeline-2 sub-agent,
+reviewed and test-run by me). The re-profile at 9accc32 showed `BlockFacts::is` still 54% of
+decoration CPU even with ahash: 72.2M lookups at about 190 ns, each hashing a whole state.
+- Each terrain section palette entry, and each written block, gets a lazily filled
+  `Cell<u64>` (bit f = asked, bit f+32 = answer); `fact_in` / `fact_at` ask through it. Real
+  table lookups dropped 72.2M -> 5.7M.
+- The overlay maps position -> index into a write list kept in first-write order, so
+  `into_writes` returns that list instead of draining 9.2M map entries (2.0 s CPU -> 0).
+- Assumption: the region's facts are the decorator's own. All three production callers pass
+  `decorator.facts()` (`&env.facts`). Tests: oxide-chunkgen 189, all pass.
+
+    sub-agent:  9accc32 decorate_ms=4058 5051 -> change 2985 3008 (cps 81.4-82.4)
+    mine:       c585498 decorate_ms=3179 3742  cps 83.8 / 76.2
+    digest df701ee858e2bdd3 on every run
+
+Decorate is now about 3.4 s, against about 6.5 s at the start of the day (-48%). The whole
+pregen path runs at about 80 cps, against 65-70. Next: `set_block` (now the top primitive,
+about 570 ns/call) and `height()`'s per-call `HashMap` lookup of the chunk heightmap.
