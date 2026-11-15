@@ -9,7 +9,9 @@ const path = require("path");
 
 const HOME = process.env.HOME;
 const OUT = "/srv/oxide-lab/agents/tree.json";
-const TRACKS = ["noise", "datapath", "pipeline"];
+const TRACKS = ["noise", "datapath", "pipeline", "audit"];
+// The auditor shares an account with one track; agents.env says which.
+const env = (() => { try { return Object.fromEntries(fs.readFileSync(path.join(HOME, "agents.env"), "utf8").split("\n").filter(l => l.includes("=")).map(l => l.split("=", 2))); } catch { return {}; } })();
 const SESSIONS_SHOWN = 6;
 
 const readJson = file => {
@@ -77,7 +79,7 @@ function parse(file, dir) {
 }
 
 function track(t) {
-  const conf = path.join(HOME, `.claude-${t}`);
+  const conf = path.join(HOME, `.claude-${t === "audit" ? env.AUDIT_ACCOUNT || "noise" : t}`);
   const status = readJson(path.join(HOME, ".agent-state", `${t}.statusline.json`)) || {};
   const proj = path.join(conf, "projects", `-home-agents-oxide-wt-${t}`);
   let files = [];
@@ -97,6 +99,8 @@ function track(t) {
     cost_usd: status.cost?.total_cost_usd ?? null,
     context_pct: status.context_window?.used_percentage ?? null,
     status_at: (() => { try { return Math.round(fs.statSync(path.join(HOME, ".agent-state", `${t}.statusline.json`)).mtimeMs / 1000); } catch { return null; } })(),
+    account: t === "audit" ? env.AUDIT_ACCOUNT || "noise" : t,
+    state: t === "audit" ? readJson(path.join(HOME, ".agent-state", "audit.status.json")) : null,
     sessions_total: files.length,
     subagents_total: sessions.reduce((a, s) => a + count(s.children), 0),
     sessions,

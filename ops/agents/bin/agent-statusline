@@ -1,8 +1,11 @@
 #!/bin/sh
-# Claude Code's status line for a track session. Claude Code passes the session's state as JSON
-# on stdin; keep the latest copy for agent-tree (usage limits, cost, context), print one line.
-t="$1"
+# Claude Code's status line for an agent session. Claude Code passes the session's state as
+# JSON on stdin; keep the latest copy for agent-tree (usage limits, cost, context) under the
+# name of the worktree the session runs in, and print one line.
 d="$HOME/.agent-state"
 mkdir -p "$d"
-cat >"$d/$t.statusline.json.tmp" && mv "$d/$t.statusline.json.tmp" "$d/$t.statusline.json"
-printf 'oxide %s' "$t"
+json="$(cat)"
+name="$(printf '%s' "$json" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{const j=JSON.parse(s);process.stdout.write(require("path").basename(j.workspace?.current_dir||j.cwd||""))}catch{}})')"
+case "$name" in noise | datapath | pipeline | audit) ;; *) name="${1:-unknown}" ;; esac
+printf '%s' "$json" >"$d/$name.statusline.json.tmp" && mv "$d/$name.statusline.json.tmp" "$d/$name.statusline.json"
+printf 'oxide %s' "$name"
