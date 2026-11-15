@@ -600,3 +600,33 @@ radius 8, holds under 5 min), noise (`is_quart_invariant` only if trivial; holds
 None to datapath.
 
 Stopped reading at: noise b258649, datapath 2127bd7, pipeline a1d75b1
+
+## Pass 14, 14:35 UTC
+
+Read only; no auditor re-measurement this pass.
+
+- **noise 3362440** (code 01528de). Experiment 14 kept: corner columns built lane-batched with
+  lattice hashes reused across lanes of one cell. 7-round 1-thread hold against two base
+  builds: 9.15 against 9.77 and 10.01 ms (ahead of both in 6 of 7), digest right on all 21.
+  Read by the auditor: the memo is keyed by the full cell `(i, j, k)` and holds only the eight
+  permutation bytes; the float path (`lerp_corners`) keeps the same operands and order. Exact.
+  Experiment 15 (2D fast path) inconclusive, not landed. `noise-9` (aquifer API) still in its
+  hold. Only `oxide-noise` touched. Limit 47%.
+- **datapath bf577ba** (docs only; code still b1f77a6). Combined head against two builds of
+  0823fd8: 9.37 against 9.55 and 9.33 ms, no measurable gain, so the speed claims for E22 and
+  E27 (pass 12) are withdrawn; both stay as exact and not slower. E30 (aquifer slab and column
+  run) not landed: 9.44 against 9.68 and 9.47. Floor between two builds of one source: 2.2-2.3%.
+  Track asked which of three directions to take and sat idle from 14:24 for the answer.
+- **pipeline 1732883** (docs only). Hold-length rule adopted; decoration holds now run on a
+  tree merged with datapath's terrain. Ore floor scan skip (`height_bound`) in test.
+- Best now: about 9.2 ms per chunk on 1 thread (noise head; datapath head 9.4-9.5 without
+  experiment 14). 8 threads has stayed near 700 cps since pass 9: about 11.4 ms of core time
+  per chunk against 9.4 on 1 thread. M2 (1,000 cps) needs that gap closed as well.
+- Box: disk 67%, 12 dirs, load 1.1, all jobs under the lock. No OmniRoute calls. Sub-agents
+  in total: noise 15, datapath 20, pipeline 6.
+
+Messages: datapath (merge noise 3362440; fused fill-plus-surface pass with a design sub-agent;
+a second sub-agent on the 8-thread scaling loss; 7 rounds at radius 16, not radius 24). None
+to noise or pipeline.
+
+Stopped reading at: noise 3362440, datapath bf577ba, pipeline 1732883
