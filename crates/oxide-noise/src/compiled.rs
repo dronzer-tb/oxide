@@ -727,6 +727,12 @@ impl Program {
     /// [`y_independent_ops`] holds for the result: `ctx.y` only enters through the leaves it
     /// rejects. Floating point is deterministic for identical inputs, so identical inputs at
     /// every instruction give identical bits, NaN payloads included.
+    /// See [`quart_invariant_ops`]: through chunk caches, this program's value is the same at
+    /// every block of a quart column.
+    pub(crate) fn quart_invariant(&self) -> bool {
+        quart_invariant_ops(&self.ops).last().copied().unwrap_or(false)
+    }
+
     pub(crate) fn y_independent(&self) -> bool {
         cache_pure(&self.ops) && y_independent_ops(&self.ops).last().copied().unwrap_or(false)
     }
@@ -1998,6 +2004,64 @@ pub(crate) fn y_independent_ops(ops: &[Op]) -> Vec<bool> {
 /// Slot sharing between programs does not break this: two cache nodes share a slot only when
 /// their arguments' fingerprints are equal, which is a full structural serialisation, so
 /// whichever program filled a slot computed it with an identical argument.
+/// For each instruction of `ops`, whether its value is provably the same at every block of a
+/// quart column: through a chunk's caches, the value at `(x, y, z)` equals the value at
+/// `(x & !3, y, z & !3)`, bit for bit.
+///
+/// `flat_cache` is what makes this hold: through chunk caches it samples its argument at the
+/// quart origin, so it qualifies whatever that argument reads. Without chunk caches it
+/// evaluates at the exact position and does not, so this is stated for `sample_in_chunk` only.
+/// The other caches (`cache_2d`, `cache_once`) evaluate at the exact position and qualify only
+/// when their argument does. `interpolated` blends within a cell and never qualifies. Noise
+/// leaves read the exact x and z. Constants and y gradients do not read x or z at all.
+pub(crate) fn quart_invariant_ops(ops: &[Op]) -> Vec<bool> {
+    fn whole(p: &Program) -> bool {
+        quart_invariant_ops(&p.ops).iter().all(|v| *v)
+    }
+    fn spline(s: &CompiledSpline) -> bool {
+        whole(&s.coordinate)
+            && s.points.iter().all(|p| match &p.value {
+                CompiledSplineValue::Constant(_) => true,
+                CompiledSplineValue::Spline(inner) => spline(inner),
+            })
+    }
+    let mut inv = vec![false; ops.len()];
+    for (i, op) in ops.iter().enumerate() {
+        let r = |a: &u32| inv.get(*a as usize).copied().unwrap_or(false);
+        inv[i] = match op {
+            Op::Const(_) | Op::YClampedGradient(_) => true,
+            Op::Noise(_)
+            | Op::ShiftedNoise(_)
+            | Op::Shift { .. }
+            | Op::OldBlendedNoise(_)
+            | Op::WeirdScaledSampler(_) => false,
+            Op::Add(a, b) | Op::Mul(a, b) | Op::Min(a, b) | Op::Max(a, b) => r(a) && r(b),
+            Op::Abs(a)
+            | Op::Square(a)
+            | Op::Cube(a)
+            | Op::HalfNegative(a)
+            | Op::QuarterNegative(a)
+            | Op::Squeeze(a)
+            | Op::Invert(a) => r(a),
+            Op::Clamp(c) => r(&c.input),
+            Op::Spline(s) => spline(s),
+            Op::RangeChoice(c) => {
+                r(&c.input) && whole(&c.when_in_range) && whole(&c.when_out_of_range)
+            }
+            Op::IntervalSelect(s) => r(&s.input) && s.functions.iter().all(whole),
+            // Its density program runs at the caller's x and z.
+            Op::FindTopSurface(f) => r(&f.upper_bound) && whole(&f.density),
+            Op::GatedAdd(g) => r(&g.g) && whole(&g.body),
+            Op::Cache { kind, argument, .. } => match kind {
+                CacheKind::FlatCache => true,
+                CacheKind::Interpolated => false,
+                CacheKind::Cache2d | CacheKind::Once => whole(argument),
+            },
+        };
+    }
+    inv
+}
+
 pub(crate) fn cache_pure(ops: &[Op]) -> bool {
     fn spline(s: &CompiledSpline) -> bool {
         cache_pure(&s.coordinate.ops)

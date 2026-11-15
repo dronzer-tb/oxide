@@ -323,6 +323,18 @@ impl NoiseRouterEvaluator {
     /// input is `y * 0.0 + shift_y` and `y * 0.0` keeps the sign of y. A plain `noise` with
     /// `y_scale` 0 does not qualify, for the same reason. Any `interpolated` node disqualifies
     /// the program, because it reads this chunk's corner grid.
+    /// Whether, through chunk caches, `slot`'s value is the same at every block of a quart
+    /// column: [`Self::sample_in_chunk`] at `(x, y, z)` returns exactly the bits it returns at
+    /// `(x & !3, y, z & !3)`, so a caller may sample once per quart and reuse the value for the
+    /// other 15 columns at the same y. Combine with [`Self::is_y_independent`] for one sample
+    /// per quart column.
+    ///
+    /// It holds through `flat_cache`, which samples at the quart origin, and not through
+    /// [`Self::sample`], where no cache snaps.
+    pub fn is_quart_invariant(&self, slot: RouterSlot) -> bool {
+        self.programs[slot.index()].quart_invariant()
+    }
+
     pub fn is_y_independent(&self, slot: RouterSlot) -> bool {
         self.programs[slot.index()].y_independent()
     }
@@ -959,5 +971,56 @@ mod tests {
             }
         }
         assert!(in_range > 20 && out_of_range > 20, "{in_range} / {out_of_range}");
+    }
+
+    /// The quart-invariance predicate accepts a `flat_cache` over noise and constants or
+    /// gradients, and rejects exact-position noise, `cache_2d` over noise and `interpolated`.
+    /// Where it says yes, every block of a quart column gives the quart origin's bits.
+    #[test]
+    fn quart_invariance_predicate() {
+        use oxide_core::ResourceLocation as Rl;
+        use oxide_datapack::{DensityFunctionObject as O, NormalNoiseParameters};
+        fn obj(o: O) -> DensityFunction {
+            DensityFunction::Object(Box::new(o))
+        }
+        let noises: Registry<NormalNoiseParameters> = [(
+            Rl::new("minecraft", "n"),
+            NormalNoiseParameters { first_octave: -4, amplitudes: vec![1.0, 1.0] },
+        )]
+        .into_iter()
+        .collect();
+        let noise = || obj(O::Noise { noise: Rl::new("minecraft", "n"), xz_scale: 1.0, y_scale: 1.0 });
+        let gradient = || obj(O::YClampedGradient { from_y: -64, to_y: 320, from_value: 1.0, to_value: -1.0 });
+        let cases: Vec<(&str, DensityFunction, bool)> = vec![
+            ("flat_cache over 3d noise", obj(O::FlatCache { argument: noise() }), true),
+            ("flat_cache plus a gradient", obj(O::Add { argument1: obj(O::FlatCache { argument: noise() }), argument2: gradient() }), true),
+            ("gradient alone", gradient(), true),
+            ("noise", noise(), false),
+            ("cache_2d over noise", obj(O::Cache2d { argument: noise() }), false),
+            ("cache_2d over flat_cache", obj(O::Cache2d { argument: obj(O::FlatCache { argument: noise() }) }), true),
+            ("interpolated", obj(O::Interpolated { argument: obj(O::FlatCache { argument: noise() }) }), false),
+            ("flat_cache times noise", obj(O::Mul { argument1: obj(O::FlatCache { argument: noise() }), argument2: noise() }), false),
+        ];
+        for (name, df, expected) in cases {
+            let mut settings = minimal_settings();
+            settings.noise_router.vegetation = df;
+            let router = NoiseRouterEvaluator::new(3, &settings, &Registry::default(), &noises);
+            assert_eq!(router.is_quart_invariant(RouterSlot::Vegetation), expected, "{name}");
+            if expected {
+                for (cx, cz) in [(0, 0), (-3, 2)] {
+                    let caches = router.chunk_caches(cx, cz);
+                    for y in [-64, 0, 77, 319] {
+                        for (qx, qz) in [(0, 0), (4, 12), (12, 8)] {
+                            let (ox, oz) = (cx * 16 + qx, cz * 16 + qz);
+                            let origin = router.sample_in_chunk(&caches, RouterSlot::Vegetation, ox, y, oz);
+                            for (dx, dz) in [(1, 0), (3, 3), (0, 2), (2, 1)] {
+                                let v = router.sample_in_chunk(&caches, RouterSlot::Vegetation, ox + dx, y, oz + dz);
+                                assert_eq!(v.to_bits(), origin.to_bits(), "{name} at {} {y} {}", ox + dx, oz + dz);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

@@ -441,3 +441,30 @@ also matches other holds' `base9`, `base9b` and `base10*`, so it deleted noise-9
 mid-experiment (its first hold printed only the patched lines and had to be re-run) and very
 likely caused noise-10's first hold to produce nothing. From now on every cleanup deletes exact
 labels only (`ab-bin/<label>` and `ab-bin/<label>.stderr`), never a glob.
+
+### API for datapath's E29: `NoiseRouterEvaluator::is_quart_invariant(slot)`
+
+True when, **through chunk caches**, the slot's value at `(x, y, z)` equals its value at
+`(x & !3, y, z & !3)`, bit for bit. A caller may then sample once per quart and reuse the value
+for the other 15 columns at the same y; with `is_y_independent` as well, once per quart column.
+It holds through `flat_cache`, which samples at the quart origin whatever its argument reads.
+It does not hold through `sample()`, where nothing snaps. `cache_2d`/`cache_once` qualify only
+if their argument does, `interpolated` never does, and noise leaves read the exact x/z. About
+50 lines on top of `is_y_independent` (`quart_invariant_ops`), plus the test
+`quart_invariance_predicate`: 8 shapes, and where true, bit identity at 4 offsets x 3 quarts x
+4 y x 2 chunks. Tests: oxide-noise 39, oxide-chunkgen 190 + 1 + 1 + 1. This is an API, not a
+speed change, so there is no hold.
+
+Real overworld (both predicates):
+
+| Slot | y-independent | quart-invariant |
+|---|---|---|
+| temperature, vegetation | true | **false** (bare `shifted_noise`, sampled at the exact x/z) |
+| continents, erosion, ridges, preliminary_surface_level | true | true |
+| depth | false | **true** (y gradient + `flat_cache`d offset) |
+| final_density, barrier, lava, fluid levels, veins | false | false |
+
+So per quart, continents, erosion, ridges and depth need one sample per (quart, y). Depth is
+still per y, but its offset part is shared by the whole quart through the flat cache.
+Temperature and vegetation must still be sampled per exact column, which is what E27 already
+does.
