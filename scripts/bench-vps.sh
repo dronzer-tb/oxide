@@ -42,14 +42,20 @@ fi
 out="$(ssh -o BatchMode=yes "$host" "
     set -eu
     cd '$dir'
-    # Builds share the lock, so several tracks compile at once; the timed run takes it alone,
-    # so it waits for builds in progress and nothing else runs while it is measured. Any other
-    # build or profile on this box must also hold it shared: flock -s ~/oxide-perf/.lock ...
+    # Fair locking through scripts/bench-lock.sh: builds pass a gate, then share the bench lock;
+    # a timed run holds the gate while it waits, so new builds queue behind it. A harness with
+    # --bench-lock holds the lock alone for the timed generation only, not its datapack load
+    # or digest pass. Any other build or profile on this box goes through bench-lock.sh build.
     start=\$(date +%s)
-    flock -s ~/oxide-perf/.lock nice -n 10 ~/.cargo/bin/cargo build --profile $profile -p oxide-harness 2>&1 | tail -n 3
+    sh scripts/bench-lock.sh build ~/.cargo/bin/cargo build --profile $profile -p oxide-harness 2>&1 | tail -n 3
     build=\$((\$(date +%s) - start))
-    flock -x ~/oxide-perf/.lock ./target/$profile/oxide-harness --datapack reference --seed 12345 \
-        --radius $radius --time-only --threads $threads | grep ^BENCH
+    bin=./target/$profile/oxide-harness
+    run='--datapack reference --seed 12345 --radius $radius --time-only --threads $threads'
+    if \$bin --help | grep -q -- --bench-lock; then
+        sh scripts/bench-lock.sh timed-inner \$bin \$run --bench-lock ~/oxide-perf/.lock | grep ^BENCH
+    else
+        sh scripts/bench-lock.sh timed \$bin \$run | grep ^BENCH
+    fi
     echo BUILD \$build
 " | tee /dev/stderr)"
 build="$(printf '%s\n' "$out" | sed -n 's/^BUILD //p')"
