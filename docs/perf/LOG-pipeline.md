@@ -614,3 +614,32 @@ df701ee858e2bdd3 on all six):
 
 **Kept.** Tests passed on the tested tree (chunkgen 192 there, pregen). The branch-head test run
 waits until the box is free again: it is reserved for a live server test until about 17:00 CET.
+
+## Plan while the box is reserved (until about 17:00 CET)
+
+Decoration on this branch now has three kept changes on top of 4aca951: interning + pregen switch
+(-23%), ore floor-scan skip (-5%) and the sculk neighbourhood (-8.9%). Each was measured on its own
+in 1-thread holds. Once the box is free again:
+
+1. Run the tests on the branch head (d6f2442); delete the box dirs pipeline-6 and pipeline-mb.
+2. Make a fresh scratch merge of the head with origin/perf/datapath (the hold base) and re-profile there with
+   `decorate-prof.patch` rebased onto interning (ready locally: the wrappers now also cover
+   `set_block_ref` and the interned output), at r8, 1 thread, shared lock. That run is short.
+3. **Stone ores, the per-cell path** (about 28% of decoration before interning). Per cell the path is:
+   `ensure_can_write`, `region.block` (about 87 ns), `RuleTest::test`, `set_block_ref`. The design, all
+   exact:
+   - `TagMatch` does two std-SipHash lookups per cell (`tags.get(tag)`, then the members set by block
+     name). Resolve the member set once per `place()`, which drops the first lookup outright. Then cache
+     the rule's answer for a state: add `DecorationRegion::block_keyed(pos) -> (StateKey, &BlockState)`
+     (StateKey = written id, or chunk/section/palette entry, the same keys the fact caches use) and
+     keep a direct-mapped 8-entry (key -> matched) cache per `place()`. Stone ores replace mostly
+     stone and deepslate, so almost every cell hits. The random variants still draw exactly when the
+     name matches; only the name/tag part is cached.
+   - `set_block_ref` hashes the full `BlockState` (name + property map) per write to find its id.
+     Intern each target's state once per `place()` (`region.intern(&state) -> u32`) and write with
+     `set_block_id(pos, id)`.
+   - Expected: most of the ~0.5 us per ore cell that is not the terrain read.
+4. Then re-rank from the new profile: lush caves (vegetation, ceiling vegetation, clay: about 11%
+   together) and dark_forest_vegetation (direct `BlockFacts::is` calls, 0.8M) are next in line.
+
+Holds stay on the datapath merge, under about 5 minutes each.
