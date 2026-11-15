@@ -1,0 +1,63 @@
+#!/bin/sh
+# Keeps the `audit` session alive and asks it for an audit pass every AUDIT_MIN minutes, when
+# it is logged in, not waiting on its usage limit, and has been quiet for five minutes. Writes
+# its state for agent-tree. Run by oxide-agents-audit.service.
+set -u
+state="$HOME/.agent-state"
+# Type a prompt into a session and submit it. Text and Enter go in separate calls: sent
+# together, Claude Code can leave the text sitting in its input box.
+say() {
+    tmux send-keys -t "$1" C-u
+    tmux send-keys -t "$1" -l "$2"
+    sleep 1
+    tmux send-keys -t "$1" Enter
+}
+# Seconds a track pane has been unchanged, tracked here independently of agent-supervisor.
+quiet() {
+    s="$(tmux capture-pane -p -t "$1" 2>/dev/null | md5sum | cut -c1-32)"
+    if [ "$s" != "$(cat "$state/$1.q.sum" 2>/dev/null)" ]; then
+        echo "$s" >"$state/$1.q.sum"
+        date +%s >"$state/$1.q.at"
+    fi
+    echo $(($(date +%s) - $(cat "$state/$1.q.at")))
+}
+mkdir -p "$state"
+while :; do
+    . "$HOME/agents.env"
+    if ! tmux has-session -t audit 2>/dev/null; then
+        tmux new-session -d -s audit -x 200 -y 50 "$HOME/bin/agent-run audit"
+        date +%s >"$state/audit.asked"
+    fi
+    pane="$(tmux capture-pane -p -t audit 2>/dev/null || true)"
+    sum="$(printf '%s' "$pane" | md5sum | cut -c1-32)"
+    now="$(date +%s)"
+    if [ "$sum" != "$(cat "$state/audit.sum" 2>/dev/null)" ]; then
+        echo "$sum" >"$state/audit.sum"
+        echo "$now" >"$state/audit.changed"
+    fi
+    idle=$(((now - $(cat "$state/audit.changed" 2>/dev/null || echo "$now")) / 60))
+    asked="$(cat "$state/audit.asked" 2>/dev/null || echo 0)"
+    logged=false
+    [ -s "$HOME/.claude-$AUDIT_ACCOUNT/.credentials.json" ] && logged=true
+    limited=false
+    printf '%s' "$pane" | tail -n 25 | grep -qiE "usage limit|limit reached|limit resets|continuing automatically" && limited=true
+    if $logged && ! $limited && [ "$idle" -ge 5 ] && [ $((now - asked)) -ge $((AUDIT_MIN * 60)) ]; then
+        say audit "Run the next audit pass (docs/perf/AUDIT-ROLE.md)."
+        echo "$now" >"$state/audit.asked"
+        asked="$now"
+    fi
+    # Tracks: agent-supervisor nudges them too, but its nudge can fail to submit; this one
+    # cannot. Only a session that is logged in, not at its limit, and quiet for 25 minutes.
+    for t in noise datapath pipeline; do
+        q="$(quiet "$t")"
+        pane="$(tmux capture-pane -p -t "$t" 2>/dev/null | tail -n 25)"
+        printf '%s' "$pane" | grep -qiE "usage limit|limit reached|limit resets|continuing automatically" && continue
+        [ -s "$HOME/.claude-$t/.credentials.json" ] || continue
+        if [ "$q" -ge 1500 ]; then
+            say "$t" "Continue the $t track from docs/perf/LOG-$t.md. Push after every experiment."
+            date +%s >"$state/$t.nudged"
+        fi
+    done
+    printf '{"logged_in":%s,"limited":%s,"idle_min":%s,"last_pass_asked":%s,"every_min":%s}\n' "$logged" "$limited" "$idle" "$asked" "$AUDIT_MIN" >"$state/audit.status.json"
+    sleep 60
+done

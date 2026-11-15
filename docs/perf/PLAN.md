@@ -39,7 +39,7 @@ Inside Oxide: `oxide_noise::compiled::Program::run` 14%, `ImprovedNoise::noise_w
 |---|---|---|---|
 | noise | `~/oxide-wt/noise` | `perf/noise` | `crates/oxide-noise` |
 | datapath | `~/oxide-wt/datapath` | `perf/datapath` | `crates/oxide-core`, `crates/oxide-biome`, `crates/oxide-chunkgen` except `decorator/` |
-| pipeline | `~/oxide-wt/pipeline` | `perf/pipeline` | `crates/oxide-pregen`, `crates/oxide-anvil`, `scripts/` |
+| pipeline | `~/oxide-wt/pipeline` | `perf/pipeline` | `crates/oxide-pregen`, `crates/oxide-anvil`, `scripts/`, decoration (`crates/oxide-chunkgen/src/decorator/`, `decorate.rs`, `region.rs`) |
 
 Stay inside what you own. If you need a change elsewhere, make the smallest additive one and
 say so in your log; never rename or reshape another track's public items.
@@ -67,17 +67,8 @@ say so in your log; never rename or reshape another track's public items.
 6. Sub-agents: use Opus, give each a single narrow job and a hard file boundary, and have them
    query graphify (`graphify query "..."` in the repo) before reading source. Only the master
    commits and pushes.
-6b. **Free workers:** `scripts/omni-agent.sh <model> "<task>"` runs a full Claude Code worker
-   (files, shell, edits) on an OmniRoute model, at no Claude cost. Run it in its own scratch
-   worktree (`git worktree add /tmp/omni-<name> HEAD`), never in yours, then review its diff.
-   Good for: trying a variant you would not spend your own turns on, writing a micro-benchmark,
-   reading a large file and reporting back. Use `gemini/gemini-3-flash-preview` (verified with tools);
-   `mistral/codestral-latest` answers questions. If a model fails, log it and stop using it.
-6a. **Cheap second opinions:** `scripts/omni-ask.sh <prompt-file> [model]` sends one prompt to a
-   model on OmniRoute and prints the answer, at no Claude cost. Use it for review, for ideas
-   when stuck, and for reading a profile. It cannot see the repo or run anything, so paste
-   what it needs. Treat its code as a suggestion: nothing lands without the bench and the
-   digest. If the key is missing the script says so; carry on without it.
+6a. **No OmniRoute.** The user dropped it on 2026-11-15 as too slow. Parallel work goes to Opus
+   sub-agents, each in its own scratch worktree with its own bench name.
 7. `reference/` is game data and gitignored; each worktree has a symlink to the main
    checkout's copy. Never commit it, never copy it anywhere but the VPS bench directory.
 8. Float parity rules in `docs/ARCHITECTURE.md` ("Float parity is not free") still apply:

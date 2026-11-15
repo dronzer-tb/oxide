@@ -118,6 +118,12 @@ tr:last-child td { border-bottom: 0; }
 </section>
 
 <section>
+  <h2>Latest audit</h2>
+  <p class="lede">The auditor session reviews all three tracks about once an hour against the plan's rules and the Pumpkin target. Its notes, newest last.</p>
+  <div class="box"><pre class="log" id="audit" style="padding:16px;max-height:520px">Reading the audit log…</pre></div>
+</section>
+
+<section>
   <h2>Tracks</h2>
   <p class="lede">Three sessions work in parallel, one area each. They push after every experiment; a track that has been quiet for a while has most likely hit its usage limit.</p>
   <div class="tracks" id="tracks"></div>
@@ -134,11 +140,17 @@ tr:last-child td { border-bottom: 0; }
 const REPO = "dronzer-tb/oxide";
 const BASE = { cps: 160.5, digest: "a977961a58122047" };
 const GATES = [[400, "M1"], [1000, "M2"], [2500, "M3"], [5000, "Goal"]];
+// PumpkinMC 0.2.2 on the same box, criterion, one thread: biomes 0.61 + noise 10.14 + surface
+// 4.16 + carvers 2.51 = 17.42 ms of terrain per chunk. Scaled to 8 threads the way Oxide scales
+// (22.8 -> 160.5 chunks/s, 7.04x). Not byte exact: a speed target only.
+const PUMPKIN = { ms: 17.42, cps: 1000 / 17.42 * 7.04 };
 const TRACKS = [
   { id: "noise", color: "#e0703a", shape: "circle", job: "The density-function interpreter and Perlin sampling: evaluate many points per call, vectorise with AVX2." },
   { id: "datapath", color: "#4f9bd9", shape: "square", job: "Stop allocating per block: integer block ids, reusable buffers, cheaper surface rules, biome search and aquifers." },
   { id: "pipeline", color: "#8f9a2c", shape: "diamond", job: "Generation with no server in it: real offline pregen, native decoration, region writing, cheaper compression." },
 ];
+// The auditor measures the tracks' work merged together; drawn as its own series.
+const COMBINED = { id: "combined", color: "#ebe5d9", shape: "square", job: "noise and datapath merged, measured by the auditor" };
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const num = (n, d = 0) => n.toLocaleString("en-US", { maximumFractionDigits: d, minimumFractionDigits: d });
@@ -173,6 +185,7 @@ function drawGauge(best) {
   let s = `<rect x="${x0}" y="40" width="${x1 - x0}" height="6" fill="#0c0b0a"/>`;
   const top = Math.max(BASE.cps, ...best.map(b => b.cps));
   s += `<rect x="${x0}" y="40" width="${x(top) - x0}" height="6" fill="#e0703a" opacity=".5"/>`;
+  s += `<line x1="${x(PUMPKIN.cps)}" y1="30" x2="${x(PUMPKIN.cps)}" y2="56" stroke="#d6a24a" stroke-width="2"/><text x="${x(PUMPKIN.cps)}" y="94" text-anchor="middle" fill="#d6a24a">Pumpkin ${num(PUMPKIN.cps)}</text>`;
   s += `<line x1="${x(BASE.cps)}" y1="34" x2="${x(BASE.cps)}" y2="52" stroke="#857e72"/><text x="${x(BASE.cps)}" y="66" text-anchor="middle">start ${num(BASE.cps)}</text>`;
   for (const [v, name] of GATES) {
     s += `<line x1="${x(v)}" y1="34" x2="${x(v)}" y2="52" stroke="#b3ab9d"/><text class="lab" x="${x(v)}" y="66" text-anchor="middle">${name}</text><text x="${x(v)}" y="80" text-anchor="middle">${num(v)}</text>`;
@@ -193,11 +206,12 @@ function drawChart(runs) {
   let s = "";
   for (const v of [100, 200, 500, 1000, 2000, 5000]) s += `<line x1="${L}" y1="${y(v)}" x2="${W - R}" y2="${y(v)}" stroke="rgba(232,222,205,.05)"/><text x="${L - 8}" y="${y(v) + 4}" text-anchor="end">${num(v)}</text>`;
   for (const [v, name] of GATES) s += `<line x1="${L}" y1="${y(v)}" x2="${W - R}" y2="${y(v)}" stroke="rgba(232,222,205,.28)" stroke-dasharray="3 5"/><text class="lab" x="${W - R}" y="${y(v) - 5}" text-anchor="end">${name}</text>`;
+  s += `<line x1="${L}" y1="${y(PUMPKIN.cps)}" x2="${W - R}" y2="${y(PUMPKIN.cps)}" stroke="#d6a24a" stroke-width="1.5"/><text x="${L + 6}" y="${y(PUMPKIN.cps) - 6}" fill="#d6a24a">PumpkinMC terrain, ~${num(PUMPKIN.cps)} (${PUMPKIN.ms} ms/chunk, not byte exact): the target</text>`;
   s += `<line x1="${L}" y1="${y(BASE.cps)}" x2="${W - R}" y2="${y(BASE.cps)}" stroke="#857e72"/><text x="${L + 6}" y="${y(BASE.cps) + 14}">where we started, ${num(BASE.cps)}</text>`;
   const fmt = u => new Date(u * 1000).toISOString().slice(5, 16).replace("T", " ");
   s += `<text x="${L}" y="${H - 8}">${fmt(t0)} UTC</text><text x="${W - R}" y="${H - 8}" text-anchor="end">now</text>`;
   const hits = [];
-  for (const t of TRACKS) {
+  for (const t of [...TRACKS, COMBINED]) {
     const mine = pts.filter(r => r.track === t).sort((a, b) => a.unix - b.unix);
     const line = mine.filter(clean);
     if (line.length > 1) s += `<polyline fill="none" stroke="${t.color}" stroke-width="2" stroke-linejoin="round" points="${line.map(r => `${x(r.unix).toFixed(1)},${y(r.cps).toFixed(1)}`).join(" ")}"/>`;
@@ -221,7 +235,7 @@ function drawChart(runs) {
     tip.style.top = e.clientY + 14 + "px";
   };
   svg.onmouseleave = () => { $("tip").style.display = "none"; };
-  $("legend").innerHTML = TRACKS.map(t => `<span><svg viewBox="0 0 12 12" style="display:inline-block;width:12px;height:12px;margin-right:7px;vertical-align:-1px">${mark(t, 6, 6, true, 4)}</svg>${t.id}</span>`).join("") +
+  $("legend").innerHTML = [...TRACKS, COMBINED].map(t => `<span><svg viewBox="0 0 12 12" style="display:inline-block;width:12px;height:12px;margin-right:7px;vertical-align:-1px">${mark(t, 6, 6, true, 4)}</svg>${t.id}</span>`).join("") +
     `<span class="q">hollow = changed the world</span>`;
 }
 
@@ -263,18 +277,20 @@ async function refresh() {
     ]);
     return { t, runs: parseRuns(tsv, t), log, commits: Array.isArray(commits) ? commits : [] };
   }));
-  const runs = data.flatMap(d => d.runs);
-  const best = data.map(d => d.runs.filter(r => standard(r) && clean(r)).reduce((a, r) => (!a || r.cps > a.cps ? r : a), null)).filter(Boolean);
+  const combined = parseRuns(await raw("perf/audit", "docs/perf/bench-audit-combined.tsv"), COMBINED);
+  const runs = data.flatMap(d => d.runs).concat(combined);
+  const best = [...data.map(d => d.runs), combined].map(rs => rs.filter(r => standard(r) && clean(r)).reduce((a, r) => (!a || r.cps > a.cps ? r : a), null)).filter(Boolean);
   const top = best.reduce((a, r) => (!a || r.cps > a.cps ? r : a), null);
   $("bestv").innerHTML = `${num(top ? top.cps : BASE.cps)}<small>chunks/s</small>`;
   const reached = GATES.filter(g => (top ? top.cps : 0) >= g[0]).pop(), next = GATES.find(g => (top ? top.cps : 0) < g[0]);
   $("bestd").innerHTML = top
-    ? `${(top.cps / BASE.cps).toFixed(2)}× where we started, by the <b style="color:var(--bone)">${top.track.id}</b> track.<br>${reached ? "Past " + reached[1] + ". " : ""}${next ? `Next gate ${next[1]} at ${num(next[0])}.` : "Goal reached."}`
+    ? `${(top.cps / BASE.cps).toFixed(2)}× where we started, by the <b style="color:var(--bone)">${top.track.id}</b> track.<br>${reached ? "Past " + reached[1] + ". " : ""}${next ? `Next gate ${next[1]} at ${num(next[0])}.` : "Goal reached."}<br>${top.cps >= PUMPKIN.cps ? "Faster than PumpkinMC's terrain." : `${(PUMPKIN.cps / top.cps).toFixed(2)}× short of PumpkinMC's terrain.`}`
     : `The starting point. No track has pushed a clean run yet.<br>First gate M1 at 400.`;
   drawGauge(best);
   drawChart(runs);
   drawTracks(data);
   drawRuns(runs);
+  raw("perf/audit", "docs/perf/AUDIT.md").then(t => { $("audit").textContent = t || "No audit pushed yet."; const a = $("audit"); a.scrollTop = a.scrollHeight; });
   $("stamp").textContent = `checked ${new Date().toISOString().slice(11, 16)} UTC · refreshes every 5 min · data from GitHub`;
 }
 refresh().catch(e => { $("stamp").textContent = "could not load: " + e.message; });
