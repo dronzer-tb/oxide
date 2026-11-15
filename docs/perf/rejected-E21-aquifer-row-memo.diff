@@ -1,0 +1,175 @@
+diff --git a/crates/oxide-chunkgen/src/aquifer.rs b/crates/oxide-chunkgen/src/aquifer.rs
+index 210cf43..2d3c808 100644
+--- a/crates/oxide-chunkgen/src/aquifer.rs
++++ b/crates/oxide-chunkgen/src/aquifer.rs
+@@ -227,6 +227,13 @@ pub struct Aquifer<'a> {
+     own_chunk_z: i32,
+     /// This thread's cross-chunk memo, bound to `router`'s id; returned to the thread on drop.
+     shared_surface: Box<SurfaceMemo>,
++    /// A run of one block row proven to share one answer: every non-solid position
++    /// `(x, run_y, run_z)` with `run_x_lo <= x <= run_x_hi` gets `run_kind`. See `note_run`.
++    run_y: i32,
++    run_z: i32,
++    run_x_lo: i32,
++    run_x_hi: i32,
++    run_kind: FluidKind,
+ }
+ 
+ impl Drop for Aquifer<'_> {
+@@ -325,6 +332,11 @@ impl<'a> Aquifer<'a> {
+                 memo.bind(router.id());
+                 memo
+             },
++            run_y: i32::MIN,
++            run_z: 0,
++            run_x_lo: 0,
++            run_x_hi: -1,
++            run_kind: FluidKind::Air,
+         };
+ 
+         // Above the highest surface in reach there is nothing to flood, so vanilla stops
+@@ -407,6 +419,12 @@ impl<'a> Aquifer<'a> {
+         if density > 0.0 {
+             return None;
+         }
++        // Inside a proven run (see `note_run`): the answer is known without the search. A run
++        // is only recorded for a y below the skip line and above the lava rule, so the two
++        // early returns below would not have been taken for this y either.
++        if y == self.run_y && z == self.run_z && x >= self.run_x_lo && x <= self.run_x_hi {
++            return Some(self.run_kind);
++        }
+         let global = self.global_fluid(y);
+         if y > self.skip_sampling_above_y {
+             return Some(global.at_kind(y));
+@@ -427,12 +445,14 @@ impl<'a> Aquifer<'a> {
+                 self.fill_anchor(slot, anchor_x, anchor_y, anchor_z);
+             }
+             let candidates = &self.anchors[slot];
++            let mut distances = [0i32; 12];
+             for i in 0..12 {
+                 let (cx, cy, cz) = candidates.centre[i];
+                 let ddx = cx - x;
+                 let ddy = cy - y;
+                 let ddz = cz - z;
+                 let distance = ddx * ddx + ddy * ddy + ddz * ddz;
++                distances[i] = distance;
+                 let index = candidates.index[i];
+                 if best[0].0 >= distance {
+                     best[2] = best[1];
+@@ -445,10 +465,99 @@ impl<'a> Aquifer<'a> {
+                     best[2] = (distance, index);
+                 }
+             }
++            let kind = self.kind_from_nearest(x, y, z, density, &best);
++            self.note_run(slot, x, y, z, anchor_x, &distances, &best);
++            kind
+         } else {
+             self.nearest_slow(x, y, z, anchor_x, anchor_y, anchor_z, &mut best);
++            self.kind_from_nearest(x, y, z, density, &best)
++        }
++    }
++
++    /// After a full fast-path answer at `(x, y, z)`, records how far along +x in this row the
++    /// same answer is proven, so the next blocks of the row skip the search.
++    ///
++    /// Let `p` be the nearest candidate (`best[0]`) and `S` its status. For a later `x' = x + t`
++    /// in the same anchor (same y and z, so the same 12 candidates), the gap to candidate `j`
++    /// is `f_j(x') = d_j(x') - d_p(x') = f_j(x) - 2 * (cx_j - cx_p) * t`, exact in `i32`. Either
++    /// rule below makes `compute_kind(x', y, z, density <= 0)` return `S.at_kind(y)`:
++    /// - every `j != p` has `f_j >= 25`: `p` is the unique nearest and the runner-up is at
++    ///   least 25 further, so `similarity12 <= 0` and the first return is taken;
++    /// - every `j` whose status is not known to equal `S` has `f_j >= 50`: the nearest is then
++    ///   some candidate with status `S`, and any candidate `kind_from_nearest` weighs against it
++    ///   (best[1] when `similarity12 > 0`, best[2] when `similarity13 > 0` or `similarity23 > 0`)
++    ///   is within 50 of the nearest, so also has status `S`. `pressure` of two equal statuses
++    ///   returns 0.0 before any noise, each `density + similarity * ... * 0.0` is
++    ///   `density + 0.0`, never `> 0` for `density <= 0`, and the result is `S.at_kind(y)`.
++    /// The skipped calls only fill pure memos (`location`, `status`), so skipping them cannot
++    /// change any other answer.
++    #[allow(clippy::too_many_arguments)]
++    fn note_run(
++        &mut self,
++        slot: usize,
++        x: i32,
++        y: i32,
++        z: i32,
++        anchor_x: i32,
++        distances: &[i32; 12],
++        best: &[(i32, usize); 3],
++    ) {
++        // The last x that maps to this anchor: `grid_x(x' + SAMPLE_OFFSET_X) == anchor_x`.
++        let segment_end = from_grid_x(anchor_x, 15) - SAMPLE_OFFSET_X;
++        let room = segment_end - x;
++        if room <= 0 {
++            return;
++        }
++        let candidates = &self.anchors[slot];
++        let Some(p) = candidates.index.iter().position(|&i| i == best[0].1) else {
++            return;
++        };
++        let Some(Some(status_p)) = self.statuses.get(best[0].1).copied() else {
++            return;
++        };
++        let cx_p = candidates.centre[p].0;
++        let d_p = distances[p];
++        // Largest t each rule allows; `None` = the rule does not hold at t = 0.
++        let mut t1 = Some(room);
++        let mut t2 = Some(room);
++        for j in 0..12 {
++            if j == p {
++                continue;
++            }
++            let f = distances[j] - d_p;
++            let a = candidates.centre[j].0 - cx_p;
++            let limit = |threshold: i32| -> Option<i32> {
++                if f < threshold {
++                    None
++                } else if a <= 0 {
++                    Some(room)
++                } else {
++                    Some((f - threshold) / (2 * a))
++                }
++            };
++            t1 = match (t1, limit(25)) {
++                (Some(t), Some(l)) => Some(t.min(l)),
++                _ => None,
++            };
++            let same = self.statuses.get(candidates.index[j]).copied() == Some(Some(status_p));
++            if !same {
++                t2 = match (t2, limit(50)) {
++                    (Some(t), Some(l)) => Some(t.min(l)),
++                    _ => None,
++                };
++            }
++            if t1.is_none() && t2.is_none() {
++                return;
++            }
++        }
++        let t = t1.unwrap_or(0).max(t2.unwrap_or(0));
++        if t > 0 {
++            self.run_y = y;
++            self.run_z = z;
++            self.run_x_lo = x + 1;
++            self.run_x_hi = x + t;
++            self.run_kind = status_p.at_kind(y);
+         }
+-        self.kind_from_nearest(x, y, z, density, &best)
+     }
+ 
+     /// The `anchors` slot for this anchor, when all twelve candidate cells around it lie
+diff --git a/crates/oxide-chunkgen/src/fill.rs b/crates/oxide-chunkgen/src/fill.rs
+index dfd0726..297c142 100644
+--- a/crates/oxide-chunkgen/src/fill.rs
++++ b/crates/oxide-chunkgen/src/fill.rs
+@@ -296,7 +296,11 @@ pub fn fill_chunk_culling(
+                     // The aquifer decides what a non-solid position holds -- air, water or
+                     // lava, at a level that varies per underground body. Vanilla runs exactly
+                     // this as the first filler in its noise fill.
++                    //
++                    // A solid density is answered here: `compute_kind` returns `None` for
++                    // `density > 0` before touching any state, and ~3 in 4 calls were that.
+                     let kind = match aquifer.as_deref_mut() {
++                        Some(_) if density > 0.0 => DEFAULT,
+                         Some(aquifer) => match aquifer.compute_kind(block_x, y, block_z, density) {
+                             None => DEFAULT,
+                             Some(crate::aquifer::FluidKind::Air) => continue,

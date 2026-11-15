@@ -41,3 +41,7 @@
 1794728909	0e3cf61	16	chunks=1089 threads=8 secs=2.002 cps=544.1 ms_per_chunk_core=14.70 digest=a977961a58122047
 1794728984	0e3cf61	16	chunks=1089 threads=8 secs=1.604 cps=679.0 ms_per_chunk_core=11.78 digest=a977961a58122047
 1794729063	0e3cf61	16	chunks=1089 threads=8 secs=1.855 cps=587.0 ms_per_chunk_core=13.63 digest=a977961a58122047
+1794729570	0e3cf61	16	chunks=1089 threads=8 secs=1.726 cps=630.8 ms_per_chunk_core=12.68 digest=a977961a58122047
+1794729624	0e3cf61	16	chunks=1089 threads=8 secs=1.603 cps=679.4 ms_per_chunk_core=11.78 digest=a977961a58122047
+1794729677	0e3cf61	16	chunks=1089 threads=8 secs=1.695 cps=642.5 ms_per_chunk_core=12.45 digest=a977961a58122047
+1794729727	0e3cf61	16	chunks=1089 threads=8 secs=1.651 cps=659.5 ms_per_chunk_core=12.13 digest=a977961a58122047

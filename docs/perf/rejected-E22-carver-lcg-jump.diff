@@ -1,0 +1,293 @@
+diff --git a/crates/oxide-chunkgen/src/carver.rs b/crates/oxide-chunkgen/src/carver.rs
+index 74c5c50..1b73b93 100644
+--- a/crates/oxide-chunkgen/src/carver.rs
++++ b/crates/oxide-chunkgen/src/carver.rs
+@@ -117,13 +117,15 @@ pub fn apply_carvers(
+     for dx in -CARVER_CHUNK_RANGE..=CARVER_CHUNK_RANGE {
+         for dz in -CARVER_CHUNK_RANGE..=CARVER_CHUNK_RANGE {
+             let source = ChunkPos::new(pos.x + dx, pos.z + dz);
+-            for (index, carver) in carvers_at(source).into_iter().enumerate() {
++            // Borrowed, not moved out element by element: the configs are large.
++            let carvers = carvers_at(source);
++            for (index, carver) in carvers.iter().enumerate() {
+                 random.set_large_feature_seed(
+                     world.seed.wrapping_add(index as i64),
+                     source.x,
+                     source.z,
+                 );
+-                match &carver {
++                match carver {
+                     ConfiguredCarver::Cave { config } | ConfiguredCarver::NetherCave { config } => {
+                         if random.next_float() <= config.base.probability {
+                             carve_cave(
+@@ -309,19 +311,22 @@ fn carve_tunnel(
+     mask: &mut CarvingMask,
+     mut aquifer: Option<&mut crate::aquifer::Aquifer>,
+ ) {
+-    let mut random = LegacyRandom::new(tunnel_seed);
++    let mut random = WalkRandom::new(tunnel_seed);
+     let split_point = random.next_int_bounded(distance / 2) + distance / 4;
+     let steep = random.next_int_bounded(6) == 0;
+     let mut y_rota = 0.0f32;
+     let mut x_rota = 0.0f32;
+ 
+-    for current_step in step..distance {
+-        let horizontal_radius = 1.5
+-            + (oxide_core::mth::sin(
+-                (std::f32::consts::PI * current_step as f32 / distance as f32) as f64,
+-            ) * thickness) as f64;
+-        let vertical_radius = horizontal_radius * y_scale;
++    // An upper bound on `|horizontal_radius * horizontal_multiplier|` over every step: the table
++    // sine is at most 1 in magnitude, so `|sin * thickness| <= |thickness|` after rounding, and
++    // every later operation rounds monotonically. With it, `carve_ellipsoid`'s own first test
++    // (`|x - center| > 16 + 2r`) can be decided without computing the step's radius; it only
++    // ever skips a call that would have returned at that test.
++    let reach_limit = 16.0 + ((1.5 + thickness.abs() as f64) * horizontal_multiplier.abs()) * 2.0;
++    let center_x = pos.min_block_x() as f64 + 8.0;
++    let center_z = pos.min_block_z() as f64 + 8.0;
+ 
++    for current_step in step..distance {
+         let cos_pitch = oxide_core::mth::cos(vertical_rotation as f64);
+         x += (oxide_core::mth::cos(horizontal_rotation as f64) * cos_pitch) as f64;
+         y += oxide_core::mth::sin(vertical_rotation as f64) as f64;
+@@ -331,8 +336,10 @@ fn carve_tunnel(
+         horizontal_rotation += y_rota * 0.1;
+         x_rota *= 0.9;
+         y_rota *= 0.75;
+-        x_rota += (random.next_float() - random.next_float()) * random.next_float() * 2.0;
+-        y_rota += (random.next_float() - random.next_float()) * random.next_float() * 4.0;
++        // The step's six floats, then (below) its nextInt(4), all from one jump of the LCG.
++        let (draws, int_seed) = random.step_floats();
++        x_rota += (draws[0] - draws[1]) * draws[2] * 2.0;
++        y_rota += (draws[3] - draws[4]) * draws[5] * 4.0;
+ 
+         if current_step == split_point && thickness > 1.0 {
+             // Splits into two tunnels at right angles and stops walking this one.
+@@ -384,12 +391,20 @@ fn carve_tunnel(
+             );
+             return;
+         }
+-        if random.next_int_bounded(4) == 0 {
++        if random.commit_bound_4(int_seed) == 0 {
+             continue;
+         }
+         if !can_reach(pos, x, z, current_step, distance, thickness) {
+             return;
+         }
++        if (x - center_x).abs() > reach_limit || (z - center_z).abs() > reach_limit {
++            continue;
++        }
++        let horizontal_radius = 1.5
++            + (oxide_core::mth::sin(
++                (std::f32::consts::PI * current_step as f32 / distance as f32) as f64,
++            ) * thickness) as f64;
++        let vertical_radius = horizontal_radius * y_scale;
+         carve_ellipsoid(
+             chunk,
+             pos,
+@@ -552,17 +567,43 @@ fn carve_ellipsoid(
+ 
+     let lava_level = world.resolve_anchor(&config.lava_level);
+ 
++    // `zd` depends only on the column's z and `yd` only on the height, so each is computed once
++    // per ellipsoid instead of once per column or block: the same expressions on the same
++    // inputs, and the sums below keep their order, `(xd*xd + yd*yd) + zd*zd`.
++    let mut zd_table = [0.0f64; 16];
++    if min_z <= max_z {
++        for local_z in min_z..=max_z {
++            let world_z = chunk_min_z + local_z;
++            zd_table[local_z as usize] = (world_z as f64 + 0.5 - z) / horizontal_radius;
++        }
++    }
++    let y_low = min_y + 1;
++    let y_span = (max_y - y_low + 1).max(0) as usize;
++    let mut yd_table = [0.0f64; YD_TABLE_LEN];
++    let use_yd_table = y_span <= YD_TABLE_LEN;
++    let mut yd_filled = false;
++
+     for local_x in min_x..=max_x {
+         let world_x = chunk_min_x + local_x;
+         let xd = (world_x as f64 + 0.5 - x) / horizontal_radius;
+         for local_z in min_z..=max_z {
+             let world_z = chunk_min_z + local_z;
+-            let zd = (world_z as f64 + 0.5 - z) / horizontal_radius;
++            let zd = zd_table[local_z as usize];
+             if xd * xd + zd * zd >= 1.0 {
+                 continue;
+             }
+-            for world_y in (min_y + 1..=max_y).rev() {
+-                let yd = (world_y as f64 - 0.5 - y) / vertical_radius;
++            if use_yd_table && !yd_filled {
++                for (i, slot) in yd_table[..y_span].iter_mut().enumerate() {
++                    *slot = ((y_low + i as i32) as f64 - 0.5 - y) / vertical_radius;
++                }
++                yd_filled = true;
++            }
++            for world_y in (y_low..=max_y).rev() {
++                let yd = if use_yd_table {
++                    yd_table[(world_y - y_low) as usize]
++                } else {
++                    (world_y as f64 - 0.5 - y) / vertical_radius
++                };
+                 // CaveWorldCarver::shouldSkip
+                 if yd <= floor_level || xd * xd + yd * yd + zd * zd >= 1.0 {
+                     continue;
+@@ -607,6 +648,123 @@ fn carve_ellipsoid(
+     }
+ }
+ 
++/// Heights an ellipsoid's per-height `yd` table covers; a taller ellipsoid computes `yd` inline.
++const YD_TABLE_LEN: usize = 64;
++
++const LCG_MULTIPLIER: u64 = 0x5DEECE66D;
++const LCG_ADDEND: u64 = 0xB;
++const LCG_MASK: u64 = (1 << 48) - 1;
++
++/// `(a, c)` with `state_k = a * state_0 + c (mod 2^48)` after `k` steps of the LCG.
++const fn lcg_jump(k: u32) -> (u64, u64) {
++    let mut a = 1u64;
++    let mut c = 0u64;
++    let mut i = 0;
++    while i < k {
++        a = a.wrapping_mul(LCG_MULTIPLIER) & LCG_MASK;
++        c = (c.wrapping_mul(LCG_MULTIPLIER).wrapping_add(LCG_ADDEND)) & LCG_MASK;
++        i += 1;
++    }
++    (a, c)
++}
++
++const LCG_JUMPS: [(u64, u64); 8] = [
++    lcg_jump(0),
++    lcg_jump(1),
++    lcg_jump(2),
++    lcg_jump(3),
++    lcg_jump(4),
++    lcg_jump(5),
++    lcg_jump(6),
++    lcg_jump(7),
++];
++
++/// The cave tunnel walk's `java.util.Random`, bit-for-bit the same sequence as
++/// [`LegacyRandom`] (same `setSeed` scramble, same `next(bits)`, same `nextInt(bound)`), but
++/// with the state visible so a step's seven draws can be taken from one jump of the LCG instead
++/// of a chain of seven dependent multiplies. Only the walk uses it; nothing else sees its state.
++struct WalkRandom {
++    seed: u64,
++}
++
++impl WalkRandom {
++    fn new(seed: i64) -> Self {
++        Self {
++            seed: (seed as u64 ^ LCG_MULTIPLIER) & LCG_MASK,
++        }
++    }
++
++    #[inline]
++    fn advance(seed: u64, k: usize) -> u64 {
++        let (a, c) = LCG_JUMPS[k];
++        a.wrapping_mul(seed).wrapping_add(c) & LCG_MASK
++    }
++
++    #[inline]
++    fn bits_of(seed: u64, bits: u32) -> i32 {
++        (seed >> (48 - bits)) as i32
++    }
++
++    #[inline]
++    fn float_of(seed: u64) -> f32 {
++        Self::bits_of(seed, 24) as f32 / 16_777_216.0
++    }
++
++    fn next_bits(&mut self, bits: u32) -> i32 {
++        self.seed = Self::advance(self.seed, 1);
++        Self::bits_of(self.seed, bits)
++    }
++
++    fn next_float(&mut self) -> f32 {
++        self.seed = Self::advance(self.seed, 1);
++        Self::float_of(self.seed)
++    }
++
++    fn next_long(&mut self) -> i64 {
++        let hi = self.next_bits(32) as i64;
++        let lo = self.next_bits(32) as i64;
++        (hi << 32).wrapping_add(lo)
++    }
++
++    fn next_int_bounded(&mut self, bound: i32) -> i32 {
++        assert!(bound > 0, "bound must be positive");
++        if bound.isolate_lowest_one() == bound {
++            return ((bound as i64).wrapping_mul(self.next_bits(31) as i64) >> 31) as i32;
++        }
++        loop {
++            let bits = self.next_bits(31);
++            let val = bits % bound;
++            if bits.wrapping_sub(val).wrapping_add(bound - 1) >= 0 {
++                return val;
++            }
++        }
++    }
++
++    /// Six `nextFloat`s in draw order, leaving the generator after the sixth, plus the state a
++    /// seventh draw would produce (for [`Self::commit_bound_4`]).
++    #[inline]
++    fn step_floats(&mut self) -> ([f32; 6], u64) {
++        let s = self.seed;
++        let draws = [
++            Self::float_of(Self::advance(s, 1)),
++            Self::float_of(Self::advance(s, 2)),
++            Self::float_of(Self::advance(s, 3)),
++            Self::float_of(Self::advance(s, 4)),
++            Self::float_of(Self::advance(s, 5)),
++            Self::float_of(Self::advance(s, 6)),
++        ];
++        self.seed = Self::advance(s, 6);
++        (draws, Self::advance(s, 7))
++    }
++
++    /// `nextInt(4)` right after [`Self::step_floats`], given the state it returned.
++    #[inline]
++    fn commit_bound_4(&mut self, next_seed: u64) -> i32 {
++        self.seed = next_seed;
++        ((4i64).wrapping_mul(Self::bits_of(next_seed, 31) as i64) >> 31) as i32
++    }
++}
++
+ /// What a carved position becomes. The carver's own lava (below `lava_level`) carries a
+ /// `level=0` property and the aquifer's does not, so the two are distinct states and distinct
+ /// slots here; `Air` is the plain air written when there is no aquifer.
+@@ -723,3 +881,34 @@ fn set_block(
+         .block_states
+         .set_index(local_index(x, local_y, z), *slot);
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    /// The walk's generator must replay `LegacyRandom` exactly, through the stepped draws.
++    #[test]
++    fn walk_random_matches_legacy_random() {
++        let seeds = [0i64, 1, -1, 42, i64::MIN, i64::MAX, 0x5DEECE66D, -123_456_789_012_345];
++        for (n, &seed) in seeds.iter().enumerate() {
++            let mut walk = WalkRandom::new(seed);
++            let mut legacy = LegacyRandom::new(seed);
++            for bound in [1, 2, 3, 4, 6, 7, 42, 56, 1 << 30, i32::MAX] {
++                assert_eq!(walk.next_int_bounded(bound), legacy.next_int_bounded(bound));
++            }
++            for round in 0..2000 {
++                let (draws, int_seed) = walk.step_floats();
++                for draw in draws {
++                    assert_eq!(draw.to_bits(), legacy.next_float().to_bits());
++                }
++                if (round + n) % 97 == 0 {
++                    assert_eq!(walk.next_long(), legacy.next_long());
++                    assert_eq!(walk.next_float().to_bits(), legacy.next_float().to_bits());
++                } else {
++                    assert_eq!(walk.commit_bound_4(int_seed), legacy.next_int_bounded(4));
++                }
++            }
++            assert_eq!(walk.next_long(), legacy.next_long());
++        }
++    }
++}

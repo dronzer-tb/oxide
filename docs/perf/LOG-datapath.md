@@ -806,3 +806,45 @@ Three-way interleaved A/B (rows of the head are in `bench-datapath.tsv`):
 All nine `digest=a977961a58122047`. The head alone spread 544-679 (25%) in one hold, much more
 than the ~4% being looked for. Next: head against head+E21+E22 combined (they touch different
 files), four rounds.
+
+### E21 and E22: rejected after the combined A/B
+
+Head against head+E21+E22, both built at 0e3cf61, four rounds in one exclusive hold.
+Tests on the combined build: chunkgen 191 passed.
+
+| | r1 | r2 | r3 | r4 | mean |
+|---|---|---|---|---|---|
+| head 0e3cf61 | 630.8 | 679.4 | 642.5 | 659.5 | 653.1 |
+| + E21 + E22 | 654.7 | 549.5 | 651.6 | 614.7 | 617.6 |
+
+All eight `digest=a977961a58122047`. The combination wins two rounds and loses two, and its mean is 5% lower.
+Neither shows a gain across 7 rounds in two holds, so both are rejected. Diffs kept at
+`docs/perf/rejected-E21-aquifer-row-memo.diff` and `rejected-E22-carver-lcg-jump.diff`; both
+are exact, and the proofs are above if someone wants to retry with better measurement.
+
+### Handover (current state, next three)
+
+Head: 0e3cf61 code (161812e with logs), **~610-650 cps**. The last two holds measured the
+head at 603.4 and 653.1. Session start: 138.2. Gate M1 (400) is passed; M2 is 1,000.
+Every kept change leaves `digest=a977961a58122047`.
+
+Kept this session: E1, E2, E3, E5, E6 (bound margin), E8-E13, E16, E18, plus the two
+noise merges. Measured as no gain: E4 (kept, harmless). Rejected after A/B, with diffs in
+`docs/perf/rejected-*.diff`: E14, E15, E17, E19, E21, E22.
+
+Where the time is (0e3cf61): the noise crate is over half of generation (corner grid 44.5%).
+The datapath parts are 3-14% each. The noise session is doing noise-4 (shared corner
+columns) on this head.
+
+Measurement is now the limit. In one exclusive hold the same binary spreads 15-25%, more than
+any remaining datapath change can win. Next three:
+1. Better measurement before more datapath micro-work. Run A/B at a larger radius (24, 2401
+   chunks) or on 1 thread, where scheduling noise is smaller, and use 5+ alternating rounds.
+   Retry E21 and E22 under that: both are exact, and their counters say they remove real work.
+2. Surface (~14%): the per-chunk folds lost twice (E14, E19), and the cheap folds are in
+   (E16). Next would be evaluating the above-surface program column-wise across y runs,
+   instead of per position.
+3. Wait for noise-4, then re-profile. If it lands, the datapath shares rise and the items
+   above become worth more.
+
+PR into `feat/native-decoration` is still not opened: no `gh` on this host.
