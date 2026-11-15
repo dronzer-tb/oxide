@@ -369,3 +369,7 @@ noise, plain 2D noise, interpolated, a gradient, and a sum. Where the predicate 
 checks bit identity at 7 y values, through two chunks' caches and without caches. Tests:
 oxide-noise 35, oxide-chunkgen 190 + 1 + 1 + 1, all passed. This is an API, not a speed change,
 so there is no hold.
+
+| # | What | Hold | Bases (s per run, median) | Patched | Digest | Verdict |
+|---|---|---|---|---|---|---|
+| 14 (noise-8) | Corner grid a column at a time (`Program::run_lanes`, experiment 5's structure, now with `GatedAdd` per lane) and lane-batched Normal/Perlin/Blended noise. Each octave reuses the last lane's 8 lattice hashes when `(i, j, k)` is unchanged (`ImprovedNoise::noise_with_scale_reusing`), with the float work unchanged. Measured reuse on the real datapack: Perlin octaves 0.845, blended 0.340, all 0.648 (`hash-stats` feature). Tests: noise 37 (3 new bit-identity tests), chunkgen 190 + 3 | 1 thread, 5 rounds, base + fresh base2 + batch, one exclusive hold (load 5.78 at start) | base 10.963, base2 11.208 (2.2% apart; 0.1% without base2's outlier round 4) | 10.667 | a977961a58122047 all fifteen | **inconclusive, not landed yet**: ahead of base in 5/5 and base2 in 4/5, but -2.7% / -4.8% by median, under the 5% bar. Patch kept at `docs/perf/wip/noise-8-column-batch-hash-reuse.patch`. A 7-round confirmation hold with two fresh bases is running |
