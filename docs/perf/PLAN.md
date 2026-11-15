@@ -52,7 +52,12 @@ say so in your log; never rename or reshape another track's public items.
 2. **The digest is the correctness gate.** At radius 16 it is `a977961a58122047` today. If it
    changes, the generated world changed: revert, or stop and write down exactly why in your
    log. Run `cargo test -p <crates you touched>` before each commit.
-3. **Log every experiment** in `docs/perf/LOG-<track>.md`: what you tried, the BENCH line
+3. **Push after every experiment.** The bench script appends each result to
+   `docs/perf/bench-<track>.tsv`; commit it with your log and push, kept or reverted. The
+   progress page at graph.tharax.me/lab/progress.html reads both files from GitHub, and it is
+   the only way anyone sees what you are doing. Benchmark noise is about 8% run to run, so
+   repeat a run before trusting a gain under 10%.
+   **Log every experiment** in `docs/perf/LOG-<track>.md`: what you tried, the BENCH line
    before and after, kept or reverted. Failed experiments are worth a line; they stop the
    next session repeating them.
 4. **Commit small, Conventional Commits, no attribution lines.** Push your own branch only.

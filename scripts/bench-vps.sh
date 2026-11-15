@@ -2,7 +2,8 @@
 # Benchmarks this working tree's terrain generation on the bench VPS (ssh host s5, 8-core
 # Zen 1): copies the sources there, builds with that machine's own CPU as the target, and runs
 # oxide-harness --time-only. Prints one BENCH line: chunks per second and a digest of every
-# generated block.
+# generated block, and appends it to docs/perf/bench-<name>.tsv. Commit and push that file with
+# your log: the progress page reads it from GitHub.
 #
 #   scripts/bench-vps.sh [name] [radius] [threads]
 #
@@ -29,7 +30,7 @@ rsync -a --delete \
 rsync -a --delete \
     --exclude /oracle --exclude /decompiled --exclude '/block_survival*.tsv' \
     -e "ssh -o BatchMode=yes" "$reference/" "$host:$dir/reference/"
-ssh -o BatchMode=yes "$host" "
+line="$(ssh -o BatchMode=yes "$host" "
     set -eu
     cd '$dir'
     flock /root/oxide-perf/.lock sh -c '
@@ -37,4 +38,11 @@ ssh -o BatchMode=yes "$host" "
         ./target/release/oxide-harness --datapack reference --seed 12345 \
             --radius $radius --time-only --threads $threads | grep ^BENCH
     '
-"
+" | tee /dev/stderr | grep '^BENCH')"
+# unix time, commit (with + when the tree has uncommitted changes), radius, then the BENCH fields.
+commit="$(git rev-parse --short HEAD)"
+if [ -n "$(git status --porcelain -- crates)" ]; then
+    commit="$commit+"
+fi
+mkdir -p docs/perf
+printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$commit" "$radius" "${line#BENCH }" >>"docs/perf/bench-$name.tsv"
