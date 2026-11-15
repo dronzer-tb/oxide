@@ -1,0 +1,6 @@
+1794728491	bf28e89	16	chunks=1089 threads=8 secs=5.910 cps=184.3 ms_per_chunk_core=43.42 digest=df701ee858e2bdd3 generate_ms=2915 decorate_ms=2797 serialise_ms=97 compress_ms=80 write_ms=21 compression=zlib6 mb_disk=10.1 pregen=1
+1794728701	bf28e89	16	chunks=1089 threads=8 secs=6.351 cps=171.5 ms_per_chunk_core=46.66 digest=df701ee858e2bdd3 generate_ms=2787 decorate_ms=3341 serialise_ms=86 compress_ms=120 write_ms=17 compression=zlib6 mb_disk=10.1 pregen=1
+1794729126	bf28e89	16	chunks=1089 threads=8 secs=1.722 cps=632.2 ms_per_chunk_core=12.65 digest=a977961a58122047 profile=release build_s=1m52s
+1794729505	bf28e89	16	chunks=1089 threads=8 secs=1.656 cps=657.6 ms_per_chunk_core=12.17 digest=a977961a58122047 profile=release build_s=0.35s
+1794730715	bf28e89	16	chunks=1089 threads=8 secs=1.835 cps=593.3 ms_per_chunk_core=13.48 digest=a977961a58122047 profile=pgo build_s=4m14s+3m05s
+1794731041	bf28e89	16	chunks=1089 threads=8 secs=1.590 cps=684.9 ms_per_chunk_core=11.68 digest=a977961a58122047 profile=pgo build_s=0.98s+3m29s

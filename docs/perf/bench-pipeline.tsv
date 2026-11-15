@@ -27,3 +27,6 @@
 1794725647	c585498	16	chunks=1089 threads=8 secs=14.282 cps=76.2 ms_per_chunk_core=104.92 digest=df701ee858e2bdd3 generate_ms=10266 decorate_ms=3742 serialise_ms=152 compress_ms=99 write_ms=23 compression=zlib6 mb_disk=10.1 pregen=1
 1794727614	4aca951	16	chunks=1089 threads=8 secs=12.970 cps=84.0 ms_per_chunk_core=95.28 digest=df701ee858e2bdd3 generate_ms=9513 decorate_ms=3250 serialise_ms=100 compress_ms=86 write_ms=22 compression=zlib6 mb_disk=10.1 pregen=1
 1794728367	2707402	16	chunks=1089 threads=8 secs=12.522 cps=87.0 ms_per_chunk_core=91.99 digest=df701ee858e2bdd3 generate_ms=9076 decorate_ms=3199 serialise_ms=142 compress_ms=86 write_ms=19 compression=zlib6 mb_disk=10.1 pregen=1
+1794731214	7252db9	16	chunks=1089 threads=8 secs=8.015 cps=135.9 ms_per_chunk_core=58.88 digest=a977961a58122047 profile=release build_s=1m46s
+1794731690	7252db9	16	chunks=1089 threads=8 secs=8.347 cps=130.5 ms_per_chunk_core=61.32 digest=a977961a58122047 profile=release build_s=0.28s
+1794733478	7252db9	16	chunks=1089 threads=8 secs=6.493 cps=167.7 ms_per_chunk_core=47.70 digest=a977961a58122047 profile=pgo build_s=5m38s+3m41s

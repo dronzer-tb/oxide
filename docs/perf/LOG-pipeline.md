@@ -379,3 +379,27 @@ With ahash an overlay miss was already cheap; `block()`'s remaining ~83 ns is th
 The next real lever is probably the cost of owned `BlockState`s, allocated by the caller and
 dropped on overwrite: interning states as ids. That is a structural change and comes after the
 merge numbers show decoration's true share.
+
+## Merge with datapath terrain (auditor's asks 1 and 2)
+
+Scratch merge bf28e89 = this branch 4aca951 + perf/datapath 0e3cf61 (not pushed; rows in
+`bench-pipeline-merge.tsv`, kept out of `bench-pipeline.tsv` so the page does not read the
+merge's terrain as this branch's). All digests held: pregen df701ee858e2bdd3, terrain
+a977961a58122047.
+
+    merge pregen   cps 184.3 171.5   generate_ms 2915 2787   decorate_ms 2797 3341
+    merge release  cps 632.2 657.6
+    merge pgo      cps 593.3 684.9
+    HEAD  release  cps 135.9 130.5   (7252db9)
+    HEAD  pgo      cps 167.7 (second run pending)
+
+- **Decoration share:** with ~4.5x faster terrain, pregen goes from ~85 to ~178 cps, and decoration is now
+  about half the pregen wall time (2.8-3.3 s of ~6 s). It is the main pregen lever now.
+- **PGO depends on the code:** on HEAD (old terrain), PGO gains +25% over the same-commit release (167.7 vs
+  133.2 mean). On the merge it is a wash, 639 vs 645 mean, with one run either side of release. The
+  datapath work seems to have taken the wins PGO was finding (branch layout and inlining in
+  the noise and density paths). Recommendation: do not make `profile=pgo` the headline. Re-test PGO
+  on the next merge (origin/perf/noise e6ecc65, which has both terrain tracks).
+
+Next: a fresh sub-agent (pipeline-2) is splitting `set_block`'s cost and cutting owned
+`BlockState` traffic. The next scratch merge will be based on origin/perf/noise.
