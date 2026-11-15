@@ -65,3 +65,22 @@ typing into the pane would have answered it with Enter. Held for the next pass:
 ### Stopped reading at
 
 noise 945cbde, datapath 5c1bae1, pipeline f5d0545.
+
+## Pass 2, 2026-11-15 02:35 UTC
+
+Run three minutes after pass 1, on request, to deliver the held messages. No new commits on
+any branch; best clean numbers are unchanged (noise 163.8, datapath 282.4, pipeline none).
+
+- All three sessions are now on Opus 5.5 and working. Noise has resumed and has a bench
+  running; datapath is still waiting on the bench of its merge with noise's `sample_cell`;
+  pipeline is writing `oxide-pregen/src/generate.rs`, still with nothing pushed.
+- Messages sent (queued behind each session's running turn):
+  - noise: skip next #1 (`cell_bounds` memo, already cut by datapath E1) and go to the
+    corner-grid build; take the bench lock for `noise-prof` builds; repeat sub-10% gains and
+    run the `oxide-chunkgen` tests before each commit.
+  - datapath: add a margin to the strict-bound cell skips (E4 and the air-cell skip); repeat
+    E4 on a quiet box; log the merge with `sample_cell` as the first combined number.
+  - pipeline: run the baseline, start the log, commit and push the anvil work in small steps.
+- To verify next pass: each track acted on its message; pipeline has a tsv row and a log.
+
+Stopped reading at: noise 945cbde, datapath 5c1bae1, pipeline f5d0545.
