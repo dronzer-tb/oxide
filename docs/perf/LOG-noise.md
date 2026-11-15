@@ -205,3 +205,33 @@ order is deterministic on one thread): **hits 63,296, misses 53,728, hit rate 0.
 up its 16 edge columns per grid, but only 7 of them are new on average (12 non-corner columns
 shared by 2 chunks, 4 corners shared by 4), so the most it can reach is 9/16 = 0.5625, less a
 little at the region's edge. The evictions do not cost hits.
+
+### Hold 2: 8 threads, 4 alternating rounds, one exclusive hold (load 2.68 at start, 2.14 at end)
+
+Radius 16, `--threads 8`, cps. All 8 runs `digest=a977961a58122047`.
+
+| Build | r1 | r2 | r3 | r4 | Mean |
+|---|---|---|---|---|---|
+| head d2433fb + counters (noise-4 on) | 611.1 | 781.7 | 739.0 | 588.1 | 680.0 |
+| 18bb0f9 (noise-4 off) | 630.4 | 682.9 | 642.5 | 597.6 | 638.4 |
+
+Shared column cache counters per 8-thread run:
+
+| Round | Hits | Misses | Hit rate | Evictions | Contended | Acquisitions | Contended rate |
+|---|---|---|---|---|---|---|---|
+| 1 | 59,404 | 57,620 | 0.508 | 26,100 | 189 | 174,644 | 0.00108 |
+| 2 | 58,717 | 58,307 | 0.502 | 26,797 | 175 | 175,331 | 0.00100 |
+| 3 | 58,552 | 58,472 | 0.500 | 26,952 | 209 | 175,496 | 0.00119 |
+| 4 | 57,696 | 59,328 | 0.493 | 27,809 | 145 | 176,352 | 0.00082 |
+
+**Lock contention is ruled out.** About 0.1% of acquisitions had to wait (145-209 per run out of
+~175k), and each wait is one short critical section (a 49-value copy). The 8-thread gain is
++6.5% on these means: ahead in three rounds, behind in the first. The auditor's hold had +17%.
+On 1 thread it is -8.6% core time per chunk. The 8-thread hit rate (0.49-0.51) is a little
+under the 1-thread one (0.541), because chunks finish out of neighbour order and a few more
+shared columns are evicted before their neighbour asks for them.
+
+Possible follow-up, small: the cache has 32,768 column slots and evicts ~27k columns per
+radius-16 run. A pregen order that walks neighbours (the pipeline's choice), or a larger cache,
+could take the hit rate to its 0.5625 ceiling, which is worth at most a few % more of the
+corner grid.
