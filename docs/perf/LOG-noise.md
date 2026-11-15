@@ -424,3 +424,20 @@ break-even, and the gain is the reuse.
 | # | What | Hold | Bases (cps, mean) | Patched | Digest | Verdict |
 |---|---|---|---|---|---|---|
 | 15 (noise-10) | 2D fast path in `ImprovedNoise`. When `yo != 0`, `ym`, `dy`, `dy - 1` and `smoothstep(dy)` for y = +/-0 are precomputed at construction (`y + yo == yo` exactly for both zeros). `PerlinNoise` takes `noise_2d` when `y == 0.0 && y_scale == 0.0`, checked once per call, and both paths share one `lerp_core` with the same operands in the same order. A forced `yo == 0` instance takes the general path. 42 noise tests (old implementations kept as references, both zeros, `dx == 1.0` forced), 193 + 3 chunkgen | 1 thread, 5 rounds, two fresh bases, on b93770d (b1e4a5c + datapath b55a3b2) | 111.84, 108.94 | 111.74 | a977961a58122047 all fifteen | **inconclusive, not landed**: level with base10, inside the build-to-build spread. It led both only in rounds 1-2, while the load was still falling. The saved work (one floor, subtract, smoothstep and mask per 2D octave sample) is too small to see. Patch kept at `docs/perf/wip/noise-10-flat-y-fast-path.patch` |
+| 16 (noise-9) | `PointMemo` + `sample_with_memo`: with no chunk caches, each cache node remembers its last exact position and value, which is exact for any program (no snapping, no blend; slots shared only by equal fingerprints). The aquifer's `surface_level` uses it for Erosion and Depth (caller diff for datapath). 37 noise tests (34k mixed-slot samples, foreign-router memo ignored), 193 + 3 chunkgen | 1 thread, 5 rounds, two fresh bases (labels n9b1/n9b2), on b93770d | 107.6, 110.9 | 108.3 | a977961a58122047 all fifteen | **rejected**: +0.6% / -2.4%, inside the build spread. Its ceiling was small: see the profile below. Patches kept at `docs/perf/wip/noise-9-point-memo*.patch` |
+
+**For datapath: the aquifer's cost is not noise.** noise-9's split profile (1 thread, radius 16,
+temporary `#[inline(never)]` per slot): the aquifer is 10.78% of generation (entries:
+`compute_kind` from the fill 67%, from `carve_ellipsoid` 25%, the constructor ~4%). Of that,
+**83.5% is the aquifer's own logic** (9.0% of generation; hot spots `note_run`'s per-candidate
+loop, aquifer.rs 529-563, and the nearest-centre loop in `compute_kind`). Depth is 12.4% (1.34%),
+of which 64% is noise under the offset spline and 29% the spline itself. Erosion is 3.6%
+(0.38%), Barrier 0.3% and floodedness 0.2%; lava, spread and preliminary surface level got 0
+samples. No API in this crate can cut the aquifer by more than ~1.7% of generation. The rest is
+in datapath's loops.
+
+**Process error, mine**: the noise-8 confirmation's cleanup ran `rm -f ab-bin/base*`. That glob
+also matches other holds' `base9`, `base9b` and `base10*`, so it deleted noise-9's base binaries
+mid-experiment (its first hold printed only the patched lines and had to be re-run) and very
+likely caused noise-10's first hold to produce nothing. From now on every cleanup deletes exact
+labels only (`ab-bin/<label>` and `ab-bin/<label>.stderr`), never a glob.

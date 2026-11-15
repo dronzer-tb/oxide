@@ -1,0 +1,46 @@
+diff --git a/crates/oxide-chunkgen/src/aquifer.rs b/crates/oxide-chunkgen/src/aquifer.rs
+index 2d3c808..9362da7 100644
+--- a/crates/oxide-chunkgen/src/aquifer.rs
++++ b/crates/oxide-chunkgen/src/aquifer.rs
+@@ -21,7 +21,9 @@
+ 
+ use oxide_core::{BlockState, RandomSource, ResourceLocation};
+ use oxide_datapack::NoiseGeneratorSettings;
+-use oxide_noise::{ChunkCaches, NoiseRouterEvaluator, RouterSlot, WorldPositionalFactory};
++use oxide_noise::{
++    ChunkCaches, NoiseRouterEvaluator, PointMemo, RouterSlot, WorldPositionalFactory,
++};
+ 
+ const X_RANGE: i32 = 10;
+ const Y_RANGE: i32 = 9;
+@@ -189,6 +191,10 @@ pub fn for_settings<'a>(
+ pub struct Aquifer<'a> {
+     router: &'a NoiseRouterEvaluator,
+     caches: &'a ChunkCaches,
++    /// For `surface_level`'s erosion and depth: `depth`'s offset spline re-reads erosion and
++    /// ridges per nested spline, and erosion was just sampled at the same position. Same bits
++    /// as `router.sample` (see `PointMemo`).
++    point_memo: PointMemo,
+     random: WorldPositionalFactory,
+ 
+     air: BlockState,
+@@ -284,6 +290,7 @@ impl<'a> Aquifer<'a> {
+         let mut aquifer = Self {
+             router,
+             caches,
++            point_memo: router.point_memo(),
+             // Vanilla's aquiferRandom: the RandomState factory hashed with "minecraft:aquifer".
+             random: router
+                 .positional_factory()
+@@ -779,8 +786,9 @@ impl<'a> Aquifer<'a> {
+         lowest_surface: i32,
+         surface_under_global_fluid: bool,
+     ) -> i32 {
+-        let erosion = self.router.sample(RouterSlot::Erosion, x, y, z);
+-        let depth = self.router.sample(RouterSlot::Depth, x, y, z);
++        let memo = &self.point_memo;
++        let erosion = self.router.sample_with_memo(memo, RouterSlot::Erosion, x, y, z);
++        let depth = self.router.sample_with_memo(memo, RouterSlot::Depth, x, y, z);
+         // Deep dark stays dry: that is what makes ancient cities generate without water.
+         let deep_dark = erosion < -0.225 && depth > 0.9;
+ 
