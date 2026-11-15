@@ -435,3 +435,24 @@ Run 2: `BENCH chunks=1089 threads=8 secs=1.907 cps=571.0 ms_per_chunk_core=14.01
 
 Both runs above the base's best (492.3) in the A/B: about 15% less core time per chunk.
 Tests: chunkgen 189 passed.
+
+### E14 (in flight): surface round 2, folded rule programs
+
+Sub-agent experiment in `/tmp/datapath-6`, based on 6b8562f. The profile could not split the
+surface pass further, because the scan loop is inlined into one frame. Counters (temporary
+build) show per chunk: ~25.9k positions offered, 85% of them below the preliminary surface,
+6.3 ops per position on average, ~2.6k `vertical_gradient` draws.
+
+Change: each position runs a copy of the program folded for facts known cheaply there: the
+y band (edges at every `vertical_gradient` bound and every depth-free `y_above`), above the
+preliminary surface or not, stone depth 1 or at least 2, water above or not. Folded copies
+are built lazily per fact key. Settled tests are dropped, and a level that always places a
+block ends its siblings. `run_bottom` is walked only when a `ceiling` `stone_depth` is
+evaluated. Exact because every condition is a pure function of the position, its column and
+the chunk. Draws are positional: `WorldPositionalFactory::at` seeds a fresh RNG from the
+position, so skipping one affects no other.
+
+Sub-agent's runs (base 6b8562f): `cps=414.8` (box load 10 right after) and `cps=504.3`,
+both `digest=a977961a58122047`. Inconclusive. It is 263 lines of folding logic, so it lands
+only if an interleaved A/B against the current head (85f6075, with E12 and E13) shows a gain.
+That A/B is running: three alternating pairs in one exclusive hold, after tests on both builds.
