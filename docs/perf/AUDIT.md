@@ -630,3 +630,11 @@ a second sub-agent on the 8-thread scaling loss; 7 rounds at radius 16, not radi
 to noise or pipeline.
 
 Stopped reading at: noise 3362440, datapath bf577ba, pipeline 1732883
+
+### Note from the user, 15:05 UTC
+
+- s5 was reserved for a live server test; bench builds were SIGSTOPped and resume at about
+  15:55 UTC (16:55 CET, systemd timer `resume-bench`). **Rows timed between 15:00 and 15:55 UTC
+  do not count.**
+- Live Chunky with the datapath head: 85 cps at first, 115 cps with the box free and lz4 region
+  files. With `native-decoration=true`: about 10 cps (pipeline has been told).
