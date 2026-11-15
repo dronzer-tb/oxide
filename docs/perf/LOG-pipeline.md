@@ -220,3 +220,27 @@ rescans written columns, and the overlay is a SipHash map of owned states. Plan:
    only).
 2. Then intern states as u32 ids, with flat fact bits by id and a dense overlay, if the split
    says lookups dominate.
+
+**Kept: PGO for the terrain bench** (pipeline-1 sub-agent; `scripts/bench-pgo-vps.sh`, brought
+in by me with small changes). The flow: instrumented build (`-Cprofile-generate`), a training
+run under the shared lock, `llvm-profdata merge`, then a `-Cprofile-use` build. Build
+directories go under `target/pgo-{gen,use}`, so the release cache is untouched, and the
+script repeats `target-cpu=native` because RUSTFLAGS overrides `.cargo/config.toml`. llvm-tools
+were added on the box with `rustup component add llvm-tools` (no sudo). Commit baa536c, r16,
+8 threads, every digest a977961a58122047:
+
+| build | cps |
+|---|---|
+| release | 143.2, 136.0 (median 139.6) |
+| PGO, trained on the bench workload | 163.8, 151.5 (median 157.7, **+12.9%**) |
+| PGO, trained on seed 999 r8, timed on 12345 r16 | 164.2 |
+| PGO + fat LTO | 150.0, 168.1 (median 159.1: nothing over plain PGO) |
+
+PGO clears the 10% bar on two runs, and the cross-trained run says it is not fitted to the
+benchmark, so the script defaults to that training (seed 999, r8). The cost is a cold build of
+about 11-13 min against about 7 min for release (instrumented about 6 min, training about 1 min,
+profile-use 3.5-6 min). This is the first configuration on this box past PLAN's 160.5 start
+line. It changes only how the binary is built, so it adds on top of every code track; whether
+the progress page counts `profile=pgo` rows as the headline is the user's call.
+`-Cllvm-args=-pgo-warn-mismatch=false` is not accepted by this LLVM, and no mismatch
+warnings appeared without it.
