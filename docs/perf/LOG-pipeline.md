@@ -113,3 +113,28 @@ every terrain bench. It now excludes it.
 
 **Process:** the user has ruled OmniRoute out entirely (too slow). There will be no more
 omni-agent.sh or omni-ask.sh calls on this track; parallel work goes to Opus sub-agents only.
+
+**Kept: fair bench locking** (68df22e, 8cc6fd3), done ahead of PGO at the auditor's lead.
+At 03:30 there were 11 timed runs waiting on `flock -x`, the oldest 26 minutes. There were
+two causes:
+1. flock is not fair, so a steady stream of shared builds kept the exclusive waiters out.
+   The new `scripts/bench-lock.sh build|timed|timed-inner <cmd>` adds a second lock,
+   `~/oxide-perf/.gate`. A timed run holds it from when it starts waiting until it ends. A
+   build must take it before taking `.lock` shared, and drops it as soon as the shared lock
+   is held. New builds now queue behind a waiting timed run; builds already running finish
+   first.
+2. The exclusive hold covered the whole harness process: datapack load, a 3-7 s timed section,
+   then a ~25 s single-threaded digest pass. `oxide-harness --bench-lock <file>` (additive; the
+   harness belongs to no track) takes the exclusive flock around `generate_all` only. The
+   digest is now computed in parallel: per-chunk hashes, folded in position order, so the
+   digest is the same.
+`bench-vps.sh` uses `timed-inner` when the harness it built has `--bench-lock`, and plain
+`timed` otherwise, so the script also works on a branch without the harness change.
+`bench-pregen-vps.sh` and `vps-cargo.sh` go through the same script.
+
+**For the owner of `feat/native-decoration`, so every track can take it:** cherry-pick
+68df22e and 8cc6fd3 from `perf/pipeline`, or copy `scripts/bench-lock.sh` and
+`scripts/bench-vps.sh`. The gate only works if *everything* on the box goes through
+`bench-lock.sh`. A bare `flock -s ~/oxide-perf/.lock` (a hand-run test, or a sub-agent's
+build) skips the gate and can still starve timed runs. The rule for all tracks becomes:
+`sh scripts/bench-lock.sh build <cmd>` for any build, test or profile on the box.
