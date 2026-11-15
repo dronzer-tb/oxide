@@ -18,3 +18,16 @@
 1794731003	d2433fb	16	chunks=1089 threads=8 secs=1.597 cps=682.0 ms_per_chunk_core=11.73 digest=a977961a58122047
 1794731242	d2433fb+	16	chunks=1089 threads=8 secs=1.772 cps=614.6 ms_per_chunk_core=13.02 digest=a977961a58122047
 1794732269	d2433fb	16	chunks=1089 threads=8 secs=1.751 cps=622.0 ms_per_chunk_core=12.86 digest=a977961a58122047
+1794733000	d2433fb	16	chunks=1089 threads=1 secs=11.205 cps=97.2 ms_per_chunk_core=10.29 digest=a977961a58122047
+1794733048	d2433fb	16	chunks=1089 threads=1 secs=11.273 cps=96.6 ms_per_chunk_core=10.35 digest=a977961a58122047
+1794733096	d2433fb	16	chunks=1089 threads=1 secs=11.663 cps=93.4 ms_per_chunk_core=10.71 digest=a977961a58122047
+1794733144	d2433fb	16	chunks=1089 threads=1 secs=11.871 cps=91.7 ms_per_chunk_core=10.90 digest=a977961a58122047
+1794733192	d2433fb+	16	chunks=1089 threads=8 secs=1.782 cps=611.1 ms_per_chunk_core=13.09 digest=a977961a58122047
+1794733198	d2433fb+	16	chunks=1089 threads=8 secs=1.393 cps=781.7 ms_per_chunk_core=10.23 digest=a977961a58122047
+1794733204	d2433fb+	16	chunks=1089 threads=8 secs=1.474 cps=739.0 ms_per_chunk_core=10.83 digest=a977961a58122047
+1794733210	d2433fb+	16	chunks=1089 threads=8 secs=1.852 cps=588.1 ms_per_chunk_core=13.60 digest=a977961a58122047
+1794736000	ff02449	16	chunks=1089 threads=1 secs=10.759 cps=101.2 ms_per_chunk_core=9.88 digest=a977961a58122047
+1794736023	ff02449	16	chunks=1089 threads=1 secs=10.476 cps=104.0 ms_per_chunk_core=9.62 digest=a977961a58122047
+1794736046	ff02449	16	chunks=1089 threads=1 secs=10.540 cps=103.3 ms_per_chunk_core=9.68 digest=a977961a58122047
+1794736069	ff02449	16	chunks=1089 threads=1 secs=10.761 cps=101.2 ms_per_chunk_core=9.88 digest=a977961a58122047
+1794736092	ff02449	16	chunks=1089 threads=1 secs=10.679 cps=102.0 ms_per_chunk_core=9.81 digest=a977961a58122047

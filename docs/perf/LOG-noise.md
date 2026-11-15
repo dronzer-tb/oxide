@@ -244,8 +244,9 @@ Tests on the combined tree (12 + the cache counters): oxide-noise 34 passed (new
 `gated_add_is_bit_identical_and_skips_where_the_gradient_is_zero`, all four operand orders, every
 y from -64 to 320 against the plain formula, with the gate exercised; `gated_add_needs_a_finite_body`,
 where `invert` keeps the plain lowering and its NaN), oxide-chunkgen 190 + 1 + 1 + 1 passed.
-The load average of 5.24 at the start of hold 3 means something ran outside the lock at that
-moment. Both builds alternated through it, and the gate wins every round.
+Correction from the auditor: a high one-minute load average at the start of a hold is not
+evidence of unlocked work. A hold starts the moment the builds it waited for end, so that
+average is always high then. Only a process seen in `ps` during the hold would count.
 
 ### Corner-grid cost model at 8a85270 (instrumented scratch build, radius 16, 8 threads)
 
@@ -273,3 +274,14 @@ cannot be lazy, because the culling bounds read every one of its corners.
 What is left in this crate is the per-sample cost of `ImprovedNoise`. `noise-7` (in flight) tries
 SIMD within one sample: the 8 corner dot products and 7 lerps across lanes, gradients from a
 per-hash `[gx, gy, gz, 0]` table, no cross-sample queue (the cost that sank 11).
+
+### Housekeeping
+
+- `bench-noise.tsv` now carries the hold runs of each kept head, as datapath's does:
+  d2433fb (hold 1, 1 thread), d2433fb+ (hold 2, 8 threads; the "+" is the cache counters that
+  later landed in 8a85270) and ff02449 (hold 3, 1 thread). The BENCH fields are the hold's own;
+  the timestamps are approximate (backfilled in run order, since the holds did not record
+  them).
+- The bench box disk was at 96%. My finished dirs there are deleted (`noise-1` to `noise-6`,
+  `noise-merged`, `count`, the finished `ab-*` trees and their binaries, `noise-prof/target`).
+  From here on each scratch dir is deleted as soon as its experiment is logged.
