@@ -37,6 +37,96 @@ const SURFACE_MEMO_SPAN: i32 = 40;
 /// The same window in chunks.
 const SURFACE_MEMO_CHUNKS: i32 = SURFACE_MEMO_SPAN / 4;
 
+/// Side of one page of the per-thread preliminary-surface memo, in quarts (log2): 64 quarts,
+/// 256 blocks, 16 chunks.
+const SURFACE_PAGE_SHIFT: i32 = 6;
+const SURFACE_PAGE_SIDE: i32 = 1 << SURFACE_PAGE_SHIFT;
+/// Pages kept per thread before the least recently used one is reused: 16 pages of 4096
+/// `i32`s, 256 KiB per thread at most.
+const SURFACE_PAGE_COUNT: usize = 16;
+
+/// One dense `SURFACE_PAGE_SIDE`-squared block of quart columns; `i32::MIN` = not sampled yet.
+struct SurfacePage {
+    page_x: i32,
+    page_z: i32,
+    last_used: u64,
+    levels: Box<[i32]>,
+}
+
+/// `preliminary_surface_level` per quart column, shared by every chunk one thread generates
+/// against one router, so a neighbour column is scanned once per thread rather than once per
+/// chunk whose aquifer reaches it (up to ~20).
+///
+/// Keyed on [`NoiseRouterEvaluator::id`], which no two evaluators in a process share, even
+/// when one is dropped and another is built at the same address. A different id clears every
+/// page before use, so a value computed for one router is never returned for another.
+#[derive(Default)]
+struct SurfaceMemo {
+    router_id: u64,
+    clock: u64,
+    pages: Vec<SurfacePage>,
+}
+
+impl SurfaceMemo {
+    /// Bind to `router_id`, dropping every page if they were filled for another router.
+    fn bind(&mut self, router_id: u64) {
+        if self.router_id != router_id {
+            self.pages.clear();
+            self.router_id = router_id;
+        }
+    }
+
+    /// The page holding quart column `(quart_x, quart_z)` (block coordinates, multiples of 4)
+    /// and the column's index in it, making room for the page if it is not held.
+    fn slot(&mut self, quart_x: i32, quart_z: i32) -> (usize, usize) {
+        let qx = quart_x >> 2;
+        let qz = quart_z >> 2;
+        let page_x = qx >> SURFACE_PAGE_SHIFT;
+        let page_z = qz >> SURFACE_PAGE_SHIFT;
+        let index = ((qz & (SURFACE_PAGE_SIDE - 1)) * SURFACE_PAGE_SIDE
+            + (qx & (SURFACE_PAGE_SIDE - 1))) as usize;
+        self.clock += 1;
+        let clock = self.clock;
+        if let Some(found) = self
+            .pages
+            .iter()
+            .position(|p| p.page_x == page_x && p.page_z == page_z)
+        {
+            self.pages[found].last_used = clock;
+            return (found, index);
+        }
+        let page = if self.pages.len() < SURFACE_PAGE_COUNT {
+            self.pages.push(SurfacePage {
+                page_x,
+                page_z,
+                last_used: clock,
+                levels: vec![i32::MIN; (SURFACE_PAGE_SIDE * SURFACE_PAGE_SIDE) as usize]
+                    .into_boxed_slice(),
+            });
+            self.pages.len() - 1
+        } else {
+            let oldest = (0..self.pages.len())
+                .min_by_key(|&i| self.pages[i].last_used)
+                .expect("SURFACE_PAGE_COUNT > 0");
+            let p = &mut self.pages[oldest];
+            p.page_x = page_x;
+            p.page_z = page_z;
+            p.last_used = clock;
+            p.levels.fill(i32::MIN);
+            oldest
+        };
+        (page, index)
+    }
+}
+
+thread_local! {
+    /// The thread's [`SurfaceMemo`]. An [`Aquifer`] takes it out for its whole life and puts it
+    /// back on drop, so lookups never touch the thread-local; an aquifer built while another
+    /// one holds it just starts with an empty memo.
+    static SURFACE_MEMO: std::cell::Cell<Option<Box<SurfaceMemo>>> =
+        const { std::cell::Cell::new(None) };
+}
+
 /// Chunk-relative offsets, in chunks, at which `computeFluid` samples the preliminary surface.
 const SURFACE_SAMPLING_OFFSETS_IN_CHUNKS: [[i32; 2]; 13] = [
     [0, 0],
@@ -135,6 +225,17 @@ pub struct Aquifer<'a> {
     surface_origin_chunk_z: i32,
     own_chunk_x: i32,
     own_chunk_z: i32,
+    /// This thread's cross-chunk memo, bound to `router`'s id; returned to the thread on drop.
+    shared_surface: Box<SurfaceMemo>,
+}
+
+impl Drop for Aquifer<'_> {
+    fn drop(&mut self) {
+        let memo = std::mem::take(&mut self.shared_surface);
+        // `try_with`: during thread teardown the slot may already be gone; the memo is then
+        // simply freed.
+        let _ = SURFACE_MEMO.try_with(|slot| slot.set(Some(memo)));
+    }
 }
 
 /// The 12 grid cells `compute_kind` weighs for one anchor, in its `(dx, dy, dz)` loop order:
@@ -215,6 +316,15 @@ impl<'a> Aquifer<'a> {
             surface_origin_chunk_z: chunk_z - 5,
             own_chunk_x: chunk_x,
             own_chunk_z: chunk_z,
+            shared_surface: {
+                let mut memo = SURFACE_MEMO
+                    .try_with(|slot| slot.take())
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
+                memo.bind(router.id());
+                memo
+            },
         };
 
         // Above the highest surface in reach there is nothing to flood, so vanilla stops
@@ -718,6 +828,17 @@ impl<'a> Aquifer<'a> {
                 return level;
             }
         }
+        // Then this thread's memo across chunks, for the same router (see `SurfaceMemo`). Its
+        // values came from this same function on an earlier chunk, through whichever caches
+        // that chunk used; by the argument below they are the same bits as computing here.
+        let (page, index) = self.shared_surface.slot(quart_x, quart_z);
+        let shared = self.shared_surface.pages[page].levels[index];
+        if shared != i32::MIN {
+            if let Some(slot) = slot {
+                self.surface_levels[slot] = shared;
+            }
+            return shared;
+        }
         // A column of this chunk goes through the chunk's own caches, as it always has. A
         // column of another chunk in the window goes through a private `ChunkCaches` for that
         // chunk, so its `cache_2d` nodes hold `offset` and `factor` across the whole
@@ -760,6 +881,8 @@ impl<'a> Aquifer<'a> {
         if let Some(slot) = slot {
             self.surface_levels[slot] = level;
         }
+        // `slot` above cannot have been evicted since: nothing between touches the memo.
+        self.shared_surface.pages[page].levels[index] = level;
         level
     }
 }
@@ -816,4 +939,60 @@ fn clamped_map(value: f64, from_min: f64, from_max: f64, to_min: f64, to_max: f6
 /// Vanilla `Mth.map`, unclamped.
 fn map(value: f64, from_min: f64, from_max: f64, to_min: f64, to_max: f64) -> f64 {
     to_min + (value - from_min) * (to_max - to_min) / (from_max - from_min)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxide_datapack::Registry;
+
+    fn settings(surface: f64) -> NoiseGeneratorSettings {
+        let json = serde_json::json!({
+            "default_block": {"Name": "minecraft:stone"},
+            "default_fluid": {"Name": "minecraft:water"},
+            "sea_level": 63,
+            "disable_mob_generation": false,
+            "aquifers_enabled": true,
+            "ore_veins_enabled": false,
+            "legacy_random_source": false,
+            "noise": {"min_y": -64, "height": 384, "size_horizontal": 1, "size_vertical": 2},
+            "noise_router": {
+                "temperature": 0.0,
+                "vegetation": 0.0,
+                "continents": 0.0,
+                "erosion": 0.0,
+                "depth": 0.0,
+                "ridges": 0.0,
+                "preliminary_surface_level": surface,
+                "final_density": 0.0
+            },
+            "surface_rule": {"type": "minecraft:block", "result_state": {"Name": "minecraft:stone"}},
+            "spawn_target": []
+        });
+        serde_json::from_value(json).expect("valid fixture")
+    }
+
+    /// Two routers used one after the other on one thread, the second very likely built where
+    /// the first was dropped: the second must never see the first's memoised surface levels.
+    #[test]
+    fn surface_memo_never_crosses_routers() {
+        let df = Registry::default();
+        let noises = Registry::default();
+        for (round, surface) in [10.0, 50.0, 10.0, -20.0].into_iter().enumerate() {
+            let settings = settings(surface);
+            let router = NoiseRouterEvaluator::new(7, &settings, &df, &noises);
+            let caches = router.chunk_caches(0, 0);
+            for chunk in [(0, 0), (1, 0), (0, 1)] {
+                let mut aquifer =
+                    Aquifer::new(chunk.0, chunk.1, &settings, &router, &caches);
+                for (x, z) in [(0, 0), (-40, 8), (20, -60), (300, 300)] {
+                    assert_eq!(
+                        aquifer.preliminary_surface_level(x, z),
+                        surface as i32,
+                        "round {round}, chunk {chunk:?}, column ({x}, {z})"
+                    );
+                }
+            }
+        }
+    }
 }

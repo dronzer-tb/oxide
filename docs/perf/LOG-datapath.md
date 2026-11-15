@@ -627,3 +627,35 @@ So, as PLAN.md allows ("the smallest additive change, say so in your log"): a pr
 `id: u64` field set in `new` from a process-wide `AtomicU64`, and `pub fn id(&self) -> u64`.
 Nothing renamed or reshaped. The router is not `Clone`, so ids are never shared. One field and one
 accessor; if the noise track changes `new`, the merge conflict is two lines.
+
+### E18: per-thread cross-chunk memo of neighbour surface levels -- kept
+
+Sub-agent experiment in `/tmp/datapath-11`, on 91bec92, which adds `NoiseRouterEvaluator::id()`.
+- Each thread keeps one `SurfaceMemo`: the router id it was filled for, plus up to 16 dense
+  pages of 64x64 quart columns, one `i32` each. That is at most 256 KiB per thread, with LRU page reuse.
+- An `Aquifer` takes the memo out of the thread-local in `new` and calls `bind(router.id())`,
+  which clears every page if the id differs. `Drop` puts the memo back. An aquifer built while another holds the
+  memo starts with an empty one.
+- Lookup order: the per-aquifer window, then the thread page, then the real computation, which
+  writes both.
+- It cannot alias, because ids come from a process-wide counter that only grows and the router
+  is not `Clone`.
+- Values are exact by the E13 argument: the same function, the same router, the same quart
+  column, so the same bits whichever caches computed it. Only an `i32` is stored.
+- New test `surface_memo_never_crosses_routers`: four routers on one thread, all with seed 7
+  but different constant surface levels, three aquifers each. Every column must return its
+  own router's value.
+
+Tests: chunkgen 190 passed (one new), noise 30 passed; `id()` compiled here for the first time.
+Sub-agent runs: `cps=610.9`, `646.1` (box load ~5).
+
+Interleaved A/B, one exclusive hold, head rebuilt plain (without the profile feature) at 91bec92 versus 91bec92 plus E18:
+
+| | pair 1 | pair 2 | pair 3 | mean |
+|---|---|---|---|---|
+| head 91bec92 | 574.8 | 593.1 | 581.9 | 583.3 |
+| + E18 | 620.7 | 639.6 | 555.9 | 605.4 |
+
+All six `digest=a977961a58122047`. +3.8%, ahead in two of three pairs. Kept: it matches the ~4%
+of generation E15 attributed to recomputing neighbour columns, and it is exact and tested.
+The datapack caveat from E13 still applies, now across chunks.
