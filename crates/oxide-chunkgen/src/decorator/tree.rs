@@ -31,6 +31,7 @@ mod pos_set;
 mod root;
 mod trunk;
 
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -44,11 +45,12 @@ pub use fallen::FallenTreeFeature;
 use self::decorator::Decorator;
 use self::pos_set::PosSet;
 use self::root::Root;
-use super::context::{block_in, Environment, FeatureContext};
+use super::context::{block_in, fact_in, Environment, FeatureContext, VOID_AIR};
 use super::feature::Feature;
 use super::predicate::IdSet;
 use super::provider::{between_inclusive, next_bounded, sample_int};
 use super::state_provider::{StateProvider, Unsupported};
+use crate::region::StateKey;
 
 pub(super) type Res<T> = Result<T, Unsupported>;
 
@@ -185,6 +187,60 @@ pub(super) fn with_property(mut state: BlockState, name: &str, value: &str) -> B
     state
 }
 
+/// `BlockState.trySetValue(RotatedPillarBlock.AXIS, axis)`.
+fn with_axis(state: BlockState, axis: Axis) -> BlockState {
+    if state.properties.contains_key("axis") {
+        with_property(state, "axis", axis.name())
+    } else {
+        state
+    }
+}
+
+/// What a tree asks of one block state, answered once per state per tree: the air fact, the tag
+/// memberships, whether it is a vine or a persistent leaf, and its `distance` property.
+#[derive(Clone, Copy)]
+pub(super) struct Info {
+    bits: u8,
+    distance: Option<i32>,
+}
+
+impl Info {
+    const AIR: u8 = 1;
+    const LEAVES: u8 = 2;
+    const LOGS: u8 = 4;
+    const REPLACEABLE: u8 = 8;
+    const PREVENTS_DECAY: u8 = 16;
+    const VINE: u8 = 32;
+    const PERSISTENT: u8 = 64;
+
+    fn has(self, bit: u8) -> bool {
+        self.bits & bit != 0
+    }
+
+    pub fn air(self) -> bool {
+        self.has(Self::AIR)
+    }
+
+    pub fn log(self) -> bool {
+        self.has(Self::LOGS)
+    }
+
+    /// `TreeFeature.validTreePos`: air, or replaceable by trees.
+    pub fn valid_tree_pos(self) -> bool {
+        self.has(Self::AIR | Self::REPLACEABLE)
+    }
+}
+
+/// Slots of [`Run::ids`]: the trunk state per axis (none, x, y, z), then the foliage state
+/// without a `waterlogged` property, waterlogged false, waterlogged true.
+const TRUNK_SLOT: usize = 0;
+const FOLIAGE_SLOT: usize = 4;
+const ID_SLOTS: usize = 7;
+/// Direct-mapped [`Info`] cache size; a tree sees a few dozen distinct states.
+const INFO_SLOTS: usize = 64;
+/// Direct-mapped cache of the ids `update_leaves` writes, by the state it rewrites and distance.
+const DISTANCE_SLOTS: usize = 32;
+
 /// Which of a tree's position sets a write belongs to.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Layer {
@@ -233,6 +289,16 @@ pub(super) struct Run<'c, 'e, 'a, 'r> {
     sets: Sets,
     /// Fallen trees write decorations without recording them.
     track: bool,
+    vine: ResourceLocation,
+    /// [`Info`] per state seen so far, keyed by the region's [`StateKey`].
+    infos: [Cell<Option<(StateKey, Info)>>; INFO_SLOTS],
+    /// [`Info`] of `void_air`, what every position outside the window reads as.
+    void_info: Cell<Option<Info>>,
+    /// Interned ids of the fixed states this tree writes (see [`TRUNK_SLOT`], [`FOLIAGE_SLOT`]),
+    /// interned on first write, when `set_block` would have interned them.
+    ids: [Option<u32>; ID_SLOTS],
+    /// `(state rewritten, distance) -> id written` for `update_leaves`.
+    distance_ids: [Option<(StateKey, u8, u32)>; DISTANCE_SLOTS],
 }
 
 impl<'c, 'e, 'a, 'r> Run<'c, 'e, 'a, 'r> {
@@ -243,6 +309,71 @@ impl<'c, 'e, 'a, 'r> Run<'c, 'e, 'a, 'r> {
             tags,
             sets: Sets::default(),
             track,
+            vine: ResourceLocation::minecraft("vine"),
+            infos: std::array::from_fn(|_| Cell::new(None)),
+            void_info: Cell::new(None),
+            ids: [None; ID_SLOTS],
+            distance_ids: [None; DISTANCE_SLOTS],
+        }
+    }
+
+    fn compute_info(&self, state: &BlockState) -> Info {
+        let mut bits = 0;
+        let mut flag = |on: bool, bit: u8| {
+            if on {
+                bits |= bit;
+            }
+        };
+        flag(self.cx.env.facts.is(state, BlockFact::Air), Info::AIR);
+        flag(in_tag(self.tags.leaves, state), Info::LEAVES);
+        flag(in_tag(self.tags.logs, state), Info::LOGS);
+        flag(
+            in_tag(self.tags.replaceable_by_trees, state),
+            Info::REPLACEABLE,
+        );
+        flag(
+            in_tag(self.tags.prevents_leaf_decay, state),
+            Info::PREVENTS_DECAY,
+        );
+        flag(state.name == self.vine, Info::VINE);
+        flag(
+            state
+                .properties
+                .get("persistent")
+                .is_some_and(|value| value == "true"),
+            Info::PERSISTENT,
+        );
+        Info {
+            bits,
+            distance: state
+                .properties
+                .get("distance")
+                .and_then(|value| value.parse().ok()),
+        }
+    }
+
+    /// The [`Info`] of the block at `p`, as [`Self::state`] reads it.
+    pub fn info(&self, p: BlockPos) -> Info {
+        match self.cx.region.block_keyed(p) {
+            Some((key, state)) => {
+                let cell = &self.infos[key.slot() % INFO_SLOTS];
+                if let Some((cached, info)) = cell.get() {
+                    if cached == key {
+                        return info;
+                    }
+                }
+                let info = self.compute_info(state);
+                cell.set(Some((key, info)));
+                info
+            }
+            None => match self.void_info.get() {
+                Some(info) => info,
+                None => {
+                    let info = self.compute_info(&VOID_AIR);
+                    self.void_info.set(Some(info));
+                    info
+                }
+            },
         }
     }
 
@@ -250,29 +381,29 @@ impl<'c, 'e, 'a, 'r> Run<'c, 'e, 'a, 'r> {
         block_in(self.cx.region, p)
     }
 
+    /// Whether `fact` holds for [`Self::state`]`(p)`, through the region's fact cache.
     pub fn fact(&self, p: BlockPos, fact: BlockFact) -> bool {
-        self.cx.env.facts.is(self.state(p), fact)
+        fact_in(self.cx.region, p, fact)
     }
 
     pub fn is_air(&self, p: BlockPos) -> bool {
-        self.fact(p, BlockFact::Air)
+        self.info(p).air()
     }
 
     pub fn is_log(&self, p: BlockPos) -> bool {
-        in_tag(self.tags.logs, self.state(p))
+        self.info(p).log()
     }
 
     pub fn is_leaves(&self, p: BlockPos) -> bool {
-        in_tag(self.tags.leaves, self.state(p))
+        self.info(p).has(Info::LEAVES)
     }
 
     /// `TreeFeature.validTreePos`: air, or replaceable by trees.
     pub fn valid_tree_pos(&self, p: BlockPos) -> bool {
-        self.is_air(p) || in_tag(self.tags.replaceable_by_trees, self.state(p))
+        self.info(p).valid_tree_pos()
     }
 
-    /// Writes `state`, recording `p` in the layer's set. Returns whether the region took it.
-    pub fn set(&mut self, layer: Layer, p: BlockPos, state: BlockState) -> bool {
+    fn record(&mut self, layer: Layer, p: BlockPos) {
         if self.track {
             let sets = &mut self.sets;
             match layer {
@@ -282,7 +413,58 @@ impl<'c, 'e, 'a, 'r> Run<'c, 'e, 'a, 'r> {
                 Layer::Decoration => sets.decorations.insert(p),
             };
         }
+    }
+
+    /// Writes `state`, recording `p` in the layer's set. Returns whether the region took it.
+    pub fn set(&mut self, layer: Layer, p: BlockPos, state: BlockState) -> bool {
+        self.record(layer, p);
         self.cx.region.set_block(p, state)
+    }
+
+    /// [`Self::set`] for a state that is the same every time this tree writes `slot`: built and
+    /// interned on the slot's first write the region takes, written by id after that.
+    fn set_slot(
+        &mut self,
+        layer: Layer,
+        p: BlockPos,
+        slot: usize,
+        make: impl FnOnce() -> BlockState,
+    ) -> bool {
+        self.record(layer, p);
+        if !self.cx.region.contains(p) {
+            return false;
+        }
+        let id = match self.ids[slot] {
+            Some(id) => id,
+            None => {
+                let id = self.cx.region.intern(&make());
+                self.ids[slot] = Some(id);
+                id
+            }
+        };
+        self.cx.region.set_block_id(p, id)
+    }
+
+    /// `update_leaves`' write: the state at `pos` with its `distance` set to `distance`.
+    fn set_distance(&mut self, pos: BlockPos, distance: usize) {
+        let Some((key, state)) = self.cx.region.block_keyed(pos) else {
+            let updated = with_property(VOID_AIR.clone(), "distance", &distance.to_string());
+            self.cx.region.set_block(pos, updated);
+            return;
+        };
+        let d = distance as u8;
+        let slot = key.slot().wrapping_add(usize::from(d).wrapping_mul(7)) % DISTANCE_SLOTS;
+        let id = match self.distance_ids[slot] {
+            Some((cached, cached_d, id)) if cached == key && cached_d == d => id,
+            _ => {
+                let updated = with_property(state.clone(), "distance", &distance.to_string());
+                let id = self.cx.region.intern(&updated);
+                self.distance_ids[slot] = Some((key, d, id));
+                id
+            }
+        };
+        // A position `block_keyed` answers is inside the window, so the write lands.
+        self.cx.region.set_block_id(pos, id);
     }
 
     pub fn sample(&mut self, provider: &StateProvider, p: BlockPos) -> Res<BlockState> {
@@ -325,11 +507,7 @@ impl<'c, 'e, 'a, 'r> Run<'c, 'e, 'a, 'r> {
 
     /// `BlockState.trySetValue(RotatedPillarBlock.AXIS, axis)`.
     pub fn with_axis(&self, state: BlockState, axis: Axis) -> BlockState {
-        if state.properties.contains_key("axis") {
-            with_property(state, "axis", axis.name())
-        } else {
-            state
-        }
+        with_axis(state, axis)
     }
 
     /// Whether a foliage write has already recorded `p`.
@@ -339,7 +517,7 @@ impl<'c, 'e, 'a, 'r> Run<'c, 'e, 'a, 'r> {
 
     /// Whether the block at `p` is `minecraft:vine`.
     pub fn has_vine(&self, p: BlockPos) -> bool {
-        self.state(p).name == ResourceLocation::minecraft("vine")
+        self.info(p).has(Info::VINE)
     }
 }
 
@@ -356,6 +534,15 @@ pub struct TreeFeature {
     decorators: Vec<Decorator>,
     /// A component this generator cannot complete; the tree then places nothing.
     unsupported: Option<String>,
+}
+
+/// What `try_place_leaf` writes for a `simple_state_provider` foliage state, by slot.
+fn foliage_slot(state: &BlockState, run: &Run<'_, '_, '_, '_>, p: BlockPos) -> (usize, bool) {
+    if !state.properties.contains_key("waterlogged") {
+        return (FOLIAGE_SLOT, false);
+    }
+    let source = run.fact(p, BlockFact::Water) && run.fact(p, BlockFact::FluidSource);
+    (FOLIAGE_SLOT + 1 + usize::from(source), true)
 }
 
 /// Compiles a configured feature by registry id; how the pale-moss decorator finds its patch.
@@ -548,14 +735,26 @@ impl TreeFeature {
 
     /// `FoliagePlacer.tryPlaceLeaf`.
     fn try_place_leaf(&self, run: &mut Run<'_, '_, '_, '_>, p: BlockPos) -> Res<bool> {
-        let here = run.state(p);
-        if here
-            .properties
-            .get("persistent")
-            .is_some_and(|value| value == "true")
-            || !run.valid_tree_pos(p)
-        {
+        let info = run.info(p);
+        if info.has(Info::PERSISTENT) || !info.valid_tree_pos() {
             return Ok(false);
+        }
+        if let StateProvider::Simple(state) = &self.foliage {
+            // The simple provider draws nothing, so the state depends only on the slot.
+            let (slot, waterloggable) = foliage_slot(state, run, p);
+            run.set_slot(Layer::Foliage, p, slot, || {
+                if waterloggable {
+                    let source = slot == FOLIAGE_SLOT + 2;
+                    with_property(
+                        state.clone(),
+                        "waterlogged",
+                        if source { "true" } else { "false" },
+                    )
+                } else {
+                    state.clone()
+                }
+            });
+            return Ok(true);
         }
         let mut state = run.sample(&self.foliage, p)?;
         if state.properties.contains_key("waterlogged") {
@@ -609,11 +808,11 @@ fn inside(low: BlockPos, high: BlockPos, p: BlockPos) -> bool {
 /// `LeavesBlock.getOptionalDistanceAt`: 0 for a block that holds leaves up, the `distance`
 /// property for a leaf, nothing for anything else.
 fn leaf_distance(run: &Run<'_, '_, '_, '_>, p: BlockPos) -> Option<i32> {
-    let state = run.state(p);
-    if in_tag(run.tags.prevents_leaf_decay, state) {
+    let info = run.info(p);
+    if info.has(Info::PREVENTS_DECAY) {
         return Some(0);
     }
-    state.properties.get("distance")?.parse().ok()
+    info.distance
 }
 
 /// `TreeFeature.updateLeaves`: a breadth-first pass, bucketed by distance, that sets each leaf's
@@ -659,9 +858,7 @@ fn update_leaves(run: &mut Run<'_, '_, '_, '_>, low: BlockPos, high: BlockPos) {
                 continue;
             }
             if smallest != 0 {
-                let updated =
-                    with_property(run.state(pos).clone(), "distance", &smallest.to_string());
-                run.cx.region.set_block(pos, updated);
+                run.set_distance(pos, smallest);
             }
             shape.fill(local(pos));
             for dir in Dir::ALL {

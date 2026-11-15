@@ -9,22 +9,29 @@ use oxide_core::BlockPos;
 use oxide_datapack::placement::IntProvider;
 use oxide_datapack::tree::{TrunkKind, UniformRange};
 
+use super::super::state_provider::StateProvider;
 use super::foliage::Attachment;
-use super::{dist_manhattan, off, rel, Axis, Dir, Layer, Res, Run, TreeFeature};
+use super::{
+    dist_manhattan, off, rel, with_axis, Axis, Dir, Info, Layer, Res, Run, TreeFeature, TRUNK_SLOT,
+};
+
+/// The upwards-branching placer's `can_grow_through` test.
+fn grows_through(tree: &TreeFeature, run: &Run<'_, '_, '_, '_>, p: BlockPos) -> bool {
+    tree.grow_through
+        .as_ref()
+        .is_some_and(|set| set.contains_block(run.cx.env, &run.state(p).name))
+}
 
 /// `TrunkPlacer.validTreePos`: air or replaceable by trees; the upwards-branching placer also
 /// grows through its `can_grow_through` blocks.
 fn valid_log_pos(tree: &TreeFeature, run: &Run<'_, '_, '_, '_>, p: BlockPos) -> bool {
-    run.valid_tree_pos(p)
-        || tree
-            .grow_through
-            .as_ref()
-            .is_some_and(|set| set.contains_block(run.cx.env, &run.state(p).name))
+    run.valid_tree_pos(p) || grows_through(tree, run, p)
 }
 
 /// `TrunkPlacer.isFree`: a position a tree may grow into (or already part of a log).
 pub(super) fn is_free(tree: &TreeFeature, run: &Run<'_, '_, '_, '_>, p: BlockPos) -> bool {
-    valid_log_pos(tree, run, p) || run.is_log(p)
+    let info: Info = run.info(p);
+    info.valid_tree_pos() || info.log() || grows_through(tree, run, p)
 }
 
 fn place_log(
@@ -35,6 +42,21 @@ fn place_log(
 ) -> Res<bool> {
     if !valid_log_pos(tree, run, p) {
         return Ok(false);
+    }
+    if let StateProvider::Simple(state) = &tree.trunk {
+        // The simple provider draws nothing, so the log depends only on its axis.
+        let slot = TRUNK_SLOT
+            + match axis {
+                None => 0,
+                Some(Axis::X) => 1,
+                Some(Axis::Y) => 2,
+                Some(Axis::Z) => 3,
+            };
+        run.set_slot(Layer::Trunk, p, slot, || match axis {
+            Some(axis) => with_axis(state.clone(), axis),
+            None => state.clone(),
+        });
+        return Ok(true);
     }
     let mut state = run.sample(&tree.trunk, p)?;
     if let Some(axis) = axis {
