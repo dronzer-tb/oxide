@@ -352,3 +352,54 @@ without lighting. Plan gates: M1 passed, M2 (1,000 cps) not.
   `perf/datapath`; keep the `oxide-datapack` edit additive.
 
 Stopped reading at: noise 18bb0f9, datapath 18bb0f9, pipeline 2707402.
+
+## Pass 8, 2026-11-15 08:27-09:26 UTC
+
+| Track | Head read | Best number (r16) | Digest |
+|---|---|---|---|
+| noise | d2433fb (datapath's head + shared corner columns) | **auditor A/B: 687.8 cps on 8 threads (673.0, 669.4, 721.8, 686.9); 10.48 ms per chunk on 1 thread (10.37, 10.58)** | ok, all runs |
+| datapath | 9559df0 (code 0e3cf61) | base in the same hold: 586.3 cps (491.3, 649.3, 613.2, 591.5); 11.74 ms on 1 thread (11.41, 12.07) | ok |
+| pipeline | 7252db9 | pregen 87.0 cps (best run); merge-with-datapath and PGO repeats queued, no rows yet | `df701ee858e2bdd3` |
+
+**noise-4 confirmed.** One exclusive hold, base and patched alternating: patched ahead in all
+four 8-thread rounds (+17% on the means) and both 1-thread rounds (-11% core time). The
+track's own two pairs (+20%, +1%) did not establish it; this does. Terrain is now about
+10.5 ms per chunk on one thread against Pumpkin's 17.4, byte exact at radius 16.
+
+### Changes read
+
+- noise d2433fb: set-associative cache of interpolation corner columns on the router, shared
+  across chunks and threads (64 mutex shards, about 13 MB), full `(slot, x, z)` key per
+  entry, geometry checked before use, bit-identity test with expected hit counts. Only
+  `oxide-noise`. Exact if a corner value is a pure function of position, which holds for the
+  caches it reads. noise-5 dropped unbenched as asked.
+- datapath 161812e..9559df0: E21 (aquifer row memo) and E22 (carver LCG jump) rejected after
+  four-round A/Bs on 8 threads and on 1 thread; diffs kept under `docs/perf/rejected-*`.
+  Handover written; the session then sat idle at 59% of its limit.
+- pipeline: dense `written_top` and heightmap table in `region.rs` (kept, small); overlay
+  skip rejected; `oxide-datapack` edit stated in its log; scratch merge with datapath built
+  and tested.
+
+### Problems
+
+1. Datapath's "load outside the lock" flags rest on the load average at the start of an
+   exclusive hold, which is always high because the hold begins when the builds it waited
+   for end. No unlocked process was named, and none was seen in the auditor's samples.
+2. Measurement spread is now the limit for datapath-sized changes: 15-25% on 8 threads, 8%
+   on 1 thread for one binary. A queue wait of 30-50 minutes for an A/B hold is normal.
+3. Datapath went idle after its handover with limit to spare.
+4. Pipeline's prompt held unsent text, so the auditor sent it nothing this pass.
+
+### Messages sent
+
+- datapath: numbers confirmed; load average is not evidence, name a process; carry on with
+  its next-three (1-thread five-round A/B, retry E21/E22, column-wise surface); re-profile on
+  noise-4 once confirmed.
+- noise: noise-4 needed a proper A/B (being run); use four or more alternating rounds and
+  1 thread from now on; log cache hits and misses and rule out lock contention.
+- pipeline: none.
+
+To do next pass: tell noise and datapath that noise-4 is confirmed and datapath should merge
+it; check pipeline's merge and PGO rows.
+
+Stopped reading at: noise e6ecc65, datapath ef5597e, pipeline 7252db9.
