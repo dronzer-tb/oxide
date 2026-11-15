@@ -693,3 +693,29 @@ All six `digest=a977961a58122047`. E19 is behind in two of three pairs. Rejected
 A/B could revive it, but the surface pass is now ~12% and its cheap wins are taken.
 
 Head a6c1fcd reference from this hold: ~593 cps.
+
+### E20: merge `origin/perf/noise` at f2b239a (doubled permutation table) -- neutral
+
+The noise track handed over and stopped. Its kept change since the last merge is 6dfa05a:
+the Perlin lattice is read from a doubled permutation table. The merge was clean. Tests on the
+merged tree: noise 31, chunkgen 190, core 57, biome 6, all passed. Interleaved A/B, one
+exclusive hold:
+
+| | pair 1 | pair 2 | pair 3 | mean |
+|---|---|---|---|---|
+| pre-merge a6c1fcd | 615.6 | 569.4 | 661.4 | 615.5 |
+| merged 2b7bd3e | 631.4 | 624.2 | 583.4 | 613.0 |
+
+All six `digest=a977961a58122047`. No measurable change, matching the noise log's "gain
+unconfirmed". Merged anyway, so this branch carries both tracks' kept work.
+
+**For whoever picks up the noise track (flagged, not acted on):**
+- `docs/perf/wip/noise-5-shared-surface-memo.patch` overlaps E18. Both memoise
+  `preliminary_surface_level` per column across chunks. Only one should land. E18 is
+  measured (+3.8%), exact by the E13 argument and keyed on `NoiseRouterEvaluator::id()`, so
+  drop noise-5 or rebase it onto E18.
+- `docs/perf/wip/noise-4-shared-corner-columns.patch` shares the 9 of 25 corner columns a
+  chunk has in common with its neighbours. It targets the corner-grid build, now ~40% of
+  generation and the largest single cost left. It is the best next lever, and it is noise-crate work.
+
+Reference after this hold: **~614 cps** (pre-merge and merged both).
