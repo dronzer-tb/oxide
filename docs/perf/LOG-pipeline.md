@@ -110,3 +110,6 @@ about 2% of the path, so the whole-path gain is at most about 1.5%. Queued as a 
 
 **Fix:** bench-vps.sh's `rsync --delete` did not exclude `/out` and wiped the pregen world
 every terrain bench. It now excludes it.
+
+**Process:** the user has ruled OmniRoute out entirely (too slow). There will be no more
+omni-agent.sh or omni-ask.sh calls on this track; parallel work goes to Opus sub-agents only.
