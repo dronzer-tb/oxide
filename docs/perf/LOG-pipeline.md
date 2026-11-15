@@ -359,3 +359,23 @@ after it: a977961a58122047.
 0e3cf61 (bf28e89 in /tmp/pipeline-merge; one conflict, bench-vps.sh, resolved with ours;
 chunkgen 190 + pregen tests pass). The queue on it: pregen x2 (gate df701ee858e2bdd3),
 terrain release x2, PGO x2. On this branch's HEAD: release x2 and PGO x2, same commit.
+
+4aca951's second run: decorate_ms=3199, cps 87.0, digest df701ee858e2bdd3. That is the best
+pregen run so far.
+
+**Rejected: skip the overlay for columns never written, plus sculk fact checks through
+`fact_in`** (pipeline-2 sub-agent, local WIP cfcfd97, not on the branch). It is exact: every
+write raises its column's top. But it gives no measurable gain:
+
+    change  cfcfd97: decorate_ms=3081 3212   (mean 3147)
+    HEAD    4aca951: decorate_ms=3288 3205   (mean 3247)   digest df701ee858e2bdd3 on all
+
+With ahash an overlay miss was already cheap; `block()`'s remaining ~83 ns is the terrain read
+(chunk -> section -> palette). Profile at this point (timers on, decoration CPU 23.7 s):
+- `set_block` is the top primitive (10.3M calls, ~565 ns, 24.5%). The stone-type ores (clay,
+  tuff, granite, diorite, andesite: 6-8% each) are almost all `set_block`.
+- Sculk is down to 24% (from 48%), mostly reads and face/tag logic now.
+- Real `BlockFacts` lookups are down to 5.5M (5%), and `height()` to 98 ns per call.
+The next real lever is probably the cost of owned `BlockState`s, allocated by the caller and
+dropped on overwrite: interning states as ids. That is a structural change and comes after the
+merge numbers show decoration's true share.
