@@ -848,3 +848,21 @@ any remaining datapath change can win. Next three:
    above become worth more.
 
 PR into `feat/native-decoration` is still not opened: no `gh` on this host.
+
+### Measurement check: 1-thread A/B of head vs head+E21+E22
+
+Four rounds, one exclusive hold, radius 16, `--threads 1`; ms of core time per chunk:
+
+| | r1 | r2 | r3 | r4 | mean |
+|---|---|---|---|---|---|
+| head 0e3cf61 | 10.85 | 11.76 | 11.73 | 11.56 | 11.48 |
+| + E21 + E22 | 10.74 | 11.80 | 11.06 | 13.58 | 11.80 |
+
+All eight `digest=a977961a58122047`. Still no consistent gain (better in two rounds, level in one, much worse in one), so the
+rejection stands. On one thread the head spreads 8%, against 15-25% on eight threads, so this is the
+better method for small changes. But the load average was 8.6 when this exclusive hold
+began: something on the box runs outside the lock. Flagged for the auditor. Until that stops,
+no A/B here can resolve a change under ~5%.
+
+Single-thread head reference: **~11.5 ms core per chunk** (session start, from PLAN.md:
+43.8 ms single-thread).
