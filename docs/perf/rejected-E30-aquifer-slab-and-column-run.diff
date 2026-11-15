@@ -1,0 +1,341 @@
+diff --git a/crates/oxide-chunkgen/src/aquifer.rs b/crates/oxide-chunkgen/src/aquifer.rs
+index e242b2d..abc71ec 100644
+--- a/crates/oxide-chunkgen/src/aquifer.rs
++++ b/crates/oxide-chunkgen/src/aquifer.rs
+@@ -234,6 +234,17 @@ pub struct Aquifer<'a> {
+     run_x_lo: i32,
+     run_x_hi: i32,
+     run_kind: FluidKind,
++    /// A run of one block column proven to share one fluid status: every non-solid position
++    /// `(col_x, y, col_z)` with `col_y_lo <= y <= col_y_hi` gets `col_status.at_kind(y)`. See
++    /// `note_run`.
++    col_x: i32,
++    col_z: i32,
++    col_y_lo: i32,
++    col_y_hi: i32,
++    col_status: FluidStatus,
++    /// This chunk's first block x and z: the slab proofs in `note_run` cover only its columns.
++    min_block_x: i32,
++    min_block_z: i32,
+ }
+ 
+ impl Drop for Aquifer<'_> {
+@@ -252,6 +263,12 @@ struct AnchorCandidates {
+     anchor_y: i32,
+     index: [usize; 12],
+     centre: [(i32, i32, i32); 12],
++    /// Set once `note_run` proves that every non-solid position of this chunk that maps to this
++    /// anchor with `uniform_y_lo <= y <= uniform_y_hi` (and passes `compute_kind`'s early
++    /// returns) gets `status.at_kind(y)`.
++    uniform: Option<FluidStatus>,
++    uniform_y_lo: i32,
++    uniform_y_hi: i32,
+ }
+ 
+ impl<'a> Aquifer<'a> {
+@@ -307,6 +324,9 @@ impl<'a> Aquifer<'a> {
+                     anchor_y: i32::MIN,
+                     index: [0; 12],
+                     centre: [(0, 0, 0); 12],
++                    uniform: None,
++                    uniform_y_lo: 0,
++                    uniform_y_hi: -1,
+                 };
+                 (grid_size_x * grid_size_z) as usize
+             ],
+@@ -337,6 +357,16 @@ impl<'a> Aquifer<'a> {
+             run_x_lo: 0,
+             run_x_hi: -1,
+             run_kind: FluidKind::Air,
++            col_x: 0,
++            col_z: 0,
++            col_y_lo: 0,
++            col_y_hi: -1,
++            col_status: FluidStatus {
++                level: 0,
++                fluid: FluidKind::Air,
++            },
++            min_block_x,
++            min_block_z,
+         };
+ 
+         // Above the highest surface in reach there is nothing to flood, so vanilla stops
+@@ -425,6 +455,9 @@ impl<'a> Aquifer<'a> {
+         if y == self.run_y && z == self.run_z && x >= self.run_x_lo && x <= self.run_x_hi {
+             return Some(self.run_kind);
+         }
++        if x == self.col_x && z == self.col_z && y >= self.col_y_lo && y <= self.col_y_hi {
++            return Some(self.col_status.at_kind(y));
++        }
+         let global = self.global_fluid(y);
+         if y > self.skip_sampling_above_y {
+             return Some(global.at_kind(y));
+@@ -444,6 +477,17 @@ impl<'a> Aquifer<'a> {
+             if self.anchors[slot].anchor_y != anchor_y {
+                 self.fill_anchor(slot, anchor_x, anchor_y, anchor_z);
+             }
++            // A proven uniform anchor (see `note_run`); the early returns above were not taken.
++            let anchor = &self.anchors[slot];
++            if let Some(status) = anchor.uniform {
++                if y >= anchor.uniform_y_lo
++                    && y <= anchor.uniform_y_hi
++                    && ((x - self.min_block_x) as u32) < 16
++                    && ((z - self.min_block_z) as u32) < 16
++                {
++                    return Some(status.at_kind(y));
++                }
++            }
+             let candidates = &self.anchors[slot];
+             let mut distances = [0i32; 12];
+             for i in 0..12 {
+@@ -466,7 +510,9 @@ impl<'a> Aquifer<'a> {
+                 }
+             }
+             let kind = self.kind_from_nearest(x, y, z, density, &best);
+-            self.note_run(slot, x, y, z, anchor_x, &distances, &best);
++            self.note_run(
++                slot, x, y, z, anchor_x, anchor_y, anchor_z, &distances, &best,
++            );
+             kind
+         } else {
+             self.nearest_slow(x, y, z, anchor_x, anchor_y, anchor_z, &mut best);
+@@ -474,13 +520,17 @@ impl<'a> Aquifer<'a> {
+         }
+     }
+ 
+-    /// After a full fast-path answer at `(x, y, z)`, records how far along +x in this row the
+-    /// same answer is proven, so the next blocks of the row skip the search.
++    /// After a full fast-path answer at `(x, y, z)`, records a region around it where the
++    /// same answer is proven, so later blocks there skip the search: first an anchor slab (every
++    /// column of this chunk that maps to the anchor, over a y range), else a row run along +x
++    /// (the fill's order) and a column run along -y (the carvers' order).
+     ///
+-    /// Let `p` be the nearest candidate (`best[0]`) and `S` its status. For a later `x' = x + t`
+-    /// in the same anchor (same y and z, so the same 12 candidates), the gap to candidate `j`
+-    /// is `f_j(x') = d_j(x') - d_p(x') = f_j(x) - 2 * (cx_j - cx_p) * t`, exact in `i32`. Either
+-    /// rule below makes `compute_kind(x', y, z, density <= 0)` return `S.at_kind(y)`:
++    /// Let `p` be the nearest candidate (`best[0]`), `S` its status, and `d_j(q)` the squared
++    /// distance from `q` to candidate `j`. While `q` maps to the same anchor, the 12 candidates
++    /// are the same, and the gap `f_j(q) = d_j(q) - d_p(q)` is affine in `q`, exactly in `i32`:
++    /// per axis `(c_j - q)^2 - (c_p - q)^2 = c_j^2 - c_p^2 - 2 * q * (c_j - c_p)`. Either rule
++    /// below makes `compute_kind(q, density <= 0)` return `S.at_kind(q.y)` at every `q` where it
++    /// holds and the early returns are not taken:
+     /// - every `j != p` has `f_j >= 25`: `p` is the unique nearest and the runner-up is at
+     ///   least 25 further, so `similarity12 <= 0` and the first return is taken;
+     /// - every `j` whose status is not known to equal `S` has `f_j >= 50`: the nearest is then
+@@ -488,9 +538,20 @@ impl<'a> Aquifer<'a> {
+     ///   (best[1] when `similarity12 > 0`, best[2] when `similarity13 > 0` or `similarity23 > 0`)
+     ///   is within 50 of the nearest, so also has status `S`. `pressure` of two equal statuses
+     ///   returns 0.0 before any noise, each `density + similarity * ... * 0.0` is
+-    ///   `density + 0.0`, never `> 0` for `density <= 0`, and the result is `S.at_kind(y)`.
+-    /// The skipped calls only fill pure memos (`location`, `status`), so skipping them cannot
+-    /// change any other answer.
++    ///   `density + 0.0`, never `> 0` for `density <= 0`, and the result is `S.at_kind(q.y)`.
++    ///
++    /// Each region is an interval of one coordinate (times a box for the slab), and each rule's
++    /// set of valid points is an intersection of half-lines, so the largest step from `q` is an
++    /// integer floor division per candidate. For the slab, the minimum of the affine gap over
++    /// the x and z extent is taken at an end of each (`axis_min`). The union of the two rules'
++    /// intervals is proven pointwise, and so is the union of two overlapping slabs of one status.
++    /// The slab is checked after the early returns; the row and column runs are checked before
++    /// them, so they stay inside the anchor's y range, at or below `y` (so at or below the skip
++    /// line) and at or above the lava rule's floor.
++    ///
++    /// Every input is a pure function of the position: `location` and `status` are memos of
++    /// fixed values, so the proofs stay true, and a skipped call only skips filling them, which
++    /// cannot change any other answer.
+     #[allow(clippy::too_many_arguments)]
+     fn note_run(
+         &mut self,
+@@ -499,15 +560,11 @@ impl<'a> Aquifer<'a> {
+         y: i32,
+         z: i32,
+         anchor_x: i32,
++        anchor_y: i32,
++        anchor_z: i32,
+         distances: &[i32; 12],
+         best: &[(i32, usize); 3],
+     ) {
+-        // The last x that maps to this anchor: `grid_x(x' + SAMPLE_OFFSET_X) == anchor_x`.
+-        let segment_end = from_grid_x(anchor_x, 15) - SAMPLE_OFFSET_X;
+-        let room = segment_end - x;
+-        if room <= 0 {
+-            return;
+-        }
+         let candidates = &self.anchors[slot];
+         let Some(p) = candidates.index.iter().position(|&i| i == best[0].1) else {
+             return;
+@@ -515,49 +572,140 @@ impl<'a> Aquifer<'a> {
+         let Some(Some(status_p)) = self.statuses.get(best[0].1).copied() else {
+             return;
+         };
+-        let cx_p = candidates.centre[p].0;
++        let (cx_p, cy_p, cz_p) = candidates.centre[p];
++        let mut same = [false; 12];
++        for j in 0..12 {
++            same[j] = self.statuses.get(candidates.index[j]).copied() == Some(Some(status_p));
++        }
++
++        // The slab: this chunk's positions that map to this anchor, `by` its whole y range.
++        let bx = (
++            (from_grid_x(anchor_x, 0) - SAMPLE_OFFSET_X).max(self.min_block_x),
++            (from_grid_x(anchor_x, 15) - SAMPLE_OFFSET_X).min(self.min_block_x + 15),
++        );
++        let by = (
++            from_grid_y(anchor_y, 0) - SAMPLE_OFFSET_Y,
++            from_grid_y(anchor_y, Y_SPACING - 1) - SAMPLE_OFFSET_Y,
++        );
++        let bz = (
++            (from_grid_z(anchor_z, 0) - SAMPLE_OFFSET_Z).max(self.min_block_z),
++            (from_grid_z(anchor_z, 15) - SAMPLE_OFFSET_Z).min(self.min_block_z + 15),
++        );
++        let axis_min = |c: i32, c_p: i32, (lo, hi): (i32, i32)| -> i32 {
++            let at = |q: i32| (c - q) * (c - q) - (c_p - q) * (c_p - q);
++            at(lo).min(at(hi))
++        };
++        let up_room = by.1 - y;
++        let down_room = y - by.0;
++        let mut slab = [
++            Some(up_room),
++            Some(down_room),
++            Some(up_room),
++            Some(down_room),
++        ];
++        let min = |t: Option<i32>, l: Option<i32>| match (t, l) {
++            (Some(t), Some(l)) => Some(t.min(l)),
++            _ => None,
++        };
++        for j in 0..12 {
++            if j == p {
++                continue;
++            }
++            let (cx, cy, cz) = candidates.centre[j];
++            let f = axis_min(cx, cx_p, bx)
++                + axis_min(cz, cz_p, bz)
++                + ((cy - y) * (cy - y) - (cy_p - y) * (cy_p - y));
++            let limit = |threshold: i32, slope: i32, room: i32| -> Option<i32> {
++                if f < threshold {
++                    None
++                } else if slope <= 0 {
++                    Some(room)
++                } else {
++                    Some((f - threshold) / (2 * slope))
++                }
++            };
++            slab[0] = min(slab[0], limit(25, cy - cy_p, up_room));
++            slab[1] = min(slab[1], limit(25, cy_p - cy, down_room));
++            if !same[j] {
++                slab[2] = min(slab[2], limit(50, cy - cy_p, up_room));
++                slab[3] = min(slab[3], limit(50, cy_p - cy, down_room));
++            }
++            if slab.iter().all(|t| t.is_none()) {
++                break;
++            }
++        }
++        let rule1 = slab[0].zip(slab[1]);
++        let rule2 = slab[2].zip(slab[3]);
++        if rule1.is_some() || rule2.is_some() {
++            let (u1, d1) = rule1.unwrap_or((0, 0));
++            let (u2, d2) = rule2.unwrap_or((0, 0));
++            let mut lo = y - d1.max(d2);
++            let mut hi = y + u1.max(u2);
++            let anchor = &mut self.anchors[slot];
++            if anchor.uniform == Some(status_p)
++                && anchor.uniform_y_lo <= hi + 1
++                && lo <= anchor.uniform_y_hi + 1
++            {
++                lo = lo.min(anchor.uniform_y_lo);
++                hi = hi.max(anchor.uniform_y_hi);
++            }
++            anchor.uniform = Some(status_p);
++            anchor.uniform_y_lo = lo;
++            anchor.uniform_y_hi = hi;
++            return;
++        }
++        // No slab: a row run along +x and a column run along -y. The last x that maps to this
++        // anchor: `grid_x(x' + SAMPLE_OFFSET_X) == anchor_x`.
++        let room_x = from_grid_x(anchor_x, 15) - SAMPLE_OFFSET_X - x;
++        // The lowest y that maps to this anchor and is not answered by the global lava rule.
++        let lava_floor = (-54).min(self.sea_level);
++        let room_y = y - by.0.max(lava_floor);
+         let d_p = distances[p];
+         // Largest t each rule allows; `None` = the rule does not hold at t = 0.
+-        let mut t1 = Some(room);
+-        let mut t2 = Some(room);
++        let mut tx1 = Some(room_x.max(0));
++        let mut tx2 = Some(room_x.max(0));
++        let mut ty1 = Some(room_y.max(0));
++        let mut ty2 = Some(room_y.max(0));
+         for j in 0..12 {
+             if j == p {
+                 continue;
+             }
+             let f = distances[j] - d_p;
+-            let a = candidates.centre[j].0 - cx_p;
+-            let limit = |threshold: i32| -> Option<i32> {
++            // The gap falls by `2 * slope` per step.
++            let limit = |threshold: i32, slope: i32, room: i32| -> Option<i32> {
+                 if f < threshold {
+                     None
+-                } else if a <= 0 {
++                } else if slope <= 0 {
+                     Some(room)
+                 } else {
+-                    Some((f - threshold) / (2 * a))
++                    Some((f - threshold) / (2 * slope))
+                 }
+             };
+-            t1 = match (t1, limit(25)) {
+-                (Some(t), Some(l)) => Some(t.min(l)),
+-                _ => None,
+-            };
+-            let same = self.statuses.get(candidates.index[j]).copied() == Some(Some(status_p));
+-            if !same {
+-                t2 = match (t2, limit(50)) {
+-                    (Some(t), Some(l)) => Some(t.min(l)),
+-                    _ => None,
+-                };
+-            }
+-            if t1.is_none() && t2.is_none() {
+-                return;
++            let a = candidates.centre[j].0 - cx_p;
++            let b = cy_p - candidates.centre[j].1;
++            tx1 = min(tx1, limit(25, a, room_x));
++            ty1 = min(ty1, limit(25, b, room_y));
++            if !same[j] {
++                tx2 = min(tx2, limit(50, a, room_x));
++                ty2 = min(ty2, limit(50, b, room_y));
+             }
+         }
+-        let t = t1.unwrap_or(0).max(t2.unwrap_or(0));
+-        if t > 0 {
++        let tx = tx1.unwrap_or(0).max(tx2.unwrap_or(0));
++        if tx > 0 {
+             self.run_y = y;
+             self.run_z = z;
+             self.run_x_lo = x + 1;
+-            self.run_x_hi = x + t;
++            self.run_x_hi = x + tx;
+             self.run_kind = status_p.at_kind(y);
+         }
++        let ty = ty1.unwrap_or(0).max(ty2.unwrap_or(0));
++        if ty > 0 {
++            self.col_x = x;
++            self.col_z = z;
++            self.col_y_lo = y - ty;
++            self.col_y_hi = y - 1;
++            self.col_status = status_p;
++        }
+     }
+ 
+     /// The `anchors` slot for this anchor, when all twelve candidate cells around it lie
+@@ -583,6 +731,9 @@ impl<'a> Aquifer<'a> {
+             anchor_y,
+             index: [0; 12],
+             centre: [(0, 0, 0); 12],
++            uniform: None,
++            uniform_y_lo: 0,
++            uniform_y_hi: -1,
+         };
+         let mut i = 0;
+         for dx in 0..=1 {

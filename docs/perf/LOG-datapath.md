@@ -1285,3 +1285,58 @@ are withdrawn.** The 2.3% spread between two builds of identical source is the f
 claim from separately built binaries. A change needs a consistent lead well beyond it.
 
 Box dirs `datapath-b1` and `datapath-b2` are deleted.
+
+### E30: aquifer anchor slab and -y column run -- not landed (below the build floor)
+
+Sub-agent experiment in `/tmp/datapath-24`, `aquifer.rs`. Counters per chunk (temporary build):
+- the fill: 10,492 calls reach `compute_kind`;
+- the row memo misses mostly because rule 2 fails partway along a row: some status uncached
+  or truly different (1,934 of 1,940 remaining searches). Not at the anchor-segment end (34);
+- carvers: 873 calls, and the row memo hit only 13, because their order is x, z, y-descending.
+
+Change:
+- **Anchor slab:** prove one answer for every in-chunk column mapped to the anchor, over a y range.
+  Within one anchor the gap `d_j - d_p` is affine in each axis (the squares cancel), so its
+  minimum over the slab's x/z box is at the box ends, and the E21 rules give a y interval by
+  floor division.
+- **Column run:** along -y for the carvers, clamped above the lava floor and inside the anchor.
+
+Full searches per chunk: fill ~1,940-2,980 down to 1,409; carvers 857 down to 410. Reviewed as exact by the master.
+Tests: chunkgen 192 passed.
+
+Rotating 1-thread hold, two head builds (b1f77a6 code), 5 rounds, ms core per chunk:
+
+| | r1 | r2 | r3 | r4 | r5 | mean |
+|---|---|---|---|---|---|---|
+| head build 1 | 9.31 | 10.47 | 9.59 | 9.82 | 9.23 | 9.68 |
+| head build 2 | 9.58 | 9.57 | 9.32 | 9.96 | 8.93 | 9.47 |
+| + E30 | 9.53 | 9.21 | 9.85 | 9.37 | 9.26 | 9.44 |
+
+All fifteen `digest=a977961a58122047`. -1.5% against the head builds' mean, -0.3% against build 2.
+The two identical head builds differ by 2.2%, so this is inside the floor. Not landed; the diff
+is at `docs/perf/rejected-E30-aquifer-slab-and-column-run.diff`. Its own estimate was
+1.5-2.5% of generation, so the result is consistent with a real but unresolvable gain.
+
+### Where the datapath track stands (session 2)
+
+Head **b1f77a6**: 1-thread ~9.4-9.5 ms core per chunk in the last two holds. Session-1
+start: 43.8 ms (PLAN.md). 8 threads: 701.8 cps at 841a929, which was level with the pre-merge
+head at that spread.
+
+Every remaining datapath item is now one where an exact change can win only ~1-2.5% of
+generation:
+- surface interpreter: four attempts lost;
+- `column_state`: ~1.3%, parked as E29, waiting on a predicate;
+- aquifer: E30;
+- carvers: E22 landed, gain unconfirmed;
+- biomes: E27 landed, gain unconfirmed.
+
+The measurement floor between separate builds is ~2.2-2.3%. Until a lever above that turns up,
+further datapath micro-work cannot be confirmed on this box. The noise crate is ~48% of
+generation. Next three:
+1. Have the noise track add `is_quart_invariant(slot)`. Then E29 is ~10 lines. Measure E29 and
+   E30 together: combined they are ~3-4%, which a hold can resolve.
+2. A structural lever, not a micro one: the surface pass and the fill both walk every column. A fused
+   fill-plus-surface pass per column, writing each block once, may save the kinds rebuild and
+   the second scan. It is a larger change and needs a design pass first.
+3. Re-measure with `--radius 24` (2,401 chunks) and 7+ rounds, to get the floor below 2%.
