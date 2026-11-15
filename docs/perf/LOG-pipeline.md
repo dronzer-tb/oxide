@@ -967,3 +967,31 @@ pipeline-or3 = pipeline-lg + only the ore.rs half of b6141b6 (d072107).
 -0.7%, behind in 1 of 3; inside run-to-run spread. Digest held, tests 195 pass. **Rejected.** So the
 sphere test is not where the stone-ore body time goes, and the bitmap half cost about +3.5%. The ore
 body needs its own split (sphere setup vs per-cell test vs cell read/match vs write) before another try.
+
+## Dense per-section write overlay in place of the HashMap: -9.1% decorate on base 1, second base pending
+
+**Change** (sub-agent commit a035159; only `region.rs`, this track's file):
+- `overlay` is a `Vec<Option<Box<[u32; 8192]>>>`, one slot per (chunk in the 3x3 window, section),
+  allocated once per region; a section's block is allocated and zeroed on its first write. The first
+  4096 entries hold written state id + 1 (0 = unwritten); the second 4096 the cell's index into
+  `writes`, read only on a rewrite, which updates `writes[original].1` in place (order unchanged).
+- `locate(pos)` does the window and height test once and returns chunk, section and cell;
+  `block`, `block_keyed`, `fact_at`, `probe` and all three `set_block*` use it. No hashing on reads or
+  writes; `contains` and the `entry` probe are gone from the write path.
+- Counts (r16, temporary print): 7535 writes into 45.4 sections per region on average, at most
+  14061 writes into 86 sections. Memory: 32 KB per written section, ~1.45 MB zeroed per region.
+
+**Hold, base 1** (rows 1794779368). pipeline-lg = b36dcf1 (branch merged with origin/perf/datapath
+**c38344f**) + sculk + lush gate; pipeline-ov2 adds the change (2c6b5f1).
+
+| | run 1 | run 2 | run 3 | mean |
+|---|---|---|---|---|
+| base decorate_ms | 10255 | 9467 | 9723 | 9815 |
+| overlay decorate_ms | 9396 | 8197 | 9181 | 8925 |
+| base / overlay cpu_user_s | 26.20 / 25.63 | 25.81 / 25.12 | 25.47 / 26.26 | 25.83 / 25.67 |
+| java_cpu_s_per_10s | 0.21 / 0.22 | 0.28 / 0.20 | 0.20 / 0.33 | |
+
+-9.1% decorate, ahead 3/3; user CPU -0.6% (behind in round 3). Java quiet, all rounds count.
+df701ee858e2bdd3 on every row; tests chunkgen 194 pass (1 ignored), pregen pass. Under 10%, so a
+second hold on a fresh base (branch head merged with the current origin/perf/datapath) decides it.
+(The hold finished 21:47 UTC; this entry is late because I missed its completion.)
