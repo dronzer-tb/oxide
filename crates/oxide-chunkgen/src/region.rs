@@ -97,6 +97,11 @@ pub struct DecorationRegion<'a> {
     /// Highest written Y per column of the window, `(z - min_z) * 48 + (x - min_x)`;
     /// [`NEVER_WRITTEN`] for a column that still has its terrain heights.
     written_top: Box<[i32]>,
+    /// The highest Y any write so far reached, [`NEVER_WRITTEN`] before the first.
+    max_written: i32,
+    /// Per kind, the highest stored height over all nine chunks (`max_y` if a chunk lacks that
+    /// map), worked out on first use.
+    stored_max: [Cell<Option<i32>>; 6],
 }
 
 impl<'a> DecorationRegion<'a> {
@@ -121,6 +126,8 @@ impl<'a> DecorationRegion<'a> {
                 .collect(),
             heightmaps: chunks.map(|chunk| KINDS.map(|kind| chunk.heightmaps.get(&kind))),
             written_top: vec![NEVER_WRITTEN; WINDOW * WINDOW].into_boxed_slice(),
+            max_written: NEVER_WRITTEN,
+            stored_max: Default::default(),
         }
     }
 
@@ -273,6 +280,7 @@ impl<'a> DecorationRegion<'a> {
         let column = self.column(pos.x, pos.z);
         let top = &mut self.written_top[column];
         *top = if *top == NEVER_WRITTEN { pos.y } else { (*top).max(pos.y) };
+        self.max_written = self.max_written.max(pos.y);
     }
 
     /// The first free Y above the highest block `kind` counts in the column at `(x, z)`: what
@@ -307,6 +315,40 @@ impl<'a> DecorationRegion<'a> {
             y -= 1;
         }
         Some(self.min_y)
+    }
+
+    /// A bound no column of the window exceeds: `height(kind, x, z) <= height_bound(kind)` for
+    /// every `(x, z)` inside it, as decoration has left it so far. `height` answers an unwritten
+    /// column from its stored map, and rescans a written one from at most
+    /// `max(stored, written_top + 1)`, so the stored maps' maximum and the highest write bound it.
+    pub fn height_bound(&self, kind: HeightmapType) -> i32 {
+        let k = kind_index(kind);
+        let stored = match self.stored_max[k].get() {
+            Some(v) => v,
+            None => {
+                let mut v = self.min_y;
+                for maps in &self.heightmaps {
+                    v = v.max(match maps[k] {
+                        Some(map) => {
+                            (0..16)
+                                .flat_map(|z| (0..16).map(move |x| map.get(x, z)))
+                                .max()
+                                .unwrap_or(0)
+                                + self.min_y
+                        }
+                        None => self.max_y(),
+                    });
+                }
+                self.stored_max[k].set(Some(v));
+                v
+            }
+        };
+        let written = if self.max_written == NEVER_WRITTEN {
+            self.min_y
+        } else {
+            (self.max_written + 1).min(self.max_y())
+        };
+        stored.max(written)
     }
 
     /// The biome at `pos`, read from the nearest stored 4x4x4 quart, or `None` outside the
@@ -534,6 +576,29 @@ mod tests {
             .map(|(pos, state)| (pos, state.clone()))
             .collect();
         assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn height_bound_covers_every_column_as_writes_go() {
+        let facts = facts();
+        let chunks = flat_ring(ChunkPos::new(0, 0), 64);
+        let mut region = DecorationRegion::new(ChunkPos::new(0, 0), refs(&chunks), &facts);
+        let all = |region: &DecorationRegion<'_>, kind| {
+            (-16..32)
+                .flat_map(|z| (-16..32).map(move |x| (x, z)))
+                .map(|(x, z)| region.height(kind, x, z).unwrap())
+                .max()
+                .unwrap()
+        };
+        for kind in KINDS {
+            assert!(all(&region, kind) <= region.height_bound(kind));
+        }
+        region.set_block(BlockPos::new(3, 80, 3), block("oak_log"));
+        region.set_block(BlockPos::new(-5, 70, 20), block("short_grass"));
+        for kind in KINDS {
+            assert!(all(&region, kind) <= region.height_bound(kind));
+        }
+        assert_eq!(region.height_bound(HeightmapType::WorldSurface), 81);
     }
 
     #[test]

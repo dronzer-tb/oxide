@@ -171,6 +171,12 @@ impl OreFeature {
         let size_xz = 2 * (spread_ceil + max_radius);
         let size_y = 2 * (2 + max_radius);
 
+        // The scan below only asks whether some column's floor reaches `y_start`, and draws no
+        // random numbers, so when no column of the window can reach it the answer is `false`
+        // without reading any. Upper ores mostly start far above the ground.
+        if y_start > cx.region.height_bound(HeightmapType::OceanFloorWg) {
+            return false;
+        }
         for x in x_start..=x_start + size_xz {
             for z in z_start..=z_start + size_xz {
                 let Some(floor) = cx.region.height(HeightmapType::OceanFloorWg, x, z) else {
