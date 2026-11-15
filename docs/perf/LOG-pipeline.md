@@ -303,3 +303,16 @@ sculk CPU went 20.5 s -> 13.4 s with **identical set_block (524,495) and fact-qu
 **Pregen path now** (median of the last two runs): about 74 cps; decorate about 4.0 s, down
 from about 6.5 s this morning (-38%). Generate (terrain, about 10.3 s for 1369 chunks) is now
 71% of the path, and it belongs to the noise and datapath tracks.
+
+**PR for the user** (PLAN rule 4; there is no `gh` on the agent host, so I can't open it):
+https://github.com/dronzer-tb/oxide/compare/feat/native-decoration...perf/pipeline. The branch
+has feat/native-decoration merged in (29bec3c) and merges cleanly. Kept wins in it:
+- real pregen, with a bulk region writer
+- zlib-rs
+- a clone-free finish pass
+- ahash for the decoration maps
+- sculk by reference
+- PGO bench script
+- parallel harness digest
+Target from the progress page: PumpkinMC terrain at about 404 cps on this box (17.42 ms/chunk
+single-thread, x7.04 for 8 threads, not byte exact). Our best terrain run is PGO at 177.4.
