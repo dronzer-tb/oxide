@@ -118,3 +118,15 @@ New experiments are judged against that.
 
 The three merged-tree baselines so far are 385.7, 415.0 and 438.3 on identical code, a 13% spread.
 A single A/B pair cannot resolve anything under ~15% at that noise, even on the quiet box.
+
+### Profile of this branch merged with datapath (before 7), generation only
+
+Noise crate is 55.6% inclusive. Corner-grid build 33% (`once` caches inside it 23%, 2D column
+caches 11%). `ImprovedNoise` 25.6%. `preliminary_surface_level` from the aquifer 9.9%; most of
+its calls land outside the chunk's 2D caches. Per-block `final_density` through the cell memo is
+no longer visible.
+
+In flight: `noise-4`, corner columns shared across chunks (9 of a chunk's 25 corner columns are
+its neighbours' edge columns). `noise-5`, a shared per-column memo of `preliminary_surface_level`,
+gated on a compile-time proof that the program does not depend on y. Both caches store the
+full key with each entry, so a hit is exact.
