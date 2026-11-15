@@ -1,0 +1,528 @@
+diff --git a/crates/oxide-noise/src/improved_noise.rs b/crates/oxide-noise/src/improved_noise.rs
+index 54fcf6e..45efa3a 100644
+--- a/crates/oxide-noise/src/improved_noise.rs
++++ b/crates/oxide-noise/src/improved_noise.rs
+@@ -63,6 +63,18 @@ pub struct ImprovedNoise {
+     xo: f64,
+     yo: f64,
+     zo: f64,
++    /// Constants of the y axis for a 2D sample (y input `+-0.0`, `y_scale == 0.0`), valid only
++    /// when `has_y2d`. With `yo != 0.0`, `y + yo == yo` exactly for both zeros, so the floor, the
++    /// fractional part, its fade and the masked lattice row are fixed per instance.
++    has_y2d: bool,
++    /// `(floor(yo) as i32 & 255)`.
++    y2d_ym: usize,
++    /// `dy - 0.0` where `dy = yo - floor(yo)`: the y offset fed to the corner dot products.
++    y2d_dy: f64,
++    /// `y2d_dy - 1.0`.
++    y2d_dy1: f64,
++    /// `smoothstep(dy)`: the y fade weight.
++    y2d_u: f64,
+ }
+ 
+ impl ImprovedNoise {
+@@ -88,12 +100,67 @@ impl ImprovedNoise {
+         doubled[..256].copy_from_slice(&permutation);
+         doubled[256..].copy_from_slice(&permutation);
+ 
+-        Self {
++        let mut noise = Self {
+             permutation: doubled,
+             xo,
+             yo,
+             zo,
++            has_y2d: false,
++            y2d_ym: 0,
++            y2d_dy: 0.0,
++            y2d_dy1: 0.0,
++            y2d_u: 0.0,
++        };
++        noise.init_y2d();
++        noise
++    }
++
++    /// Precomputes the 2D y constants, exactly as `noise_with_scale` would derive them from
++    /// `d1 = y + yo` with `y == 0.0` and `y_scale == 0.0`. Skipped when `yo == 0.0`: there
++    /// `+-0.0 + 0.0` need not equal `yo` bit for bit, so such an instance keeps the general path.
++    fn init_y2d(&mut self) {
++        let d1 = self.yo;
++        if d1 == 0.0 || !d1.is_finite() {
++            self.has_y2d = false;
++            return;
++        }
++        let j = d1.floor() as i32;
++        let dy = d1 - j as f64;
++        let dy_faded = 0.0;
++        let fade_dy = dy;
++        let dy = dy - dy_faded;
++        self.has_y2d = true;
++        self.y2d_ym = (j & 255) as usize;
++        self.y2d_dy = dy;
++        self.y2d_dy1 = dy - 1.0;
++        self.y2d_u = smoothstep(fade_dy);
++    }
++
++    /// `noise_with_scale(x, y, z, 0.0, 0.0)` for a y input that is `+-0.0` (any `y == 0.0`),
++    /// bit for bit. The caller guarantees `y == 0.0`; `y` itself is only read by the general
++    /// path, taken when this instance has `yo == 0.0`.
++    #[inline]
++    pub(crate) fn noise_2d(&self, x: f64, y: f64, z: f64) -> f64 {
++        debug_assert!(y == 0.0);
++        if !self.has_y2d {
++            return self.noise_with_scale(x, y, z, 0.0, 0.0);
+         }
++        let d0 = x + self.xo;
++        let d2 = z + self.zo;
++        let i = d0.floor() as i32;
++        let k = d2.floor() as i32;
++        let dx = d0 - i as f64;
++        let dz = d2 - k as f64;
++        self.lerp_core(
++            (i & 255) as usize,
++            self.y2d_ym,
++            (k & 255) as usize,
++            dx,
++            self.y2d_dy,
++            self.y2d_dy1,
++            dz,
++            self.y2d_u,
++        )
+     }
+ 
+     pub fn noise(&self, x: f64, y: f64, z: f64) -> f64 {
+@@ -145,11 +212,36 @@ impl ImprovedNoise {
+         dy: f64,
+         dz: f64,
+         fade_dy: f64,
++    ) -> f64 {
++        self.lerp_core(
++            (grid_x & 255) as usize,
++            (grid_y & 255) as usize,
++            (grid_z & 255) as usize,
++            dx,
++            dy,
++            dy - 1.0,
++            dz,
++            smoothstep(fade_dy),
++        )
++    }
++
++    /// The hash and trilinear blend shared by the 3D and 2D paths. `dy1` is `dy - 1.0` and `u`
++    /// is `smoothstep(fade_dy)`, either computed per sample or precomputed; each float operation
++    /// sees the same operands in the same order as before, only hoisted.
++    #[allow(clippy::too_many_arguments)]
++    #[inline(always)]
++    fn lerp_core(
++        &self,
++        xm: usize,
++        ym: usize,
++        zm: usize,
++        dx: f64,
++        dy: f64,
++        dy1: f64,
++        dz: f64,
++        u: f64,
+     ) -> f64 {
+         let p = &self.permutation;
+-        let xm = (grid_x & 255) as usize;
+-        let ym = (grid_y & 255) as usize;
+-        let zm = (grid_z & 255) as usize;
+         let a = p[xm] as usize + ym;
+         let b = p[xm + 1] as usize + ym;
+         let k = p[a] as usize + zm;
+@@ -159,15 +251,14 @@ impl ImprovedNoise {
+ 
+         let d0 = grad_dot(p[k], dx, dy, dz);
+         let d1 = grad_dot(p[i1], dx - 1.0, dy, dz);
+-        let d2 = grad_dot(p[l], dx, dy - 1.0, dz);
+-        let d3 = grad_dot(p[j1], dx - 1.0, dy - 1.0, dz);
++        let d2 = grad_dot(p[l], dx, dy1, dz);
++        let d3 = grad_dot(p[j1], dx - 1.0, dy1, dz);
+         let d4 = grad_dot(p[k + 1], dx, dy, dz - 1.0);
+         let d5 = grad_dot(p[i1 + 1], dx - 1.0, dy, dz - 1.0);
+-        let d6 = grad_dot(p[l + 1], dx, dy - 1.0, dz - 1.0);
+-        let d7 = grad_dot(p[j1 + 1], dx - 1.0, dy - 1.0, dz - 1.0);
++        let d6 = grad_dot(p[l + 1], dx, dy1, dz - 1.0);
++        let d7 = grad_dot(p[j1 + 1], dx - 1.0, dy1, dz - 1.0);
+ 
+         let t = smoothstep(dx);
+-        let u = smoothstep(fade_dy);
+         let v = smoothstep(dz);
+ 
+         let e0 = lerp(t, d0, d1);
+@@ -316,6 +407,206 @@ mod tests {
+         }
+     }
+ 
++    /// Copy of `noise_with_scale` as it stood before the 2D path (doubled table, per-sample y).
++    fn current_noise_with_scale(
++        n: &ImprovedNoise,
++        x: f64,
++        y: f64,
++        z: f64,
++        y_scale: f64,
++        y_max: f64,
++    ) -> f64 {
++        let d0 = x + n.xo;
++        let d1 = y + n.yo;
++        let d2 = z + n.zo;
++        let i = d0.floor() as i32;
++        let j = d1.floor() as i32;
++        let k = d2.floor() as i32;
++        let dx = d0 - i as f64;
++        let dy = d1 - j as f64;
++        let dz = d2 - k as f64;
++        let dy_faded = if y_scale != 0.0 {
++            let clamped = if y_max >= 0.0 && y_max < dy {
++                y_max
++            } else {
++                dy
++            };
++            (clamped / y_scale + 1.0e-7).floor() * y_scale
++        } else {
++            0.0
++        };
++        let (dy, fade_dy) = (dy - dy_faded, dy);
++        let p = &n.permutation;
++        let xm = (i & 255) as usize;
++        let ym = (j & 255) as usize;
++        let zm = (k & 255) as usize;
++        let a = p[xm] as usize + ym;
++        let b = p[xm + 1] as usize + ym;
++        let k = p[a] as usize + zm;
++        let l = p[a + 1] as usize + zm;
++        let i1 = p[b] as usize + zm;
++        let j1 = p[b + 1] as usize + zm;
++        let d0 = grad_dot(p[k], dx, dy, dz);
++        let d1 = grad_dot(p[i1], dx - 1.0, dy, dz);
++        let d2 = grad_dot(p[l], dx, dy - 1.0, dz);
++        let d3 = grad_dot(p[j1], dx - 1.0, dy - 1.0, dz);
++        let d4 = grad_dot(p[k + 1], dx, dy, dz - 1.0);
++        let d5 = grad_dot(p[i1 + 1], dx - 1.0, dy, dz - 1.0);
++        let d6 = grad_dot(p[l + 1], dx, dy - 1.0, dz - 1.0);
++        let d7 = grad_dot(p[j1 + 1], dx - 1.0, dy - 1.0, dz - 1.0);
++        let t = smoothstep(dx);
++        let u = smoothstep(fade_dy);
++        let v = smoothstep(dz);
++        let e0 = lerp(t, d0, d1);
++        let e1 = lerp(t, d2, d3);
++        let e2 = lerp(t, d4, d5);
++        let e3 = lerp(t, d6, d7);
++        let f0 = lerp(u, e0, e1);
++        let f1 = lerp(u, e2, e3);
++        lerp(v, f0, f1)
++    }
++
++    /// x/z inputs that stress the 2D path: negatives, huge (wrapped and unwrapped), near
++    /// integers, and values whose fractional part rounds `dx` to exactly 1.0.
++    pub(crate) fn hard_xz(rng: &mut LegacyRandom, n: usize, xo: f64) -> f64 {
++        let scales = [1.0, 1.0e3, 1.0e6, 3.0e7, 1.0e9, 3.0e9];
++        match n % 8 {
++            0..=3 => (rng.next_double() * 2.0 - 1.0) * scales[n % scales.len()],
++            4 => wrap((rng.next_double() * 2.0 - 1.0) * 1.0e10),
++            5 => {
++                let base = (rng.next_int_bounded(2000) - 1000) as f64;
++                base + (rng.next_double() - 0.5) * 1.0e-12
++            }
++            // d0 = x + xo exactly on the lattice (0.0), or one ulp either side of it.
++            6 => match rng.next_int_bounded(3) {
++                0 => -xo,
++                1 => f64::from_bits((-xo).to_bits() + 1),
++                _ => f64::from_bits((-xo).to_bits() - 1),
++            },
++            _ => -(rng.next_int_bounded(1000) as f64) - xo,
++        }
++    }
++
++    #[test]
++    fn noise_2d_matches_current_bit_for_bit() {
++        use oxide_core::Xoroshiro128PlusPlus;
++        let mut rng = LegacyRandom::new(0x2d2d);
++        for seed in 0..256u64 {
++            let mut r = Xoroshiro128PlusPlus::new(seed as i64);
++            let noise = ImprovedNoise::new(&mut r);
++            assert!(noise.has_y2d);
++            let reference = reference::Ref {
++                permutation: &noise.permutation[..256],
++                xo: noise.xo,
++                yo: noise.yo,
++                zo: noise.zo,
++            };
++            for n in 0..2000 {
++                let x = hard_xz(&mut rng, n, noise.xo);
++                let z = hard_xz(&mut rng, n / 3 + n, noise.zo);
++                for &y in &[0.0f64, -0.0] {
++                    let fast = noise.noise_2d(x, y, z);
++                    let cur = current_noise_with_scale(&noise, x, y, z, 0.0, 0.0);
++                    let gen = noise.noise_with_scale(x, y, z, 0.0, 0.0);
++                    let old = reference.noise_with_scale(x, y, z, 0.0, 0.0);
++                    assert_eq!(fast.to_bits(), cur.to_bits(), "seed {seed} ({x}, {y}, {z})");
++                    assert_eq!(gen.to_bits(), cur.to_bits(), "seed {seed} ({x}, {y}, {z})");
++                    assert_eq!(old.to_bits(), cur.to_bits(), "seed {seed} ({x}, {y}, {z})");
++                }
++            }
++        }
++    }
++
++    /// `dx` (and `dz`) round to exactly 1.0 when `d0` is a tiny negative: `-tiny - (-1) == 1.0`.
++    /// That needs a tiny `xo`, so force one; `dx - 1.0` is then `+0.0`.
++    #[test]
++    fn noise_2d_matches_current_when_dx_is_one() {
++        use oxide_core::Xoroshiro128PlusPlus;
++        let mut seen = 0;
++        for seed in 0..32u64 {
++            let mut r = Xoroshiro128PlusPlus::new(seed as i64);
++            let mut noise = ImprovedNoise::new(&mut r);
++            for &off in &[0.0f64, 1.0e-20, -3.0e-18, 2f64.powi(-60)] {
++                noise.xo = off;
++                noise.zo = off;
++                for &x in &[-1.0e-300, -1.0e-20, -2f64.powi(-54), -2f64.powi(-55), -1.0e-17] {
++                    let x = x - off;
++                    let d0 = x + noise.xo;
++                    if d0 - d0.floor() == 1.0 {
++                        seen += 1;
++                    }
++                    for &z in &[x, 0.5, -0.0] {
++                        for &y in &[0.0f64, -0.0] {
++                            let a = noise.noise_2d(x, y, z);
++                            let b = current_noise_with_scale(&noise, x, y, z, 0.0, 0.0);
++                            assert_eq!(a.to_bits(), b.to_bits(), "({x}, {y}, {z})");
++                        }
++                    }
++                }
++            }
++        }
++        assert!(seen > 0, "no sample hit dx == 1.0");
++    }
++
++    #[test]
++    fn noise_with_scale_matches_current_in_3d() {
++        use oxide_core::Xoroshiro128PlusPlus;
++        let mut rng = LegacyRandom::new(0x3d3d);
++        for seed in 0..32u64 {
++            let mut r = Xoroshiro128PlusPlus::new(seed as i64);
++            let noise = ImprovedNoise::new(&mut r);
++            for n in 0..3000 {
++                let x = hard_xz(&mut rng, n, noise.xo);
++                let y = hard_xz(&mut rng, n + 1, noise.yo);
++                let z = hard_xz(&mut rng, n + 2, noise.zo);
++                let (ys, ym) = match n % 3 {
++                    0 => (0.0, 0.0),
++                    1 => (rng.next_double() * 2.0, rng.next_double() * 2.0),
++                    _ => (rng.next_double() * 0.5, -1.0),
++                };
++                let a = noise.noise_with_scale(x, y, z, ys, ym);
++                let b = current_noise_with_scale(&noise, x, y, z, ys, ym);
++                assert_eq!(a.to_bits(), b.to_bits(), "seed {seed} ({x}, {y}, {z})");
++            }
++        }
++    }
++
++    /// An instance with `yo == 0.0` (forced; the RNG never yields it in practice) must not use
++    /// the precomputed constants and must still match for both zeros.
++    #[test]
++    fn noise_2d_with_zero_yo_takes_general_path() {
++        use oxide_core::Xoroshiro128PlusPlus;
++        let mut rng = LegacyRandom::new(7);
++        for seed in 0..16u64 {
++            let mut r = Xoroshiro128PlusPlus::new(seed as i64);
++            let mut noise = ImprovedNoise::new(&mut r);
++            for &yo in &[0.0f64, -0.0] {
++                noise.yo = yo;
++                noise.init_y2d();
++                assert!(!noise.has_y2d);
++                for n in 0..500 {
++                    let x = hard_xz(&mut rng, n, noise.xo);
++                    let z = hard_xz(&mut rng, n + 5, noise.zo);
++                    for &y in &[0.0f64, -0.0] {
++                        let a = noise.noise_2d(x, y, z);
++                        let b = current_noise_with_scale(&noise, x, y, z, 0.0, 0.0);
++                        assert_eq!(a.to_bits(), b.to_bits(), "yo {yo} ({x}, {y}, {z})");
++                    }
++                }
++            }
++        }
++    }
++
++    #[test]
++    fn wrap_preserves_signed_zero() {
++        assert_eq!(wrap(0.0).to_bits(), 0.0f64.to_bits());
++        assert_eq!(wrap(-0.0).to_bits(), (-0.0f64).to_bits());
++        for freq in [2f64.powi(-12), 1.0, 2f64.powi(10)] {
++            assert_eq!(wrap(0.0 * freq).to_bits(), 0.0f64.to_bits());
++            assert_eq!(wrap(-0.0 * freq).to_bits(), (-0.0f64).to_bits());
++        }
++    }
++
+     #[test]
+     fn doubled_table_matches_reference_bit_for_bit() {
+         use oxide_core::Xoroshiro128PlusPlus;
+diff --git a/crates/oxide-noise/src/normal_noise.rs b/crates/oxide-noise/src/normal_noise.rs
+index 691fbb3..1f853c7 100644
+--- a/crates/oxide-noise/src/normal_noise.rs
++++ b/crates/oxide-noise/src/normal_noise.rs
+@@ -107,6 +107,35 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn get_value_2d_matches_reference_bit_for_bit() {
++        use oxide_core::{LegacyRandom, RandomSource};
++        let mut rng = LegacyRandom::new(0xfeed);
++        for seed in 0..64i64 {
++            let mut r = WorldRandom::new(seed, false);
++            let n = NormalNoise::create(&mut r, -8, vec![1.0, 1.0, 0.0, 1.0]);
++            for i in 0..500 {
++                let s = [1.0, 1.0e3, 1.0e6, 3.0e7, 1.0e9][i % 5];
++                let x = (rng.next_double() * 2.0 - 1.0) * s;
++                let z = (rng.next_double() * 2.0 - 1.0) * s;
++                for &y in &[0.0f64, -0.0] {
++                    let a = n.get_value(x, y, z);
++                    let y2 = y * INPUT_FACTOR;
++                    let b = (n.first.reference_get_value_with_scale(x, y, z, 0.0, 0.0)
++                        + n.second.reference_get_value_with_scale(
++                            x * INPUT_FACTOR,
++                            y2,
++                            z * INPUT_FACTOR,
++                            0.0,
++                            0.0,
++                        ))
++                        * n.value_factor;
++                    assert_eq!(a.to_bits(), b.to_bits(), "seed {seed} ({x}, {y}, {z})");
++                }
++            }
++        }
++    }
++
+     #[test]
+     fn deterministic_for_same_seed() {
+         let mut r1 = WorldRandom::new(1, false);
+diff --git a/crates/oxide-noise/src/perlin_noise.rs b/crates/oxide-noise/src/perlin_noise.rs
+index e559bc0..c5b3b5f 100644
+--- a/crates/oxide-noise/src/perlin_noise.rs
++++ b/crates/oxide-noise/src/perlin_noise.rs
+@@ -133,6 +133,13 @@ impl PerlinNoise {
+     /// "fixed Y" variant on this class at all — that was this crate's own invention, not
+     /// vanilla behavior, and has been removed.
+     pub fn get_value_with_scale(&self, x: f64, y: f64, z: f64, y_scale: f64, y_fudge: f64) -> f64 {
++        // A 2D sample: `y` is +-0.0, so every octave's `wrap(y * freq)` is that same zero
++        // (`freq` is a finite power of two; `wrap(+-0.0) == +-0.0`), and `y_scale * freq` is a
++        // zero too, so each `noise_with_scale` takes its no-smear branch. `noise_2d` is that
++        // call, bit for bit, with the y axis precomputed. `y_fudge` is unused when `y_scale == 0`.
++        if y == 0.0 && y_scale == 0.0 {
++            return self.get_value_2d(x, y, z);
++        }
+         let mut result = 0.0;
+         let mut freq = self.lowest_freq_input_factor;
+         let mut amp = self.lowest_freq_value_factor;
+@@ -154,6 +161,58 @@ impl PerlinNoise {
+ 
+         result
+     }
++
++    #[inline]
++    fn get_value_2d(&self, x: f64, y: f64, z: f64) -> f64 {
++        let mut result = 0.0;
++        let mut freq = self.lowest_freq_input_factor;
++        let mut amp = self.lowest_freq_value_factor;
++
++        for (i, level) in self.noise_levels.iter().enumerate() {
++            if let Some(noise) = level {
++                let sample = noise.noise_2d(
++                    wrap_coordinate(x * freq),
++                    wrap_coordinate(y * freq),
++                    wrap_coordinate(z * freq),
++                );
++                result += self.amplitudes[i] * sample * amp;
++            }
++            freq *= 2.0;
++            amp /= 2.0;
++        }
++
++        result
++    }
++
++    /// `get_value_with_scale` as it stood before the 2D path.
++    #[cfg(test)]
++    pub(crate) fn reference_get_value_with_scale(
++        &self,
++        x: f64,
++        y: f64,
++        z: f64,
++        y_scale: f64,
++        y_fudge: f64,
++    ) -> f64 {
++        let mut result = 0.0;
++        let mut freq = self.lowest_freq_input_factor;
++        let mut amp = self.lowest_freq_value_factor;
++        for (i, level) in self.noise_levels.iter().enumerate() {
++            if let Some(noise) = level {
++                let sample = noise.noise_with_scale(
++                    wrap_coordinate(x * freq),
++                    wrap_coordinate(y * freq),
++                    wrap_coordinate(z * freq),
++                    y_scale * freq,
++                    y_fudge * freq,
++                );
++                result += self.amplitudes[i] * sample * amp;
++            }
++            freq *= 2.0;
++            amp /= 2.0;
++        }
++        result
++    }
+ }
+ 
+ #[cfg(test)]
+@@ -191,6 +250,51 @@ mod tests {
+         assert_eq!(p1.get_value(1.0, 2.0, 3.0), 0.0);
+     }
+ 
++    #[test]
++    fn get_value_2d_matches_reference_bit_for_bit() {
++        use oxide_core::{LegacyRandom, RandomSource};
++        let mut rng = LegacyRandom::new(0xbeef);
++        let configs: [(i32, Vec<f64>); 4] = [
++            (-7, vec![1.0, 1.0, 1.0]),
++            (-10, vec![1.5, 0.0, 1.0, 0.0, 0.0, 0.0]),
++            (-3, vec![1.0, 1.0, 0.0, 1.0, 1.0]),
++            (-12, vec![1.0; 10]),
++        ];
++        for seed in 0..48i64 {
++            for (first, amps) in &configs {
++                let mut r = WorldRandom::new(seed, seed % 2 == 1);
++                let p = PerlinNoise::create(&mut r, *first, amps.clone());
++                for n in 0..400 {
++                    let s = [1.0, 1.0e3, 1.0e6, 3.0e7, 1.0e9, 3.0e9][n % 6];
++                    let mut x = (rng.next_double() * 2.0 - 1.0) * s;
++                    let mut z = (rng.next_double() * 2.0 - 1.0) * s;
++                    if n % 5 == 0 {
++                        x = x.round();
++                        z = -z.round();
++                    }
++                    for &y in &[0.0f64, -0.0] {
++                        for &(ys, yf) in &[(0.0, 0.0), (-0.0, 0.0), (0.0, 3.0), (0.0, -1.0)] {
++                            let a = p.get_value_with_scale(x, y, z, ys, yf);
++                            let b = p.reference_get_value_with_scale(x, y, z, ys, yf);
++                            assert_eq!(a.to_bits(), b.to_bits(), "seed {seed} ({x}, {y}, {z})");
++                        }
++                        let a = p.get_value(x, y, z);
++                        let b = p.reference_get_value_with_scale(x, y, z, 0.0, 0.0);
++                        assert_eq!(a.to_bits(), b.to_bits(), "seed {seed} ({x}, {y}, {z})");
++                    }
++                    // Non-zero y and non-zero y_scale stay on the general path.
++                    let y = (rng.next_double() * 2.0 - 1.0) * s;
++                    let a = p.get_value_with_scale(x, y, z, 0.5, 0.25);
++                    let b = p.reference_get_value_with_scale(x, y, z, 0.5, 0.25);
++                    assert_eq!(a.to_bits(), b.to_bits());
++                    let a = p.get_value_with_scale(x, 0.0, z, 0.5, 0.25);
++                    let b = p.reference_get_value_with_scale(x, 0.0, z, 0.5, 0.25);
++                    assert_eq!(a.to_bits(), b.to_bits());
++                }
++            }
++        }
++    }
++
+     #[test]
+     fn legacy_flavour_also_works() {
+         let mut r = WorldRandom::new(7, true);

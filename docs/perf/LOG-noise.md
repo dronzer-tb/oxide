@@ -420,3 +420,7 @@ datapack: 0.648 of `ImprovedNoise` samples overall (Perlin octaves 0.845, blende
 counted with the `hash-stats` cargo feature. That feature is off by default; when on, it adds a
 `HASH ...` line next to `CORNER` while `OXIDE_CORNER_STATS` is set. Batching alone (5) was
 break-even, and the gain is the reuse.
+
+| # | What | Hold | Bases (cps, mean) | Patched | Digest | Verdict |
+|---|---|---|---|---|---|---|
+| 15 (noise-10) | 2D fast path in `ImprovedNoise`. When `yo != 0`, `ym`, `dy`, `dy - 1` and `smoothstep(dy)` for y = +/-0 are precomputed at construction (`y + yo == yo` exactly for both zeros). `PerlinNoise` takes `noise_2d` when `y == 0.0 && y_scale == 0.0`, checked once per call, and both paths share one `lerp_core` with the same operands in the same order. A forced `yo == 0` instance takes the general path. 42 noise tests (old implementations kept as references, both zeros, `dx == 1.0` forced), 193 + 3 chunkgen | 1 thread, 5 rounds, two fresh bases, on b93770d (b1e4a5c + datapath b55a3b2) | 111.84, 108.94 | 111.74 | a977961a58122047 all fifteen | **inconclusive, not landed**: level with base10, inside the build-to-build spread. It led both only in rounds 1-2, while the load was still falling. The saved work (one floor, subtract, smoothstep and mask per 2D octave sample) is too small to see. Patch kept at `docs/perf/wip/noise-10-flat-y-fast-path.patch` |
