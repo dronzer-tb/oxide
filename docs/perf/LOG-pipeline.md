@@ -1011,3 +1011,29 @@ pipeline-b2 = this branch at b84621e merged with origin/perf/datapath **26f512f*
 -8.4% decorate and -3.4% user CPU, ahead 2/3 on both. With base 1 (-9.1%, 3/3) it is ahead in 5 of
 6 rounds on two bases. Java quiet, all rounds count; df701ee858e2bdd3 on every row; tests chunkgen 194
 pass. **Kept**, cherry-picked onto the branch.
+
+## Trees: per-state info cache and interned writes (dark_forest_vegetation target); base 1 -12.3%
+
+**Change** (sub-agent commit 4d69493; `decorator/tree.rs`, `decorator/tree/trunk.rs`):
+- a 64-slot per-tree cache keyed by `StateKey` holding what tree code asks of a state (air; leaves,
+  logs, replaceable_by_trees, prevents_nearby_leaf_decay tags; vine; persistent; parsed distance);
+  outside-window positions read as void_air with their own entry. `is_free`, the leaf-distance pass
+  and the other read checks use it; `has_vine` no longer builds a `ResourceLocation` per call.
+- `Run::fact` goes through the region's fact cache (waterlogged, roots, leaf litter solidity).
+- fixed trunk/foliage states are interned on their first accepted write and written by id after;
+  leaf-distance rewrites cached by (state, distance) and written by id. Out-of-window positions keep
+  the old path. Draws, visiting order (Java-ordered position sets), write order and states unchanged.
+- Shared tree code, so every tree feature benefits, not only dark forest.
+
+**Hold, base 1** (pipeline-b2 = branch b84621e + datapath **26f512f**; pipeline-df2 adds 33c801c):
+
+| | run 1 | run 2 | run 3 | mean |
+|---|---|---|---|---|
+| base decorate_ms | 10583 | 9594 | 10241 | 10139 |
+| trees decorate_ms | 8168 | 9246 | 9269 | 8894 |
+| base / trees cpu_user_s | 27.28 / 24.74 | 26.35 / 26.06 | 26.67 / 26.71 | 26.77 / 25.84 |
+| java_cpu_s_per_10s | 0.28 / 0.20 | 0.25 / 0.23 | 0.28 / 0.27 | |
+
+-12.3% decorate ahead 3/3; -3.5% user CPU (round 3 even). Java quiet. df701ee858e2bdd3 on every row;
+tests chunkgen 194 pass. Larger than dark forest's ~7% share; confirming on a second base (branch
+head with the dense overlay, merged with datapath) before landing.
