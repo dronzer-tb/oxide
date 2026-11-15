@@ -1702,3 +1702,30 @@ Sub-agent experiment in `/tmp/datapath-29`, `surface.rs` only; `lib.rs` and the 
 
 **The stack (`datapath-28`):** E32 + E33 + noise-12, on aa8ffab. It is being tested, then held with the
 CPU-seconds method against two base builds, 8 rounds at 8 threads, then 8 at 1.
+
+### The stack (E32 + E33 + noise-12) against two base builds: about +9% at both 8 and 1 threads
+
+Tests on the stack: chunkgen 194, noise 40, all passed. (A first attempt measured nothing: the master's hold helper in the scratchpad had
+been overwritten by a sub-agent's box-side script, which then ran on the agent host and timed empty
+commands. Nothing touched the box. The helper is now `master-hold.sh`.)
+
+CPU-seconds method, rotating order, java's CPU-seconds logged per run. The box was quiet: java used
+0.46-1.14 CPU-s per ~26-36 s run, so all 48 runs are kept. Bases: `datapath` and `datapath-h2`, two builds
+of aa8ffab code.
+
+| | base 1 cps / CPU-s | base 2 cps / CPU-s | stack cps / CPU-s |
+|---|---|---|---|
+| 8 threads, 8 rounds, mean | 766.8 / 36.23 | 802.6 / 35.80 | **857.4** / 35.49 |
+| 1 thread, 8 rounds, mean | 113.9 / 34.50 | 111.3 / 34.68 | **123.0** / 34.04 |
+
+All forty-eight `digest=a977961a58122047`.
+- **8 threads:** +9.3% over the bases' mean wall cps. The stack beats both bases in 5 of 8 rounds
+  (r1 928, r3 1003, r5 860, r6 913, r8 909) and loses in r2, r4, r7 (730-779). Wall spread at 8
+  threads stays large.
+- **1 thread:** +9.2%, ahead of both bases in 7 of 8 rounds. In r7 it is between them.
+- **CPU-s:** the stack is lowest on both. The difference is diluted by the ~24 s of identical digest and
+  load work in each run (1-thread generation alone: ~9.6 s for the bases against ~8.85 s for the stack).
+
+The two base builds differ by 2.3-4.6%. The stack's ~9% is the first change since E21 to clear the
+build floor. noise-12 is the noise track's patch, so E32 + E33 are held next without it, to
+attribute the gain before anything lands here.
