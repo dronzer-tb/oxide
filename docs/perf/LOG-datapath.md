@@ -1086,3 +1086,11 @@ The surface interpreter has resisted four attempts. Gains there need a different
    Leave carvers until the surface and aquifer shares are re-measured.
 
 The PR into `feat/native-decoration` is still not opened: no `gh` on this host.
+
+### E26: merge `origin/perf/noise` at 0c83b38 (includes ff02449, noise experiment 12)
+
+Merged clean onto 2730aeb as a939acf. Tests on the box (`datapath-22`, shared lock): noise 34,
+chunkgen 190, core 57, biome 6, all passed. Release build in `~/oxide-perf/datapath-22`. Pushed
+before its own A/B so the branch carries it. The 1-thread re-reference (head 20d218d against this
+merge, rotating hold) runs after the E22 A/B frees the lock queue. The noise track's own hold for
+experiment 12 was 9.77 against 10.43 ms, ahead in 5 of 5.
