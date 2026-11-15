@@ -1613,3 +1613,48 @@ profile says it removes ~2% of CPU there.
 
 The sub-agent deleted `datapath-26b` and `-26c`; `datapath-26` is deleted now.
 Housekeeping noted by the sub-agent: two retry loops took the exclusive lock for ~2 s each and aborted with nothing timed.
+
+### Live server ~115 cps against harness ~700: where the 6x can go (read-only analysis, for the user to assign)
+
+A sub-agent read the code and logs; nothing was built or run, and no server was touched. Same terrain code: the ~115 cps
+was measured on perf/datapath bf577ba, Vertex path, `native-decoration=false` (LOG-pipeline.md
+647-650), and `oxide-ffi` and `plugin/` are unchanged since. At 115 cps on 8 cores a chunk costs
+~70 ms of core time, of which Oxide is ~15 ms and the boundary under 1 ms. **The rest, ~55 ms, is
+Java.**
+
+**Call path.**
+1. Vertex calls `OxideChunkHook.generate`. The hook is registered for `BIOMES, SURFACE, CARVERS`
+   (`OxideVertexModule.java:51-52`), and the handle is cached in a `ConcurrentHashMap`.
+2. Java opens `Arena.ofConfined()` per chunk and allocates 196,608 B for blocks plus 3,072 B for biomes
+   (`OxideChunkHook.java:72-74`). It makes a Panama downcall `oxide_generate_chunk` (`OxideNative.java:270-275`, `ffi/lib.rs:247-293`).
+3. Rust: `OxideGenerator::generate_chunk`, `terrain()`, then `oxide_chunkgen::generate_chunk`, then `write_out` (`handle.rs:341-395`).
+4. Java: `toArray` copies blocks and biomes. The hook re-reads both palettes as `String[]` and calls
+   `target.setBlocks` / `setBiomes` (`OxideChunkHook.java:81-117`).
+
+Not serialised anywhere: the only shared locks are read-only palette `RwLock`s.
+
+**Candidates, in order of share:**
+
+| # | Candidate | Evidence | Share of the 6x |
+|---|---|---|---|
+| 1 | Vanilla Java stages: features, lighting, structure starts, heightmaps, saving, Chunky/scheduler | The PLAN.md profile: 25% of CPU in JIT Java, 17% libc. Decoration is 37-50% of offline pregen. | ~4x (~55-60 ms of ~70) |
+| 2 | Vanilla noise still run in Java for structure placement | The Vertex path hooks neither `getBaseHeight` nor the biome source (`handle.rs:456-459`); the Bukkit path does | part of 1; a few ms? |
+| 3 | **Vanilla NOISE fill may still run** after Oxide's hook | `NOISE` is not in the claimed stage set (`OxideVertexModule.java:52`). If Vertex does not skip `fillFromNoise`, Java regenerates terrain that matches Oxide's by design, so nobody would notice | **unverified; tens of ms if true** |
+| 4 | FFI-only Rust work | `carvers_at` runs an uncached `ClimateSample::sample` (six full router programs, `caches: None`) plus `tree.nearest` and a Vec clone, for each of the 289 source chunks per chunk (`handle.rs:367-381`). `write_out` does two 196 KB `fill(0)`s, `to_string` per palette entry, and a `RwLock` plus SipHash lookup per entry; ~150-250 small allocations per chunk. The live profile puts Oxide at ~1.3x the harness | ~2-5 ms per chunk, ~0.2-0.4x |
+| 5 | Boundary copies and palette strings | ~400 KB memset/copy, ~130 Java strings and downcalls. The biome palette carries every datapack biome, ~65 strings, though a chunk uses 1-3 | under 1 ms, under 2%, unless Vertex's `setBlocks` parses state strings per chunk |
+| 6 | Box contention | The java server on s5 used 1-6 cores during bench runs | could make either number unrepresentative |
+| 7 | Different datapack and seed | Live uses the container datapack and seed 4489057056054590644; the harness uses `reference` and 12345 | unknown |
+
+**What reading cannot settle, and the measurement that would:**
+1. Does Vertex skip NOISE, and what does `ChunkTarget.setBlocks` cost? Read the Vertex source, or take
+   JFR / async-profiler during Chunky and look for `fillFromNoise` / `NoiseChunk` frames.
+2. The Java-side split: an async-profiler wall-plus-CPU profile of a Chunky run, grouped by stage
+   (features, light engine, structure starts with `getBaseHeight`/`Climate.Sampler`, region files with zlib, GC).
+3. Oxide's real cost behind the FFI: `crates/oxide-ffi/examples/bench_native.rs` at 8 threads on
+   `reference` with seed 12345, against the harness at the same radius (isolates row 4); then on the live datapack and seed (row 7).
+4. Whether 115 cps is CPU-bound: the server process's utime+stime per wall second during Chunky.
+5. The JVM-only cap: Chunky with a hook that returns a constant chunk. PLAN.md's "~240 cps" has no
+   derivation in the repo; this model puts it nearer 120-140.
+
+Row 4 is datapath-adjacent: `carvers_at`'s per-source climate sampling could use chunk caches or a
+per-source-chunk memo. That is in `oxide-ffi`, not this track's, so it is not acted on here.
