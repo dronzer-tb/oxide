@@ -823,3 +823,28 @@ Open for the user, added this pass: a harness option to skip the digest on hold 
 checked once per binary) would cut hold time about 3.5x on 1 thread; the harness has no owner.
 
 Stopped reading at: noise 9fabbb3, datapath 4ddd92c, pipeline 3c2fafd
+
+## Pass 21 (2026-11-15 21:40 UTC)
+
+No code landed on any track. Read: noise 3534f6a..e0ba0b6, datapath ef0764b..5c47191 (logs only);
+pipeline has no commit since 3c2fafd (20:16).
+
+- **noise** (code fd4bfe2, 9.15 ms 1T unchanged): exp 18 scratch pool decided on generation-only
+  CPU: 10.93 s against bases 10.91/11.10 at 1T, between the bases at 8T; not landed. Now holding
+  exp 17 (column x/z) on gen_cpu_s; that hold is 5 rounds at 1T, about 9 min exclusive.
+- **datapath** (code bd442e7, unchanged): stack E32+E33+noise-12 on aa8ffab +9.2% at 1T (7/8
+  rounds), +9.3% at 8T (5/8), 48 digests ok. E32+E33 alone: -2.6% at 1T (1/6), +8.5% at 8T (4/6);
+  not landed. It attributes the 1T gain to noise-12 by subtraction.
+- **Conflict:** the two tracks disagree on noise-12 (same noise crate in both trees: merge-base
+  of aa8ffab and fd4bfe2 is fd4bfe2). Neither claim is landed. Asked datapath for one hold with
+  four binaries (two bases, base+noise-12, stack) judged on generation-only CPU.
+- **pipeline**: working, 4 sub-agents; a per-region write-table change is built on `pipeline-lg`
+  and waiting for the lock. Nothing to check yet.
+- Box: disk 69%, all builds under the shared lock, Java at 33% of a core. Limits: noise 28%,
+  datapath 41%, pipeline 1% (window reset). No OmniRoute. All three sessions have unsubmitted
+  supervisor nudges stacked in the input line.
+
+Messages: noise (do not close 18, datapath's contrary result, 4-round holds); datapath (four-binary
+hold on generation-only CPU).
+
+Stopped reading at: noise e0ba0b6, datapath 5c47191, pipeline 3c2fafd
