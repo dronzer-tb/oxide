@@ -540,3 +540,22 @@ before runs differ by 73% because the box was heavily shared. The read counts ar
 saving (-1.5 s, -29% for sculk, about -4% of decoration) comes from one profile each, so a 1-thread
 alternating hold is next. Misses still go through `fact_at`, so a region call that returns all fact
 bits at once would cut more; that is region.rs work, after interning lands.
+
+## 1-thread alternating hold: interning + pregen switch, sculk memo (auditor's decider)
+
+`scripts/bench-ab-pregen-vps.sh 16 1 3 pipeline pipeline-4 pipeline-3`: one exclusive hold,
+r16, 1 thread, `--no-write`, three rounds rotating base (87927ea) / interning + pregen switch /
+sculk memo. Digest df701ee858e2bdd3 on all nine. Rows in `bench-pipeline-ab.tsv`.
+
+    decorate_ms  base       20396 22645 22066   mean 21702
+                 interning  16951 17010 16106   mean 16689   -23.1%, ahead 3/3
+                 sculk memo 24052 21970 22188   mean 22737   +4.8%, behind 2/3
+
+**Kept: interning + pregen switch** (10d7220, 78de067, 639be4e on the branch; `crates/` is identical
+to the tested tree, where tests pass: chunkgen 189 and pregen). The first decoration win on
+perf/pipeline since the 4aca951 tables: about 5 s of 1-thread decoration CPU at r16.
+
+**Rejected: sculk read memo** (1a19e6b, not landed). The profile showed 29% less sculk CPU, but
+the whole stage is slower. The profile's per-call timers do not see the memo's own cost: a 1.1 MB
+thread-local box per thread, generation checks, and cache pressure on top of every read. Keep the
+idea of fewer reads, but it needs a small per-step neighbourhood rather than a whole-feature box.
