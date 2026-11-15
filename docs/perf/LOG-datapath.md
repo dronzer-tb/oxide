@@ -764,3 +764,45 @@ as it runs.
 Noted from the auditor: the noise session is back, has been told to drop noise-5 in favour of
 E18, and will do noise-4 (shared corner columns) on top of this head. `NoiseRouterEvaluator::id()`
 stays as the one datapath change in `oxide-noise`; the rest of that crate is left to noise.
+
+### Round 5: E21 (aquifer per block) and E22 (carvers) -- three-way A/B inconclusive
+
+**E21** (`/tmp/datapath-13`, `aquifer.rs` + `fill.rs`). Counters per chunk:
+- 40,957 `compute_kind` calls; 73.5% of them are `density > 0` early returns.
+- ~10.8k full searches, 68% ending at `similarity12 <= 0`.
+- `Barrier` sampled 54 times.
+
+The cost is the search itself, ~75 ns each. Changes:
+- The fill answers `density > 0` itself.
+- A one-row run memo. After a full fast-path search, `note_run` proves how far along +x the
+  same answer holds, from exact integer gaps that are linear in x:
+  - rule 1: every other candidate is >= 25 further, so `similarity12 <= 0`;
+  - rule 2: every candidate whose cached status differs is >= 50 further, so everything weighed
+    has the nearest's status and pressure returns 0.0 before any noise.
+
+  Uncached statuses count as different. Proof reviewed by the master.
+- Sub-agent runs: 630.5, 641.2. Tests: chunkgen 190 passed.
+
+**E22** (`/tmp/datapath-14`, `carver.rs`):
+- A private `WalkRandom` takes a tunnel step's seven LCG draws from precomputed jump
+  constants instead of a chain of seven dependent multiplies; it is bit-identical to
+  `LegacyRandom` (new test: 8 seeds, 2000 steps, interleaved splits).
+- The step radius is computed only after `can_reach`.
+- A conservative pre-check skips calls that `carve_ellipsoid`'s own first test rejects.
+- `zd` and `yd` tables per ellipsoid, with the same expressions and summation order.
+- `carvers_at`'s Vec is iterated by reference.
+- No useful exact pre-walk skip for a whole tunnel exists: `can_reach` already ends far
+  tunnels within a step or two.
+- Sub-agent runs: 676.9, 599.7. Tests: chunkgen 191 passed (one new).
+
+Three-way interleaved A/B (rows of the head are in `bench-datapath.tsv`):
+
+| | round 1 | round 2 | round 3 | mean |
+|---|---|---|---|---|
+| head 0e3cf61 | 544.1 | 679.0 | 587.0 | 603.4 |
+| + E21 | 635.6 | 667.7 | 578.7 | 627.3 |
+| + E22 | 658.9 | 504.7 | 617.3 | 593.6 |
+
+All nine `digest=a977961a58122047`. The head alone spread 544-679 (25%) in one hold, much more
+than the ~4% being looked for. Next: head against head+E21+E22 combined (they touch different
+files), four rounds.

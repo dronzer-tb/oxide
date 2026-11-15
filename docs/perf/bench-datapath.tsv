@@ -38,3 +38,6 @@
 1794726848	2b7bd3e	16	chunks=1089 threads=8 secs=1.745 cps=624.2 ms_per_chunk_core=12.82 digest=a977961a58122047
 1794726882	a6c1fcd	16	chunks=1089 threads=8 secs=1.646 cps=661.4 ms_per_chunk_core=12.09 digest=a977961a58122047
 1794726902	2b7bd3e	16	chunks=1089 threads=8 secs=1.867 cps=583.4 ms_per_chunk_core=13.71 digest=a977961a58122047
+1794728909	0e3cf61	16	chunks=1089 threads=8 secs=2.002 cps=544.1 ms_per_chunk_core=14.70 digest=a977961a58122047
+1794728984	0e3cf61	16	chunks=1089 threads=8 secs=1.604 cps=679.0 ms_per_chunk_core=11.78 digest=a977961a58122047
+1794729063	0e3cf61	16	chunks=1089 threads=8 secs=1.855 cps=587.0 ms_per_chunk_core=13.63 digest=a977961a58122047
