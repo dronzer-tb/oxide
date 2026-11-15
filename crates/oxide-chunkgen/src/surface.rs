@@ -27,7 +27,7 @@ use oxide_core::{
 use oxide_datapack::{
     NoiseGeneratorSettings, SurfaceCondition, SurfaceRule, SurfaceType, VerticalAnchor,
 };
-use oxide_noise::{NoiseRouterEvaluator, RouterSlot, WorldPositionalFactory};
+use oxide_noise::{NoiseRouterEvaluator, NormalNoise, RouterSlot, WorldPositionalFactory};
 
 use crate::fill::local_index;
 
@@ -50,7 +50,10 @@ struct Cursor {
     stone_depth_above: i32,
     stone_depth_below: i32,
     water_height: i32,
-    biome: ResourceLocation,
+    /// Index into the chunk's biome table (see [`ChunkBiomes`]), not an id: the rule tree asks
+    /// "is this biome one of ..." many times per position, and answers it from a precomputed
+    /// mask instead of comparing strings.
+    biome: usize,
 }
 
 const BAND_COUNT: usize = 64;
@@ -132,6 +135,80 @@ fn make_band(
     }
 }
 
+/// The rule tree, compiled once per [`SurfaceSystem`]: every name the datapack spells as a
+/// string -- noises, randomizers, anchors, result blocks -- is resolved here, so evaluating a
+/// position does no hashing, no string comparison and no allocation.
+enum CompiledRule<'a> {
+    Sequence(Vec<CompiledRule<'a>>),
+    Condition(CompiledCondition<'a>, Box<CompiledRule<'a>>),
+    /// Index into [`SurfaceSystem::results`].
+    Block(usize),
+    Badlands,
+}
+
+enum CompiledCondition<'a> {
+    /// Index into [`SurfaceSystem::biome_sets`], and so into each chunk's biome masks.
+    Biome(usize),
+    /// A 2D noise threshold depends on the column only, so its answer is remembered per column
+    /// in memo slot `memo`.
+    Noise2d {
+        noise: Option<&'a NormalNoise>,
+        min: f64,
+        max: f64,
+        memo: usize,
+    },
+    Noise3d {
+        noise: Option<&'a NormalNoise>,
+        min: f64,
+        max: f64,
+    },
+    VerticalGradient {
+        random: WorldPositionalFactory,
+        true_y: i32,
+        false_y: i32,
+    },
+    YAbove {
+        anchor_y: i32,
+        surface_depth_multiplier: i32,
+        add_stone_depth: bool,
+    },
+    Water {
+        offset: i32,
+        surface_depth_multiplier: i32,
+        add_stone_depth: bool,
+    },
+    Temperature,
+    /// Column-only; remembered in memo slot `memo`.
+    Steep {
+        memo: usize,
+    },
+    Hole,
+    AbovePreliminarySurface,
+    StoneDepth {
+        offset: i32,
+        add_surface_depth: bool,
+        secondary_depth_range: i32,
+        ceiling: bool,
+    },
+    Not(Box<CompiledCondition<'a>>),
+}
+
+const MEMO_UNKNOWN: u8 = 0;
+const MEMO_FALSE: u8 = 1;
+const MEMO_TRUE: u8 = 2;
+
+/// What the rule tree needs to know about the biomes of one chunk, as small tables indexed by
+/// a per-chunk biome number.
+struct ChunkBiomes {
+    /// Per section: biome palette index -> chunk biome number.
+    section_maps: Vec<Vec<u16>>,
+    /// `biome_sets.len()` rows of `count` flags: is chunk biome `b` in biome set `s`?
+    masks: Vec<bool>,
+    /// Base temperature per chunk biome.
+    temperatures: Vec<f32>,
+    count: usize,
+}
+
 pub struct SurfaceSystem<'a> {
     settings: &'a NoiseGeneratorSettings,
     router: &'a NoiseRouterEvaluator,
@@ -145,17 +222,35 @@ pub struct SurfaceSystem<'a> {
     /// steps through a deep tree, once per column, so sharing the fill pass's caches is the
     /// difference between cheap and dominating the whole chunk.
     caches: Option<&'a oxide_noise::ChunkCaches>,
-    /// Built once rather than per column: these are looked up for every column in a chunk.
-    surface_noise_id: ResourceLocation,
-    surface_secondary_noise_id: ResourceLocation,
-    clay_bands_offset_id: ResourceLocation,
-    temperature_noise_id: ResourceLocation,
-    clay_bands: [BlockState; BAND_COUNT],
+    /// Resolved once rather than per column: these are sampled for every column in a chunk.
+    surface_noise: Option<&'a NormalNoise>,
+    surface_secondary_noise: Option<&'a NormalNoise>,
+    clay_bands_offset_noise: Option<&'a NormalNoise>,
+    temperature_noise: Option<&'a NormalNoise>,
+    /// Built on first use: only badlands columns read it, and building it costs an MD5 and 64
+    /// block states.
+    clay_bands: std::cell::OnceCell<[BlockState; BAND_COUNT]>,
+    rule: CompiledRule<'a>,
+    /// The state each `Block` rule places, by the index the compiled rule carries.
+    results: Vec<&'a BlockState>,
+    /// The id list of each `biome` condition, by the index the compiled condition carries.
+    biome_sets: Vec<&'a [ResourceLocation]>,
+    /// One slot per column-only condition, cleared at the start of every column.
+    memo: Vec<std::cell::Cell<u8>>,
+    /// Column-only values the badlands rule and the temperature condition read.
+    band_offset: std::cell::Cell<Option<i32>>,
+    temperature_offset: std::cell::Cell<Option<f32>>,
+}
+
+/// Scratch state for [`SurfaceSystem::compile_rule`].
+#[derive(Default)]
+struct Compiler<'a> {
+    results: Vec<&'a BlockState>,
+    biome_sets: Vec<&'a [ResourceLocation]>,
+    memo_slots: usize,
     /// `noise_threshold`-style conditions name their randomizer by string, and deriving a
-    /// factory from that name costs an MD5 of it. The names are a handful of constants out of
-    /// the rule tree and the derivation is pure, so each is derived once per chunk instead of
-    /// once per block considered -- the profile had 2.5% of generation sitting in MD5.
-    named_randoms: std::cell::RefCell<Vec<(String, WorldPositionalFactory)>>,
+    /// factory from that name costs an MD5 of it. Each distinct name is derived once.
+    named_randoms: Vec<(&'a str, WorldPositionalFactory)>,
 }
 
 impl<'a> SurfaceSystem<'a> {
@@ -164,38 +259,64 @@ impl<'a> SurfaceSystem<'a> {
         router: &'a NoiseRouterEvaluator,
         biome_temperatures: &'a BiomeTemperatures,
     ) -> Self {
-        let mut clay_random = router
-            .positional_factory()
-            .from_hash_of("minecraft:clay_bands");
-        let clay_bands = generate_clay_bands(&mut clay_random);
+        let min_y = settings.noise.min_y;
+        let height = settings.noise.height;
+        let mut compiler = Compiler::default();
+        let rule = compile_rule(&settings.surface_rule, router, min_y, height, &mut compiler);
+        let memo = (0..compiler.memo_slots)
+            .map(|_| std::cell::Cell::new(MEMO_UNKNOWN))
+            .collect();
 
         Self {
             settings,
             router,
             biome_temperatures,
-            min_y: settings.noise.min_y,
-            height: settings.noise.height,
+            min_y,
+            height,
             ocean_floor: None,
             caches: None,
-            surface_noise_id: ResourceLocation::minecraft("surface"),
-            surface_secondary_noise_id: ResourceLocation::minecraft("surface_secondary"),
-            clay_bands_offset_id: ResourceLocation::minecraft("clay_bands_offset"),
-            temperature_noise_id: ResourceLocation::minecraft("temperature"),
-            clay_bands,
-            named_randoms: std::cell::RefCell::new(Vec::new()),
+            surface_noise: router.noise(&ResourceLocation::minecraft("surface")),
+            surface_secondary_noise: router
+                .noise(&ResourceLocation::minecraft("surface_secondary")),
+            clay_bands_offset_noise: router
+                .noise(&ResourceLocation::minecraft("clay_bands_offset")),
+            temperature_noise: router.noise(&ResourceLocation::minecraft("temperature")),
+            clay_bands: std::cell::OnceCell::new(),
+            rule,
+            results: compiler.results,
+            biome_sets: compiler.biome_sets,
+            memo,
+            band_offset: std::cell::Cell::new(None),
+            temperature_offset: std::cell::Cell::new(None),
+        }
+    }
+
+    fn clay_bands(&self) -> &[BlockState; BAND_COUNT] {
+        self.clay_bands.get_or_init(|| {
+            let mut clay_random = self
+                .router
+                .positional_factory()
+                .from_hash_of("minecraft:clay_bands");
+            generate_clay_bands(&mut clay_random)
+        })
+    }
+
+    /// The state a rule result stands for. Results past the rule tree's own are the clay
+    /// bands, in band order.
+    fn result_state(&self, result: usize) -> &BlockState {
+        match self.results.get(result) {
+            Some(state) => state,
+            None => &self.clay_bands()[result - self.results.len()],
         }
     }
 
     /// Rewrites `chunk`'s `default_block` positions per the rule tree. Positions holding fluid
     /// or air are never rewritten -- vanilla only offers the rule tree a stone position.
     ///
-    /// The column scan reads *palette indices*, never `BlockState` values. A chunk is ~98k
-    /// positions and the old scan cloned a `BlockState` -- a `ResourceLocation` plus a
-    /// `BTreeMap<String, String>` -- at every one of them, then answered "is this air?" by
-    /// comparing strings. `perf` put ~15% of total generation time in `malloc`/`free`,
-    /// `BTreeMap::clone_subtree`, `BTreeMap::eq` and `drop_glue<BlockState>` because of it.
-    /// Classifying each section's palette once up front (see [`SectionClass`]) turns the inner
-    /// loop into `u32` compares against three precomputed indices, with zero allocation.
+    /// The column scan reads and writes *palette indices*, never `BlockState` values: each
+    /// section's palette is classified once up front (see [`SectionClass`]), each biome is a
+    /// small number (see [`ChunkBiomes`]), and a rule result is interned into a section's
+    /// palette the first time that section receives it.
     pub fn apply(
         &mut self,
         chunk: &mut ChunkData,
@@ -204,7 +325,6 @@ impl<'a> SurfaceSystem<'a> {
     ) {
         self.caches = Some(caches);
         self.ocean_floor = chunk.heightmaps.get(&HeightmapType::OceanFloorWg).cloned();
-        let rule = &self.settings.surface_rule;
         let top_y = self.min_y + self.height - 1;
 
         // One pass over each section's palette (a handful of entries), rather than one
@@ -220,12 +340,22 @@ impl<'a> SurfaceSystem<'a> {
                 )
             })
             .collect();
+        let biomes = self.chunk_biomes(chunk);
+        // Per section, per rule result: the palette index that result has in that section,
+        // once it has been written there. `u32::MAX` = not interned yet.
+        let result_count = self.results.len() + BAND_COUNT;
+        let mut result_index = vec![u32::MAX; chunk.sections.len() * result_count];
 
         for local_z in 0..16usize {
             let z = pos.min_block_z() + local_z as i32;
             for local_x in 0..16usize {
                 let x = pos.min_block_x() + local_x as i32;
                 let column = self.column_state(x, z);
+                for slot in &self.memo {
+                    slot.set(MEMO_UNKNOWN);
+                }
+                self.band_offset.set(None);
+                self.temperature_offset.set(None);
 
                 let mut stone_depth_above = 0;
                 let mut water_height = i32::MIN;
@@ -233,80 +363,137 @@ impl<'a> SurfaceSystem<'a> {
                 // derived without rescanning for every y.
                 let mut run_bottom = i32::MAX;
 
-                for y in (self.min_y..=top_y).rev() {
-                    let Some(kind) = self.classify(chunk, &classes, local_x, y, local_z) else {
+                for section_index in (0..chunk.sections.len()).rev() {
+                    let section_min_y = self.min_y + section_index as i32 * 16;
+                    if section_min_y > top_y {
                         continue;
-                    };
-
-                    if kind == BlockKind::Air {
+                    }
+                    if classes[section_index].all_air {
+                        // Sixteen air positions: exactly what the per-block arm below does.
                         stone_depth_above = 0;
                         water_height = i32::MIN;
                         run_bottom = i32::MAX;
                         continue;
                     }
-                    if kind == BlockKind::DefaultFluid {
-                        // PARITY-CHECK: vanilla records the position *above* the fluid column.
-                        water_height = y + 1;
-                        stone_depth_above = 0;
-                        run_bottom = i32::MAX;
-                        continue;
-                    }
+                    for local_y in (0..16usize).rev() {
+                        let y = section_min_y + local_y as i32;
+                        let slot = local_index(local_x, local_y, local_z);
+                        let palette_index =
+                            chunk.sections[section_index].block_states.indices()[slot];
+                        let kind = classes[section_index].kind(palette_index);
 
-                    if run_bottom > y {
-                        run_bottom = self.run_bottom(chunk, &classes, local_x, y, local_z);
-                    }
-                    stone_depth_above += 1;
-                    let stone_depth_below = y - run_bottom + 1;
-
-                    if kind != BlockKind::DefaultBlock {
-                        continue;
-                    }
-
-                    let cursor = Cursor {
-                        x,
-                        y,
-                        z,
-                        stone_depth_above,
-                        stone_depth_below,
-                        water_height,
-                        biome: self.biome_at(chunk, local_x, y, local_z),
-                    };
-                    if let Some(result) = self.eval_rule(rule, &cursor, &column) {
-                        self.set_block(chunk, local_x, y, local_z, result);
-                        // A write can intern a palette entry this section did not have, which
-                        // would leave its cached classification short an index. Re-derive just
-                        // that section's -- once per actual write, not per position scanned.
-                        if let Some(si) = self.section_of(y) {
-                            if let (Some(section), Some(slot)) =
-                                (chunk.sections.get(si), classes.get_mut(si))
-                            {
-                                *slot = SectionClass::of(
-                                    section.block_states.palette(),
-                                    &self.settings.default_block,
-                                    &self.settings.default_fluid,
-                                );
-                            }
+                        if kind == BlockKind::Air {
+                            stone_depth_above = 0;
+                            water_height = i32::MIN;
+                            run_bottom = i32::MAX;
+                            continue;
                         }
+                        if kind == BlockKind::DefaultFluid {
+                            // PARITY-CHECK: vanilla records the position *above* the fluid
+                            // column.
+                            water_height = y + 1;
+                            stone_depth_above = 0;
+                            run_bottom = i32::MAX;
+                            continue;
+                        }
+
+                        if run_bottom > y {
+                            run_bottom = self.run_bottom(chunk, &classes, local_x, y, local_z);
+                        }
+                        stone_depth_above += 1;
+                        let stone_depth_below = y - run_bottom + 1;
+
+                        if kind != BlockKind::DefaultBlock {
+                            continue;
+                        }
+
+                        let quart = ((local_y / 4) * 4 + local_z / 4) * 4 + local_x / 4;
+                        let biome_palette_index =
+                            chunk.sections[section_index].biomes.indices()[quart];
+                        let cursor = Cursor {
+                            x,
+                            y,
+                            z,
+                            stone_depth_above,
+                            stone_depth_below,
+                            water_height,
+                            biome: biomes.section_maps[section_index][biome_palette_index as usize]
+                                as usize,
+                        };
+                        let Some(result) = self.eval_rule(&self.rule, &cursor, &column, &biomes)
+                        else {
+                            continue;
+                        };
+                        let cached = &mut result_index[section_index * result_count + result];
+                        let block_states = &mut chunk.sections[section_index].block_states;
+                        if *cached == u32::MAX {
+                            *cached =
+                                block_states.index_of_or_insert(self.result_state(result).clone());
+                            // Interning can add a palette entry this section did not have,
+                            // which would leave its classification short an index.
+                            classes[section_index].extend(
+                                block_states.palette(),
+                                &self.settings.default_block,
+                                &self.settings.default_fluid,
+                            );
+                        }
+                        block_states.set_index(slot, *cached);
                     }
                 }
             }
         }
     }
 
+    /// Numbers the distinct biomes of `chunk` and answers every biome question the rule tree
+    /// can ask about them, once.
+    fn chunk_biomes(&self, chunk: &ChunkData) -> ChunkBiomes {
+        let mut ids: Vec<&ResourceLocation> = Vec::new();
+        let section_maps: Vec<Vec<u16>> = chunk
+            .sections
+            .iter()
+            .map(|section| {
+                section
+                    .biomes
+                    .palette()
+                    .iter()
+                    .map(|id| match ids.iter().position(|known| *known == id) {
+                        Some(index) => index as u16,
+                        None => {
+                            ids.push(id);
+                            (ids.len() - 1) as u16
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        let count = ids.len();
+        let mut masks = Vec::with_capacity(self.biome_sets.len() * count);
+        for set in &self.biome_sets {
+            for id in &ids {
+                masks.push(set.contains(id));
+            }
+        }
+        let temperatures = ids
+            .iter()
+            .map(|id| self.biome_temperatures.get(*id).copied().unwrap_or(0.5))
+            .collect();
+        ChunkBiomes {
+            section_maps,
+            masks,
+            temperatures,
+            count,
+        }
+    }
+
     /// PARITY-CHECK: `surface` noise scaled by 2.75, offset 3.0, plus a quarter of a
     /// per-column random -- vanilla's `SurfaceSystem#getSurfaceDepth`, reconstructed.
     fn column_state(&self, x: i32, z: i32) -> Column {
-        let surface = self.sample_noise(&self.surface_noise_id, x as f64, 0.0, z as f64);
+        let surface = sample_noise(self.surface_noise, x as f64, 0.0, z as f64);
         let mut random = self.router.positional_factory().at(x, 0, z);
         let surface_depth = (surface * 2.75 + 3.0 + random.next_double() * 0.25) as i32;
         Column {
             surface_depth,
-            surface_secondary: self.sample_noise(
-                &self.surface_secondary_noise_id,
-                x as f64,
-                0.0,
-                z as f64,
-            ),
+            surface_secondary: sample_noise(self.surface_secondary_noise, x as f64, 0.0, z as f64),
             min_surface_level: self.sample(RouterSlot::PreliminarySurfaceLevel, x, 0, z) as i32,
         }
     }
@@ -316,15 +503,6 @@ impl<'a> SurfaceSystem<'a> {
         match self.caches {
             Some(caches) => self.router.sample_in_chunk(caches, slot, x, y, z),
             None => self.router.sample(slot, x, y, z),
-        }
-    }
-
-    fn sample_noise(&self, id: &ResourceLocation, x: f64, y: f64, z: f64) -> f64 {
-        match self.router.noise(id) {
-            Some(noise) => noise.get_value(x, y, z),
-            // A datapack without the noise the rules ask for: 0.0 keeps the pass running
-            // rather than aborting a chunk, and reads as "no contribution".
-            None => 0.0,
         }
     }
 
@@ -349,110 +527,102 @@ impl<'a> SurfaceSystem<'a> {
         bottom
     }
 
+    /// The result index of the first `block` rule whose enclosing conditions all hold.
     fn eval_rule(
         &self,
-        rule: &SurfaceRule,
+        rule: &CompiledRule<'a>,
         cursor: &Cursor,
         column: &Column,
-    ) -> Option<BlockState> {
+        biomes: &ChunkBiomes,
+    ) -> Option<usize> {
         match rule {
-            SurfaceRule::Sequence { sequence } => sequence
+            CompiledRule::Sequence(sequence) => sequence
                 .iter()
-                .find_map(|inner| self.eval_rule(inner, cursor, column)),
-            SurfaceRule::Condition { if_true, then_run } => {
-                if self.eval_condition(if_true, cursor, column) {
-                    self.eval_rule(then_run, cursor, column)
+                .find_map(|inner| self.eval_rule(inner, cursor, column, biomes)),
+            CompiledRule::Condition(if_true, then_run) => {
+                if self.eval_condition(if_true, cursor, column, biomes) {
+                    self.eval_rule(then_run, cursor, column, biomes)
                 } else {
                     None
                 }
             }
-            SurfaceRule::Block { result_state } => Some(result_state.clone()),
-            SurfaceRule::Badlands {} => {
-                let offset_noise = self.router.noise(&self.clay_bands_offset_id);
-                let offset = match offset_noise {
-                    Some(noise) => (noise.get_value(cursor.x as f64, 0.0, cursor.z as f64) * 4.0)
-                        .round() as i32,
-                    None => 0,
+            CompiledRule::Block(result) => Some(*result),
+            CompiledRule::Badlands => {
+                let offset = match self.band_offset.get() {
+                    Some(offset) => offset,
+                    None => {
+                        let offset = match self.clay_bands_offset_noise {
+                            Some(noise) => (noise.get_value(cursor.x as f64, 0.0, cursor.z as f64)
+                                * 4.0)
+                                .round() as i32,
+                            None => 0,
+                        };
+                        self.band_offset.set(Some(offset));
+                        offset
+                    }
                 };
                 let band = (cursor.y + offset).rem_euclid(BAND_COUNT as i32) as usize;
-                Some(self.clay_bands[band].clone())
+                Some(self.results.len() + band)
             }
         }
-    }
-
-    /// The positional factory a rule's named randomizer forks to, derived once per name.
-    fn named_random(&self, name: &str) -> WorldPositionalFactory {
-        if let Some((_, factory)) = self
-            .named_randoms
-            .borrow()
-            .iter()
-            .find(|(known, _)| known == name)
-        {
-            return factory.clone();
-        }
-        let factory = self
-            .router
-            .positional_factory()
-            .from_hash_of(name)
-            .fork_positional();
-        self.named_randoms
-            .borrow_mut()
-            .push((name.to_string(), factory.clone()));
-        factory
     }
 
     fn eval_condition(
         &self,
-        condition: &SurfaceCondition,
+        condition: &CompiledCondition<'a>,
         cursor: &Cursor,
         column: &Column,
+        biomes: &ChunkBiomes,
     ) -> bool {
         match condition {
-            SurfaceCondition::Biome { biome_is } => biome_is.contains(&cursor.biome),
+            CompiledCondition::Biome(set) => biomes.masks[set * biomes.count + cursor.biome],
 
-            SurfaceCondition::NoiseThreshold {
+            CompiledCondition::Noise2d {
                 noise,
-                min_threshold,
-                max_threshold,
-                is_3d,
-            } => {
-                let y = if *is_3d { cursor.y as f64 } else { 0.0 };
-                let value = match self.router.noise(noise) {
-                    Some(n) => n.get_value(cursor.x as f64, y, cursor.z as f64),
-                    None => return false,
-                };
-                value >= *min_threshold && value <= *max_threshold
-            }
+                min,
+                max,
+                memo,
+            } => self.memoized(*memo, || match noise {
+                Some(n) => {
+                    let value = n.get_value(cursor.x as f64, 0.0, cursor.z as f64);
+                    value >= *min && value <= *max
+                }
+                None => false,
+            }),
+
+            CompiledCondition::Noise3d { noise, min, max } => match noise {
+                Some(n) => {
+                    let value = n.get_value(cursor.x as f64, cursor.y as f64, cursor.z as f64);
+                    value >= *min && value <= *max
+                }
+                None => false,
+            },
 
             // PARITY-CHECK: linear probability between the two anchors, sampled from the
             // shared positional factory keyed by `random_name` -- vanilla's
             // `SurfaceRules.VerticalGradientConditionSource`, reconstructed.
-            SurfaceCondition::VerticalGradient {
-                random_name,
-                true_at_and_below,
-                false_at_and_above,
+            CompiledCondition::VerticalGradient {
+                random,
+                true_y,
+                false_y,
             } => {
-                let true_y = self.resolve_anchor(true_at_and_below);
-                let false_y = self.resolve_anchor(false_at_and_above);
-                if cursor.y <= true_y {
+                if cursor.y <= *true_y {
                     return true;
                 }
-                if cursor.y >= false_y {
+                if cursor.y >= *false_y {
                     return false;
                 }
                 let span = (false_y - true_y) as f64;
                 let probability = (false_y - cursor.y) as f64 / span;
-                let mut random = self
-                    .named_random(random_name)
-                    .at(cursor.x, cursor.y, cursor.z);
+                let mut random = random.at(cursor.x, cursor.y, cursor.z);
                 // nextFloat, not nextDouble: vanilla compares a float draw here, and the two
                 // consume the generator differently, so the choice changes every bedrock
                 // position -- not just precision.
                 (random.next_float() as f64) < probability
             }
 
-            SurfaceCondition::YAbove {
-                anchor,
+            CompiledCondition::YAbove {
+                anchor_y,
                 surface_depth_multiplier,
                 add_stone_depth,
             } => {
@@ -461,11 +631,10 @@ impl<'a> SurfaceSystem<'a> {
                 } else {
                     0
                 };
-                cursor.y + stone
-                    >= self.resolve_anchor(anchor) + column.surface_depth * surface_depth_multiplier
+                cursor.y + stone >= anchor_y + column.surface_depth * surface_depth_multiplier
             }
 
-            SurfaceCondition::Water {
+            CompiledCondition::Water {
                 offset,
                 surface_depth_multiplier,
                 add_stone_depth,
@@ -484,21 +653,26 @@ impl<'a> SurfaceSystem<'a> {
                         + column.surface_depth * surface_depth_multiplier
             }
 
-            SurfaceCondition::Temperature {} => {
-                let base = self
-                    .biome_temperatures
-                    .get(&cursor.biome)
-                    .copied()
-                    .unwrap_or(0.5);
+            CompiledCondition::Temperature => {
+                let base = biomes.temperatures[cursor.biome];
                 let adjusted = if cursor.y > 80 {
-                    let temp_noise = self.router.noise(&self.temperature_noise_id);
-                    let noise_val = match temp_noise {
-                        Some(noise) => {
-                            noise.get_value(cursor.x as f64 / 8.0, 0.0, cursor.z as f64 / 8.0)
-                                as f32
-                                * 8.0
+                    let noise_val = match self.temperature_offset.get() {
+                        Some(value) => value,
+                        None => {
+                            let value = match self.temperature_noise {
+                                Some(noise) => {
+                                    noise.get_value(
+                                        cursor.x as f64 / 8.0,
+                                        0.0,
+                                        cursor.z as f64 / 8.0,
+                                    ) as f32
+                                        * 8.0
+                                }
+                                None => 0.0,
+                            };
+                            self.temperature_offset.set(Some(value));
+                            value
                         }
-                        None => 0.0,
                     };
                     base - (noise_val + (cursor.y - 80) as f32) * 0.05 / 40.0
                 } else {
@@ -511,7 +685,7 @@ impl<'a> SurfaceSystem<'a> {
             // the columns one step away on Z -- vanilla's `Steep` condition, reconstructed.
             // Vanilla clamps the neighbour lookup into this chunk rather than reaching into
             // the next one, so edge columns compare against themselves; that clamp is kept.
-            SurfaceCondition::Steep {} => {
+            CompiledCondition::Steep { memo } => self.memoized(*memo, || {
                 let Some(heightmap) = self.ocean_floor.as_ref() else {
                     return false;
                 };
@@ -539,21 +713,22 @@ impl<'a> SurfaceSystem<'a> {
                     center
                 };
                 (x_above - x_below).abs() >= 4 || (z_above - z_below).abs() >= 4
-            }
+            }),
 
-            SurfaceCondition::Hole {} => column.surface_depth <= 0,
+            CompiledCondition::Hole => column.surface_depth <= 0,
 
-            SurfaceCondition::AbovePreliminarySurface {} => cursor.y >= column.min_surface_level,
+            CompiledCondition::AbovePreliminarySurface => cursor.y >= column.min_surface_level,
 
-            SurfaceCondition::StoneDepth {
+            CompiledCondition::StoneDepth {
                 offset,
                 add_surface_depth,
                 secondary_depth_range,
-                surface_type,
+                ceiling,
             } => {
-                let depth = match surface_type {
-                    SurfaceType::Floor => cursor.stone_depth_above,
-                    SurfaceType::Ceiling => cursor.stone_depth_below,
+                let depth = if *ceiling {
+                    cursor.stone_depth_below
+                } else {
+                    cursor.stone_depth_above
                 };
                 let surface = if *add_surface_depth {
                     column.surface_depth
@@ -576,15 +751,20 @@ impl<'a> SurfaceSystem<'a> {
                 depth <= 1 + offset + surface + secondary
             }
 
-            SurfaceCondition::Not { invert } => !self.eval_condition(invert, cursor, column),
+            CompiledCondition::Not(invert) => !self.eval_condition(invert, cursor, column, biomes),
         }
     }
 
-    fn resolve_anchor(&self, anchor: &VerticalAnchor) -> i32 {
-        match anchor {
-            VerticalAnchor::Absolute { absolute } => *absolute,
-            VerticalAnchor::AboveBottom { above_bottom } => self.min_y + above_bottom,
-            VerticalAnchor::BelowTop { below_top } => self.min_y + self.height - 1 - below_top,
+    /// A column-only condition's answer, computed on first ask within the column.
+    fn memoized(&self, slot: usize, compute: impl FnOnce() -> bool) -> bool {
+        match self.memo[slot].get() {
+            MEMO_TRUE => true,
+            MEMO_FALSE => false,
+            _ => {
+                let value = compute();
+                self.memo[slot].set(if value { MEMO_TRUE } else { MEMO_FALSE });
+                value
+            }
         }
     }
 
@@ -595,10 +775,8 @@ impl<'a> SurfaceSystem<'a> {
         Some(((y - self.min_y) / 16) as usize)
     }
 
-    /// What the block at `(local_x, y, local_z)` is, as a three-way tag read off the section's
-    /// precomputed palette classification. This is the allocation-free replacement for
-    /// `get_block` in the column scan: one `u32` array read plus index compares, against a
-    /// `BlockState` clone (heap `BTreeMap`) plus string comparison before.
+    /// What the block at `(local_x, y, local_z)` is, as a tag read off the section's
+    /// precomputed palette classification: one `u32` array read plus a table lookup.
     fn classify(
         &self,
         chunk: &ChunkData,
@@ -614,49 +792,161 @@ impl<'a> SurfaceSystem<'a> {
         let palette_index = section.block_states.indices()[local_index(local_x, local_y, local_z)];
         Some(class.kind(palette_index))
     }
+}
 
-    fn set_block(
-        &self,
-        chunk: &mut ChunkData,
-        local_x: usize,
-        y: i32,
-        local_z: usize,
-        state: BlockState,
-    ) {
-        let Some(index) = self.section_of(y) else {
-            return;
-        };
-        let Some(section) = chunk.sections.get_mut(index) else {
-            return;
-        };
-        let local_y = (y - self.min_y).rem_euclid(16) as usize;
-        section
-            .block_states
-            .set(local_index(local_x, local_y, local_z), state);
+fn sample_noise(noise: Option<&NormalNoise>, x: f64, y: f64, z: f64) -> f64 {
+    match noise {
+        Some(noise) => noise.get_value(x, y, z),
+        // A datapack without the noise the rules ask for: 0.0 keeps the pass running
+        // rather than aborting a chunk, and reads as "no contribution".
+        None => 0.0,
     }
+}
 
-    fn biome_at(
-        &self,
-        chunk: &ChunkData,
-        local_x: usize,
-        y: i32,
-        local_z: usize,
-    ) -> ResourceLocation {
-        let fallback = || ResourceLocation::minecraft("plains");
-        let Some(index) = self.section_of(y) else {
-            return fallback();
-        };
-        let Some(section) = chunk.sections.get(index) else {
-            return fallback();
-        };
-        let local_y = (y - self.min_y).rem_euclid(16) as usize;
-        let quart = ((local_y / 4) * 4 + local_z / 4) * 4 + local_x / 4;
-        section.biomes.get(quart).clone()
+fn resolve_anchor(anchor: &VerticalAnchor, min_y: i32, height: i32) -> i32 {
+    match anchor {
+        VerticalAnchor::Absolute { absolute } => *absolute,
+        VerticalAnchor::AboveBottom { above_bottom } => min_y + above_bottom,
+        VerticalAnchor::BelowTop { below_top } => min_y + height - 1 - below_top,
+    }
+}
+
+fn compile_rule<'a>(
+    rule: &'a SurfaceRule,
+    router: &'a NoiseRouterEvaluator,
+    min_y: i32,
+    height: i32,
+    compiler: &mut Compiler<'a>,
+) -> CompiledRule<'a> {
+    match rule {
+        SurfaceRule::Sequence { sequence } => CompiledRule::Sequence(
+            sequence
+                .iter()
+                .map(|inner| compile_rule(inner, router, min_y, height, compiler))
+                .collect(),
+        ),
+        SurfaceRule::Condition { if_true, then_run } => CompiledRule::Condition(
+            compile_condition(if_true, router, min_y, height, compiler),
+            Box::new(compile_rule(then_run, router, min_y, height, compiler)),
+        ),
+        SurfaceRule::Block { result_state } => {
+            compiler.results.push(result_state);
+            CompiledRule::Block(compiler.results.len() - 1)
+        }
+        SurfaceRule::Badlands {} => CompiledRule::Badlands,
+    }
+}
+
+fn compile_condition<'a>(
+    condition: &'a SurfaceCondition,
+    router: &'a NoiseRouterEvaluator,
+    min_y: i32,
+    height: i32,
+    compiler: &mut Compiler<'a>,
+) -> CompiledCondition<'a> {
+    let memo_slot = |compiler: &mut Compiler<'a>| {
+        compiler.memo_slots += 1;
+        compiler.memo_slots - 1
+    };
+    match condition {
+        SurfaceCondition::Biome { biome_is } => {
+            compiler.biome_sets.push(biome_is.as_slice());
+            CompiledCondition::Biome(compiler.biome_sets.len() - 1)
+        }
+        SurfaceCondition::NoiseThreshold {
+            noise,
+            min_threshold,
+            max_threshold,
+            is_3d,
+        } => {
+            let noise = router.noise(noise);
+            if *is_3d {
+                CompiledCondition::Noise3d {
+                    noise,
+                    min: *min_threshold,
+                    max: *max_threshold,
+                }
+            } else {
+                CompiledCondition::Noise2d {
+                    noise,
+                    min: *min_threshold,
+                    max: *max_threshold,
+                    memo: memo_slot(compiler),
+                }
+            }
+        }
+        SurfaceCondition::VerticalGradient {
+            random_name,
+            true_at_and_below,
+            false_at_and_above,
+        } => {
+            let known = compiler
+                .named_randoms
+                .iter()
+                .find(|(name, _)| *name == random_name.as_str())
+                .map(|(_, factory)| factory.clone());
+            let random = match known {
+                Some(factory) => factory,
+                None => {
+                    let factory = router
+                        .positional_factory()
+                        .from_hash_of(random_name)
+                        .fork_positional();
+                    compiler
+                        .named_randoms
+                        .push((random_name.as_str(), factory.clone()));
+                    factory
+                }
+            };
+            CompiledCondition::VerticalGradient {
+                random,
+                true_y: resolve_anchor(true_at_and_below, min_y, height),
+                false_y: resolve_anchor(false_at_and_above, min_y, height),
+            }
+        }
+        SurfaceCondition::YAbove {
+            anchor,
+            surface_depth_multiplier,
+            add_stone_depth,
+        } => CompiledCondition::YAbove {
+            anchor_y: resolve_anchor(anchor, min_y, height),
+            surface_depth_multiplier: *surface_depth_multiplier,
+            add_stone_depth: *add_stone_depth,
+        },
+        SurfaceCondition::Water {
+            offset,
+            surface_depth_multiplier,
+            add_stone_depth,
+        } => CompiledCondition::Water {
+            offset: *offset,
+            surface_depth_multiplier: *surface_depth_multiplier,
+            add_stone_depth: *add_stone_depth,
+        },
+        SurfaceCondition::Temperature {} => CompiledCondition::Temperature,
+        SurfaceCondition::Steep {} => CompiledCondition::Steep {
+            memo: memo_slot(compiler),
+        },
+        SurfaceCondition::Hole {} => CompiledCondition::Hole,
+        SurfaceCondition::AbovePreliminarySurface {} => CompiledCondition::AbovePreliminarySurface,
+        SurfaceCondition::StoneDepth {
+            offset,
+            add_surface_depth,
+            secondary_depth_range,
+            surface_type,
+        } => CompiledCondition::StoneDepth {
+            offset: *offset,
+            add_surface_depth: *add_surface_depth,
+            secondary_depth_range: *secondary_depth_range,
+            ceiling: matches!(surface_type, SurfaceType::Ceiling),
+        },
+        SurfaceCondition::Not { invert } => CompiledCondition::Not(Box::new(compile_condition(
+            invert, router, min_y, height, compiler,
+        ))),
     }
 }
 
 /// Compares by name without building a `ResourceLocation`: this runs once per *palette entry*
-/// now (a handful per section), rather than once per block position.
+/// (a handful per section), not once per block position.
 fn is_air(state: &BlockState) -> bool {
     state.name.path() == "air" && state.name.namespace() == "minecraft"
 }
@@ -673,38 +963,49 @@ enum BlockKind {
     Other,
 }
 
-/// A section's palette, pre-classified into [`BlockKind`] per palette index.
+/// A section's palette, pre-classified into [`BlockKind`] per palette index, so the ~98k
+/// "is this air / the default fluid / the default block?" questions a chunk's scan asks are
+/// each a table read.
 ///
-/// The scan asks "is this position air / the default fluid / the default block?" ~98k times per
-/// chunk. Answering that from the `BlockState` itself meant cloning a heap `BTreeMap` and
-/// comparing strings every time. A section's palette holds only a handful of distinct states,
-/// so classifying it once and then indexing this table makes each of those 98k questions a
-/// bounds-checked byte read.
-///
-/// Behaviour is identical by construction: the classification uses the same [`is_air`] helper
-/// and the same `==` on `BlockState` the inline checks used, just evaluated per palette entry
+/// Behaviour is identical to comparing states by construction: the classification uses the
+/// same [`is_air`] helper and the same `==` on `BlockState`, evaluated per palette entry
 /// instead of per position.
 struct SectionClass {
     kinds: Vec<BlockKind>,
+    /// Every palette entry is air, so every position is: the scan can step over the section.
+    all_air: bool,
 }
 
 impl SectionClass {
     fn of(palette: &[BlockState], default_block: &BlockState, default_fluid: &BlockState) -> Self {
-        Self {
-            kinds: palette
-                .iter()
-                .map(|state| {
-                    if is_air(state) {
-                        BlockKind::Air
-                    } else if state == default_fluid {
-                        BlockKind::DefaultFluid
-                    } else if state == default_block {
-                        BlockKind::DefaultBlock
-                    } else {
-                        BlockKind::Other
-                    }
-                })
-                .collect(),
+        let mut class = Self {
+            kinds: Vec::with_capacity(palette.len()),
+            all_air: true,
+        };
+        class.extend(palette, default_block, default_fluid);
+        class
+    }
+
+    /// Classifies the palette entries added since this was built. A palette only ever grows at
+    /// its end, so the entries already classified stay valid.
+    fn extend(
+        &mut self,
+        palette: &[BlockState],
+        default_block: &BlockState,
+        default_fluid: &BlockState,
+    ) {
+        for state in &palette[self.kinds.len().min(palette.len())..] {
+            let kind = if is_air(state) {
+                BlockKind::Air
+            } else if state == default_fluid {
+                BlockKind::DefaultFluid
+            } else if state == default_block {
+                BlockKind::DefaultBlock
+            } else {
+                BlockKind::Other
+            };
+            self.all_air &= kind == BlockKind::Air;
+            self.kinds.push(kind);
         }
     }
 

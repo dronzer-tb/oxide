@@ -64,3 +64,26 @@ After:  `BENCH chunks=1089 threads=8 secs=5.898 cps=184.6 ms_per_chunk_core=43.3
 Repeat: `BENCH chunks=1089 threads=8 secs=6.386 cps=170.5 ms_per_chunk_core=46.91 digest=a977961a58122047`
 
 Digest unchanged. Tests: chunkgen 189 passed, biome 5 passed.
+
+### E2: compiled surface rule tree -- kept
+
+`surface.rs`: the rule tree is compiled once per `SurfaceSystem` into a form with every
+string resolved: noises to `&NormalNoise`, anchors to a y, randomizer names to their
+factory, `block` results to an index. Per chunk, biomes are numbered and each `biome`
+condition becomes a mask over those numbers. Column-only conditions (2D noise thresholds,
+`steep`, the badlands band offset, the temperature noise) are computed at most once per
+column. Results are interned into a section's palette on first write and written by index
+after that; the palette classification is extended on a new entry rather than rebuilt per
+write. All-air sections are stepped over. Clay bands are built on first badlands hit, not
+per chunk. Formulas and evaluation order are unchanged.
+
+What this removed per chunk: a `ResourceLocation` clone (two allocations) for every stone
+block, a `BlockState` clone plus hash for every rewritten block (all of deepslate, ~16k),
+and a `SectionClass` rebuild for each of those writes. Under 8 threads this was worth more
+than its single-thread profile share, which points at allocator contention.
+
+Before: `BENCH chunks=1089 threads=8 secs=6.386 cps=170.5 ms_per_chunk_core=46.91 digest=a977961a58122047`
+After:  `BENCH chunks=1089 threads=8 secs=3.934 cps=276.8 ms_per_chunk_core=28.90 digest=a977961a58122047`
+Repeat: `BENCH chunks=1089 threads=8 secs=3.954 cps=275.4 ms_per_chunk_core=29.05 digest=a977961a58122047`
+
+Digest unchanged. Tests: chunkgen 189 passed.
