@@ -67,6 +67,12 @@ say so in your log; never rename or reshape another track's public items.
 6. Sub-agents: use Opus, give each a single narrow job and a hard file boundary, and have them
    query graphify (`graphify query "..."` in the repo) before reading source. Only the master
    commits and pushes.
+6b. **Free workers:** `scripts/omni-agent.sh <model> "<task>"` runs a full Claude Code worker
+   (files, shell, edits) on an OmniRoute model, at no Claude cost. Run it in its own scratch
+   worktree (`git worktree add /tmp/omni-<name> HEAD`), never in yours, then review its diff.
+   Good for: trying a variant you would not spend your own turns on, writing a micro-benchmark,
+   reading a large file and reporting back. Start with `kimi-web/k3`; if a model fails at tool
+   use, note it in your log and stop using it.
 6a. **Cheap second opinions:** `scripts/omni-ask.sh <prompt-file> [model]` sends one prompt to a
    model on OmniRoute and prints the answer, at no Claude cost. Use it for review, for ideas
    when stuck, and for reading a profile. It cannot see the repo or run anything, so paste
