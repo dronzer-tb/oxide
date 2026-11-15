@@ -952,3 +952,18 @@ the y-window.
 +2.9% decorate, +4.2% user CPU, behind 2/3 (user CPU behind 3/3). Java quiet, all rounds count.
 Digest df701ee858e2bdd3 on every row; tests 195 pass. **Rejected.** The ore.rs part alone is being
 held next to separate the two halves.
+
+### Ore z-run alone (no region bitmap): rejected (-0.7%, inside noise)
+
+pipeline-or3 = pipeline-lg + only the ore.rs half of b6141b6 (d072107).
+
+| | run 1 | run 2 | run 3 | mean |
+|---|---|---|---|---|
+| base decorate_ms | 9059 | 8702 | 9690 | 9150 |
+| z-run decorate_ms | 9287 | 8689 | 9280 | 9085 |
+| base / z-run cpu_user_s | 25.86 / 25.82 | 25.05 / 25.39 | 28.20 / 26.43 | 26.37 / 25.88 |
+| java_cpu_s_per_10s | 0.22 / 0.24 | 0.30 / 0.20 | 0.23 / 0.24 | |
+
+-0.7%, behind in 1 of 3; inside run-to-run spread. Digest held, tests 195 pass. **Rejected.** So the
+sphere test is not where the stone-ore body time goes, and the bitmap half cost about +3.5%. The ore
+body needs its own split (sphere setup vs per-cell test vs cell read/match vs write) before another try.
