@@ -570,3 +570,42 @@ reading shows the Java server is not idle. A one-off `top` snapshot at 17:07 sai
 peaked above 6 cores during this hold, and over 5 s afterwards it used 1.4 cores (129% average
 over its 45-minute life). Every hold on s5 while it runs, datapath's included, is suspect unless
 its per-round Java CPU is near zero.
+
+### 18 re-held under the auditor's method (rotating rounds, CPU-seconds, Java CPU per round)
+
+Method: `noise-holdloop.sh` rotates the start label each round and wraps every run in
+`/usr/bin/time -f '%U %S'`. `ab-analyze.py` drops a round if any run in it saw the Java server
+above 2 CPU-s per 10 s wall. **No round was dropped**: Java used 0.7-1.4 CPU-s per ~36 s run on
+1 thread, 0.5-0.8 per ~27 s run on 8 threads. Labels sp0a/sp0b (two fresh builds of 13cbfb2,
+crates = fd4bfe2) and sp1 (the same plus `noise-12-scratch-pool.patch`). Digest
+`a977961a58122047` in all 42 runs.
+
+**Allocations** (LD_PRELOAD counter `noise-prof/alloccount.so`, whole process, 1 thread, radius
+16, deterministic):
+
+| build | malloc-family calls | bytes |
+|---|---|---|
+| sp0a (head) | 247,240,858 | 11,821,129,637 |
+| sp1 (pool) | 238,957,124 | 5,210,679,059 |
+| difference per chunk (/1089) | **-7,607 calls** | **-6.07 MB** |
+
+That matches the auditor's estimate (~7.2k allocations and 6 MB per chunk from fill). The
+remaining ~219k calls per chunk are whole-process (setup included) and outside this patch.
+
+| hold | sp0a cpu_s / cps | sp0b cpu_s / cps | sp1 cpu_s / cps | sp1 vs sp0a | sp1 vs sp0b |
+|---|---|---|---|---|---|
+| 1 thread, 7 rounds | 36.21 / 102.8 | 36.33 / 103.8 | 35.40 / 106.0 | cpu -2.2%, fewer in 5/7; cps +3.1% | cpu -2.5%, fewer in 5/7; cps +2.1% |
+| 8 threads, 7 rounds | 37.59 / 690.9 | 37.48 / 687.5 | 36.68 / 717.6 | cpu -2.4%, fewer in 5/7; cps +3.9% | cpu -2.1%, fewer in 4/7; cps +4.4% |
+
+**Verdict: inconclusive, not landed** (below the bar: not >5% against both bases, not ahead in
+every round). All four comparisons point the same way, and the allocation cut is real and
+deterministic, so the patch stays in `docs/perf/wip/noise-12-scratch-pool.patch` as the first
+candidate to re-decide with a sharper measure.
+
+**Why the CPU column is blunt here:** `cpu_s` is whole-process. Each run is ~36 s wall on
+1 thread, of which only ~10.4 s is generation (`secs`). The other ~26 s (datapack load, router
+build) is identical code in both builds, so it dilutes a generation-only effect about 3.5x.
+If setup CPU is equal, sp1's -0.81 CPU-s on 1 thread is ~8% of generation CPU. That is an
+inference, not a measurement. To measure it, the harness would need to print `getrusage` CPU
+around the generation phase only (an additive line in `oxide-harness`, outside this crate's
+ownership; proposed, not done).
