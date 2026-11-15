@@ -53,6 +53,29 @@ h2 { margin: 0 0 var(--u); font: 600 13px/1.2 var(--label); letter-spacing: .16e
 .state.wait::before { background: var(--ochre); }
 .state.bad::before { background: var(--cinnabar); transform: rotate(45deg); }
 
+/* Usage limits: one bar per window, filled by how much is used. */
+.limits { display: grid; gap: 8px; margin-top: calc(var(--u) * 4); }
+.limit { display: grid; grid-template-columns: 52px minmax(0, 1fr) 42px; align-items: center; gap: 10px; font-size: 12px; }
+.limit .bar { height: 6px; background: var(--pit); position: relative; }
+.limit .bar i { position: absolute; inset: 0 auto 0 0; background: var(--ash); }
+.limit .bar i.hot { background: var(--ochre); }
+.limit .bar i.full { background: var(--cinnabar); }
+.limit .n { text-align: right; font-variant-numeric: tabular-nums; }
+.limit small { grid-column: 2 / 4; color: var(--dust); font-size: 11px; margin-top: -4px; }
+.spend { margin-top: 10px; color: var(--dust); font-size: 11.5px; }
+
+/* Session tree: sessions, the sub-agents they start, and theirs. */
+.tree { list-style: none; margin: 0; padding: 0; }
+.tree .tree { padding-left: 22px; border-left: 1px solid var(--seam); margin-left: 6px; }
+.tree li { padding: 6px 0 6px 0; }
+.tree .row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; }
+.tree .what { color: var(--bone); font: 500 14px/1.35 var(--label); }
+.tree .meta { color: var(--dust); font-size: 11.5px; display: flex; flex-wrap: wrap; gap: 2px 12px; }
+.tree .kind { font: 500 10.5px/1 var(--label); letter-spacing: .12em; text-transform: uppercase; padding: 3px 6px; border: 1px solid var(--seam-strong); color: var(--ash); }
+.tree .kind.omni { border-color: rgba(143, 154, 44, .6); color: #c3cc6a; }
+.tree .kind.sess { border-color: rgba(224, 112, 58, .5); color: #f0a57c; }
+.treebox { padding: calc(var(--u) * 3) calc(var(--u) * 4) calc(var(--u) * 4); border-top: 1px solid var(--seam-soft); }
+.counts { color: var(--ash); }
 .track { margin-top: calc(var(--u) * 4); }
 .track > div:first-child { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; padding: calc(var(--u) * 3) calc(var(--u) * 4); }
 .track h3 { margin: 0; font: 600 15px/1 var(--label); letter-spacing: .12em; text-transform: uppercase; display: flex; align-items: center; gap: 10px; }
@@ -136,7 +159,7 @@ function build() {
   $("tracks").innerHTML = TRACKS.map(t => `<div class="box track" id="t-${t.id}"><div>` +
     `<h3><i style="background:${t.color}"></i>${t.id}</h3><span class="facts"><span class="q">${t.job}</span><span class="state" id="s-${t.id}">–</span></span>` +
     `<button class="open" aria-expanded="false" data-t="${t.id}">Open terminal</button></div>` +
-    `<div class="term" id="term-${t.id}"></div></div>`).join("");
+    `<div class="term" id="term-${t.id}"></div><div class="treebox" id="tree-${t.id}"><span class="q">Reading sessions…</span></div></div>`).join("");
   $("tracks").onclick = e => {
     const b = e.target.closest(".open");
     if (!b) return;
@@ -149,18 +172,69 @@ function build() {
   };
 }
 
+let last = {};
+function drawStrip() {
+  const tt = tree ? Object.fromEntries(tree.tracks.map(t => [t.track, t])) : {};
+  $("strip").innerHTML = TRACKS.map(t => {
+    const v = read(last[t.id]), x = tt[t.id];
+    return `<div class="slot"><div class="name"><i style="background:${t.color}"></i>${t.id}</div>` +
+      `<div class="now"><span class="state ${v.cls}">${esc(v.now)}</span></div><div class="why">${esc(v.why)}</div>` +
+      (x ? limitBars(x.limits) + `<div class="spend">${esc(x.model || "")}${x.cost_usd != null ? ` · $${x.cost_usd.toFixed(2)} of API-equivalent use this session` : ""}${x.context_pct != null ? ` · context ${x.context_pct}%` : ""}</div>` : "") + `</div>`;
+  }).join("");
+}
+const clock = unix => new Date(unix * 1000).toISOString().slice(11, 16) + " UTC";
+const span = (a, b) => (a && b ? mins(Math.max(0, Math.round((b - a) / 60))) : "–");
+const kilo = n => (n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n || 0));
+let tree = null;
+
+function limitBars(l) {
+  if (!l) return `<div class="spend">No usage figures yet; they arrive with the session's next status-line update.</div>`;
+  const bar = (name, w) => {
+    if (!w) return "";
+    const p = Math.max(0, Math.min(100, w.used_percentage)), cls = p >= 100 ? "full" : p >= 80 ? "hot" : "";
+    const left = w.resets_at - Date.now() / 1000;
+    return `<div class="limit"><span class="q">${name}</span><span class="bar"><i class="${cls}" style="width:${p}%"></i></span><span class="n">${p}%</span>` +
+      `<small>resets ${clock(w.resets_at)}${left > 0 ? ", in " + mins(Math.round(left / 60)) : ""}</small></div>`;
+  };
+  return `<div class="limits">${bar("5 hours", l.five_hour)}${bar("7 days", l.seven_day)}</div>`;
+}
+
+function nodes(list) {
+  if (!list || !list.length) return "";
+  return `<ul class="tree">` + list.map(n => {
+    const omni = n.kind.startsWith("omni");
+    const dur = n.ms ? mins(Math.round(n.ms / 60000)) : n.ended ? span(n.started, n.ended) : "running " + span(n.started, Date.now() / 1000);
+    return `<li><div class="row"><span class="kind ${omni ? "omni" : ""}">${omni ? (n.kind === "omni-worker" ? "omni worker" : "omni ask") : "sub-agent"}</span>` +
+      `<span class="what">${esc(n.label)}</span></div><div class="meta"><span>${esc(n.model || "inherits model")}</span>${omni ? "" : `<span>${esc(n.type)}</span>`}` +
+      `<span>started ${n.started ? clock(n.started) : "–"}</span><span>${esc(dur)}</span>${n.tokens ? `<span>${kilo(n.tokens)} tokens</span>` : ""}` +
+      `${n.tools ? `<span>${n.tools} tool calls</span>` : ""}<span class="state ${n.status === "done" ? "work" : n.status === "failed" ? "bad" : "wait"}">${n.status}</span></div>${nodes(n.children)}</li>`;
+  }).join("") + `</ul>`;
+}
+
+function drawTree() {
+  if (!tree) return;
+  for (const t of tree.tracks) {
+    const box = $("tree-" + t.track);
+    if (!box) continue;
+    const head = `<p class="eyebrow" style="margin-bottom:8px">Sessions and sub-agents · <span class="counts">${t.sessions_total} session${t.sessions_total === 1 ? "" : "s"}, ${t.subagents_total} sub-agent${t.subagents_total === 1 ? "" : "s"} started</span></p>`;
+    box.innerHTML = head + (t.sessions.length ? `<ul class="tree">` + t.sessions.map(s =>
+      `<li><div class="row"><span class="kind sess">session ${esc(s.id)}</span><span class="what">${esc(s.title || "untitled")}</span></div>` +
+      `<div class="meta"><span>${esc(s.model || "–")}</span><span>started ${s.first ? clock(s.first) : "–"}</span><span>last ${s.last ? ago(s.last) : "–"}</span>` +
+      `<span>${s.turns} turns</span><span>${kilo(s.out)} out, ${kilo(s.input)} in</span><span>${s.children.length} direct sub-agent${s.children.length === 1 ? "" : "s"}</span></div>` +
+      nodes(s.children) + `</li>`).join("") + `</ul>` : `<span class="q">No sessions yet.</span>`);
+  }
+}
+
 async function refresh() {
+  fetch("agents/tree.json", { cache: "no-store" }).then(r => (r.ok ? r.json() : null), () => null).then(d => { if (d) { tree = d; drawTree(); drawStrip(); } });
   try {
     const r = await fetch("agents/status.json", { cache: "no-store" });
     if (!r.ok) throw new Error("HTTP " + r.status);
     const d = await r.json(), by = Object.fromEntries(d.tracks.map(s => [s.track, s]));
     const stale = Date.now() / 1000 - d.updated > 300;
     $("fault").innerHTML = stale ? `<div class="fault"><span class="state bad">The agent host stopped reporting ${ago(d.updated)}.</span> The sessions may be down; check <code>systemctl status oxide-agents</code> on oci-v3.</div>` : "";
-    $("strip").innerHTML = TRACKS.map(t => {
-      const v = read(by[t.id]);
-      return `<div class="slot"><div class="name"><i style="background:${t.color}"></i>${t.id}</div>` +
-        `<div class="now"><span class="state ${v.cls}">${esc(v.now)}</span></div><div class="why">${esc(v.why)}</div></div>`;
-    }).join("");
+    last = by;
+    drawStrip();
     for (const t of TRACKS) {
       const s = by[t.id], v = read(s), el = $("s-" + t.id);
       el.className = "state " + v.cls;

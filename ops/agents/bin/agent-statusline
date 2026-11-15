@@ -1,0 +1,8 @@
+#!/bin/sh
+# Claude Code's status line for a track session. Claude Code passes the session's state as JSON
+# on stdin; keep the latest copy for agent-tree (usage limits, cost, context), print one line.
+t="$1"
+d="$HOME/.agent-state"
+mkdir -p "$d"
+cat >"$d/$t.statusline.json.tmp" && mv "$d/$t.statusline.json.tmp" "$d/$t.statusline.json"
+printf 'oxide %s' "$t"

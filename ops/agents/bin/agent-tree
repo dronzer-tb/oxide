@@ -1,0 +1,108 @@
+#!/usr/bin/env node
+// Writes /srv/oxide-lab/agents/tree.json for the control page: per track, the account's usage
+// limits (from the status-line hook, agent-statusline) and a tree of its sessions, the
+// sub-agents each one started, their own sub-agents, and OmniRoute workers, read from Claude
+// Code's transcripts. Run once a minute by oxide-agents-tree.timer.
+"use strict";
+const fs = require("fs");
+const path = require("path");
+
+const HOME = process.env.HOME;
+const OUT = "/srv/oxide-lab/agents/tree.json";
+const TRACKS = ["noise", "datapath", "pipeline"];
+const SESSIONS_SHOWN = 6;
+
+const readJson = file => {
+  try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; }
+};
+const readLines = file => {
+  try {
+    return fs.readFileSync(file, "utf8").split("\n").filter(Boolean).map(l => {
+      try { return JSON.parse(l); } catch { return null; }
+    }).filter(Boolean);
+  } catch { return []; }
+};
+const secs = iso => (iso ? Math.round(Date.parse(iso) / 1000) : null);
+
+// One transcript -> its own totals and the children it started.
+function parse(file, dir) {
+  const lines = readLines(file);
+  const calls = new Map();
+  let first = null, last = null, model = null, out = 0, input = 0, turns = 0, title = null;
+  for (const e of lines) {
+    const at = secs(e.timestamp);
+    if (at) { first = first ?? at; last = at; }
+    if (e.type === "ai-title") title = e.aiTitle || e.title || title;
+    const m = e.message;
+    if (e.type === "assistant" && m) {
+      turns++;
+      model = m.model || model;
+      if (m.usage) {
+        out += m.usage.output_tokens || 0;
+        input += (m.usage.input_tokens || 0) + (m.usage.cache_creation_input_tokens || 0) + (m.usage.cache_read_input_tokens || 0);
+      }
+      for (const c of Array.isArray(m.content) ? m.content : []) {
+        if (c.type !== "tool_use") continue;
+        const i = c.input || {};
+        if (c.name === "Agent" || c.name === "Task") {
+          calls.set(c.id, { kind: "subagent", label: i.description || i.subagent_type || "sub-agent", type: i.subagent_type || "general-purpose", model: i.model || null, started: at, ended: null, status: "running" });
+        } else if (c.name === "Bash" && /omni-(agent|ask)\.sh/.test(i.command || "")) {
+          const cmd = i.command;
+          const agent = /omni-agent\.sh/.test(cmd);
+          const mm = agent ? cmd.match(/omni-agent\.sh\s+['"]?([\w./-]+)/) : cmd.match(/omni-ask\.sh\s+\S+\s+['"]?([\w./-]+)/);
+          calls.set(c.id, { kind: agent ? "omni-worker" : "omni-ask", label: i.description || (agent ? "OmniRoute worker" : "OmniRoute consult"), type: agent ? "worker" : "consult", model: mm ? mm[1] : "gemini/gemini-3-flash-preview", started: at, ended: null, status: "running" });
+        }
+      }
+    }
+    if (e.type === "user" && m && Array.isArray(m.content)) {
+      for (const c of m.content) {
+        if (c.type !== "tool_result" || !calls.has(c.tool_use_id)) continue;
+        const n = calls.get(c.tool_use_id);
+        n.ended = at;
+        n.status = c.is_error ? "failed" : "done";
+        const r = e.toolUseResult;
+        if (r && typeof r === "object") {
+          if (r.totalTokens) n.tokens = r.totalTokens;
+          if (r.totalDurationMs) n.ms = r.totalDurationMs;
+          if (r.totalToolUseCount) n.tools = r.totalToolUseCount;
+          if (r.agentId && dir) {
+            const sub = path.join(dir, "subagents", `agent-${r.agentId}.jsonl`);
+            if (fs.existsSync(sub)) n.children = parse(sub, dir).children;
+          }
+        }
+      }
+    }
+  }
+  return { first, last, model, out, input, turns, title, children: [...calls.values()] };
+}
+
+function track(t) {
+  const conf = path.join(HOME, `.claude-${t}`);
+  const status = readJson(path.join(HOME, ".agent-state", `${t}.statusline.json`)) || {};
+  const proj = path.join(conf, "projects", `-home-agents-oxide-wt-${t}`);
+  let files = [];
+  try {
+    files = fs.readdirSync(proj).filter(f => f.endsWith(".jsonl"))
+      .map(f => ({ f, at: fs.statSync(path.join(proj, f)).mtimeMs })).sort((a, b) => b.at - a.at);
+  } catch {}
+  const sessions = files.slice(0, SESSIONS_SHOWN).map(({ f }) => {
+    const id = f.replace(/\.jsonl$/, "");
+    return { id: id.slice(0, 8), ...parse(path.join(proj, f), path.join(proj, id)) };
+  });
+  const count = nodes => nodes.reduce((a, n) => a + 1 + count(n.children || []), 0);
+  return {
+    track: t,
+    model: status.model?.display_name || null,
+    limits: status.rate_limits || null,
+    cost_usd: status.cost?.total_cost_usd ?? null,
+    context_pct: status.context_window?.used_percentage ?? null,
+    status_at: (() => { try { return Math.round(fs.statSync(path.join(HOME, ".agent-state", `${t}.statusline.json`)).mtimeMs / 1000); } catch { return null; } })(),
+    sessions_total: files.length,
+    subagents_total: sessions.reduce((a, s) => a + count(s.children), 0),
+    sessions,
+  };
+}
+
+const tree = { updated: Math.round(Date.now() / 1000), tracks: TRACKS.map(track) };
+fs.writeFileSync(OUT + ".tmp", JSON.stringify(tree));
+fs.renameSync(OUT + ".tmp", OUT);
