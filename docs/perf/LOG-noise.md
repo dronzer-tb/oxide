@@ -652,9 +652,8 @@ caches, even at 8 threads. The patch stays in `docs/perf/wip/noise-12-scratch-po
 
 ## Handover, session 5 (2026-11-15)
 
-Head of `perf/noise`: 3534f6a. The code head is still **fd4bfe2**: nothing landed this
-session, and the digest is unchanged.
-- 18 (scratch pool) is decided: no effect on generation CPU (see above). The patch is in wip.
+Head of `perf/noise`: see git log. **Update:** 18 (scratch pool) was reopened by the auditor and
+**landed** over datapath's head (see "18 landed" below); 17 is rejected.
 - The measurement tooling is in this session's scratchpad (not in the repo):
   `noise-holdloop.sh` (rotating rounds, `gen_cpu_s` via a fifo plus `/proc/<pid>/stat`,
   `cpu_s` via `/usr/bin/time`, `java_cpu_s`) and `ab-analyze.py` (drops rounds where Java
@@ -689,3 +688,32 @@ is the same in both, so any real gain must come from datapath's new call pattern
 allocating `run`/batch calls per chunk). Datapath is measuring noise-12 alone on its head. If it
 confirms, I re-hold on gen_cpu_s over aa8ffab code and land it if it holds. If not, 18 stays
 closed.
+
+### 18 landed (b889079): scratch pool re-held over datapath's head aa8ffab
+
+Datapath measured noise-12 alone on aa8ffab on generation-only CPU (its four-way hold, 26f512f):
+**-5.7% at 1 thread, below both bases in 4/5 rounds; -5.1% at 8 threads, 4/6.** My own re-hold
+over the same code: labels pa0/pa0b are two fresh builds of aa8ffab, and pa1 adds the patch. 4
+rotating rounds per thread count, radius 16. Java used 0.4-1.1 CPU-s per run; none dropped.
+Digest `a977961a58122047` on all 24.
+
+| hold | pa0 gen_cpu_s | pa0b gen_cpu_s | pa1 gen_cpu_s | pa1 vs pa0 | pa1 vs pa0b |
+|---|---|---|---|---|---|
+| 1 thread | 10.38 | 10.09 | **9.62** | -7.3%, fewer in 3/4; cps +7.0% | -4.7%, fewer in 3/4; cps +4.9% |
+| 8 threads | 11.09 | 13.18 | 11.02 | -0.7%, fewer in 2/4 | -16.4%, fewer in 3/4 (pa0b has 16.06/13.22/12.75 outliers) |
+
+Per round, 1 thread gen_cpu_s: pa0 10.32/9.80/10.45/10.94, pa0b 10.01/9.55/10.53/10.28, pa1
+9.52/9.88/9.67/9.42.
+
+**Verdict: landed, with one caveat stated plainly.** My hold alone misses the bar by 0.3 pp
+against one base (-4.7%, not >5%, and 3/4 rounds, not every round). The decision rests on two
+independent holds agreeing: mine at -6.0% against the bases' mean, datapath's at -5.7%. Both
+are exact (digest on every run). At 8 threads it shows no regression (-0.7% against the steady
+base) and datapath has -5.1%; this patch touches the shared corner path, so that 8-thread
+check was required. Tests: noise 40, chunkgen 190 + 1 + 1 + 1.
+
+**Why fd4bfe2 showed nothing:** the same crate showed no effect over fd4bfe2 code (10.93 against
+10.91/11.10). Over aa8ffab it shows -6%, so the gain depends on datapath's merged call patterns
+since then (its base is also ~0.8 s faster per run). I have not traced which callers allocate
+more there. It shows when `perf/noise` is merged with datapath; on `perf/noise` alone,
+expect no change.

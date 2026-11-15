@@ -66,3 +66,11 @@
 1794771851	fd4bfe2	16	chunks=1089 threads=8 secs=1.442 cps=755.1 ms_per_chunk_core=10.60 digest=a977961a58122047
 1794771878	fd4bfe2	16	chunks=1089 threads=8 secs=1.494 cps=728.8 ms_per_chunk_core=10.98 digest=a977961a58122047
 1794771905	fd4bfe2	16	chunks=1089 threads=8 secs=1.654 cps=658.5 ms_per_chunk_core=12.15 digest=a977961a58122047
+1794781703	b889079+aa8ffab	16	chunks=1089 threads=1 secs=9.155 cps=119.0 ms_per_chunk_core=8.41 digest=a977961a58122047
+1794781772	b889079+aa8ffab	16	chunks=1089 threads=1 secs=9.591 cps=113.5 ms_per_chunk_core=8.81 digest=a977961a58122047
+1794781841	b889079+aa8ffab	16	chunks=1089 threads=1 secs=9.387 cps=116.0 ms_per_chunk_core=8.62 digest=a977961a58122047
+1794782021	b889079+aa8ffab	16	chunks=1089 threads=1 secs=9.095 cps=119.7 ms_per_chunk_core=8.35 digest=a977961a58122047
+1794782114	b889079+aa8ffab	16	chunks=1089 threads=8 secs=1.332 cps=817.3 ms_per_chunk_core=9.79 digest=a977961a58122047
+1794782170	b889079+aa8ffab	16	chunks=1089 threads=8 secs=1.326 cps=821.0 ms_per_chunk_core=9.74 digest=a977961a58122047
+1794782224	b889079+aa8ffab	16	chunks=1089 threads=8 secs=1.523 cps=714.9 ms_per_chunk_core=11.19 digest=a977961a58122047
+1794782357	b889079+aa8ffab	16	chunks=1089 threads=8 secs=1.420 cps=767.1 ms_per_chunk_core=10.43 digest=a977961a58122047
