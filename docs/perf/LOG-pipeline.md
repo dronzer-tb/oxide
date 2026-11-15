@@ -720,3 +720,50 @@ heightmaps. Every merged-tree row names its merge:
 
 df701ee858e2bdd3 has held on every pregen row so far, merged or not. Any change is reported to the
 auditor at once.
+
+## Stone-ore per-state match cache kept, -14.9% decorate (merged with datapath d137014)
+
+**Change** (9480668, cherry-picked from the tested scratch commit):
+- region.rs: `StateKey(u64)` with `slot()`, plus `block_keyed`, `intern` and `set_block_id`, so a
+  feature can read a cell's interned state key and write a state it interned once. New region test.
+- ore.rs: `RuleTest` split into `matches` (pure in the state) and `roll` (random draw), a direct-mapped
+  `MatchCache` of 8 slots keyed by `StateKey`, and `place_at_cached`. The random draws happen in the
+  same order and count as before; only the repeated state comparison is cached.
+
+**Hold** (`bench-ab-pregen-vps.sh 16 1 3 pipeline-mb pipeline-mo`, rows 1794762319 in
+`bench-pipeline-ab.tsv`). Both trees are this branch at 36688fe merged with origin/perf/datapath
+**d137014** (scratch merge 30fddc1); pipeline-mo adds the change (abfd462).
+
+| | run 1 | run 2 | run 3 | mean |
+|---|---|---|---|---|
+| base decorate_ms | 15583 | 15899 | 16340 | 15941 |
+| stone-ore decorate_ms | 13010 | 13939 | 13739 | 13563 |
+
+-14.9%, ahead in 3/3 pairs. Every row kept df701ee858e2bdd3. Tests on the mo tree: chunkgen 194 pass,
+pregen pass.
+
+## Spiral counting test: neighbour regeneration is smaller than estimated
+
+`spiral_cost` (81e6458, ignored test in decorate.rs) drives `decorated_chunk` in Chunky's square spiral
+out to r=32 (4225 chunks), one request at a time, with this branch's `DecorationCache` (FIFO, as at
+bf577ba). It counts terrain generations and feature runs per finished chunk.
+
+| terrain cache | write cache | terrain per chunk | feature runs per chunk |
+|---|---|---|---|
+| 256 (live server) | 1024 (live server) | 2.77 | 1.06 |
+| 1024 | 1024 | 1.13 | 1.06 |
+| 2048 | 2048 | 1.13 | 1.06 |
+| 4096 | 4096 | 1.13 | 1.06 |
+
+- 1.13 and 1.06 are the floors for a square: terrain is needed out to r+2 and writes to r+1, and
+  (69/65)^2 = 1.127, (67/65)^2 = 1.062. A terrain cache of 1024 already reaches the floor; LRU would
+  not lower it further for a pure spiral.
+- **Correction to the live-server entry above:** it estimated about 5 terrain generations and 3 feature
+  runs per chunk. The count is 2.77 and 1.06. Features are not rerun; terrain is generated about 2.5x
+  more than needed at the server's 256.
+- So regeneration explains at most a ~2-3x slowdown, not the 11x drop. The other named cause, vanilla
+  FEATURES running on top of native decoration (item 1), and contention on the per-cache `Mutex` across
+  8 workers, carry the rest. Not measured here: the test is single-threaded in exact spiral order with
+  flat terrain; Chunky's 8 workers interleave neighbouring requests, which may cost more.
+- (2a) reduces to raising `TERRAIN_CACHE_CHUNKS` from 256 to about 1024 (oxide-ffi, not this track).
+  (2b) matters only for memory at that size.
