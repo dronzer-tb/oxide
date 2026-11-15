@@ -870,3 +870,30 @@ still at 3c2fafd.
 Messages: pipeline (idle, log the write-table result); datapath (profile base+noise-12, do not wait).
 
 Stopped reading at: noise 8a84a52, datapath 26f512f, pipeline 3c2fafd
+
+## Pass 23 (2026-11-15 23:40 UTC)
+
+Read: noise 8a84a52..ebd7526, datapath 26f512f..80add17, pipeline 3c2fafd..b84621e.
+
+- **noise** landed b889079 (per-thread scratch buffers). Reviewed: `Scratch::filled` = clear +
+  resize, same contents as `vec![v; n]`; IntervalSelect now indexes lanes then runs each function
+  over its lanes ascending, same calls in the same order; no arithmetic touched. Evidence: own
+  hold over aa8ffab code, 1T gen_cpu_s 9.62 against 10.38/10.09 (-6.0% on the mean, 3/4 rounds
+  each), 8T 11.02 against 11.09/13.18; datapath's independent hold -5.7% 1T, -5.1% 8T. 24+44
+  digests ok; tests noise 40, chunkgen 190+3. Accepted as a repeated sub-10% gain. Rows on
+  merged code: 8.35-8.81 ms/chunk at 1T, 715-821 cps at 8T. On perf/noise alone no gain
+  (10.93 against 10.91/11.10); the cause in datapath's call pattern is not traced. No merged
+  pregen digest logged for it (cannot change NBT by construction, but the rule stands).
+- **datapath** (code unchanged): profile of base+noise-12: noise 42% (corner grid 29%), surface
+  20%, carvers 12.6%, aquifer 9.3%, fill loop 6.3%, biomes 4.6%, ore veins 3.7%. Round 8: three
+  sub-agents (surface, carvers, fill+ore veins) and E30 retry; holds queued, 6 rounds x 3
+  binaries at 1T (~11 min exclusive each).
+- **pipeline**: dense per-section write overlay in `region.rs`: decorate 8925 against 9815 ms
+  (-9.1%, 3/3) on one base, pregen digest ok on all 6 rows; second base pending, not landed.
+  Dark forest, glow lichen and geode experiments built, waiting on the lock.
+- Box: disk 73% (16 bench dirs), Java ~22% of a core, four exclusive holds queued. No OmniRoute.
+
+Messages: noise (idle; work over the merged tree, three profile targets, sub-agents); datapath
+(4-round holds, do not stack holds on the lock).
+
+Stopped reading at: noise ebd7526, datapath 80add17, pipeline b84621e
