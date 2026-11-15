@@ -31,7 +31,7 @@ use oxide_core::{ChunkData, ChunkPos, ChunkStatus, Heightmap, HeightmapType};
 use oxide_datapack::BlockFacts;
 
 use crate::fill::local_index;
-use crate::region::{height_fact, BlockWrite, DecorationRegion};
+use crate::region::{height_fact, DecorationRegion, InternedWrites};
 
 /// Runs one chunk's features. The region's centre is the chunk being decorated.
 pub trait Decorator: Sync {
@@ -73,7 +73,7 @@ impl<K: Hash + Eq + Clone, V: Clone> Bounded<K, V> {
 /// Memoised terrain and decoration writes, shared by every thread generating one world.
 pub struct DecorationCache {
     terrain: Mutex<Bounded<ChunkPos, Arc<ChunkData>>>,
-    writes: Mutex<Bounded<ChunkPos, Arc<Vec<BlockWrite>>>>,
+    writes: Mutex<Bounded<ChunkPos, Arc<InternedWrites>>>,
 }
 
 impl DecorationCache {
@@ -115,7 +115,7 @@ impl DecorationCache {
         generate: &(dyn Fn(ChunkPos) -> ChunkData + Sync),
         decorator: &dyn Decorator,
         facts: &BlockFacts,
-    ) -> Arc<Vec<BlockWrite>> {
+    ) -> Arc<InternedWrites> {
         if let Some(found) = self.writes.lock().expect("write cache poisoned").get(&pos) {
             return found;
         }
@@ -128,7 +128,7 @@ impl DecorationCache {
         let chunks: [&ChunkData; 9] = std::array::from_fn(|index| ring[index].as_ref());
         let mut region = DecorationRegion::new(pos, chunks, facts);
         decorator.decorate(&mut region);
-        let made = Arc::new(region.into_writes());
+        let made = Arc::new(region.into_interned());
         self.writes
             .lock()
             .expect("write cache poisoned")

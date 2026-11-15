@@ -47,6 +47,28 @@ const KINDS: [HeightmapType; 6] = [
 /// One block write a decoration made, in world coordinates.
 pub type BlockWrite = (BlockPos, BlockState);
 
+/// A region's writes with every distinct state stored once: the same list as
+/// [`DecorationRegion::into_writes`], in the same order, but each write names its state by
+/// index into `states` instead of owning a copy.
+///
+/// Prefer it wherever the writes are only read: cloning a `BlockState` per write (two heap
+/// strings each, into memory that stays live) is about a quarter of a region's CPU.
+pub struct InternedWrites {
+    /// Each write's position and its state's index into `states`, in first-write order.
+    pub writes: Vec<(BlockPos, u32)>,
+    /// Every state some write names (and possibly a few none does), in first-seen order.
+    pub states: Vec<BlockState>,
+}
+
+impl InternedWrites {
+    /// The writes in order, each with its state.
+    pub fn iter(&self) -> impl Iterator<Item = (BlockPos, &BlockState)> + '_ {
+        self.writes
+            .iter()
+            .map(|&(pos, id)| (pos, &self.states[id as usize]))
+    }
+}
+
 pub struct DecorationRegion<'a> {
     center: ChunkPos,
     /// Row-major from the north-west: index `(dz + 1) * 3 + (dx + 1)`.
@@ -328,11 +350,19 @@ impl<'a> DecorationRegion<'a> {
 
     /// Every write, in the order positions were first written, each with its final state.
     pub fn into_writes(self) -> Vec<BlockWrite> {
-        let states = &self.states;
-        self.writes
+        let interned = self.into_interned();
+        interned
             .iter()
-            .map(|&(pos, id)| (pos, states[id as usize].clone()))
+            .map(|(pos, state)| (pos, state.clone()))
             .collect()
+    }
+
+    /// [`Self::into_writes`] without a copy of the state per write.
+    pub fn into_interned(self) -> InternedWrites {
+        InternedWrites {
+            writes: self.writes,
+            states: self.states,
+        }
     }
 }
 
@@ -495,10 +525,15 @@ mod tests {
         // Rewriting a position keeps its place in the order and its last state.
         assert!(region.set_block(inside, block("oak_log")));
         assert!(region.set_block(next_door, block("stone")));
-        assert_eq!(
-            region.into_writes(),
-            vec![(next_door, block("stone")), (inside, block("oak_log"))]
-        );
+        assert!(region.set_block_ref(inside, &block("air")));
+        assert!(region.set_block_ref(inside, &block("oak_log")));
+        let interned = region.into_interned();
+        let expected = vec![(next_door, block("stone")), (inside, block("oak_log"))];
+        let resolved: Vec<BlockWrite> = interned
+            .iter()
+            .map(|(pos, state)| (pos, state.clone()))
+            .collect();
+        assert_eq!(resolved, expected);
     }
 
     #[test]
