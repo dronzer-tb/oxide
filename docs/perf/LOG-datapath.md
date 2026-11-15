@@ -744,3 +744,23 @@ Round 5, on 0e3cf61:
   provable whole-row answers).
 - `datapath-14`: carvers with no cross-chunk state (per-step savings in the walk,
   `carve_ellipsoid`).
+
+### bench-datapath.tsv backfilled (auditor's request)
+
+The tsv had no row after 1da3c44's two invalid runs (226 and 264): every number since then came
+from interleaved A/B holds run by hand, so they reached only this log. Appended, in the
+script's format, one row per timed run of each kept head from those holds:
+- 1da3c44 (3 runs);
+- 85f6075 (3);
+- ae011ba, the E16 build (3);
+- a6c1fcd: the E18 build and the head side of the E19 and merge holds (9);
+- 2b7bd3e, the noise merge (3).
+
+Timestamps are each hold's box-clock times converted with `date -d`, a few seconds apart
+within a round. Rejected variants (E14, E15, E17, E19) are not added: their rows are in
+their own `bench-datapath-<n>.tsv`. From now on each A/B hold appends its kept-head rows here
+as it runs.
+
+Noted from the auditor: the noise session is back, has been told to drop noise-5 in favour of
+E18, and will do noise-4 (shared corner columns) on top of this head. `NoiseRouterEvaluator::id()`
+stays as the one datapath change in `oxide-noise`; the rest of that crate is left to noise.
