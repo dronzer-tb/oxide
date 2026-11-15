@@ -296,7 +296,11 @@ pub fn fill_chunk_culling(
                     // The aquifer decides what a non-solid position holds -- air, water or
                     // lava, at a level that varies per underground body. Vanilla runs exactly
                     // this as the first filler in its noise fill.
+                    //
+                    // A solid density is answered here: `compute_kind` returns `None` for
+                    // `density > 0` before touching any state, and ~3 in 4 calls were that.
                     let kind = match aquifer.as_deref_mut() {
+                        Some(_) if density > 0.0 => DEFAULT,
                         Some(aquifer) => match aquifer.compute_kind(block_x, y, block_z, density) {
                             None => DEFAULT,
                             Some(crate::aquifer::FluidKind::Air) => continue,

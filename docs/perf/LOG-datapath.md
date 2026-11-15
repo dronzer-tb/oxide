@@ -974,3 +974,19 @@ Round 6:
 - `datapath-19` sub-agent: `SurfaceSystem::apply`'s own per-block work (~4.3%: slot walk,
   run state, cursor, biome lookup). Not the interpreter, where E14, E19 and E23 all lost.
 - One standard 8-thread `bench-vps.sh` row of 11ccdeb for the progress page.
+
+### E21 retried on top of noise-4 -- now kept
+
+E21 (aquifer row memo, and the fill answering `density > 0` itself; described in round 5) rebased onto 11ccdeb
+unchanged. Tests: chunkgen 190 passed. Rotating-order A/B, 1 thread, 6 rounds, one exclusive
+hold, `ps` clean. ms core per chunk:
+
+| | r1 | r2 | r3 | r4 | r5 | r6 | mean |
+|---|---|---|---|---|---|---|---|
+| head 11ccdeb | 10.55 | 10.22 | 10.09 | 10.24 | 10.81 | 10.51 | 10.40 |
+| + E21 | 9.95 | 10.09 | 9.47 | 9.83 | 10.26 | 10.20 | 9.97 |
+
+All twelve `digest=a977961a58122047`. Ahead in 6 of 6 rounds, with the order rotated: -4.2% core time.
+Kept. Before noise-4 it was +2.4% with 3 of 5; with the corner grid cheaper, the aquifer is a
+larger slice, and the rotating 1-thread method resolves it. The rejected-diff file is removed,
+since the change is now in the tree.
