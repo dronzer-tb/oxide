@@ -10,12 +10,13 @@
 # anything from reference/ (game data) or any secret.
 #
 # Key: $OMNI_KEY, or the first line of ~/.config/omniroute/key. Host: $OMNI_URL.
-# Models that answered real requests when last checked (2026-11-11): kimi-web/k3,
-# deepseek-web/deepseek-v4-flash, gemini-pro-latest. Requests are streamed because several
+# Models that answered when last checked (2026-11-15): gemini/gemini-3-flash-preview,
+# mistral/codestral-latest. Failing then: kimi-web/k3 (upstream login expired),
+# deepseek-web (circuit breaker open), gemini-pro-latest (empty answers). Requests are streamed because several
 # providers only answer that way.
 set -eu
 prompt="${1:?usage: omni-ask.sh <prompt-file|-> [model]}"
-model="${2:-kimi-web/k3}"
+model="${2:-gemini/gemini-3-flash-preview}"
 url="${OMNI_URL:-https://omni.tharax.me}"
 key="${OMNI_KEY:-$(head -n 1 "$HOME/.config/omniroute/key" 2>/dev/null || true)}"
 if [ -z "$key" ]; then

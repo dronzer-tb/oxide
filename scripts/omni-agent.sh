@@ -4,7 +4,10 @@
 # commands and edits code. It spends no Claude quota.
 #
 #   scripts/omni-agent.sh <model> "<task>"
-#   e.g. scripts/omni-agent.sh kimi-web/k3 "Profile notes are in /tmp/p.txt. Which ..."
+#   e.g. scripts/omni-agent.sh gemini/gemini-3-flash-preview "Read ... and report ..."
+#
+# Verified with tools 2026-11-15: gemini/gemini-3-flash-preview. Claude Code warns it does not
+# know the model and assumes a 1M context window; that warning is expected.
 #
 # Give it its own tree, never yours: `git worktree add /tmp/omni-<name> HEAD`, run it there,
 # then read its diff and take what is good. It runs with permission checks off and its work
