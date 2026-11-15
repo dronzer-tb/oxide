@@ -52,11 +52,14 @@ out="$(ssh -o BatchMode=yes "$host" "
     flock -s ~/oxide-perf/.lock nice -n 10 ./target/pgo-gen/$profile/oxide-harness --datapack reference \
         $train --time-only | grep ^BENCH | sed 's/^BENCH/TRAIN/'
     flock -s ~/oxide-perf/.lock nice -n 10 \"\$profdata\" merge -o \"\$root/target/pgo.profdata\" \"\$root/target/pgo-data\"
+    # Each PGO dir is about 1 GB and the box's disk is shared and nearly full, so delete them.
+    rm -rf \"\$root/target/pgo-gen\" \"\$root/target/pgo-data\"
     RUSTFLAGS=\"\$base -Cprofile-use=\$root/target/pgo.profdata\" \
         CARGO_TARGET_DIR=target/pgo-use \
         flock -s ~/oxide-perf/.lock nice -n 10 ~/.cargo/bin/cargo build --profile $profile -p oxide-harness 2>&1 | tail -n 3
     flock -x ~/oxide-perf/.lock ./target/pgo-use/$profile/oxide-harness --datapack reference --seed 12345 \
         --radius $radius --time-only --threads $threads | grep ^BENCH
+    rm -rf \"\$root/target/pgo-use\"
 " | tee /dev/stderr)"
 build="$(printf '%s\n' "$out" | sed -n 's/.*Finished .* in //p' | tr -d ' ' | paste -sd+ -)"
 tag=pgo
