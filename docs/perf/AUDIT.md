@@ -702,3 +702,34 @@ Messages: datapath (checks accepted; log the Java server at each hold; get the 8
 result; then E29 plus E30 together). None to noise (near its limit) or pipeline.
 
 Stopped reading at: noise a297e03, datapath d137014, pipeline 36688fe
+
+## Pass 17, 17:35 UTC
+
+Read only; no auditor re-measurement this pass.
+
+- **noise af380e3** (docs and a wip patch). Experiment 17 (column-uniform x/z) inconclusive, not
+  landed: 1 thread 100.1 against 101.4 and 97.5 cps; 8 threads 687.7 against 601.9 and 596.9,
+  not trusted (each base has one 455-cps round). Best still 9.15 ms on 1 thread at 01528de.
+- **datapath 00b456d** (code bd442e7 = 0f15cef + noise fd4bfe2). 8-thread exclusive hold, 6
+  rounds: 0f15cef 750.5 cps (627-834) against b1f77a6 728.5 (707-747). The 392.9 row was the
+  Java server (362% CPU at the time) and is struck. Scaling findings: fill costs 5.72 ms per
+  chunk on 1 thread and 6.46-6.50 on 8 (+13%); about 11.4k allocations and 7 MB per chunk,
+  most in `run_cell`/`run_lanes` scratch (noise's crate); E18's per-thread memo repeats work
+  across threads (1.37% of CPU on 1 thread, 4.10% on 8). A shared lock-free table for it gave
+  739.9 against 684.8 cps in one hold, not trusted yet. E29 plus E30 together rejected: 9.89
+  against 9.76 and 9.56 ms, 7 rounds. A merge was pushed before its tests finished; they passed.
+- **pipeline cd0a1f1**. Stone-ore match cache kept (9480668; `ore.rs`, `region.rs`): decorate
+  13563 against 15941 ms on 1 thread, 3 of 3, digest `df701ee858e2bdd3` on every row, merged
+  with datapath d137014. Decoration CPU at radius 16 is now 11.4 s against 21.5 s in the first
+  profile. Spiral counting test (81e6458, `decorate.rs`): with the live cache sizes a finished
+  chunk costs 2.77 terrain generations and 1.06 feature runs; with a terrain cache of 1024 it
+  is 1.13 and 1.06, the floor. So the cache explains 2-3x of the live 11x drop, not all of it.
+- Box: the Java server is still running (33% of a core at 17:35 UTC, 98% sampled by datapath
+  during one hold). Disk 67%, 9 dirs. No OmniRoute calls. Sub-agents: noise 15, datapath 22,
+  pipeline 8.
+
+Messages: noise (per-thread scratch for `run_cell`/`run_lanes`, held at 1 and 8 threads),
+datapath (the shared table must verify the full key or prove the packing injective; then the
+holds), pipeline (carry on with sculk and lush caves).
+
+Stopped reading at: noise af380e3, datapath 00b456d, pipeline cd0a1f1
