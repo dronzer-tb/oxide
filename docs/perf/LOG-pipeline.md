@@ -559,3 +559,27 @@ perf/pipeline since the 4aca951 tables: about 5 s of 1-thread decoration CPU at 
 the whole stage is slower. The profile's per-call timers do not see the memo's own cost: a 1.1 MB
 thread-local box per thread, generation checks, and cache pressure on top of every read. Keep the
 idea of fewer reads, but it needs a small per-step neighbourhood rather than a whole-feature box.
+
+**Hold length (auditor):** the 9-run hold above kept the exclusive lock about 15 minutes, and the
+noise and datapath builds waited 20 minutes behind it. On this branch's old terrain a 1-thread r16 pregen
+run is about 95 s, 70 s of it terrain. From here on, decoration holds run from a scratch tree
+merged with origin/perf/datapath (terrain about 10 s per 1-thread run) or at radius 8, and every
+exclusive hold stays under about 5 minutes. The HEAD-vs-ore hold queued on the old terrain was
+cancelled before it started.
+
+## Ore floor scan skip (in test)
+
+`OreFeature.place` scans the floor height of every column in its box and returns at the first
+column whose floor reaches `y_start`. The scan draws no random numbers, and `place_blob` does not
+depend on which column hit. Upper ores start far above ground, so nearly every scan reads all
+columns and fails: ore_iron_upper made 8.7M `height` calls for 12k writes.
+
+New `DecorationRegion::height_bound(kind)`: the maximum of the nine stored heightmaps (computed
+once per kind per region, `max_y` if a map is missing) and the highest write + 1. `height` answers an
+unwritten column from the stored map and rescans a written one from at most
+`max(stored, written_top + 1)`, so no column of the window exceeds the bound. The ore returns `false`
+before the scan when `y_start` is above it. A new unit test checks the bound against every column
+before and after writes. Tests: chunkgen 190, pregen pass.
+
+Hold: pipeline-mb (a1d75b1 + origin/perf/datapath 2127bd7) against pipeline-mo (the same + the skip),
+r16, 1 thread, 3 rounds.
