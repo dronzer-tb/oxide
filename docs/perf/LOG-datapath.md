@@ -866,3 +866,18 @@ no A/B here can resolve a change under ~5%.
 
 Single-thread head reference: **~11.5 ms core per chunk** (session start, from PLAN.md:
 43.8 ms single-thread).
+
+### Correction (from the auditor): the "load outside the lock" flag was wrong
+
+The 8.6 load average I read at the start of the last hold is not evidence of unlocked work.
+It is a decaying one-minute average, and a hold starts the moment the shared-lock builds it
+waited for finish, so it reads high every time. The auditor's samples showed every heavy
+process under the lock. Retracted. From now on a hold is judged by `ps` sampled during it,
+and only a named process is flagged. The one real case this session was the pipeline track's
+`oxide-pregen` running unlocked, seen by name in `ps`. The auditor confirms my head: a29cef5
+at 620.3 and 695.4 cps on 8 threads, and 10.82 and 12.07 ms per chunk on 1 thread, against
+Pumpkin's 17.4 ms terrain.
+
+Next-three item 1 is running: 1-thread A/B, 5 alternating rounds of head, E21 and E22, with
+`ps` sampled each round. Item 2, the column-wise surface program, goes to a sub-agent on
+`datapath-16`.
