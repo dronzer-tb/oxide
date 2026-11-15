@@ -1440,3 +1440,21 @@ Order once the box is back (~15:55 UTC):
    14:56 UTC, minutes before the reservation, so it is suspect;
 2. the queued throwaway palette/heightmap check, 3fd5cf6 against 0f15cef;
 3. the pregen r16 digest on `/tmp/datapath-pg`.
+
+### Palette and heightmap check: identical at the session start and the head
+
+Throwaway harness (not committed), radius 16, 8 threads, run after the reservation (~15:58 UTC):
+
+| | 3fd5cf6 (session start) | 0f15cef (head) |
+|---|---|---|
+| block-state gate `digest=` | a977961a58122047 | a977961a58122047 |
+| `PALETTE digest=`: block and biome palettes in order, plus packed longs (covers biome values) | 04da69623d0ddc8f | 04da69623d0ddc8f |
+| `PALETTE heightmaps digest=`: all six heightmaps, packed, in a fixed order | 16f8026ca33ac948 | 16f8026ca33ac948 |
+
+So every change this session (E1-E28 and the noise merges) leaves palette order, dead entries,
+biomes and heightmaps exactly as they were. The reading review was right.
+
+The same job's head run gave `cps=712.0 ms_per_chunk_core=11.24` at 8 threads. That was under the shared
+lock, not an exclusive timing, but it is far from the suspect 392.9 row: that row looks disturbed
+rather than a regression. The scaling sub-agent's exclusive 8-thread hold will settle it. The box dirs
+`datapath-pa` and `datapath-pb` are deleted.
