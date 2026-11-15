@@ -1748,3 +1748,21 @@ Not landed on this evidence. The deciding test is whether E32+E33 add anything o
 the code the noise track will actually land: base+noise-12 against base+noise-12+E32+E33 (the
 `datapath-28` stack), at 8 threads and 1. Running it now. **For the noise track: noise-12 (scratch
 pool) is the clear win here: +9% at 1 thread inside the stack, 7 of 8 rounds.**
+
+### Correction (auditor): the noise-12 attribution was a subtraction across two holds
+
+The noise track measured the scratch pool on generation-only CPU at fd4bfe2: 10.93 s against bases
+10.91 and 11.10 at 1 thread, no effect, and did not land it. My "noise-12 carries the 1-thread gain"
+came from subtracting one hold (E32+E33) from another (the stack), and whole-process CPU is ~70%
+digest. **Withdrawn until measured directly.** The E32+E33 hold against base+noise-12 was stopped
+before it timed anything.
+
+New measure, `master-gen-hold.sh` (scratchpad) with `remote-gen-hold.sh` on the box: the harness's
+stdout goes through a fifo. The harness's utime+stime is sampled from `/proc/<pid>/stat` at its
+`carvers in play` line (printed just before the timed generation) and at `generated N chunks` (just after).
+That gives generation-only CPU seconds, `gen_cpu_s`, with java's CPU over the same window. Smoke test:
+1 thread, gen_cpu_s 9.29 against generation wall 9.278 s.
+
+One hold, four binaries rotating: base 1, base 2 (two builds of aa8ffab code), base+noise-12
+(`datapath-31`), and the full stack (`datapath-28`). 6 rounds at 8 threads and 5 at 1. Decided on
+gen_cpu_s; noise-12 is reported alone against both bases, for the noise track.
