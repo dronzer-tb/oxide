@@ -26,7 +26,8 @@ gh repo deploy-key list -R dronzer-tb/oxide | grep -qF "$(echo "$key" | cut -d' 
     { echo "$key" >/tmp/oxide-agents.pub && gh repo deploy-key add /tmp/oxide-agents.pub -R dronzer-tb/oxide -w -t oxide-agents-oci-v3 && rm /tmp/oxide-agents.pub; }
 
 echo "== s5: bench user"
-$ssh s5 sh -s "$key" <ops/agents/setup-s5.sh
+# ssh joins its arguments into one remote command line, so the key must be quoted for it.
+$ssh s5 sh -s "'$key'" <ops/agents/setup-s5.sh
 
 echo "== oci-v3: repo and worktrees"
 $ssh oci-v3 sudo -iu agents sh -s <ops/agents/setup-repo.sh
