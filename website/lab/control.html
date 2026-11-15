@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Oxide Lab · Control</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --magnetite: #131211; --slate: #191817; --shale: #201e1c; --pit: #0c0b0a;
+  --seam: rgba(232, 222, 205, .09); --seam-soft: rgba(232, 222, 205, .05); --seam-strong: rgba(232, 222, 205, .22);
+  --bone: #ebe5d9; --ash: #b3ab9d; --dust: #857e72; --silt: #5b564e;
+  --hematite: #e0703a; --azurite: #4f9bd9; --olivine: #8f9a2c; --verdigris: #58b09a; --cinnabar: #e5534b; --ochre: #d6a24a;
+  --label: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --data: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  --u: 4px;
+}
+* { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: var(--silt) transparent; }
+body { margin: 0; background: var(--magnetite); color: var(--bone); font: 13px/1.5 var(--data); }
+a { color: inherit; }
+button { font: inherit; color: inherit; cursor: pointer; }
+:focus-visible { outline: 1px solid var(--hematite); outline-offset: 2px; }
+.wrap { max-width: 1180px; margin: 0 auto; padding: 0 calc(var(--u) * 6) calc(var(--u) * 20); }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: calc(var(--u) * 2) calc(var(--u) * 6); padding: calc(var(--u) * 6) 0 calc(var(--u) * 4); border-bottom: 1px solid var(--seam); }
+.mark { font: 600 20px/1 var(--label); letter-spacing: .14em; text-transform: uppercase; }
+.mark b { color: var(--hematite); font-weight: 600; }
+nav { display: flex; gap: calc(var(--u) * 5); font: 500 13px/1 var(--label); letter-spacing: .12em; text-transform: uppercase; }
+nav a { text-decoration: none; color: var(--dust); padding-bottom: 5px; }
+nav a:hover { color: var(--bone); }
+nav a.on { color: var(--bone); box-shadow: inset 0 -2px var(--hematite); }
+.stamp { margin-left: auto; color: var(--dust); font-size: 11.5px; }
+section { margin-top: calc(var(--u) * 10); }
+h2 { margin: 0 0 var(--u); font: 600 13px/1.2 var(--label); letter-spacing: .16em; text-transform: uppercase; }
+.lede { color: var(--ash); max-width: 78ch; margin: 0 0 calc(var(--u) * 4); font: 400 15px/1.5 var(--label); }
+.eyebrow { font: 500 11px/1 var(--label); letter-spacing: .16em; text-transform: uppercase; color: var(--dust); margin: 0 0 6px; }
+.box { border: 1px solid var(--seam); background: var(--slate); }
+.q { color: var(--dust); }
+
+/* The three accounts as one strip: who is logged in, who is working, who is waiting. */
+.strip { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: calc(var(--u) * 8); }
+.slot { padding: calc(var(--u) * 4); border-left: 1px solid var(--seam-soft); }
+.slot:first-child { border-left: 0; }
+.slot .name { font: 600 18px/1 var(--label); letter-spacing: .12em; text-transform: uppercase; display: flex; align-items: center; gap: 10px; }
+.slot .name i { width: 10px; height: 10px; }
+.slot .now { font: 500 15px/1.3 var(--label); margin: calc(var(--u) * 3) 0 4px; }
+.slot .why { color: var(--dust); font-size: 12px; min-height: 2.8em; }
+
+.state { display: inline-flex; align-items: center; gap: 7px; }
+.state::before { content: ""; width: 7px; height: 7px; background: var(--silt); flex: none; }
+.state.work::before { background: var(--verdigris); }
+.state.wait::before { background: var(--ochre); }
+.state.bad::before { background: var(--cinnabar); transform: rotate(45deg); }
+
+.track { margin-top: calc(var(--u) * 4); }
+.track > div:first-child { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; padding: calc(var(--u) * 3) calc(var(--u) * 4); }
+.track h3 { margin: 0; font: 600 15px/1 var(--label); letter-spacing: .12em; text-transform: uppercase; display: flex; align-items: center; gap: 10px; }
+.track h3 i { width: 10px; height: 10px; }
+.track .facts { color: var(--ash); display: flex; flex-wrap: wrap; gap: 4px 18px; }
+.open { margin-left: auto; background: var(--pit); border: 1px solid var(--seam-strong); padding: 7px 14px; font: 500 12px/1 var(--label); letter-spacing: .12em; text-transform: uppercase; }
+.open:hover { border-color: var(--hematite); }
+.open[aria-expanded="true"] { background: var(--shale); box-shadow: inset 0 -2px var(--hematite); }
+.term { display: none; border-top: 1px solid var(--seam); background: #000; }
+.term.on { display: block; }
+.term iframe { display: block; width: 100%; height: min(70vh, 620px); border: 0; }
+
+ol.steps { margin: 0; padding: 0; list-style: none; counter-reset: s; display: grid; gap: 10px; }
+ol.steps li { counter-increment: s; display: grid; grid-template-columns: 28px 1fr; color: var(--ash); font: 400 14.5px/1.5 var(--label); }
+ol.steps li::before { content: counter(s); font: 500 13px/1.6 var(--data); color: var(--hematite); }
+code { font: 12.5px var(--data); background: var(--pit); border: 1px solid var(--seam); padding: 1px 5px; color: var(--bone); }
+.pad { padding: calc(var(--u) * 4); }
+.fault { border: 1px solid rgba(229, 83, 75, .4); background: rgba(229, 83, 75, .06); padding: calc(var(--u) * 4); margin-top: calc(var(--u) * 6); }
+
+@media (max-width: 760px) {
+  .wrap { padding: 0 calc(var(--u) * 4) calc(var(--u) * 16); }
+  .strip { grid-template-columns: 1fr; }
+  .slot { border-left: 0; border-top: 1px solid var(--seam-soft); }
+  .slot:first-child { border-top: 0; }
+  .stamp { margin-left: 0; width: 100%; }
+  .open { margin-left: 0; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="mark"><b>Oxide</b> Lab</div>
+  <nav><a href="progress.html">Progress</a><a href="control.html" class="on">Control</a><a href="index.html">Parity lab</a></nav>
+  <span class="stamp" id="stamp">reading the agent host…</span>
+</header>
+<div id="fault"></div>
+
+<div class="box strip" id="strip"></div>
+
+<section>
+  <h2>Sessions</h2>
+  <p class="lede">Each track is one Claude session on oci-v3, logged into its own account, working in its own git worktree and benchmarking on the bench VPS. A session that finishes is restarted after a minute; one that sits idle for twenty minutes is told to carry on. Results land on the <a href="progress.html">progress page</a>.</p>
+  <div id="tracks"></div>
+</section>
+
+<section>
+  <h2>Logging an account in</h2>
+  <div class="box pad">
+    <ol class="steps">
+      <li><span>Open a track's terminal. A session that is not logged in shows Claude's first-run screens; pick a theme and choose to log in with a Claude account.</span></li>
+      <li><span>Claude prints a link. Open it in a browser where you are signed in to the account for this track, approve, and copy the code it shows.</span></li>
+      <li><span>Paste the code into the terminal and press Enter. Accept the trust prompt for the folder and the prompt for skipping permissions; the session starts on the track by itself.</span></li>
+      <li><span>Use a different account per track. An account that is out of quota still logs in; its session waits and is nudged again every twenty minutes until the quota resets.</span></li>
+    </ol>
+    <p class="q" style="margin:14px 0 0">Terminals are open to one GitHub account only, not to the rest of the organisation. Detach without stopping anything by closing the tab.</p>
+  </div>
+</section>
+</div>
+<script>
+"use strict";
+const TRACKS = [
+  { id: "noise", color: "#e0703a", job: "density functions and Perlin sampling" },
+  { id: "datapath", color: "#4f9bd9", job: "allocation, block ids, surface, biomes" },
+  { id: "pipeline", color: "#8f9a2c", job: "offline pregen and region writing" },
+];
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const mins = m => (m < 60 ? m + " min" : Math.floor(m / 60) + " h " + (m % 60) + " min");
+const ago = unix => (unix ? mins(Math.max(0, Math.round((Date.now() / 1000 - unix) / 60))) + " ago" : "never");
+
+function read(s) {
+  if (!s) return { cls: "", now: "No status", why: "The agent host has not reported this track." };
+  if (!s.logged_in) return { cls: "bad", now: "Not logged in", why: "Open the terminal and log an account in." };
+  if (s.limited) return { cls: "wait", now: "Waiting on the usage limit", why: `Nudged ${ago(s.last_nudge)}; carries on when the account resets.` };
+  if (s.idle_min < 5) return { cls: "work", now: "Working", why: "The terminal changed in the last few minutes." };
+  return { cls: "wait", now: `Quiet for ${mins(s.idle_min)}`, why: "A nudge goes out at twenty minutes." };
+}
+
+function build() {
+  $("tracks").innerHTML = TRACKS.map(t => `<div class="box track" id="t-${t.id}"><div>` +
+    `<h3><i style="background:${t.color}"></i>${t.id}</h3><span class="facts"><span class="q">${t.job}</span><span class="state" id="s-${t.id}">–</span></span>` +
+    `<button class="open" aria-expanded="false" data-t="${t.id}">Open terminal</button></div>` +
+    `<div class="term" id="term-${t.id}"></div></div>`).join("");
+  $("tracks").onclick = e => {
+    const b = e.target.closest(".open");
+    if (!b) return;
+    const t = b.dataset.t, box = $("term-" + t), open = b.getAttribute("aria-expanded") !== "true";
+    b.setAttribute("aria-expanded", open);
+    b.textContent = open ? "Close terminal" : "Open terminal";
+    // Load the terminal only when asked for, and drop it when closed: each one is a live connection.
+    box.innerHTML = open ? `<iframe title="${t} terminal" src="term/?arg=${t}"></iframe>` : "";
+    box.classList.toggle("on", open);
+  };
+}
+
+async function refresh() {
+  try {
+    const r = await fetch("agents/status.json", { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const d = await r.json(), by = Object.fromEntries(d.tracks.map(s => [s.track, s]));
+    const stale = Date.now() / 1000 - d.updated > 300;
+    $("fault").innerHTML = stale ? `<div class="fault"><span class="state bad">The agent host stopped reporting ${ago(d.updated)}.</span> The sessions may be down; check <code>systemctl status oxide-agents</code> on oci-v3.</div>` : "";
+    $("strip").innerHTML = TRACKS.map(t => {
+      const v = read(by[t.id]);
+      return `<div class="slot"><div class="name"><i style="background:${t.color}"></i>${t.id}</div>` +
+        `<div class="now"><span class="state ${v.cls}">${esc(v.now)}</span></div><div class="why">${esc(v.why)}</div></div>`;
+    }).join("");
+    for (const t of TRACKS) {
+      const s = by[t.id], v = read(s), el = $("s-" + t.id);
+      el.className = "state " + v.cls;
+      el.textContent = s ? `${v.now} · idle ${mins(s.idle_min)}` : v.now;
+    }
+    $("stamp").textContent = `model ${d.model} · host reported ${ago(d.updated)} · refreshes every 30 s`;
+  } catch (e) {
+    $("stamp").textContent = "agent host not reachable";
+    $("strip").innerHTML = TRACKS.map(t => `<div class="slot"><div class="name"><i style="background:${t.color}"></i>${t.id}</div><div class="now"><span class="state">No status</span></div><div class="why">The agent host is not set up yet, or not reporting.</div></div>`).join("");
+  }
+}
+build();
+refresh();
+setInterval(refresh, 30000);
+</script>
+</body>
+</html>

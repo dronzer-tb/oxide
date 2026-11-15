@@ -17,7 +17,9 @@ name="${1:-$(git branch --show-current | tr '/' '-')}"
 radius="${2:-16}"
 threads="${3:-8}"
 host="${OXIDE_BENCH_HOST:-s5}"
-dir="/root/oxide-perf/$name"
+# Relative to the remote home: /root for the laptop (host s5), /home/bench for the agents on
+# oci-v3 (host bench-s5).
+dir="oxide-perf/$name"
 # reference/ is gitignored game data, so a git worktree has none: take it from the main checkout.
 reference="$(cd "$(git rev-parse --git-common-dir)/.." && pwd)/reference"
 
@@ -27,13 +29,18 @@ rsync -a --delete \
     --exclude /website --exclude /plugin --exclude /client-mod \
     --exclude /reference \
     -e "ssh -o BatchMode=yes" ./ "$host:$dir/"
-rsync -a --delete \
-    --exclude /oracle --exclude /decompiled --exclude '/block_survival*.tsv' \
-    -e "ssh -o BatchMode=yes" "$reference/" "$host:$dir/reference/"
+if [ -d "$reference" ]; then
+    rsync -a --delete \
+        --exclude /oracle --exclude /decompiled --exclude '/block_survival*.tsv' \
+        -e "ssh -o BatchMode=yes" "$reference/" "$host:$dir/reference/"
+else
+    # No game data on this machine (the agent host): use the copy kept on the bench box.
+    ssh -o BatchMode=yes "$host" "test -e '$dir/reference' || ln -s ~/oxide-perf/reference '$dir/reference'"
+fi
 line="$(ssh -o BatchMode=yes "$host" "
     set -eu
     cd '$dir'
-    flock /root/oxide-perf/.lock sh -c '
+    flock ~/oxide-perf/.lock sh -c '
         ~/.cargo/bin/cargo build --release -p oxide-harness 2>&1 | tail -n 3
         ./target/release/oxide-harness --datapack reference --seed 12345 \
             --radius $radius --time-only --threads $threads | grep ^BENCH

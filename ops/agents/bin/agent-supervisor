@@ -1,0 +1,41 @@
+#!/bin/sh
+# Keeps the three track sessions alive, nudges one that has sat idle for NUDGE_MIN minutes, and
+# writes the control page's status file once a minute. Run by oxide-agents.service; every
+# process it starts stays inside that service's memory and CPU limits.
+set -u
+. "$HOME/agents.env"
+tracks="noise datapath pipeline"
+out=/srv/oxide-lab/agents/status.json
+state="$HOME/.agent-state"
+mkdir -p "$state"
+while :; do
+    json=""
+    for t in $tracks; do
+        if ! tmux has-session -t "$t" 2>/dev/null; then
+            tmux new-session -d -s "$t" -x 200 -y 50 "$HOME/bin/agent-run $t"
+        fi
+        pane="$(tmux capture-pane -p -t "$t" 2>/dev/null || true)"
+        sum="$(printf '%s' "$pane" | md5sum | cut -c1-32)"
+        now="$(date +%s)"
+        if [ "$sum" != "$(cat "$state/$t.sum" 2>/dev/null)" ]; then
+            echo "$sum" >"$state/$t.sum"
+            echo "$now" >"$state/$t.changed"
+        fi
+        changed="$(cat "$state/$t.changed" 2>/dev/null || echo "$now")"
+        idle=$(((now - changed) / 60))
+        logged=false
+        [ -s "$HOME/.claude-$t/.credentials.json" ] && logged=true
+        limited=false
+        printf '%s' "$pane" | tail -n 15 | grep -qiE "usage limit|limit reached|resets (at|in)" && limited=true
+        # Nudge only a logged-in session, so a nudge never types into the login prompt.
+        if $logged && [ "$idle" -ge "$NUDGE_MIN" ]; then
+            tmux send-keys -t "$t" "Continue the $t track from docs/perf/LOG-$t.md. Push after every experiment." Enter
+            echo "$now" >"$state/$t.changed"
+            date +%s >"$state/$t.nudged"
+        fi
+        nudged="$(cat "$state/$t.nudged" 2>/dev/null || echo 0)"
+        json="$json{\"track\":\"$t\",\"logged_in\":$logged,\"idle_min\":$idle,\"limited\":$limited,\"last_nudge\":$nudged},"
+    done
+    printf '{"updated":%s,"model":"%s","tracks":[%s]}\n' "$(date +%s)" "$AGENT_MODEL" "${json%,}" >"$out.tmp" && mv "$out.tmp" "$out"
+    sleep 60
+done

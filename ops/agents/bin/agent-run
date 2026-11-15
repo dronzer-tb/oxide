@@ -1,0 +1,23 @@
+#!/bin/sh
+# Runs one perf track's Claude session forever, inside its tmux session. A new session starts
+# whenever the last one exits; agent-supervisor nudges one that sits idle.
+#
+#   agent-run <track>
+set -u
+track="$1"
+. "$HOME/agents.env"
+export CLAUDE_CONFIG_DIR="$HOME/.claude-$track"
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/opt/studio/venv/bin:$PATH"
+export OXIDE_BENCH_HOST=bench-s5 CARGO_BUILD_JOBS=1
+export CLAUDE_CODE_SUBAGENT_MODEL="$AGENT_SUBAGENT_MODEL"
+cd "$HOME/oxide-wt/$track"
+first="Read docs/perf/PLAN.md and docs/perf/track-$track.md, then work the track until you hit your usage limit. Push after every experiment."
+again="Resume the $track track: read docs/perf/PLAN.md, docs/perf/track-$track.md and docs/perf/LOG-$track.md, then carry on from where the log stops. Push after every experiment."
+prompt="$first"
+while :; do
+    git pull -q --ff-only 2>/dev/null || true
+    claude --dangerously-skip-permissions --model "$AGENT_MODEL" "$prompt"
+    prompt="$again"
+    echo "--- session for $track ended $(date -u +%H:%M) UTC; a new one starts in 60 s (Ctrl-C to stop) ---"
+    sleep 60
+done
