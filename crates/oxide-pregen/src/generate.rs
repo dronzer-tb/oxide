@@ -178,6 +178,10 @@ fn square(center: ChunkPos, radius: i32) -> Vec<ChunkPos> {
 }
 
 /// Applies `writes` (all from one source chunk) that land inside `chunk`.
+///
+/// A section's palette is small, so a write's palette index is found by comparing against it
+/// by reference; the state is cloned (and hashed) only when it is new to the section, which is
+/// exactly when `PalettedContainer::set` would insert it, so palette order is unchanged.
 fn apply_writes(chunk: &mut ChunkData, writes: &[BlockWrite]) {
     let (min_y, height) = (chunk.min_y, chunk.height);
     for (at, state) in writes {
@@ -186,7 +190,12 @@ fn apply_writes(chunk: &mut ChunkData, writes: &[BlockWrite]) {
         }
         let y = (at.y - min_y) as usize;
         let slot = ((y & 15) * 16 + (at.z & 15) as usize) * 16 + (at.x & 15) as usize;
-        chunk.sections[y >> 4].block_states.set(slot, state.clone());
+        let states = &mut chunk.sections[y >> 4].block_states;
+        let index = match states.palette().iter().position(|p| p == state) {
+            Some(i) => i as u32,
+            None => states.index_of_or_insert(state.clone()),
+        };
+        states.set_index(slot, index);
     }
 }
 
@@ -243,7 +252,7 @@ pub fn run(generator: &Generator, opts: &Options<'_>) -> Result<Outcome> {
 
     // 1. Terrain.
     let started = Instant::now();
-    let terrain: Vec<ChunkData> = square(opts.center, terrain_radius)
+    let mut terrain: Vec<ChunkData> = square(opts.center, terrain_radius)
         .par_iter()
         .map(|&pos| generator.terrain(pos))
         .collect();
@@ -255,6 +264,7 @@ pub fn run(generator: &Generator, opts: &Options<'_>) -> Result<Outcome> {
     // 2. Decoration: each chunk's writes, then each finished chunk from its nine neighbours',
     // in `oxide_chunkgen::decorate::decorated_chunk`'s order.
     let started = Instant::now();
+    let (min_y, height) = (terrain[0].min_y, terrain[0].height);
     let writes: Vec<Vec<BlockWrite>> = square(opts.center, writes_radius)
         .par_iter()
         .map(|&c| {
@@ -269,10 +279,19 @@ pub fn run(generator: &Generator, opts: &Options<'_>) -> Result<Outcome> {
         .collect();
     let inner = square(opts.center, opts.radius);
     let facts = generator.facts();
-    let finished: Vec<ChunkData> = inner
-        .par_iter()
+    // The writes are made, so terrain is only read as a base now, and each inner terrain chunk
+    // is the base of exactly one finished chunk: move it rather than clone it.
+    let bases: Vec<ChunkData> = inner
+        .iter()
         .map(|&pos| {
-            let mut chunk = at(pos).clone();
+            let i = index(pos, terrain_radius).expect("inside the terrain square");
+            std::mem::replace(&mut terrain[i], ChunkData::new(pos, min_y, height))
+        })
+        .collect();
+    let finished: Vec<ChunkData> = bases
+        .into_par_iter()
+        .map(|mut chunk| {
+            let pos = chunk.pos;
             for dx in -1..=1 {
                 for dz in -1..=1 {
                     let source = ChunkPos::new(pos.x + dx, pos.z + dz);
