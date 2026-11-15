@@ -10,3 +10,11 @@
 1794710952	3a1b789	16	chunks=1089 threads=8 secs=6.414 cps=169.8 ms_per_chunk_core=47.12 digest=a977961a58122047
 1794711364	4abb9a3	16	chunks=1089 threads=8 secs=5.759 cps=189.1 ms_per_chunk_core=42.31 digest=a977961a58122047
 1794711738	4abb9a3	16	chunks=1089 threads=8 secs=6.004 cps=181.4 ms_per_chunk_core=44.11 digest=a977961a58122047
+1794728468	18bb0f9+	16	chunks=1089 threads=8 secs=1.587 cps=686.2 ms_per_chunk_core=11.66 digest=a977961a58122047
+1794728727	18bb0f9	16	chunks=1089 threads=8 secs=1.907 cps=571.0 ms_per_chunk_core=14.01 digest=a977961a58122047
+1794729167	18bb0f9+	16	chunks=1089 threads=8 secs=1.697 cps=641.8 ms_per_chunk_core=12.47 digest=a977961a58122047
+1794729545	18bb0f9	16	chunks=1089 threads=8 secs=1.712 cps=636.2 ms_per_chunk_core=12.57 digest=a977961a58122047
+1794730703	d2433fb+	16	chunks=1089 threads=8 secs=1.747 cps=623.5 ms_per_chunk_core=12.83 digest=a977961a58122047
+1794731003	d2433fb	16	chunks=1089 threads=8 secs=1.597 cps=682.0 ms_per_chunk_core=11.73 digest=a977961a58122047
+1794731242	d2433fb+	16	chunks=1089 threads=8 secs=1.772 cps=614.6 ms_per_chunk_core=13.02 digest=a977961a58122047
+1794732269	d2433fb	16	chunks=1089 threads=8 secs=1.751 cps=622.0 ms_per_chunk_core=12.86 digest=a977961a58122047

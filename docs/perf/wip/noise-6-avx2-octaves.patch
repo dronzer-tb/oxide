@@ -1,0 +1,1084 @@
+diff --git a/crates/oxide-noise/src/blended_noise.rs b/crates/oxide-noise/src/blended_noise.rs
+index 78a48ff..2d66c51 100644
+--- a/crates/oxide-noise/src/blended_noise.rs
++++ b/crates/oxide-noise/src/blended_noise.rs
+@@ -9,6 +9,7 @@
+ //! the factor *first* -- an older signature had it last, which would silently swap the
+ //! arguments here.
+ 
++use crate::improved_noise::SampleQueue;
+ use crate::perlin_noise::PerlinNoise;
+ use crate::random::WorldRandom;
+ 
+@@ -60,18 +61,32 @@ impl BlendedNoise {
+         // The main stack selects how far to blend between the two limit stacks. Its 8 octaves
+         // are walked highest-frequency-first via `get_octave_noise`, halving `pow` each step.
+         let mut main_value = 0.0;
+-        let mut pow = 1.0;
+-        for i in 0..8 {
+-            if let Some(noise) = self.main.get_octave_noise(i) {
+-                main_value += noise.noise_with_scale(
+-                    wrap(main_x * pow),
+-                    wrap(main_y * pow),
+-                    wrap(main_z * pow),
+-                    main_smear * pow,
+-                    main_y * pow,
+-                ) / pow;
++        let mut queue = SampleQueue::new();
++        {
++            let mut sink = |_tag: u8, pow: f64, _: f64, sample: f64| {
++                main_value += sample / pow;
++            };
++            let mut pow = 1.0;
++            for i in 0..8 {
++                if let Some(noise) = self.main.get_octave_noise(i) {
++                    queue.push(
++                        noise,
++                        [
++                            wrap(main_x * pow),
++                            wrap(main_y * pow),
++                            wrap(main_z * pow),
++                            main_smear * pow,
++                            main_y * pow,
++                        ],
++                        0,
++                        pow,
++                        0.0,
++                        &mut sink,
++                    );
++                }
++                pow /= 2.0;
+             }
+-            pow /= 2.0;
++            queue.finish(&mut sink);
+         }
+ 
+         let factor = (main_value / 10.0 + 1.0) / 2.0;
+@@ -80,27 +95,38 @@ impl BlendedNoise {
+         let is_max = factor >= 1.0;
+         let is_min = factor <= 0.0;
+ 
++        // Both limit stacks' samples share the queue; tag 0 feeds `blend_min`, tag 1
++        // `blend_max`, each summed in octave order as before.
+         let mut blend_min = 0.0;
+         let mut blend_max = 0.0;
+-        pow = 1.0;
+-        for i in 0..16 {
+-            let wx = wrap(limit_x * pow);
+-            let wy = wrap(limit_y * pow);
+-            let wz = wrap(limit_z * pow);
+-            let y_scale_pow = limit_smear * pow;
+-            if !is_max {
+-                if let Some(noise) = self.min_limit.get_octave_noise(i) {
+-                    blend_min +=
+-                        noise.noise_with_scale(wx, wy, wz, y_scale_pow, limit_y * pow) / pow;
++        {
++            let mut sink = |tag: u8, pow: f64, _: f64, sample: f64| {
++                if tag == 0 {
++                    blend_min += sample / pow;
++                } else {
++                    blend_max += sample / pow;
+                 }
+-            }
+-            if !is_min {
+-                if let Some(noise) = self.max_limit.get_octave_noise(i) {
+-                    blend_max +=
+-                        noise.noise_with_scale(wx, wy, wz, y_scale_pow, limit_y * pow) / pow;
++            };
++            let mut pow = 1.0;
++            for i in 0..16 {
++                let wx = wrap(limit_x * pow);
++                let wy = wrap(limit_y * pow);
++                let wz = wrap(limit_z * pow);
++                let y_scale_pow = limit_smear * pow;
++                let coords = [wx, wy, wz, y_scale_pow, limit_y * pow];
++                if !is_max {
++                    if let Some(noise) = self.min_limit.get_octave_noise(i) {
++                        queue.push(noise, coords, 0, pow, 0.0, &mut sink);
++                    }
+                 }
++                if !is_min {
++                    if let Some(noise) = self.max_limit.get_octave_noise(i) {
++                        queue.push(noise, coords, 1, pow, 0.0, &mut sink);
++                    }
++                }
++                pow /= 2.0;
+             }
+-            pow /= 2.0;
++            queue.finish(&mut sink);
+         }
+ 
+         clamped_lerp(factor, blend_min / 512.0, blend_max / 512.0) / 128.0
+@@ -137,6 +163,178 @@ mod tests {
+         }
+     }
+ 
++    /// The pre-batching `compute`, verbatim, as the reference the batched path must match.
++    fn compute_reference(
++        n: &BlendedNoise,
++        params: &BlendedNoiseParams,
++        x: f64,
++        y: f64,
++        z: f64,
++    ) -> f64 {
++        let xz_multiplier = 684.412 * params.xz_scale;
++        let y_multiplier = 684.412 * params.y_scale;
++
++        let limit_x = x * xz_multiplier;
++        let limit_y = y * y_multiplier;
++        let limit_z = z * xz_multiplier;
++        let main_x = limit_x / params.xz_factor;
++        let main_y = limit_y / params.y_factor;
++        let main_z = limit_z / params.xz_factor;
++        let limit_smear = y_multiplier * params.smear_scale_multiplier;
++        let main_smear = limit_smear / params.y_factor;
++
++        let mut main_value = 0.0;
++        let mut pow = 1.0;
++        for i in 0..8 {
++            if let Some(noise) = n.main.get_octave_noise(i) {
++                main_value += noise.noise_with_scale(
++                    wrap(main_x * pow),
++                    wrap(main_y * pow),
++                    wrap(main_z * pow),
++                    main_smear * pow,
++                    main_y * pow,
++                ) / pow;
++            }
++            pow /= 2.0;
++        }
++
++        let factor = (main_value / 10.0 + 1.0) / 2.0;
++        let is_max = factor >= 1.0;
++        let is_min = factor <= 0.0;
++
++        let mut blend_min = 0.0;
++        let mut blend_max = 0.0;
++        pow = 1.0;
++        for i in 0..16 {
++            let wx = wrap(limit_x * pow);
++            let wy = wrap(limit_y * pow);
++            let wz = wrap(limit_z * pow);
++            let y_scale_pow = limit_smear * pow;
++            if !is_max {
++                if let Some(noise) = n.min_limit.get_octave_noise(i) {
++                    blend_min +=
++                        noise.noise_with_scale(wx, wy, wz, y_scale_pow, limit_y * pow) / pow;
++                }
++            }
++            if !is_min {
++                if let Some(noise) = n.max_limit.get_octave_noise(i) {
++                    blend_max +=
++                        noise.noise_with_scale(wx, wy, wz, y_scale_pow, limit_y * pow) / pow;
++                }
++            }
++            pow /= 2.0;
++        }
++
++        clamped_lerp(factor, blend_min / 512.0, blend_max / 512.0) / 128.0
++    }
++
++    #[test]
++    fn batched_compute_matches_reference_bit_for_bit() {
++        use oxide_core::{LegacyRandom, RandomSource};
++        let param_sets = [
++            overworld(),
++            // `BASE_3D_NOISE_NETHER`.
++            BlendedNoiseParams {
++                xz_scale: 0.25,
++                y_scale: 0.375,
++                xz_factor: 80.0,
++                y_factor: 60.0,
++                smear_scale_multiplier: 8.0,
++            },
++            // `BASE_3D_NOISE_END`.
++            BlendedNoiseParams {
++                xz_scale: 0.25,
++                y_scale: 0.25,
++                xz_factor: 80.0,
++                y_factor: 160.0,
++                smear_scale_multiplier: 4.0,
++            },
++            // A steep selector, so both saturated branches (one limit stack skipped) are hit.
++            BlendedNoiseParams {
++                xz_scale: 1.0,
++                y_scale: 1.0,
++                xz_factor: 0.5,
++                y_factor: 0.5,
++                smear_scale_multiplier: 0.0,
++            },
++        ];
++        let mut rng = LegacyRandom::new(0xb1e0d);
++        let (mut saw_min, mut saw_max, mut saw_mid) = (0u32, 0u32, 0u32);
++        for seed in 0..6i64 {
++            let mut r = WorldRandom::new(seed * 31 + 9, seed % 2 == 1);
++            let n = BlendedNoise::new(&mut r);
++            for params in &param_sets {
++                for k in 0..1500 {
++                    let s = [16.0, 1.0e3, 3.0e7][k % 3];
++                    let x = (rng.next_double() * 2.0 - 1.0) * s;
++                    let y = if k % 13 == 0 {
++                        -0.0
++                    } else {
++                        (rng.next_double() * 2.0 - 1.0) * 400.0
++                    };
++                    let z = if k % 7 == 0 {
++                        x.floor()
++                    } else {
++                        (rng.next_double() * 2.0 - 1.0) * s
++                    };
++                    let fast = n.compute(params, x, y, z);
++                    let slow = compute_reference(&n, params, x, y, z);
++                    assert_eq!(
++                        fast.to_bits(),
++                        slow.to_bits(),
++                        "seed {seed} params {params:?} at ({x}, {y}, {z})"
++                    );
++                }
++            }
++            // Selector coverage on the steep parameter set.
++            let steep = &param_sets[3];
++            for k in 0..400 {
++                let x = k as f64 * 0.37 - 70.0;
++                let main = selector(&n, steep, x, 3.0, -x);
++                if main >= 1.0 {
++                    saw_max += 1;
++                } else if main <= 0.0 {
++                    saw_min += 1;
++                } else {
++                    saw_mid += 1;
++                }
++                assert_eq!(
++                    n.compute(steep, x, 3.0, -x).to_bits(),
++                    compute_reference(&n, steep, x, 3.0, -x).to_bits()
++                );
++            }
++        }
++        assert!(
++            saw_min > 0 && saw_max > 0 && saw_mid > 0,
++            "{saw_min} {saw_max} {saw_mid}"
++        );
++    }
++
++    /// The `factor` `compute` derives from the main stack (reference arithmetic).
++    fn selector(n: &BlendedNoise, params: &BlendedNoiseParams, x: f64, y: f64, z: f64) -> f64 {
++        let xz_multiplier = 684.412 * params.xz_scale;
++        let y_multiplier = 684.412 * params.y_scale;
++        let main_x = x * xz_multiplier / params.xz_factor;
++        let main_y = y * y_multiplier / params.y_factor;
++        let main_z = z * xz_multiplier / params.xz_factor;
++        let main_smear = y_multiplier * params.smear_scale_multiplier / params.y_factor;
++        let mut main_value = 0.0;
++        let mut pow = 1.0;
++        for i in 0..8 {
++            if let Some(noise) = n.main.get_octave_noise(i) {
++                main_value += noise.noise_with_scale(
++                    wrap(main_x * pow),
++                    wrap(main_y * pow),
++                    wrap(main_z * pow),
++                    main_smear * pow,
++                    main_y * pow,
++                ) / pow;
++            }
++            pow /= 2.0;
++        }
++        (main_value / 10.0 + 1.0) / 2.0
++    }
++
+     #[test]
+     fn varies_horizontally() {
+         // The bug this replaced returned a constant 0.0, which flattened the nether into a
+diff --git a/crates/oxide-noise/src/improved_noise.rs b/crates/oxide-noise/src/improved_noise.rs
+index 54fcf6e..f58ce87 100644
+--- a/crates/oxide-noise/src/improved_noise.rs
++++ b/crates/oxide-noise/src/improved_noise.rs
+@@ -182,6 +182,338 @@ impl ImprovedNoise {
+     pub fn yo(&self) -> f64 {
+         self.yo
+     }
++
++    /// Four independent `noise_with_scale` samples, lane `l` being
++    /// `noises[l].noise_with_scale(x[l], y[l], z[l], y_scale[l], y_max[l])` bit for bit. The
++    /// lanes may use different instances. With AVX2 the float work runs four-wide (each lane
++    /// doing exactly the scalar IEEE operations in the scalar order, no FMA); otherwise, or
++    /// when any lane's offset coordinate is out of the guarded range, it is four scalar calls.
++    #[inline]
++    pub fn noise_with_scale_x4(
++        noises: [&ImprovedNoise; 4],
++        x: [f64; 4],
++        y: [f64; 4],
++        z: [f64; 4],
++        y_scale: [f64; 4],
++        y_max: [f64; 4],
++    ) -> [f64; 4] {
++        #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
++        {
++            // SAFETY: AVX2 is enabled for the whole build (`cfg` above).
++            if let Some(out) = unsafe { avx2::noise_x4(&noises, &x, &y, &z, &y_scale, &y_max) } {
++                return out;
++            }
++        }
++        Self::noise_with_scale_x4_scalar(noises, x, y, z, y_scale, y_max)
++    }
++
++    #[inline(never)]
++    #[cold]
++    fn noise_with_scale_x4_scalar(
++        noises: [&ImprovedNoise; 4],
++        x: [f64; 4],
++        y: [f64; 4],
++        z: [f64; 4],
++        y_scale: [f64; 4],
++        y_max: [f64; 4],
++    ) -> [f64; 4] {
++        std::array::from_fn(|l| noises[l].noise_with_scale(x[l], y[l], z[l], y_scale[l], y_max[l]))
++    }
++}
++
++/// Placeholder for unused lanes of a [`SampleQueue`]; never sampled for a result that is used.
++static PAD_NOISE: ImprovedNoise = ImprovedNoise {
++    permutation: [0; 512],
++    xo: 0.0,
++    yo: 0.0,
++    zo: 0.0,
++};
++
++/// Batches independent octave samples four at a time through
++/// [`ImprovedNoise::noise_with_scale_x4`]. Every sample carries a caller-chosen `tag` and two
++/// weights; `sink(tag, wa, wb, sample)` is called once per sample, in exactly the order the
++/// samples were pushed, so a caller that accumulates in `sink` sums in its original order.
++pub(crate) struct SampleQueue<'a> {
++    noises: [&'a ImprovedNoise; 4],
++    x: [f64; 4],
++    y: [f64; 4],
++    z: [f64; 4],
++    y_scale: [f64; 4],
++    y_max: [f64; 4],
++    tag: [u8; 4],
++    wa: [f64; 4],
++    wb: [f64; 4],
++    len: usize,
++}
++
++impl<'a> SampleQueue<'a> {
++    #[inline(always)]
++    pub(crate) fn new() -> Self {
++        Self {
++            noises: [&PAD_NOISE; 4],
++            x: [0.0; 4],
++            y: [0.0; 4],
++            z: [0.0; 4],
++            y_scale: [0.0; 4],
++            y_max: [0.0; 4],
++            tag: [0; 4],
++            wa: [0.0; 4],
++            wb: [0.0; 4],
++            len: 0,
++        }
++    }
++
++    #[allow(clippy::too_many_arguments)]
++    #[inline(always)]
++    pub(crate) fn push(
++        &mut self,
++        noise: &'a ImprovedNoise,
++        coords: [f64; 5],
++        tag: u8,
++        wa: f64,
++        wb: f64,
++        sink: &mut impl FnMut(u8, f64, f64, f64),
++    ) {
++        let l = self.len;
++        self.noises[l] = noise;
++        self.x[l] = coords[0];
++        self.y[l] = coords[1];
++        self.z[l] = coords[2];
++        self.y_scale[l] = coords[3];
++        self.y_max[l] = coords[4];
++        self.tag[l] = tag;
++        self.wa[l] = wa;
++        self.wb[l] = wb;
++        self.len = l + 1;
++        if self.len == 4 {
++            self.flush(4, sink);
++        }
++    }
++
++    #[inline(always)]
++    fn flush(&mut self, n: usize, sink: &mut impl FnMut(u8, f64, f64, f64)) {
++        let out = ImprovedNoise::noise_with_scale_x4(
++            self.noises,
++            self.x,
++            self.y,
++            self.z,
++            self.y_scale,
++            self.y_max,
++        );
++        for l in 0..n {
++            sink(self.tag[l], self.wa[l], self.wb[l], out[l]);
++        }
++        self.len = 0;
++    }
++
++    /// Emits the 0-3 samples still queued: one sample goes through the scalar path, two or
++    /// three are padded (with copies of lane 0, whose extra results are discarded).
++    #[inline(always)]
++    pub(crate) fn finish(&mut self, sink: &mut impl FnMut(u8, f64, f64, f64)) {
++        match self.len {
++            0 => {}
++            1 => {
++                let s = self.noises[0].noise_with_scale(
++                    self.x[0],
++                    self.y[0],
++                    self.z[0],
++                    self.y_scale[0],
++                    self.y_max[0],
++                );
++                sink(self.tag[0], self.wa[0], self.wb[0], s);
++                self.len = 0;
++            }
++            n => {
++                for l in n..4 {
++                    self.noises[l] = self.noises[0];
++                    self.x[l] = self.x[0];
++                    self.y[l] = self.y[0];
++                    self.z[l] = self.z[0];
++                    self.y_scale[l] = self.y_scale[0];
++                    self.y_max[l] = self.y_max[0];
++                }
++                self.flush(n, sink);
++            }
++        }
++    }
++}
++
++#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
++mod avx2 {
++    use super::{ImprovedNoise, GRADIENT};
++    use std::arch::x86_64::*;
++
++    /// Lanes whose offset coordinate magnitude is not below this (or is NaN) send the whole
++    /// call back to the scalar path. Below it `floor(d)` fits an `i32`, so `_mm256_cvttpd_epi32`
++    /// of the floored value equals Rust's saturating `d.floor() as i32` exactly. Every caller
++    /// wraps coordinates to about ±2^24 first, so this never triggers in generation.
++    const LANE_LIMIT: f64 = 1_073_741_824.0; // 2^30
++
++    #[inline(always)]
++    unsafe fn smoothstep(t: __m256d) -> __m256d {
++        // t * t * t * (t * (t * 6.0 - 15.0) + 10.0), left to right as in the scalar code.
++        let t3 = _mm256_mul_pd(_mm256_mul_pd(t, t), t);
++        let inner = _mm256_sub_pd(_mm256_mul_pd(t, _mm256_set1_pd(6.0)), _mm256_set1_pd(15.0));
++        let poly = _mm256_add_pd(_mm256_mul_pd(t, inner), _mm256_set1_pd(10.0));
++        _mm256_mul_pd(t3, poly)
++    }
++
++    #[inline(always)]
++    unsafe fn lerp(t: __m256d, a: __m256d, b: __m256d) -> __m256d {
++        // a + t * (b - a)
++        _mm256_add_pd(a, _mm256_mul_pd(t, _mm256_sub_pd(b, a)))
++    }
++
++    /// `g[0] * x + g[1] * y + g[2] * z` per lane, with lane `l`'s gradient row
++    /// `GRADIENT[h[l]]`: the same three products and two sums, in the same order.
++    #[inline(always)]
++    unsafe fn grad_dot(h: [u8; 4], x: __m256d, y: __m256d, z: __m256d) -> __m256d {
++        let r0 = &GRADIENT[h[0] as usize];
++        let r1 = &GRADIENT[h[1] as usize];
++        let r2 = &GRADIENT[h[2] as usize];
++        let r3 = &GRADIENT[h[3] as usize];
++        let g0 = _mm256_setr_pd(r0[0], r1[0], r2[0], r3[0]);
++        let g1 = _mm256_setr_pd(r0[1], r1[1], r2[1], r3[1]);
++        let g2 = _mm256_setr_pd(r0[2], r1[2], r2[2], r3[2]);
++        _mm256_add_pd(
++            _mm256_add_pd(_mm256_mul_pd(g0, x), _mm256_mul_pd(g1, y)),
++            _mm256_mul_pd(g2, z),
++        )
++    }
++
++    #[inline(always)]
++    unsafe fn load(v: &[f64; 4]) -> __m256d {
++        _mm256_loadu_pd(v.as_ptr())
++    }
++
++    #[inline(always)]
++    unsafe fn store_i32(v: __m128i) -> [i32; 4] {
++        let mut out = [0i32; 4];
++        _mm_storeu_si128(out.as_mut_ptr() as *mut __m128i, v);
++        out
++    }
++
++    /// See [`ImprovedNoise::noise_with_scale_x4`]. `None` when a lane is out of range.
++    #[inline(always)]
++    pub(super) unsafe fn noise_x4(
++        n: &[&ImprovedNoise; 4],
++        x: &[f64; 4],
++        y: &[f64; 4],
++        z: &[f64; 4],
++        y_scale: &[f64; 4],
++        y_max: &[f64; 4],
++    ) -> Option<[f64; 4]> {
++        let xo = _mm256_setr_pd(n[0].xo, n[1].xo, n[2].xo, n[3].xo);
++        let yo = _mm256_setr_pd(n[0].yo, n[1].yo, n[2].yo, n[3].yo);
++        let zo = _mm256_setr_pd(n[0].zo, n[1].zo, n[2].zo, n[3].zo);
++        let d0 = _mm256_add_pd(load(x), xo);
++        let d1 = _mm256_add_pd(load(y), yo);
++        let d2 = _mm256_add_pd(load(z), zo);
++
++        // Range guard: |d| < 2^30 in every lane (false for NaN, so NaN also falls back).
++        let sign = _mm256_set1_pd(-0.0);
++        let limit = _mm256_set1_pd(LANE_LIMIT);
++        let ok = _mm256_and_pd(
++            _mm256_and_pd(
++                _mm256_cmp_pd::<_CMP_LT_OQ>(_mm256_andnot_pd(sign, d0), limit),
++                _mm256_cmp_pd::<_CMP_LT_OQ>(_mm256_andnot_pd(sign, d1), limit),
++            ),
++            _mm256_cmp_pd::<_CMP_LT_OQ>(_mm256_andnot_pd(sign, d2), limit),
++        );
++        if _mm256_movemask_pd(ok) != 0b1111 {
++            return None;
++        }
++
++        // `i = d.floor() as i32` then `d - i as f64`. Going through the integer (not reusing
++        // the floored double) matters for d == -0.0: floor gives -0.0 but `i as f64` is +0.0.
++        let i = _mm256_cvttpd_epi32(_mm256_floor_pd(d0));
++        let j = _mm256_cvttpd_epi32(_mm256_floor_pd(d1));
++        let k = _mm256_cvttpd_epi32(_mm256_floor_pd(d2));
++        let dx = _mm256_sub_pd(d0, _mm256_cvtepi32_pd(i));
++        let dy = _mm256_sub_pd(d1, _mm256_cvtepi32_pd(j));
++        let dz = _mm256_sub_pd(d2, _mm256_cvtepi32_pd(k));
++
++        // Y smear, both branches computed and selected per lane:
++        //   clamped  = if y_max >= 0.0 && y_max < dy { y_max } else { dy }
++        //   dy_faded = if y_scale != 0.0 { (clamped / y_scale + 1.0e-7).floor() * y_scale } else { 0.0 }
++        // Ordered compares are false on NaN exactly like Rust's `>=`/`<`; `!=` is unordered-true
++        // like Rust's. Lanes with y_scale == 0 compute a discarded inf/NaN (exceptions are masked).
++        let zero = _mm256_setzero_pd();
++        let ys = load(y_scale);
++        let ym = load(y_max);
++        let use_max = _mm256_and_pd(
++            _mm256_cmp_pd::<_CMP_GE_OQ>(ym, zero),
++            _mm256_cmp_pd::<_CMP_LT_OQ>(ym, dy),
++        );
++        let clamped = _mm256_blendv_pd(dy, ym, use_max);
++        let faded = _mm256_mul_pd(
++            _mm256_floor_pd(_mm256_add_pd(
++                _mm256_div_pd(clamped, ys),
++                _mm256_set1_pd(1.0e-7),
++            )),
++            ys,
++        );
++        // Masking with AND yields +0.0 (the scalar literal) where y_scale == 0.
++        let dy_faded = _mm256_and_pd(faded, _mm256_cmp_pd::<_CMP_NEQ_UQ>(ys, zero));
++        let sy = _mm256_sub_pd(dy, dy_faded);
++
++        // Lattice hashes, scalar per lane on the doubled tables (same indices as
++        // `sample_and_lerp`).
++        let gi = store_i32(i);
++        let gj = store_i32(j);
++        let gk = store_i32(k);
++        let mut h = [[0u8; 4]; 8];
++        for l in 0..4 {
++            let p = &n[l].permutation;
++            let xm = (gi[l] & 255) as usize;
++            let ymask = (gj[l] & 255) as usize;
++            let zm = (gk[l] & 255) as usize;
++            let a = p[xm] as usize + ymask;
++            let b = p[xm + 1] as usize + ymask;
++            let kk = p[a] as usize + zm;
++            let ll = p[a + 1] as usize + zm;
++            let i1 = p[b] as usize + zm;
++            let j1 = p[b + 1] as usize + zm;
++            h[0][l] = p[kk] & 15;
++            h[1][l] = p[i1] & 15;
++            h[2][l] = p[ll] & 15;
++            h[3][l] = p[j1] & 15;
++            h[4][l] = p[kk + 1] & 15;
++            h[5][l] = p[i1 + 1] & 15;
++            h[6][l] = p[ll + 1] & 15;
++            h[7][l] = p[j1 + 1] & 15;
++        }
++
++        let one = _mm256_set1_pd(1.0);
++        let dx1 = _mm256_sub_pd(dx, one);
++        let sy1 = _mm256_sub_pd(sy, one);
++        let dz1 = _mm256_sub_pd(dz, one);
++        let g0 = grad_dot(h[0], dx, sy, dz);
++        let g1 = grad_dot(h[1], dx1, sy, dz);
++        let g2 = grad_dot(h[2], dx, sy1, dz);
++        let g3 = grad_dot(h[3], dx1, sy1, dz);
++        let g4 = grad_dot(h[4], dx, sy, dz1);
++        let g5 = grad_dot(h[5], dx1, sy, dz1);
++        let g6 = grad_dot(h[6], dx, sy1, dz1);
++        let g7 = grad_dot(h[7], dx1, sy1, dz1);
++
++        // The fade on y uses the unsmeared `dy`, as in the scalar `sample_and_lerp` call.
++        let t = smoothstep(dx);
++        let u = smoothstep(dy);
++        let v = smoothstep(dz);
++
++        let e0 = lerp(t, g0, g1);
++        let e1 = lerp(t, g2, g3);
++        let e2 = lerp(t, g4, g5);
++        let e3 = lerp(t, g6, g7);
++        let f0 = lerp(u, e0, e1);
++        let f1 = lerp(u, e2, e3);
++        let r = lerp(v, f0, f1);
++
++        let mut out = [0.0f64; 4];
++        _mm256_storeu_pd(out.as_mut_ptr(), r);
++        Some(out)
++    }
+ }
+ 
+ pub(crate) fn wrap_coordinate(value: f64) -> f64 {
+@@ -372,6 +704,194 @@ mod tests {
+         }
+     }
+ 
++    /// The 4-lane routine must equal four scalar calls bit for bit, whatever mix of instances,
++    /// coordinates and smear parameters the lanes carry.
++    #[test]
++    fn x4_matches_scalar_bit_for_bit() {
++        use oxide_core::Xoroshiro128PlusPlus;
++        let noises: Vec<ImprovedNoise> = (0..48u64)
++            .map(|seed| {
++                if seed % 2 == 0 {
++                    ImprovedNoise::new(&mut Xoroshiro128PlusPlus::new(seed as i64))
++                } else {
++                    ImprovedNoise::new(&mut LegacyRandom::new(seed as i64))
++                }
++            })
++            .collect();
++        let mut rng = LegacyRandom::new(0x0c7a);
++        let specials = [
++            -0.0,
++            0.0,
++            -1.0,
++            1.0,
++            0.5,
++            -0.5,
++            1.0e-300,
++            -1.0e-300,
++            -256.0,
++            255.999_999_999_999_97,
++            -255.999_999_999_999_97,
++            1.0 - f64::EPSILON / 2.0,
++            -(1.0 - f64::EPSILON / 2.0),
++            16_777_215.999_999_998,
++            -16_777_216.0,
++            16_777_216.0,
++            3.355_443_2e7,
++            -3.355_443_2e7,
++        ];
++        let mut checked = 0u64;
++        let pick = |rng: &mut LegacyRandom, n: usize| -> f64 {
++            match n % 6 {
++                0 => specials[rng.next_int_bounded(specials.len() as i32) as usize],
++                // Near-integer: an integer plus a tiny signed nudge (or none).
++                1 => {
++                    let i = (rng.next_int_bounded(2001) - 1000) as f64;
++                    let nudge = [0.0, 1.0e-12, -1.0e-12, 1.0e-16, -1.0e-16, -0.0];
++                    i + nudge[rng.next_int_bounded(nudge.len() as i32) as usize]
++                }
++                2 => (rng.next_double() * 2.0 - 1.0) * 4.0,
++                3 => (rng.next_double() * 2.0 - 1.0) * 1.0e4,
++                // Large but wrapped, as every generator caller passes.
++                4 => wrap((rng.next_double() * 2.0 - 1.0) * 3.0e9),
++                _ => (rng.next_double() * 2.0 - 1.0) * 3.355_443_2e7,
++            }
++        };
++        for n in 0..200_000usize {
++            let lanes: [&ImprovedNoise; 4] = std::array::from_fn(|_| {
++                &noises[rng.next_int_bounded(noises.len() as i32) as usize]
++            });
++            let mut x = [0.0; 4];
++            let mut y = [0.0; 4];
++            let mut z = [0.0; 4];
++            let mut ys = [0.0; 4];
++            let mut ym = [0.0; 4];
++            for l in 0..4 {
++                x[l] = pick(&mut rng, n + l);
++                y[l] = pick(&mut rng, n + 2 * l + 1);
++                z[l] = pick(&mut rng, n + 3 * l + 2);
++                let (a, b) = match rng.next_int_bounded(8) {
++                    0 | 1 => (0.0, 0.0),
++                    2 => (-0.0, rng.next_double()),
++                    3 => (rng.next_double() * 2.0, rng.next_double() * 2.0),
++                    4 => (rng.next_double() * 0.5, -1.0),
++                    5 => (-(rng.next_double() * 2.0), rng.next_double()),
++                    // The BlendedNoise shape: smear and y_max scaled from the same y.
++                    6 => {
++                        let pow = 1.0 / (1u32 << rng.next_int_bounded(16)) as f64;
++                        (684.412 * 0.125 * 8.0 * pow, y[l] * pow)
++                    }
++                    _ => (rng.next_double() * 1.0e-6, 0.0),
++                };
++                ys[l] = a;
++                ym[l] = b;
++            }
++            let fast = ImprovedNoise::noise_with_scale_x4(lanes, x, y, z, ys, ym);
++            for l in 0..4 {
++                let slow = lanes[l].noise_with_scale(x[l], y[l], z[l], ys[l], ym[l]);
++                assert_eq!(
++                    fast[l].to_bits(),
++                    slow.to_bits(),
++                    "lane {l} at ({}, {}, {}) y_scale {} y_max {}",
++                    x[l],
++                    y[l],
++                    z[l],
++                    ys[l],
++                    ym[l]
++                );
++                checked += 1;
++            }
++        }
++        assert_eq!(checked, 800_000);
++    }
++
++    /// Under AVX2 the vector kernel itself (not the scalar fallback) must serve in-range
++    /// lanes, so the bit-exactness test above really exercises it.
++    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
++    #[test]
++    fn avx2_kernel_serves_in_range_lanes() {
++        let a = ImprovedNoise::new(&mut LegacyRandom::new(3));
++        let b = ImprovedNoise::new(&mut LegacyRandom::new(4));
++        let n = [&a, &b, &a, &b];
++        let x = [0.5, -3.25, 1.6e7, -1.6e7];
++        let y = [-0.0, 2.0, 64.5, -64.5];
++        let z = [7.0, -7.0, 0.125, 1.0e5];
++        let ys = [0.0, 1.0, 0.25, 0.0];
++        let ym = [0.0, 0.5, -1.0, 3.0];
++        // SAFETY: AVX2 is enabled for this build.
++        let out = unsafe { avx2::noise_x4(&n, &x, &y, &z, &ys, &ym) }.expect("in range");
++        for l in 0..4 {
++            let s = n[l].noise_with_scale(x[l], y[l], z[l], ys[l], ym[l]);
++            assert_eq!(out[l].to_bits(), s.to_bits());
++        }
++        let x = [0.5, 2.0e9, 0.0, 0.0];
++        assert!(unsafe { avx2::noise_x4(&n, &x, &y, &z, &ys, &ym) }.is_none());
++    }
++
++    /// Lanes outside the guarded range (huge, infinite, NaN) take the scalar path and so
++    /// still match the scalar routine, including its saturating `as i32`.
++    #[test]
++    fn x4_out_of_range_lanes_fall_back_to_scalar() {
++        let noise = ImprovedNoise::new(&mut LegacyRandom::new(5));
++        let odd = [
++            2.0e9,
++            -2.0e9,
++            1.0e30,
++            -1.0e30,
++            f64::INFINITY,
++            f64::NEG_INFINITY,
++            f64::NAN,
++            1_073_741_824.0,
++            -1_073_741_824.0,
++        ];
++        for &v in &odd {
++            for lane in 0..4 {
++                let mut x = [0.25, -3.5, 7.0, 100.125];
++                x[lane] = v;
++                let y = [1.5, -0.0, 64.0, -17.25];
++                let z = [-2.0, 0.0, 3.75, 9.0];
++                let ys = [0.0, 1.0, 0.5, 0.0];
++                let ym = [0.0, 0.5, -1.0, 0.0];
++                let lanes = [&noise; 4];
++                let fast = ImprovedNoise::noise_with_scale_x4(lanes, x, y, z, ys, ym);
++                for l in 0..4 {
++                    let slow = noise.noise_with_scale(x[l], y[l], z[l], ys[l], ym[l]);
++                    assert_eq!(fast[l].to_bits(), slow.to_bits(), "value {v} lane {l}");
++                }
++            }
++        }
++    }
++
++    /// The queue hands samples back in push order with their tags and weights, for every
++    /// tail length (0-3 left over).
++    #[test]
++    fn sample_queue_preserves_order_and_values() {
++        let noise = ImprovedNoise::new(&mut LegacyRandom::new(11));
++        for count in 0..13usize {
++            let mut seen = Vec::new();
++            let mut queue = SampleQueue::new();
++            let mut sink = |tag: u8, wa: f64, wb: f64, s: f64| seen.push((tag, wa, wb, s));
++            for i in 0..count {
++                let f = i as f64;
++                queue.push(
++                    &noise,
++                    [f * 1.7, -f, f * 0.3, f * 0.01, f * 0.5],
++                    (i % 3) as u8,
++                    f,
++                    -f,
++                    &mut sink,
++                );
++            }
++            queue.finish(&mut sink);
++            assert_eq!(seen.len(), count);
++            for (i, &(tag, wa, wb, s)) in seen.iter().enumerate() {
++                let f = i as f64;
++                let expect = noise.noise_with_scale(f * 1.7, -f, f * 0.3, f * 0.01, f * 0.5);
++                assert_eq!((tag, wa, wb), ((i % 3) as u8, f, -f));
++                assert_eq!(s.to_bits(), expect.to_bits(), "count {count} sample {i}");
++            }
++        }
++    }
++
+     /// Captured 2026-08-22 from a standalone Java transcription of the confirmed-correct
+     /// algorithm chain (decompiled from the real Minecraft 26.2 server jar's `ImprovedNoise`/
+     /// `XoroshiroRandomSource`/`RandomSupport`) run on real OpenJDK 25 — see the session's
+diff --git a/crates/oxide-noise/src/normal_noise.rs b/crates/oxide-noise/src/normal_noise.rs
+index 9e9b441..c6353c3 100644
+--- a/crates/oxide-noise/src/normal_noise.rs
++++ b/crates/oxide-noise/src/normal_noise.rs
+@@ -3,6 +3,7 @@
+ //! `net.minecraft.world.level.levelgen.synth.NormalNoise`. This is what `minecraft:noise`
+ //! density-function nodes and `worldgen/noise/*.json` (`NormalNoiseParameters`) sample.
+ 
++use crate::improved_noise::SampleQueue;
+ use crate::perlin_noise::PerlinNoise;
+ use crate::random::WorldRandom;
+ 
+@@ -57,7 +58,25 @@ impl NormalNoise {
+         let x2 = x * INPUT_FACTOR;
+         let y2 = y * INPUT_FACTOR;
+         let z2 = z * INPUT_FACTOR;
+-        (self.first.get_value(x, y, z) + self.second.get_value(x2, y2, z2)) * self.value_factor
++        // Both stacks' octaves share one sample queue (so a 2-octave noise fills a 4-wide
++        // call); each stack still sums its own samples in octave order, exactly as
++        // `PerlinNoise::get_value` would.
++        let mut first = 0.0;
++        let mut second = 0.0;
++        let mut queue = SampleQueue::new();
++        let mut sink = |tag: u8, amplitude: f64, amp: f64, sample: f64| {
++            if tag == 0 {
++                first += amplitude * sample * amp;
++            } else {
++                second += amplitude * sample * amp;
++            }
++        };
++        self.first
++            .push_octaves(&mut queue, x, y, z, 0.0, 0.0, 0, &mut sink);
++        self.second
++            .push_octaves(&mut queue, x2, y2, z2, 0.0, 0.0, 1, &mut sink);
++        queue.finish(&mut sink);
++        (first + second) * self.value_factor
+     }
+ }
+ 
+@@ -102,6 +121,52 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn batched_get_value_matches_reference_bit_for_bit() {
++        use oxide_core::{LegacyRandom, RandomSource};
++        // The pre-batching `get_value`, verbatim over the scalar PerlinNoise reference.
++        fn reference(n: &NormalNoise, x: f64, y: f64, z: f64) -> f64 {
++            let x2 = x * INPUT_FACTOR;
++            let y2 = y * INPUT_FACTOR;
++            let z2 = z * INPUT_FACTOR;
++            (n.first.get_value_with_scale_reference(x, y, z, 0.0, 0.0)
++                + n.second
++                    .get_value_with_scale_reference(x2, y2, z2, 0.0, 0.0))
++                * n.value_factor
++        }
++        let mut rng = LegacyRandom::new(0xfeed);
++        let mut checked = 0u64;
++        for seed in 0..12i64 {
++            for (first_octave, amps) in crate::perlin_noise::tests::amplitude_lists() {
++                let mut r = WorldRandom::new(seed * 104_729 + 1, seed % 4 == 1);
++                let n = NormalNoise::create(&mut r, first_octave, amps);
++                for k in 0..1500 {
++                    let s = [1.0, 300.0, 3.0e4, 3.0e7][k % 4];
++                    let x = (rng.next_double() * 2.0 - 1.0) * s;
++                    let y = if k % 5 == 0 {
++                        0.0
++                    } else {
++                        (rng.next_double() * 2.0 - 1.0) * s
++                    };
++                    let z = if k % 9 == 0 {
++                        -0.0
++                    } else {
++                        (rng.next_double() * 2.0 - 1.0) * s
++                    };
++                    let fast = n.get_value(x, y, z);
++                    let slow = reference(&n, x, y, z);
++                    assert_eq!(
++                        fast.to_bits(),
++                        slow.to_bits(),
++                        "seed {seed} first_octave {first_octave} at ({x}, {y}, {z})"
++                    );
++                    checked += 1;
++                }
++            }
++        }
++        assert_eq!(checked, 12 * 11 * 1500);
++    }
++
+     #[test]
+     fn deterministic_for_same_seed() {
+         let mut r1 = WorldRandom::new(1, false);
+diff --git a/crates/oxide-noise/src/perlin_noise.rs b/crates/oxide-noise/src/perlin_noise.rs
+index b999118..fd899c3 100644
+--- a/crates/oxide-noise/src/perlin_noise.rs
++++ b/crates/oxide-noise/src/perlin_noise.rs
+@@ -1,7 +1,7 @@
+ //! `PerlinNoise`: multi-octave combinator over [`ImprovedNoise`], matching vanilla's
+ //! `net.minecraft.world.level.levelgen.synth.PerlinNoise`.
+ 
+-use crate::improved_noise::{wrap_coordinate, ImprovedNoise};
++use crate::improved_noise::{wrap_coordinate, ImprovedNoise, SampleQueue};
+ use crate::random::WorldRandom;
+ 
+ #[derive(Debug, Clone)]
+@@ -115,6 +115,70 @@ impl PerlinNoise {
+     /// "fixed Y" variant on this class at all — that was this crate's own invention, not
+     /// vanilla behavior, and has been removed.
+     pub fn get_value_with_scale(&self, x: f64, y: f64, z: f64, y_scale: f64, y_fudge: f64) -> f64 {
++        let mut result = 0.0;
++        let mut queue = SampleQueue::new();
++        let mut sink = |_tag: u8, amplitude: f64, amp: f64, sample: f64| {
++            result += amplitude * sample * amp;
++        };
++        self.push_octaves(&mut queue, x, y, z, y_scale, y_fudge, 0, &mut sink);
++        queue.finish(&mut sink);
++        result
++    }
++
++    /// Queues one sample per present octave, in octave order, with exactly the arguments
++    /// `get_value_with_scale` passes. Each reaches `sink(tag, amplitude, amp, sample)`; the
++    /// value is `sum += amplitude * sample * amp` over them in order, starting from `0.0`.
++    #[allow(clippy::too_many_arguments)]
++    #[inline(always)]
++    pub(crate) fn push_octaves<'a>(
++        &'a self,
++        queue: &mut SampleQueue<'a>,
++        x: f64,
++        y: f64,
++        z: f64,
++        y_scale: f64,
++        y_fudge: f64,
++        tag: u8,
++        sink: &mut impl FnMut(u8, f64, f64, f64),
++    ) {
++        let mut freq = self.lowest_freq_input_factor;
++        let mut amp = self.lowest_freq_value_factor;
++
++        for (i, level) in self.noise_levels.iter().enumerate() {
++            if let Some(noise) = level {
++                queue.push(
++                    noise,
++                    [
++                        wrap_coordinate(x * freq),
++                        wrap_coordinate(y * freq),
++                        wrap_coordinate(z * freq),
++                        y_scale * freq,
++                        y_fudge * freq,
++                    ],
++                    tag,
++                    self.amplitudes[i],
++                    amp,
++                    sink,
++                );
++            }
++            freq *= 2.0;
++            amp /= 2.0;
++        }
++    }
++}
++
++#[cfg(test)]
++impl PerlinNoise {
++    /// The pre-batching `get_value_with_scale`, kept verbatim as the reference the batched
++    /// path must match bit for bit.
++    pub(crate) fn get_value_with_scale_reference(
++        &self,
++        x: f64,
++        y: f64,
++        z: f64,
++        y_scale: f64,
++        y_fudge: f64,
++    ) -> f64 {
+         let mut result = 0.0;
+         let mut freq = self.lowest_freq_input_factor;
+         let mut amp = self.lowest_freq_value_factor;
+@@ -139,7 +203,7 @@ impl PerlinNoise {
+ }
+ 
+ #[cfg(test)]
+-mod tests {
++pub(crate) mod tests {
+     use super::*;
+ 
+     /// Captured 2026-08-22 from a standalone Java transcription of the confirmed-correct
+@@ -152,6 +216,70 @@ mod tests {
+         assert_eq!(p.get_value(10.0, 20.0, 30.0), -0.14383364863583398);
+     }
+ 
++    /// Amplitude lists covering every queue tail length, zero octaves in any position, and
++    /// both RNG flavours.
++    pub(crate) fn amplitude_lists() -> Vec<(i32, Vec<f64>)> {
++        vec![
++            (-7, vec![1.0]),
++            (-3, vec![1.0, 1.0]),
++            (-7, vec![1.0, 1.0, 1.0]),
++            (-6, vec![1.0, 1.0, 1.0, 1.0]),
++            (-9, vec![1.0, 1.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0]),
++            (-10, vec![1.5, 0.0, 1.0, 0.0, 0.0, 0.0]),
++            (-8, vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5]),
++            (-2, vec![0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0]),
++            (-16, vec![1.0; 16]),
++            (0, vec![0.0, 0.0]),
++            (-5, vec![0.25, 0.5, 0.75, 1.0, 1.25]),
++        ]
++    }
++
++    #[test]
++    fn batched_get_value_matches_reference_bit_for_bit() {
++        use oxide_core::{LegacyRandom, RandomSource};
++        let mut rng = LegacyRandom::new(0xbeef);
++        let mut checked = 0u64;
++        for seed in 0..12i64 {
++            for (first_octave, amps) in amplitude_lists() {
++                let mut r = WorldRandom::new(seed * 7919 + 3, seed % 3 == 0);
++                let p = PerlinNoise::create(&mut r, first_octave, amps);
++                for n in 0..1500 {
++                    let s = [1.0, 64.0, 1.0e4, 3.0e7, 1.0e9][n % 5];
++                    let x = (rng.next_double() * 2.0 - 1.0) * s;
++                    let y = if n % 7 == 0 {
++                        -0.0
++                    } else {
++                        (rng.next_double() * 2.0 - 1.0) * s
++                    };
++                    let z = if n % 11 == 0 {
++                        x.floor()
++                    } else {
++                        (rng.next_double() * 2.0 - 1.0) * s
++                    };
++                    let (ys, yf) = match n % 3 {
++                        0 => (0.0, 0.0),
++                        1 => (rng.next_double() * 2.0, rng.next_double() * 4.0 - 1.0),
++                        _ => (-(rng.next_double()), y),
++                    };
++                    let fast = p.get_value_with_scale(x, y, z, ys, yf);
++                    let slow = p.get_value_with_scale_reference(x, y, z, ys, yf);
++                    assert_eq!(
++                        fast.to_bits(),
++                        slow.to_bits(),
++                        "seed {seed} first_octave {first_octave} at ({x}, {y}, {z}) {ys} {yf}"
++                    );
++                    assert_eq!(
++                        p.get_value(x, y, z).to_bits(),
++                        p.get_value_with_scale_reference(x, y, z, 0.0, 0.0)
++                            .to_bits()
++                    );
++                    checked += 1;
++                }
++            }
++        }
++        assert_eq!(checked, 12 * 11 * 1500);
++    }
++
+     #[test]
+     fn deterministic_for_same_seed() {
+         let mut r1 = WorldRandom::new(42, false);

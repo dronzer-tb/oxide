@@ -2,6 +2,7 @@
 //! `NoiseGeneratorSettings.noise_router` slot at a block position — vanilla's `RandomState` +
 //! `NoiseRouter`.
 
+use std::sync::Arc;
 use std::collections::HashMap;
 
 use oxide_datapack::{
@@ -10,7 +11,7 @@ use oxide_datapack::{
 };
 
 use crate::blended_noise::BlendedNoise;
-use crate::cache::ChunkCaches;
+use crate::cache::{ChunkCaches, CornerColumns};
 use crate::compiled::{CacheSlotCounts, Compiler, Program, RunCtx};
 use crate::density::FunctionContext;
 use crate::normal_noise::NormalNoise;
@@ -116,6 +117,9 @@ pub struct NoiseRouterEvaluator {
     blended: BlendedNoise,
     /// Unique per evaluator for the life of the process; see [`Self::id`].
     id: u64,
+    /// Interpolation corner columns shared by every chunk this router builds caches for, on
+    /// every thread: neighbouring chunks share their edge columns.
+    corner_columns: Arc<CornerColumns>,
 }
 
 /// Source of [`NoiseRouterEvaluator::id`]. 64 bits never wrap in practice, so no two
@@ -198,6 +202,12 @@ impl NoiseRouterEvaluator {
             noise: settings.noise.clone(),
             blended,
             id: NEXT_ROUTER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            corner_columns: Arc::new(CornerColumns::new(
+                settings.noise.min_y,
+                settings.noise.height,
+                settings.noise.size_horizontal,
+                settings.noise.size_vertical,
+            )),
         }
     }
 
@@ -327,6 +337,7 @@ impl NoiseRouterEvaluator {
             self.noise.size_vertical,
             self.cache_slots,
         )
+        .with_shared_columns(&self.corner_columns)
     }
 }
 
@@ -551,6 +562,63 @@ mod tests {
                     .sample_in_chunk(&caches, RouterSlot::FinalDensity, x, y, z)
                     .to_bits()
             );
+        }
+    }
+
+    /// Corner grids built through the router's shared column cache equal, bit for bit, grids
+    /// each chunk computes entirely on its own, and the columns two chunks share are hits.
+    #[test]
+    fn shared_corner_columns_are_bit_identical_and_hit_on_shared_edges() {
+        let settings = interpolated_settings();
+        let df_registry = Registry::default();
+        let noise_registry = Registry::default();
+        let router = NoiseRouterEvaluator::new(7, &settings, &df_registry, &noise_registry);
+        let noise = &settings.noise;
+        let slots = router.cache_slots.interpolated;
+        assert!(slots >= 3);
+
+        // (0,0) first, then its +z, +x and diagonal neighbours: 5, 5 and 9 shared columns.
+        let order = [((0, 0), 0), ((0, 1), 5), ((1, 0), 5), ((1, 1), 9)];
+        let (mut expected_hits, mut expected_lookups) = (0, 0);
+        for ((chunk_x, chunk_z), shared_columns) in order {
+            let shared = router.chunk_caches(chunk_x, chunk_z);
+            assert!(shared.has_shared_columns());
+            let plain = ChunkCaches::new(
+                chunk_x * 16,
+                chunk_z * 16,
+                noise.min_y,
+                noise.height,
+                noise.size_horizontal,
+                noise.size_vertical,
+                router.cache_slots,
+            );
+            assert!(!plain.has_shared_columns());
+            // A few samples build whichever grids `final_density` reads, in both caches alike.
+            for (y, local_z, local_x) in [(-64, 0, 0), (-64, 15, 15), (100, 7, 9), (319, 3, 12)] {
+                let (x, z) = (chunk_x * 16 + local_x, chunk_z * 16 + local_z);
+                let a = router.sample_in_chunk(&shared, RouterSlot::FinalDensity, x, y, z);
+                let b = router.sample_in_chunk(&plain, RouterSlot::FinalDensity, x, y, z);
+                assert_eq!(a.to_bits(), b.to_bits(), "sample at {x} {y} {z}");
+            }
+            let mut grids = 0;
+            for slot in 0..slots {
+                let (a, b) = (shared.corner_grid(slot), plain.corner_grid(slot));
+                assert_eq!(a.is_some(), b.is_some(), "slot {slot} built in only one cache");
+                if let (Some(a), Some(b)) = (a, b) {
+                    assert_eq!(a.len(), 5 * 49 * 5);
+                    let a: Vec<u64> = a.iter().map(|v| v.to_bits()).collect();
+                    let b: Vec<u64> = b.iter().map(|v| v.to_bits()).collect();
+                    assert_eq!(a, b, "slot {slot} of chunk {chunk_x} {chunk_z}");
+                    grids += 1;
+                }
+            }
+            assert_eq!(grids, slots, "every interpolated slot is built");
+            expected_hits += shared_columns * grids;
+            // Every chunk looks up its 16 edge columns per grid, and nothing else.
+            expected_lookups += 16 * grids;
+            let (hits, misses) = router.corner_columns.counts();
+            assert_eq!(hits, expected_hits, "hits after chunk {chunk_x} {chunk_z}");
+            assert_eq!(hits + misses, expected_lookups, "lookups after {chunk_x} {chunk_z}");
         }
     }
 }
