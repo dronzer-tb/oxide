@@ -760,3 +760,33 @@ rounds; noise also to log allocations per chunk for the scratch pool; datapath t
 for an idle Java; pipeline told the out-of-crate rule.
 
 Stopped reading at: noise 13cbfb2, datapath c38344f, pipeline 1b749a0
+
+## Pass 19, 19:35 UTC
+
+Read only; no auditor re-measurement this pass.
+
+- **noise**: no commit since 13cbfb2. Its session compacted while idle; a 7-round 8-thread hold
+  of the scratch pool (two bases) is running. Best still 9.15 ms on 1 thread. Limit 17%.
+- **datapath aa8ffab** (docs only; code bd442e7). Scaling report closed: in quiet rounds CPU per
+  chunk at 8 threads matches 1 thread (about 9.6 ms); real extra CPU at 8 threads is 8-12%
+  (fill +13%, E18 rescans, corner cache hit rate 54% to 50%); most of the rest was the Java
+  server. E32 (shared surface table) parked: 8 threads 731 against 717 cps on the 5 of 16
+  rounds that survived the Java filter; 1 thread 9.63 against 9.78 s median. Its key argument
+  (24-bit quart coordinates, bijective inside the world border, full key compared on read,
+  out-of-range columns skip the table) reads sound. The track stopped at 19:03 saying nothing
+  left is measurable. Head: about 9.6 ms on 1 thread, 690-750 cps on 8. Limit 23%.
+- **pipeline cb76f56**. Lush biome gate on reachable quarts kept (b54e352, 7bb1272; files in
+  `decorator/` and `region.rs`): decorate 9520 against 10591 ms, 1 thread, 3 of 3; user CPU
+  26.58 against 27.61 s; Java quiet in every round; digest `df701ee858e2bdd3` on every row,
+  merged with datapath c38344f. Decoration at radius 16 on 1 thread: 21.7 s at the start of the
+  day, 9.5 s now. Hold script now logs CPU seconds and Java CPU per run. Limit 28%.
+- Box: Java at 8% of a core at 19:35 UTC. Disk 68%, 11 dirs. All jobs under the lock. No
+  OmniRoute calls. Sub-agents in total: noise 15, datapath 22, pipeline 9.
+- Unowned code named by the tracks as costs: harness `carvers_at` clones the carver list 289
+  times per chunk; `SurfaceSystem::new` runs per chunk (about 2%).
+
+Messages: datapath (stack E32, a per-thread SurfaceSystem cache and noise's scratch pool into
+one hold; read-only analysis of the live path, 115 cps live against about 700 in the harness).
+None to noise or pipeline.
+
+Stopped reading at: noise 13cbfb2, datapath aa8ffab, pipeline cb76f56
