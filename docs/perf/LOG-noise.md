@@ -663,3 +663,29 @@ session, and the digest is unchanged.
 - Next: 17 (column x/z, `wip/noise-11-column-xz.patch`) was judged on cps under a busy Java
   server. Re-hold it on `gen_cpu_s` at 1 thread first. It is the only open candidate with a
   plausible exact gain inside this crate.
+
+### 17 re-held on generation CPU: no effect, rejected
+
+1 thread, radius 16, rotating rounds. Labels cx0/cx0b are two fresh builds of e0ba0b6 (crates =
+fd4bfe2) and cx1 adds `wip/noise-11-column-xz.patch`. The hold was started at 5 rounds and **cut
+after round 4** (the auditor's 4-round limit, which arrived mid-hold), so it held the exclusive lock
+~7 min. Java used 0.7-0.9 CPU-s per run; no round was dropped. Digest `a977961a58122047` on all 12.
+
+| | cx0 | cx0b | cx1 | cx1 vs cx0 | cx1 vs cx0b |
+|---|---|---|---|---|---|
+| gen_cpu_s (mean of 4) | 10.79 | 10.49 | 10.59 | -1.8%, fewer in 3/4 | +0.9%, fewer in 2/4 |
+| cps | 104.2 | 107.1 | 106.3 | +2.0% | -0.8% |
+
+Per round gen_cpu_s: cx0 11.16/10.68/11.00/10.31, cx0b 10.38/10.31/10.77/10.51, cx1
+10.78/11.08/10.38/10.12.
+
+**Verdict: rejected.** On 1 thread it sits between the bases, as in the first hold. The +15% at
+8 threads seen under the busy Java server is not credible for an exact change with no 1-thread
+effect, and it is not re-held. The patch stays in wip.
+
+**18 is not closed (auditor):** datapath measured noise-12 stacked on its head aa8ffab (E32+E33)
+at +9% at 1 thread, ahead in 7/8 rounds, against my no-effect result on fd4bfe2. The noise crate
+is the same in both, so any real gain must come from datapath's new call patterns (more
+allocating `run`/batch calls per chunk). Datapath is measuring noise-12 alone on its head. If it
+confirms, I re-hold on gen_cpu_s over aa8ffab code and land it if it holds. If not, 18 stays
+closed.
