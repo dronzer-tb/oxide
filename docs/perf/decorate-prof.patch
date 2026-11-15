@@ -1,0 +1,692 @@
+diff --git a/crates/oxide-chunkgen/src/decorator/biome_decorator.rs b/crates/oxide-chunkgen/src/decorator/biome_decorator.rs
+index 7085646..67b45ab 100644
+--- a/crates/oxide-chunkgen/src/decorator/biome_decorator.rs
++++ b/crates/oxide-chunkgen/src/decorator/biome_decorator.rs
+@@ -74,6 +74,7 @@ impl BiomeDecorator {
+         // sit under (vanilla's record equality), so each distinct content gets one key.
+         let mut key_of: HashMap<String, u32> = HashMap::new();
+         let mut placed: Vec<Arc<Placed>> = Vec::new();
++        let mut prof_names: Vec<String> = Vec::new();
+         let mut lists: HashMap<BiomeId, Vec<Vec<u32>>> = HashMap::new();
+         for (biome_id, biome) in datapack.biomes.iter() {
+             let mut per_step = Vec::with_capacity(biome.features.len());
+@@ -90,6 +91,7 @@ impl BiomeDecorator {
+                         None => {
+                             let key = placed.len() as u32;
+                             placed.push(compiler.placed_by_id(feature_id)?);
++                            prof_names.push(feature_id.to_string());
+                             key_of.insert(content, key);
+                             key
+                         }
+@@ -161,6 +163,13 @@ impl BiomeDecorator {
+             })
+             .collect();
+ 
++        let _ = super::prof::FEATURES.set((
++            prof_names.clone(),
++            prof_names
++                .iter()
++                .map(|_| std::array::from_fn(|_| std::sync::atomic::AtomicU64::new(0)))
++                .collect(),
++        ));
+         let env = Environment {
+             block_tags: datapack.block_tags.clone(),
+             fluid_tags: datapack.fluid_tags.clone(),
+@@ -214,6 +223,9 @@ impl BiomeDecorator {
+ 
+ impl Decorator for BiomeDecorator {
+     fn decorate(&self, region: &mut DecorationRegion<'_>) {
++        use std::sync::atomic::Ordering::Relaxed;
++        let prof_started = std::time::Instant::now();
++        let mut prof_features_ns = 0u64;
+         let center = region.center();
+         let (min_x, min_z) = (center.min_block_x(), center.min_block_z());
+         // The position every chain starts from: the chunk's corner at the bottom of the world.
+@@ -222,8 +234,11 @@ impl Decorator for BiomeDecorator {
+         let mut random = WorldgenRandom::new(0);
+         let decoration_seed = set_decoration_seed(&mut random, self.env.seed, min_x, min_z);
+ 
+-        let present: Vec<BiomeId> = region
+-            .biomes_present()
++        let prof_t = std::time::Instant::now();
++        let prof_present = region.biomes_present();
++        super::prof::end_always(super::prof::BIOMES_PRESENT, prof_t);
++        super::prof::count(super::prof::BIOMES_PRESENT);
++        let present: Vec<BiomeId> = prof_present
+             .into_iter()
+             .filter(|biome| self.biome_steps.contains_key(*biome))
+             .cloned()
+@@ -255,9 +270,25 @@ impl Decorator for BiomeDecorator {
+                     unsupported: &mut tally,
+                     top_feature: Some(key),
+                 };
++                let before = super::prof::snapshot();
++                let t = std::time::Instant::now();
+                 place_placed(&self.placed[key as usize], &mut cx, origin, Some(key));
++                let ns = t.elapsed().as_nanos() as u64;
++                prof_features_ns += ns;
++                let after = super::prof::snapshot();
++                if let Some((_, stats)) = super::prof::FEATURES.get() {
++                    let s = &stats[key as usize];
++                    s[0].fetch_add(ns, Relaxed);
++                    s[1].fetch_add(1, Relaxed);
++                    for j in 0..5 {
++                        s[2 + j].fetch_add(after[j] - before[j], Relaxed);
++                    }
++                }
+             }
+         }
++        super::prof::FEATURES_NS.fetch_add(prof_features_ns, Relaxed);
++        super::prof::DECORATE_CALLS.fetch_add(1, Relaxed);
++        super::prof::DECORATE_NS.fetch_add(prof_started.elapsed().as_nanos() as u64, Relaxed);
+         if !tally.is_empty() {
+             self.unsupported
+                 .lock()
+@@ -266,3 +297,9 @@ impl Decorator for BiomeDecorator {
+         }
+     }
+ }
++
++impl Drop for BiomeDecorator {
++    fn drop(&mut self) {
++        super::prof::report();
++    }
++}
+diff --git a/crates/oxide-chunkgen/src/decorator/ground/block_pile.rs b/crates/oxide-chunkgen/src/decorator/ground/block_pile.rs
+index 1c838cb..1825deb 100644
+--- a/crates/oxide-chunkgen/src/decorator/ground/block_pile.rs
++++ b/crates/oxide-chunkgen/src/decorator/ground/block_pile.rs
+@@ -62,7 +62,7 @@ impl BlockPileFeature {
+         let allowed = if is_block(support, "dirt_path") {
+             cx.random.next_boolean()
+         } else {
+-            cx.env.facts.is(support, BlockFact::SturdyTop)
++            crate::decorator::prof::fis(&cx.env.facts, support, BlockFact::SturdyTop)
+         };
+         if allowed {
+             if let Some(state) = provide(cx, &self.provider, pos) {
+diff --git a/crates/oxide-chunkgen/src/decorator/ground/climate.rs b/crates/oxide-chunkgen/src/decorator/ground/climate.rs
+index c9f9b6c..262125c 100644
+--- a/crates/oxide-chunkgen/src/decorator/ground/climate.rs
++++ b/crates/oxide-chunkgen/src/decorator/ground/climate.rs
+@@ -140,7 +140,7 @@ pub fn should_freeze(
+         return false;
+     }
+     let state = block_in(cx.region, pos);
+-    if !(is_block(state, "water") && cx.env.facts.is(state, BlockFact::Water)) {
++    if !(is_block(state, "water") && crate::decorator::prof::fis(&cx.env.facts, state, BlockFact::Water)) {
+         return false;
+     }
+     if !require_edge {
+diff --git a/crates/oxide-chunkgen/src/decorator/ground/iceberg.rs b/crates/oxide-chunkgen/src/decorator/ground/iceberg.rs
+index a8c2335..e4bf6ec 100644
+--- a/crates/oxide-chunkgen/src/decorator/ground/iceberg.rs
++++ b/crates/oxide-chunkgen/src/decorator/ground/iceberg.rs
+@@ -209,7 +209,7 @@ impl IcebergFeature {
+         }
+         let height_difference = height - y;
+         let state = block_in(cx.region, pos);
+-        let replaceable = cx.env.facts.is(state, BlockFact::Air)
++        let replaceable = crate::decorator::prof::fis(&cx.env.facts, state, BlockFact::Air)
+             || ["snow_block", "ice", "water"]
+                 .iter()
+                 .any(|path| is_block(state, path));
+diff --git a/crates/oxide-chunkgen/src/decorator/ground/lake.rs b/crates/oxide-chunkgen/src/decorator/ground/lake.rs
+index d6aa18c..124404d 100644
+--- a/crates/oxide-chunkgen/src/decorator/ground/lake.rs
++++ b/crates/oxide-chunkgen/src/decorator/ground/lake.rs
+@@ -120,10 +120,10 @@ impl LakeFeature {
+                 for y in layers(edges[(x * 16 + z) as usize]) {
+                     let pos = offset(origin, x, y, z);
+                     let state = block_in(cx.region, pos);
+-                    if y >= 4 && cx.env.facts.is(state, BlockFact::Liquid) {
++                    if y >= 4 && crate::decorator::prof::fis(&cx.env.facts, state, BlockFact::Liquid) {
+                         return false;
+                     }
+-                    if y < 4 && !cx.env.facts.is(state, BlockFact::Solid) && *state != fluid {
++                    if y < 4 && !crate::decorator::prof::fis(&cx.env.facts, state, BlockFact::Solid) && *state != fluid {
+                         return false;
+                     }
+                     if !self.can_place_feature.test(cx, pos) {
+@@ -150,7 +150,7 @@ impl LakeFeature {
+         let Some(barrier) = provide(cx, &self.barrier, origin) else {
+             return true;
+         };
+-        if !cx.env.facts.is(&barrier, BlockFact::Air) {
++        if !crate::decorator::prof::fis(&cx.env.facts, &barrier, BlockFact::Air) {
+             for x in 0..16 {
+                 for z in 0..16 {
+                     for y in layers(edges[(x * 16 + z) as usize]) {
+@@ -165,7 +165,7 @@ impl LakeFeature {
+                 }
+             }
+         }
+-        if cx.env.facts.is(&fluid, BlockFact::Water) {
++        if crate::decorator::prof::fis(&cx.env.facts, &fluid, BlockFact::Water) {
+             for x in 0..16 {
+                 for z in 0..16 {
+                     let pos = offset(origin, x, 4, z);
+diff --git a/crates/oxide-chunkgen/src/decorator/ground/monster_room.rs b/crates/oxide-chunkgen/src/decorator/ground/monster_room.rs
+index 2c7e086..4c52bce 100644
+--- a/crates/oxide-chunkgen/src/decorator/ground/monster_room.rs
++++ b/crates/oxide-chunkgen/src/decorator/ground/monster_room.rs
+@@ -103,7 +103,7 @@ impl MonsterRoomFeature {
+                     {
+                         if pos.y >= min_y && !Self::solid(cx, offset(pos, 0, -1, 0)) {
+                             cx.region.set_block(pos, self.cave_air.clone());
+-                        } else if cx.env.facts.is(&wall, BlockFact::Solid)
++                        } else if crate::decorator::prof::fis(&cx.env.facts, &wall, BlockFact::Solid)
+                             && !is_block(&wall, "chest")
+                         {
+                             let value = if dy == -1 && cx.random.next_int_bounded(4) != 0 {
+@@ -189,7 +189,7 @@ impl MonsterRoomFeature {
+             if is_block(beside, "chest") {
+                 return self.chest.clone();
+             }
+-            if cx.env.facts.is(beside, BlockFact::SolidRender) {
++            if crate::decorator::prof::fis(&cx.env.facts, beside, BlockFact::SolidRender) {
+                 if solid_side.is_some() {
+                     solid_side = None;
+                     break;
+diff --git a/crates/oxide-chunkgen/src/decorator/ground/spike.rs b/crates/oxide-chunkgen/src/decorator/ground/spike.rs
+index 7807d5b..c9573d9 100644
+--- a/crates/oxide-chunkgen/src/decorator/ground/spike.rs
++++ b/crates/oxide-chunkgen/src/decorator/ground/spike.rs
+@@ -83,7 +83,7 @@ impl SpikeFeature {
+                 }
+                 while pos.y > 50 {
+                     let here = block_in(cx.region, pos);
+-                    let air = cx.env.facts.is(here, BlockFact::Air);
++                    let air = crate::decorator::prof::fis(&cx.env.facts, here, BlockFact::Air);
+                     let own = *here == self.state;
+                     if !air && !self.can_replace.test(cx, pos) && !own {
+                         break;
+diff --git a/crates/oxide-chunkgen/src/decorator/mod.rs b/crates/oxide-chunkgen/src/decorator/mod.rs
+index 789d45d..d90192e 100644
+--- a/crates/oxide-chunkgen/src/decorator/mod.rs
++++ b/crates/oxide-chunkgen/src/decorator/mod.rs
+@@ -18,6 +18,7 @@
+ //! unknown. See [`BiomeDecorator::unsupported`].
+ 
+ mod biome_decorator;
++pub mod prof;
+ mod cave;
+ mod context;
+ mod end;
+diff --git a/crates/oxide-chunkgen/src/decorator/placement.rs b/crates/oxide-chunkgen/src/decorator/placement.rs
+index 5485a0f..6275ae7 100644
+--- a/crates/oxide-chunkgen/src/decorator/placement.rs
++++ b/crates/oxide-chunkgen/src/decorator/placement.rs
+@@ -317,7 +317,7 @@ enum Layer {
+ fn layer_of(cx: &FeatureContext<'_, '_, '_>, pos: BlockPos) -> Layer {
+     let state = block_in(cx.region, pos);
+     let named = |path: &str| state.name.namespace() == "minecraft" && state.name.path() == path;
+-    if cx.env.facts.is(state, BlockFact::Air) || named("water") || named("lava") {
++    if crate::decorator::prof::fis(&cx.env.facts, state, BlockFact::Air) || named("water") || named("lava") {
+         Layer::Empty
+     } else if named("bedrock") {
+         Layer::Bedrock
+diff --git a/crates/oxide-chunkgen/src/decorator/predicate.rs b/crates/oxide-chunkgen/src/decorator/predicate.rs
+index 1046260..bf4ce1b 100644
+--- a/crates/oxide-chunkgen/src/decorator/predicate.rs
++++ b/crates/oxide-chunkgen/src/decorator/predicate.rs
+@@ -75,14 +75,14 @@ fn moved(pos: BlockPos, offset: [i32; 3]) -> BlockPos {
+ /// The facts record whether a state's fluid is water or lava and whether it is a source; those
+ /// are the only four fluids that exist plus "none".
+ fn fluid_path(facts: &BlockFacts, state: &BlockState) -> &'static str {
+-    let source = facts.is(state, BlockFact::FluidSource);
+-    if facts.is(state, BlockFact::Water) {
++    let source = crate::decorator::prof::fis(&facts, state, BlockFact::FluidSource);
++    if crate::decorator::prof::fis(&facts, state, BlockFact::Water) {
+         if source {
+             "water"
+         } else {
+             "flowing_water"
+         }
+-    } else if facts.is(state, BlockFact::Lava) {
++    } else if crate::decorator::prof::fis(&facts, state, BlockFact::Lava) {
+         if source {
+             "lava"
+         } else {
+diff --git a/crates/oxide-chunkgen/src/decorator/prof.rs b/crates/oxide-chunkgen/src/decorator/prof.rs
+new file mode 100644
+index 0000000..6ac8a3a
+--- /dev/null
++++ b/crates/oxide-chunkgen/src/decorator/prof.rs
+@@ -0,0 +1,164 @@
++//! TEMPORARY decoration profiling (scratch only, never commit). Thread-local counters flushed
++//! into global atomics at the end of each `BiomeDecorator::decorate`; one call in `SAMPLE` of
++//! each region primitive is timed. Reported once, from `BiomeDecorator`'s `Drop`.
++
++use std::cell::Cell;
++use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
++use std::sync::OnceLock;
++use std::time::Instant;
++
++use oxide_core::BlockState;
++use oxide_datapack::{BlockFact, BlockFacts};
++
++/// Prime stride, on a counter never reset: a power-of-two stride aliases with HashMap growth.
++pub const SAMPLE: u64 = 61;
++pub const N: usize = 7;
++pub const IS: usize = 0;
++pub const BLOCK: usize = 1;
++pub const HEIGHT: usize = 2;
++pub const SET_BLOCK: usize = 3;
++pub const FACTS_IS: usize = 4;
++pub const BIOMES_PRESENT: usize = 5;
++pub const INTO_WRITES: usize = 6;
++const NAMES: [&str; N] = [
++    "DecorationRegion::is",
++    "DecorationRegion::block",
++    "DecorationRegion::height",
++    "DecorationRegion::set_block",
++    "BlockFacts::is (all decorator call sites)",
++    "DecorationRegion::biomes_present",
++    "DecorationRegion::into_writes",
++];
++
++thread_local! {
++    static CALLS: [Cell<u64>; N] = Default::default();
++    static NS: [Cell<u64>; N] = Default::default();
++    static SAMPLES: [Cell<u64>; N] = Default::default();
++    static SEQ: [Cell<u64>; N] = Default::default();
++}
++
++static G_CALLS: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
++static G_NS: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
++static G_SAMPLES: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
++pub static DECORATE_NS: AtomicU64 = AtomicU64::new(0);
++pub static DECORATE_CALLS: AtomicU64 = AtomicU64::new(0);
++pub static FEATURES_NS: AtomicU64 = AtomicU64::new(0);
++
++/// Per top-level placed feature key: [ns, invocations, set_block, is, block, height, facts_is].
++pub static FEATURES: OnceLock<(Vec<String>, Vec<[AtomicU64; 7]>)> = OnceLock::new();
++
++/// Counts a call; returns a start time for one call in `SAMPLE`.
++#[inline]
++pub fn start(op: usize) -> Option<Instant> {
++    CALLS.with(|c| c[op].set(c[op].get() + 1));
++    SEQ.with(|c| {
++        let n = c[op].get() + 1;
++        c[op].set(n);
++        (n % SAMPLE == 0).then(Instant::now)
++    })
++}
++
++#[inline]
++pub fn end(op: usize, t: Option<Instant>) {
++    if let Some(t) = t {
++        let ns = t.elapsed().as_nanos() as u64;
++        NS.with(|c| c[op].set(c[op].get() + ns));
++        SAMPLES.with(|c| c[op].set(c[op].get() + 1));
++    }
++}
++
++/// Always-timed variant for rare calls.
++#[inline]
++pub fn end_always(op: usize, t: Instant) {
++    let ns = t.elapsed().as_nanos() as u64;
++    NS.with(|c| c[op].set(c[op].get() + ns));
++    SAMPLES.with(|c| c[op].set(c[op].get() + 1));
++}
++
++#[inline]
++pub fn count(op: usize) {
++    CALLS.with(|c| c[op].set(c[op].get() + 1));
++}
++
++pub fn calls(op: usize) -> u64 {
++    CALLS.with(|c| c[op].get())
++}
++
++/// `BlockFacts::is`, counted and sampled.
++#[inline]
++pub fn fis(facts: &BlockFacts, state: &BlockState, fact: BlockFact) -> bool {
++    let t = start(FACTS_IS);
++    let r = facts.is(state, fact);
++    end(FACTS_IS, t);
++    r
++}
++
++pub fn flush() {
++    CALLS.with(|c| {
++        NS.with(|ns| {
++            SAMPLES.with(|s| {
++                for i in 0..N {
++                    G_CALLS[i].fetch_add(c[i].replace(0), Relaxed);
++                    G_NS[i].fetch_add(ns[i].replace(0), Relaxed);
++                    G_SAMPLES[i].fetch_add(s[i].replace(0), Relaxed);
++                }
++            })
++        })
++    });
++}
++
++pub fn snapshot() -> [u64; 5] {
++    [calls(SET_BLOCK), calls(IS), calls(BLOCK), calls(HEIGHT), calls(FACTS_IS)]
++}
++
++pub fn report() {
++    let ms = |ns: u64| ns as f64 / 1e6;
++    let dec = DECORATE_NS.load(Relaxed);
++    println!(
++        "PROF decorate() calls={} cpu_ms={:.0} in_features_cpu_ms={:.0}",
++        DECORATE_CALLS.load(Relaxed),
++        ms(dec),
++        ms(FEATURES_NS.load(Relaxed))
++    );
++    println!("PROF --- region primitives (inclusive; is includes block; height includes is) ---");
++    for i in 0..N {
++        let calls = G_CALLS[i].load(Relaxed);
++        let samples = G_SAMPLES[i].load(Relaxed).max(1);
++        let ns = G_NS[i].load(Relaxed);
++        let per = ns as f64 / samples as f64;
++        let est = if i == BIOMES_PRESENT || i == INTO_WRITES { ns as f64 } else { per * calls as f64 };
++        println!(
++            "PROF {:<44} calls={:>12} ns_per_call={:>8.1} est_cpu_ms={:>8.0} ({:>4.1}% of decorate cpu)",
++            NAMES[i],
++            calls,
++            per,
++            est / 1e6,
++            100.0 * est / dec.max(1) as f64
++        );
++    }
++    let Some((names, stats)) = FEATURES.get() else {
++        return;
++    };
++    let mut rows: Vec<(usize, [u64; 7])> = stats
++        .iter()
++        .enumerate()
++        .map(|(k, s)| (k, std::array::from_fn(|j| s[j].load(Relaxed))))
++        .filter(|(_, s)| s[1] > 0)
++        .collect();
++    rows.sort_by(|a, b| b.1[0].cmp(&a.1[0]));
++    println!("PROF --- top placed features by cpu (of {} with any invocations) ---", rows.len());
++    for (k, s) in rows.iter().take(25) {
++        println!(
++            "PROF {:<48} cpu_ms={:>7.0} ({:>4.1}%) runs={:>6} set_block={:>9} is={:>10} block={:>10} height={:>8} facts_is={:>10}",
++            names[*k],
++            ms(s[0]),
++            100.0 * s[0] as f64 / dec.max(1) as f64,
++            s[1],
++            s[2],
++            s[3],
++            s[4],
++            s[5],
++            s[6]
++        );
++    }
++}
+diff --git a/crates/oxide-chunkgen/src/decorator/survival/probe.rs b/crates/oxide-chunkgen/src/decorator/survival/probe.rs
+index 8be8e61..9eb2550 100644
+--- a/crates/oxide-chunkgen/src/decorator/survival/probe.rs
++++ b/crates/oxide-chunkgen/src/decorator/survival/probe.rs
+@@ -126,7 +126,7 @@ impl<'a> Probe<'a, '_> {
+     }
+ 
+     pub fn has(&self, state: &BlockState, fact: BlockFact) -> bool {
+-        self.region.facts().is(state, fact)
++        crate::decorator::prof::fis(&self.region.facts(), state, fact)
+     }
+ 
+     pub fn tag(&self, tag: Tag, state: &BlockState) -> bool {
+diff --git a/crates/oxide-chunkgen/src/decorator/templated/fossil.rs b/crates/oxide-chunkgen/src/decorator/templated/fossil.rs
+index 3512b67..ca7bf9d 100644
+--- a/crates/oxide-chunkgen/src/decorator/templated/fossil.rs
++++ b/crates/oxide-chunkgen/src/decorator/templated/fossil.rs
+@@ -83,7 +83,7 @@ fn count_empty_corners(cx: &FeatureContext<'_, '_, '_>, bounds: BoundingBox) ->
+         .into_iter()
+         .filter(|&pos| {
+             let state = block_in(cx.region, pos);
+-            cx.env.facts.is(state, BlockFact::Air) || state.name == lava || state.name == water
++            crate::decorator::prof::fis(&cx.env.facts, state, BlockFact::Air) || state.name == lava || state.name == water
+         })
+         .count() as i32
+ }
+diff --git a/crates/oxide-chunkgen/src/decorator/templated/shape.rs b/crates/oxide-chunkgen/src/decorator/templated/shape.rs
+index 4531d24..0a2eeb1 100644
+--- a/crates/oxide-chunkgen/src/decorator/templated/shape.rs
++++ b/crates/oxide-chunkgen/src/decorator/templated/shape.rs
+@@ -127,7 +127,7 @@ fn update_shape(
+     direction: Direction,
+ ) -> BlockState {
+     let facts = &cx.env.facts;
+-    if facts.is(state, BlockFact::ShapeInert) {
++    if crate::decorator::prof::fis(&facts, state, BlockFact::ShapeInert) {
+         return state.clone();
+     }
+     match state.name.path() {
+@@ -154,15 +154,15 @@ fn potent_sulfur(cx: &FeatureContext<'_, '_, '_>, state: &BlockState, pos: Block
+     let facts = &cx.env.facts;
+     let tags = &cx.env.block_tags;
+     let above = block_in(cx.region, step(pos, Direction::Up));
+-    let water_source = facts.is(above, BlockFact::Water) && facts.is(above, BlockFact::FluidSource);
++    let water_source = crate::decorator::prof::fis(&facts, above, BlockFact::Water) && crate::decorator::prof::fis(&facts, above, BlockFact::FluidSource);
+     let with = |value: &str| state.clone().with_property("potent_sulfur_state", value);
+     if !water_source {
+         return with("dry");
+     }
+     let below = block_in(cx.region, step(pos, Direction::Down));
+     // `isSourceIfFluid`: no fluid, or a source.
+-    let source_if_fluid = !(facts.is(below, BlockFact::Water) || facts.is(below, BlockFact::Lava))
+-        || facts.is(below, BlockFact::FluidSource);
++    let source_if_fluid = !(crate::decorator::prof::fis(&facts, below, BlockFact::Water) || crate::decorator::prof::fis(&facts, below, BlockFact::Lava))
++        || crate::decorator::prof::fis(&facts, below, BlockFact::FluidSource);
+     let tagged = |tag: &str| tags.contains(&ResourceLocation::minecraft(tag), &below.name);
+     if tagged("causes_continuous_geyser_eruptions") && source_if_fluid {
+         return with("continuous");
+@@ -213,7 +213,7 @@ fn speleothem_up(
+     let below = block_in(cx.region, step(pos, Direction::Down));
+     // `canSurvive` = `isValidSpeleothemPlacement(pos, UP)`: a sturdy top below, or the same
+     // block pointing up. Failing it on the update from below only schedules a tick.
+-    let survives = facts.is(below, BlockFact::SturdyTop)
++    let survives = crate::decorator::prof::fis(&facts, below, BlockFact::SturdyTop)
+         || (speleothem_pointing(below, "up") && below.name == state.name);
+     if direction == Direction::Down && !survives {
+         return state.clone();
+diff --git a/crates/oxide-chunkgen/src/decorator/templated/structure_template.rs b/crates/oxide-chunkgen/src/decorator/templated/structure_template.rs
+index e9744ca..c9d57e3 100644
+--- a/crates/oxide-chunkgen/src/decorator/templated/structure_template.rs
++++ b/crates/oxide-chunkgen/src/decorator/templated/structure_template.rs
+@@ -136,8 +136,8 @@ impl Template {
+                     };
+                     if info.has_nbt {
+                         with_nbt.push(info);
+-                    } else if !facts.is(&info.state, BlockFact::DynamicShape)
+-                        && facts.is(&info.state, BlockFact::FullCollision)
++                    } else if !crate::decorator::prof::fis(&facts, &info.state, BlockFact::DynamicShape)
++                        && crate::decorator::prof::fis(&facts, &info.state, BlockFact::FullCollision)
+                     {
+                         full.push(info);
+                     } else {
+@@ -264,15 +264,15 @@ pub fn place_in_world(
+             continue;
+         }
+         placed.push(info.pos);
+-        if facts.is(&state, BlockFact::BlockEntity) {
++        if crate::decorator::prof::fis(&facts, &state, BlockFact::BlockEntity) {
+             cx.unsupported
+                 .record("block_entity", &state.name.to_string());
+         }
+-        if facts.is(&state, BlockFact::FluidSource) {
++        if crate::decorator::prof::fis(&facts, &state, BlockFact::FluidSource) {
+             locked.insert(info.pos);
+         } else if is_liquid_container(&state) {
+             place_liquid(cx, info.pos, &state, &previous);
+-            if !facts.is(&previous, BlockFact::FluidSource) {
++            if !crate::decorator::prof::fis(&facts, &previous, BlockFact::FluidSource) {
+                 to_fill.push(info.pos);
+             }
+         }
+@@ -309,7 +309,7 @@ fn place_liquid(
+     fluid: &BlockState,
+ ) -> bool {
+     let facts = &cx.env.facts;
+-    let water_source = facts.is(fluid, BlockFact::Water) && facts.is(fluid, BlockFact::FluidSource);
++    let water_source = crate::decorator::prof::fis(&facts, fluid, BlockFact::Water) && crate::decorator::prof::fis(&facts, fluid, BlockFact::FluidSource);
+     if state
+         .properties
+         .get("waterlogged")
+@@ -346,16 +346,16 @@ fn flood(
+             let pos = to_fill[index];
+             let mut source = block_in(cx.region, pos).clone();
+             for direction in AROUND {
+-                if cx.env.facts.is(&source, BlockFact::FluidSource) {
++                if crate::decorator::prof::fis(&cx.env.facts, &source, BlockFact::FluidSource) {
+                     break;
+                 }
+                 let neighbour = step(pos, direction);
+                 let state = block_in(cx.region, neighbour);
+-                if cx.env.facts.is(state, BlockFact::FluidSource) && !locked.contains(&neighbour) {
++                if crate::decorator::prof::fis(&cx.env.facts, state, BlockFact::FluidSource) && !locked.contains(&neighbour) {
+                     source = state.clone();
+                 }
+             }
+-            if cx.env.facts.is(&source, BlockFact::FluidSource) {
++            if crate::decorator::prof::fis(&cx.env.facts, &source, BlockFact::FluidSource) {
+                 let state = block_in(cx.region, pos).clone();
+                 if is_liquid_container(&state) {
+                     place_liquid(cx, pos, &state, &source);
+diff --git a/crates/oxide-chunkgen/src/decorator/tree.rs b/crates/oxide-chunkgen/src/decorator/tree.rs
+index 364c411..956c43e 100644
+--- a/crates/oxide-chunkgen/src/decorator/tree.rs
++++ b/crates/oxide-chunkgen/src/decorator/tree.rs
+@@ -251,7 +251,7 @@ impl<'c, 'e, 'a, 'r> Run<'c, 'e, 'a, 'r> {
+     }
+ 
+     pub fn fact(&self, p: BlockPos, fact: BlockFact) -> bool {
+-        self.cx.env.facts.is(self.state(p), fact)
++        crate::decorator::prof::fis(&self.cx.env.facts, self.state(p), fact)
+     }
+ 
+     pub fn is_air(&self, p: BlockPos) -> bool {
+diff --git a/crates/oxide-chunkgen/src/decorator/tree/fallen.rs b/crates/oxide-chunkgen/src/decorator/tree/fallen.rs
+index 54781af..89503d5 100644
+--- a/crates/oxide-chunkgen/src/decorator/tree/fallen.rs
++++ b/crates/oxide-chunkgen/src/decorator/tree/fallen.rs
+@@ -119,7 +119,7 @@ fn decorate(run: &mut Run<'_, '_, '_, '_>, logs: &[BlockPos], decorators: &[Deco
+ /// full-face support type; confirm against a fallen log over a slab or a leaf block.
+ fn over_solid_ground(run: &Run<'_, '_, '_, '_>, p: BlockPos) -> bool {
+     let below = block_in(run.cx.region, off(p, 0, -1, 0));
+-    run.cx.env.facts.is(below, BlockFact::SturdyTop)
++    crate::decorator::prof::fis(&run.cx.env.facts, below, BlockFact::SturdyTop)
+ }
+ 
+ fn may_place_on(run: &Run<'_, '_, '_, '_>, p: BlockPos) -> bool {
+diff --git a/crates/oxide-chunkgen/src/decorator/vegetation/multiface.rs b/crates/oxide-chunkgen/src/decorator/vegetation/multiface.rs
+index ce0dfb1..7dd85f1 100644
+--- a/crates/oxide-chunkgen/src/decorator/vegetation/multiface.rs
++++ b/crates/oxide-chunkgen/src/decorator/vegetation/multiface.rs
+@@ -206,8 +206,8 @@ impl MultifaceFeature {
+             old.clone()
+         } else {
+             let mut fresh = self.block.clone();
+-            let water_source = cx.env.facts.is(old, BlockFact::Water)
+-                && cx.env.facts.is(old, BlockFact::FluidSource);
++            let water_source = crate::decorator::prof::fis(&cx.env.facts, old, BlockFact::Water)
++                && crate::decorator::prof::fis(&cx.env.facts, old, BlockFact::FluidSource);
+             if water_source && fresh.properties.contains_key("waterlogged") {
+                 fresh.properties.insert("waterlogged".into(), "true".into());
+             }
+@@ -282,16 +282,16 @@ impl MultifaceFeature {
+                 }
+                 let facts = &cx.env.facts;
+                 let fluid =
+-                    facts.is(&existing, BlockFact::Water) || facts.is(&existing, BlockFact::Lava);
+-                let water_source = facts.is(&existing, BlockFact::Water)
+-                    && facts.is(&existing, BlockFact::FluidSource);
++                    crate::decorator::prof::fis(&facts, &existing, BlockFact::Water) || crate::decorator::prof::fis(&facts, &existing, BlockFact::Lava);
++                let water_source = crate::decorator::prof::fis(&facts, &existing, BlockFact::Water)
++                    && crate::decorator::prof::fis(&facts, &existing, BlockFact::FluidSource);
+                 if blocked
+                     || (fluid && !water_source)
+                     || cx.env.block_tags.contains(&self.fire, &existing.name)
+                 {
+                     false
+                 } else {
+-                    facts.is(&existing, BlockFact::Replaceable)
++                    crate::decorator::prof::fis(&facts, &existing, BlockFact::Replaceable)
+                         || self.default_replaceable(cx, &existing)
+                 }
+             }
+@@ -305,8 +305,8 @@ impl MultifaceFeature {
+     /// water source block.
+     fn default_replaceable(&self, cx: &FeatureContext<'_, '_, '_>, existing: &BlockState) -> bool {
+         let facts = &cx.env.facts;
+-        facts.is(existing, BlockFact::Air)
++        crate::decorator::prof::fis(&facts, existing, BlockFact::Air)
+             || self.is_block(existing)
+-            || (existing.name == self.water && facts.is(existing, BlockFact::FluidSource))
++            || (existing.name == self.water && crate::decorator::prof::fis(&facts, existing, BlockFact::FluidSource))
+     }
+ }
+diff --git a/crates/oxide-chunkgen/src/region.rs b/crates/oxide-chunkgen/src/region.rs
+index fd65b26..be0f28e 100644
+--- a/crates/oxide-chunkgen/src/region.rs
++++ b/crates/oxide-chunkgen/src/region.rs
+@@ -149,6 +149,13 @@ impl<'a> DecorationRegion<'a> {
+ 
+     /// The block at `pos` as decoration so far left it, or `None` outside the window.
+     pub fn block(&self, pos: BlockPos) -> Option<&BlockState> {
++        let t = crate::decorator::prof::start(crate::decorator::prof::BLOCK);
++        let r = self.block_inner(pos);
++        crate::decorator::prof::end(crate::decorator::prof::BLOCK, t);
++        r
++    }
++
++    fn block_inner(&self, pos: BlockPos) -> Option<&BlockState> {
+         match self.overlay.get(&pos) {
+             Some(&i) => Some(&self.writes[i].1),
+             None => self.terrain_block(pos),
+@@ -157,6 +164,13 @@ impl<'a> DecorationRegion<'a> {
+ 
+     /// Whether `fact` holds at `pos`. Outside the window nothing holds.
+     pub fn is(&self, pos: BlockPos, fact: BlockFact) -> bool {
++        let t = crate::decorator::prof::start(crate::decorator::prof::IS);
++        let r = self.is_inner(pos, fact);
++        crate::decorator::prof::end(crate::decorator::prof::IS, t);
++        r
++    }
++
++    fn is_inner(&self, pos: BlockPos, fact: BlockFact) -> bool {
+         self.fact_at(pos, fact).unwrap_or(false)
+     }
+ 
+@@ -194,6 +208,13 @@ impl<'a> DecorationRegion<'a> {
+     /// Writes `state` at `pos`. Returns `false`, writing nothing, outside the window -- the
+     /// same refusal vanilla's region gives a feature that reaches past its write radius.
+     pub fn set_block(&mut self, pos: BlockPos, state: BlockState) -> bool {
++        let t = crate::decorator::prof::start(crate::decorator::prof::SET_BLOCK);
++        let r = self.set_block_inner(pos, state);
++        crate::decorator::prof::end(crate::decorator::prof::SET_BLOCK, t);
++        r
++    }
++
++    fn set_block_inner(&mut self, pos: BlockPos, state: BlockState) -> bool {
+         if !self.contains(pos) {
+             return false;
+         }
+@@ -222,6 +243,13 @@ impl<'a> DecorationRegion<'a> {
+     /// written column is rescanned, since vanilla keeps its heightmaps current block by block
+     /// and a later feature must see the tree an earlier one planted.
+     pub fn height(&self, kind: HeightmapType, x: i32, z: i32) -> Option<i32> {
++        let t = crate::decorator::prof::start(crate::decorator::prof::HEIGHT);
++        let r = self.height_inner(kind, x, z);
++        crate::decorator::prof::end(crate::decorator::prof::HEIGHT, t);
++        r
++    }
++
++    fn height_inner(&self, kind: HeightmapType, x: i32, z: i32) -> Option<i32> {
+         let dx = (x >> 4) - self.center.x;
+         let dz = (z >> 4) - self.center.z;
+         if !(-1..=1).contains(&dx) || !(-1..=1).contains(&dz) {
+@@ -290,6 +318,8 @@ impl<'a> DecorationRegion<'a> {
+ 
+     /// Every write, in the order positions were first written, each with its final state.
+     pub fn into_writes(self) -> Vec<BlockWrite> {
++        crate::decorator::prof::count(crate::decorator::prof::INTO_WRITES);
++        crate::decorator::prof::flush();
+         self.writes
+     }
+ }

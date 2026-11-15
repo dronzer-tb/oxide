@@ -447,3 +447,46 @@ inside the noise (+6%, 3/5), so most of the per-core saving does not show up as 
 It stays an opt-in script (`bench-pgo-vps.sh`, about 7 min of build) for a release build. It is
 not the progress-page headline, and nothing else depends on it. Closed as an experiment.
 The `pipeline-merge2` box dir was deleted once these rows were logged.
+
+## Decoration stage profile, 1 thread (auditor's ask)
+
+Commit 0769ca1+timers (`docs/perf/decorate-prof.patch`: per-feature wall time, and region
+primitives timed one call in 61. Apply it with `git apply`, do not commit it to a branch).
+`oxide-pregen --radius 16 --threads 1 --no-write`, under the shared lock at nice 10, digest
+df701ee858e2bdd3. Terrain here is this branch's old code (generate_ms 82126); decoration is
+the same code that would ship.
+
+    decorate_ms=24387 on 1 thread: 1225 decorate() calls, 21.5 s CPU in them, 98% inside features
+    (19.9 ms per call; about 17.5 ms per finished chunk)
+
+Region primitives (est. CPU, share of decorate CPU):
+
+| call | calls | ns/call | ms | share |
+|---|---|---|---|---|
+| `block` | 44.6M | 87 | 3889 | 18.1% |
+| `set_block` | 10.3M | 338 | 3471 | 16.2% |
+| `is` | 37.2M | 84 | 3137 | 14.6% |
+| `height` | 21.1M | 114 | 2407 | 11.2% |
+| `biomes_present` | 1225 | 268k | 328 | 1.5% |
+| `BlockFacts::is` direct | 1.2M | 143 | 165 | 0.8% |
+
+Top features (share of decorate CPU):
+
+| feature | share | the calls it is made of |
+|---|---|---|
+| sculk_patch_deep_dark | **24.4%** (5239 ms, 505 runs, 10.4 ms each) | 21.8M `block`, 14.3M `is`, 0.5M `set_block` |
+| the five stone-type ores (clay, tuff, granite, diorite, andesite) | **28.1%** together | ~1.3M `set_block` + ~1.6M `block` each |
+| lush_caves_ceiling_vegetation | 4.7% | 1.6M `is`, 1.5M `block` |
+| dark_forest_vegetation | 4.2% | 1.9M `block`, 0.8M direct `BlockFacts::is` |
+| ore_gravel | 4.1% | 3.1M `height` |
+| lush_caves_vegetation, lush_caves_clay | 3.4%, 3.1% | |
+| ore_iron_upper, ore_coal_upper | 2.9%, 1.7% | 8.7M and 4.4M `height` for 12k and 8k writes |
+
+Reading:
+1. **Stone ores (28%)** are `set_block`-bound: the interning work (pipeline-2) targets these.
+2. **Sculk (24%)** is the largest single feature, and its cost is reads: 43k `block` and 28k `is`
+   per run. The next lever is fewer or cheaper reads in sculk's spread and charge logic. A second
+   sub-agent (pipeline-3) is starting on it, limited to `decorator/cave/sculk.rs` so it does not
+   collide with the interning work in region.rs.
+3. Upper ores spend their time in `height` (about 700 calls per write; vanilla's
+   discard-on-air-exposure check probably reads heights per block). This is worth a look after sculk.
