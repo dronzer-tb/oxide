@@ -474,3 +474,9 @@ what it saves, with `SurfaceSystem` rebuilt per chunk in `lib.rs`. The diff is k
 `SurfaceSystem` becomes per-thread rather than per-chunk.
 
 **Reference: ~584 cps, ~13.7 ms core per chunk** (session start: 138.2 cps, 57.9 ms; 4.2x).
+
+PLAN.md updated from `feat/native-decoration`: decoration (`decorator/`, `decorate.rs`,
+`region.rs`) now belongs to the pipeline track. No datapath change has touched those
+files. The PR into `feat/native-decoration` that rule 4 asks for is not open: this agent host
+has no `gh`. Branch `perf/datapath` is ready for one; someone with GitHub access can open it,
+or `gh` can be installed here.
