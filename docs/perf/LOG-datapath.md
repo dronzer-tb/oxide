@@ -530,3 +530,34 @@ Open, outside this track's files or rules:
   aquifer reaches it, up to ~20 times. Removing that needs state shared across chunks: a
   per-thread memo keyed on router identity, with exactness argued as in E13. Not done: it
   crosses the "nothing shared across chunks" line, and the key needs care.
+
+### E16 (pending A/B): surface round 3, fold by preliminary-surface fact and y bands
+
+Sub-agent experiment in `/tmp/datapath-8`. The first profile that splits the surface pass
+(temporary `#[inline(never)]`; 1 thread, radius 8):
+
+| Frame | Inclusive | Self |
+|---|---|---|
+| `SurfaceSystem::apply` | 14.3% | 0.5% |
+| per-column body | 13.8% | 3.0% (slot walk, cursor, biome lookup) |
+| `eval_program` | 8.8% | 3.5% |
+| `eval_condition` | 5.3% | 5.2% |
+| `column_state` | 1.4% | |
+| `SurfaceSystem::new` | 0.8% | `compile_rule` 0.6% |
+
+The cost is the interpreter: ~163k condition tests per chunk at ~5-8 ns each. Draws, noise and
+setup are small. Sharing the program across chunks would save at most 0.8%.
+
+Change: `new` folds the flattened program once for "at or above the preliminary surface". It
+then folds once for "below it", which leaves about 8 ops, and folds that small program once
+per y band (about 5 bands, plus a 384-entry y-to-band table). The scan picks a program by
+`y >= column.min_surface_level`, the same comparison the condition makes. A test is dropped only if its answer
+is fixed across the program's positions and evaluating it has no side effect: preliminary
+surface, depth-free `y_above`, and `vertical_gradient` only where it answers without
+drawing. Below the surface, four tests per position become about one.
+Unlike E14 (rejected), the folding is a few small passes per chunk, not lazy builds per
+fact key.
+
+`BENCH chunks=1089 threads=8 secs=2.054 cps=530.1 ms_per_chunk_core=15.09 digest=a977961a58122047`
+`BENCH chunks=1089 threads=8 secs=1.796 cps=606.3 ms_per_chunk_core=13.19 digest=a977961a58122047`
+Inconclusive. Waiting for an interleaved A/B against the head. Tests: chunkgen 189 passed.
