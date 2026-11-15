@@ -1260,3 +1260,28 @@ Parked, not landed:
 compiled program like `is_y_independent`: the value at `(x, z)` equals the value at
 `(x & !3, z & !3)` through any caches. With that, E29 is ~10 lines in `surface.rs`. The diff is at
 `docs/perf/parked-E29-preliminary-per-quart.diff`.
+
+### Auditor item 2: combined head against 0823fd8 -- no measurable gain
+
+Rotating 1-thread hold, 5 rounds. `datapath` is the combined head (b1f77a6 code:
+0823fd8 plus E22, E27 and noise 65ba9fc). `datapath-b1` and `datapath-b2` are two separate
+builds of 0823fd8. ms core per chunk:
+
+| | r1 | r2 | r3 | r4 | r5 | mean |
+|---|---|---|---|---|---|---|
+| combined b1f77a6 | 9.84 | 8.90 | 9.71 | 9.27 | 9.12 | 9.37 |
+| 0823fd8 build 1 | 9.66 | 9.41 | 9.22 | 9.56 | 9.88 | 9.55 |
+| 0823fd8 build 2 | 9.44 | 9.07 | 9.26 | 9.40 | 9.48 | 9.33 |
+
+All fifteen `digest=a977961a58122047`. The combined head is -0.7% against the base builds' mean (9.44):
+-1.9% against build 1 and +0.4% against build 2. The two base builds differ by 2.3%.
+
+**So E22 and E27 show no measurable gain on top of the noise merge.** In the variance hold they
+each beat the pre-merge head (20d218d) by 5-8%, more than E27's whole profile share. Either
+their gains overlap with what the noise changes (experiment 12, and 65ba9fc) removed, or that
+hold was biased against its head binaries in a way the source diff did not show. Both stay in
+the tree: they are exact (the auditor read them), tested, and not slower. **Their speed claims
+are withdrawn.** The 2.3% spread between two builds of identical source is the floor for any
+claim from separately built binaries. A change needs a consistent lead well beyond it.
+
+Box dirs `datapath-b1` and `datapath-b2` are deleted.
