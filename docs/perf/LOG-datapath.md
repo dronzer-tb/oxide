@@ -1392,3 +1392,32 @@ against ~700 at b1f77a6. Either the box was disturbed, or the 3362440 noise merg
 lane-batched corner columns with a shared cache, measured by noise on 1 thread only) regresses
 at 8 threads. The scaling sub-agent (`datapath-26`) is told to make 0f15cef against b1f77a6 at 8
 threads its first exclusive hold.
+
+### The gate covers block states only -- not palettes, biomes or heightmaps
+
+`crates/oxide-harness/src/merkle.rs` `hash_sub_region` hashes `section.block_states.get(..)`
+`.to_string()` per position, and nothing else. So `a977961a58122047` does not see:
+- palette order or dead palette entries (NBT and `bits_per_entry`);
+- **biomes at all**: E1, E12 and E27 changed biome code, checked only by their own unit tests (E27's on 5 chunks);
+- **heightmaps**: E1 rewrote `compute_heightmaps`. The surface `steep` rule reads `OceanFloorWg`
+  indirectly, but the stored maps go to NBT unchecked.
+
+Reading review (during the s5 reservation), change by change:
+- **Palettes:** E1, E2/E11/E16, E9, E10 and E22 all intern a state at its first write into a section
+  via `index_of_or_insert` on the same `BlockState`, where the old per-block `set` did.
+- **Biomes:** E1 and E12 keep per-quart values and `(qy, qz, qx)` write order. E27 rests on its
+  y-independence and hint-bound arguments.
+- **Heightmaps:** E1 uses the same air-by-name / default-fluid-by-equality / else-solid
+  classification, with the same stopping point.
+
+No violation found by reading.
+
+Empirical check, queued behind the reservation: a throwaway harness (not committed) at 3fd5cf6
+and 0f15cef prints, besides `BENCH`, `PALETTE digest=` (every section's block and biome palettes
+in order, plus packed longs, which also covers biome values) and `PALETTE heightmaps digest=` (all
+six heightmaps, packed, in a fixed order). They must match between the two commits.
+
+**Proposal (for the auditor; the harness is not this track's):** make the gate cover all three.
+Either fold the palette and heightmap hashes into the `digest=` field, or print them as extra
+`BENCH` fields, so `bench-vps.sh` records them and every track's changes are checked for them.
+A new gate value then has to be established once, at a commit everyone agrees on.
