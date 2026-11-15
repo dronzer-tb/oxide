@@ -67,6 +67,11 @@ say so in your log; never rename or reshape another track's public items.
 6. Sub-agents: use Opus, give each a single narrow job and a hard file boundary, and have them
    query graphify (`graphify query "..."` in the repo) before reading source. Only the master
    commits and pushes.
+6a. **Cheap second opinions:** `scripts/omni-ask.sh <prompt-file> [model]` sends one prompt to a
+   model on OmniRoute and prints the answer, at no Claude cost. Use it for review, for ideas
+   when stuck, and for reading a profile. It cannot see the repo or run anything, so paste
+   what it needs. Treat its code as a suggestion: nothing lands without the bench and the
+   digest. If the key is missing the script says so; carry on without it.
 7. `reference/` is game data and gitignored; each worktree has a symlink to the main
    checkout's copy. Never commit it, never copy it anywhere but the VPS bench directory.
 8. Float parity rules in `docs/ARCHITECTURE.md` ("Float parity is not free") still apply:

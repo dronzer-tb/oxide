@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Oxide Lab · Progress</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --magnetite: #131211; --slate: #191817; --shale: #201e1c; --pit: #0c0b0a;
+  --seam: rgba(232, 222, 205, .09); --seam-soft: rgba(232, 222, 205, .05); --seam-strong: rgba(232, 222, 205, .22);
+  --bone: #ebe5d9; --ash: #b3ab9d; --dust: #857e72; --silt: #5b564e;
+  /* One mineral per track; verdigris and cinnabar are states only. */
+  --hematite: #e0703a; --azurite: #4f9bd9; --olivine: #8f9a2c; --verdigris: #58b09a; --cinnabar: #e5534b;
+  --label: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --data: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  --u: 4px;
+}
+* { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: var(--silt) transparent; }
+body { margin: 0; background: var(--magnetite); color: var(--bone); font: 13px/1.5 var(--data); }
+a { color: inherit; }
+:focus-visible { outline: 1px solid var(--hematite); outline-offset: 2px; }
+.wrap { max-width: 1180px; margin: 0 auto; padding: 0 calc(var(--u) * 6) calc(var(--u) * 20); }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: calc(var(--u) * 2) calc(var(--u) * 6); padding: calc(var(--u) * 6) 0 calc(var(--u) * 4); border-bottom: 1px solid var(--seam); }
+.mark { font: 600 20px/1 var(--label); letter-spacing: .14em; text-transform: uppercase; }
+.mark b { color: var(--hematite); font-weight: 600; }
+nav { display: flex; gap: calc(var(--u) * 5); font: 500 13px/1 var(--label); letter-spacing: .12em; text-transform: uppercase; }
+nav a { text-decoration: none; color: var(--dust); padding-bottom: 5px; }
+nav a:hover { color: var(--bone); }
+nav a.on { color: var(--bone); box-shadow: inset 0 -2px var(--hematite); }
+.stamp { margin-left: auto; color: var(--dust); font-size: 11.5px; }
+section { margin-top: calc(var(--u) * 12); }
+h2 { margin: 0 0 var(--u); font: 600 13px/1.2 var(--label); letter-spacing: .16em; text-transform: uppercase; }
+.lede { color: var(--ash); max-width: 76ch; margin: 0 0 calc(var(--u) * 4); font: 400 15px/1.5 var(--label); }
+.eyebrow { font: 500 11px/1 var(--label); letter-spacing: .16em; text-transform: uppercase; color: var(--dust); margin: 0; }
+.box { border: 1px solid var(--seam); background: var(--slate); }
+.pad { padding: calc(var(--u) * 4); }
+.scroll { overflow-x: auto; overflow-y: hidden; }
+.q { color: var(--dust); } .z { color: var(--silt); } .n { text-align: right; }
+
+/* Headline: the best clean number, then how far down the hole that is. */
+.head { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); margin-top: calc(var(--u) * 8); }
+.best { padding: calc(var(--u) * 5); border-right: 1px solid var(--seam); }
+.best .v { font: 500 52px/1 var(--data); letter-spacing: -.02em; margin: calc(var(--u) * 3) 0 calc(var(--u) * 2); font-variant-numeric: tabular-nums; }
+.best .v small { font: 400 14px/1 var(--label); letter-spacing: .08em; color: var(--dust); margin-left: 6px; }
+.gauge { padding: calc(var(--u) * 5); min-width: 0; }
+svg { display: block; width: 100%; height: auto; overflow: visible; }
+svg text { font-family: var(--data); font-size: 11px; fill: var(--dust); }
+svg .lab { font-family: var(--label); font-size: 12px; letter-spacing: .06em; fill: var(--ash); }
+
+.state { display: inline-flex; align-items: center; gap: 6px; }
+.state::before { content: ""; width: 7px; height: 7px; background: var(--verdigris); flex: none; }
+.state.idle::before { background: var(--silt); }
+.state.bad::before { background: var(--cinnabar); transform: rotate(45deg); }
+.swatch { display: inline-block; width: 10px; height: 10px; margin-right: 8px; vertical-align: -1px; }
+
+.tracks { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: calc(var(--u) * 4); }
+.track h3 { margin: 0; padding: calc(var(--u) * 3) calc(var(--u) * 4); font: 600 15px/1.2 var(--label); letter-spacing: .1em; text-transform: uppercase; border-bottom: 1px solid var(--seam); display: flex; align-items: center; }
+.track h3 span { margin-left: auto; font: 400 11.5px/1 var(--data); letter-spacing: 0; text-transform: none; color: var(--dust); }
+.track .job { color: var(--ash); font: 400 14px/1.45 var(--label); margin: 0 0 calc(var(--u) * 4); }
+.figs { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--seam-soft); margin-bottom: calc(var(--u) * 4); }
+.figs div { padding: calc(var(--u) * 3); border-left: 1px solid var(--seam-soft); }
+.figs div:first-child { border-left: 0; }
+.figs b { display: block; font: 500 20px/1.3 var(--data); font-variant-numeric: tabular-nums; }
+ul.commits { list-style: none; margin: calc(var(--u) * 2) 0 0; padding: 0; }
+ul.commits li { display: grid; grid-template-columns: 62px 1fr; gap: 8px; padding: 5px 0; border-top: 1px solid var(--seam-soft); }
+ul.commits li span:last-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ash); }
+details { border-top: 1px solid var(--seam); }
+summary { cursor: pointer; padding: calc(var(--u) * 3) calc(var(--u) * 4); font: 500 11px/1 var(--label); letter-spacing: .14em; text-transform: uppercase; color: var(--ash); }
+summary:hover { color: var(--bone); }
+pre.log { margin: 0; padding: 0 calc(var(--u) * 4) calc(var(--u) * 4); white-space: pre-wrap; word-break: break-word; color: var(--ash); font: 12px/1.55 var(--data); max-height: 420px; overflow-y: auto; }
+
+table { border-collapse: collapse; width: 100%; }
+th { font: 500 11px/1.2 var(--label); letter-spacing: .12em; text-transform: uppercase; color: var(--dust); text-align: left; padding: calc(var(--u) * 2) calc(var(--u) * 3); border-bottom: 1px solid var(--seam); white-space: nowrap; }
+td { padding: 7px calc(var(--u) * 3); border-bottom: 1px solid var(--seam-soft); white-space: nowrap; font-variant-numeric: tabular-nums; }
+tr:last-child td { border-bottom: 0; }
+#tip { position: fixed; pointer-events: none; background: var(--shale); border: 1px solid var(--seam-strong); padding: 8px 10px; font-size: 12px; white-space: pre; display: none; z-index: 5; }
+.empty { padding: calc(var(--u) * 8); color: var(--dust); text-align: center; border: 1px dashed var(--seam-strong); }
+
+@media (max-width: 760px) {
+  .wrap { padding: 0 calc(var(--u) * 4) calc(var(--u) * 16); }
+  .head { grid-template-columns: 1fr; }
+  .best { border-right: 0; border-bottom: 1px solid var(--seam); }
+  .best .v { font-size: 44px; }
+  .stamp { margin-left: 0; width: 100%; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="mark"><b>Oxide</b> Lab</div>
+  <nav><a href="progress.html" class="on">Progress</a><a href="index.html">Parity lab</a></nav>
+  <span class="stamp" id="stamp">reading the tracks…</span>
+</header>
+
+<div class="box head">
+  <div class="best">
+    <p class="eyebrow">Fastest clean run</p>
+    <div class="v" id="bestv">–<small>chunks/s</small></div>
+    <div class="q" id="bestd"></div>
+  </div>
+  <div class="gauge">
+    <p class="eyebrow" style="margin-bottom:10px">Chunks per second on the bench VPS, log scale</p>
+    <svg id="gauge" viewBox="0 0 800 96" role="img" aria-label="Progress toward 5,000 chunks per second"></svg>
+  </div>
+</div>
+
+<section>
+  <h2>Every benchmark run</h2>
+  <p class="lede">Each mark is one run of the terrain benchmark on the 8-core VPS: 1,089 chunks on 8 threads. A hollow mark changed the generated world and does not count. Dashed lines are the gates in the plan.</p>
+  <div class="box pad">
+    <div id="legend" style="display:flex;flex-wrap:wrap;gap:6px 20px;margin-bottom:12px;color:var(--ash)"></div>
+    <svg id="chart" viewBox="0 0 800 320" role="img" aria-label="Benchmark results over time"></svg>
+  </div>
+</section>
+
+<section>
+  <h2>Tracks</h2>
+  <p class="lede">Three sessions work in parallel, one area each. They push after every experiment; a track that has been quiet for a while has most likely hit its usage limit.</p>
+  <div class="tracks" id="tracks"></div>
+</section>
+
+<section>
+  <h2>Run table</h2>
+  <div class="box scroll"><table id="runs"></table></div>
+</section>
+</div>
+<div id="tip"></div>
+<script>
+"use strict";
+const REPO = "dronzer-tb/oxide";
+const BASE = { cps: 160.5, digest: "a977961a58122047" };
+const GATES = [[400, "M1"], [1000, "M2"], [2500, "M3"], [5000, "Goal"]];
+const TRACKS = [
+  { id: "noise", color: "#e0703a", shape: "circle", job: "The density-function interpreter and Perlin sampling: evaluate many points per call, vectorise with AVX2." },
+  { id: "datapath", color: "#4f9bd9", shape: "square", job: "Stop allocating per block: integer block ids, reusable buffers, cheaper surface rules, biome search and aquifers." },
+  { id: "pipeline", color: "#8f9a2c", shape: "diamond", job: "Generation with no server in it: real offline pregen, native decoration, region writing, cheaper compression." },
+];
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const num = (n, d = 0) => n.toLocaleString("en-US", { maximumFractionDigits: d, minimumFractionDigits: d });
+function ago(unix) {
+  const s = Math.max(0, Date.now() / 1000 - unix);
+  return s < 90 ? "just now" : s < 5400 ? Math.round(s / 60) + " min ago" : s < 172800 ? Math.round(s / 3600) + " h ago" : Math.round(s / 86400) + " d ago";
+}
+const raw = (branch, path) => fetch(`https://raw.githubusercontent.com/${REPO}/${branch}/${path}`, { cache: "no-store" }).then(r => (r.ok ? r.text() : ""), () => "");
+
+function parseRuns(text, track) {
+  return text.split("\n").filter(Boolean).map(line => {
+    const [unix, commit, radius, rest] = line.split("\t");
+    const f = Object.fromEntries((rest || "").split(" ").map(p => p.split("=")));
+    return { track, unix: +unix, commit, radius: +radius, threads: +f.threads, chunks: +f.chunks, secs: +f.secs, cps: +f.cps, ms: +f.ms_per_chunk_core, digest: f.digest || "" };
+  }).filter(r => r.unix && r.cps);
+}
+// The comparable runs: the standard size on 8 threads. A run is clean when the world is
+// unchanged; the pipeline track measures a different path and reports no terrain digest.
+const standard = r => r.threads === 8 && (r.radius === 16 || r.track.id === "pipeline");
+const clean = r => !r.digest || r.digest === BASE.digest || r.track.id === "pipeline";
+
+function mark(t, x, y, filled, r = 5) {
+  const a = filled ? `fill="${t.color}"` : `fill="#191817" stroke="${t.color}" stroke-width="1.5"`;
+  if (t.shape === "circle") return `<circle cx="${x}" cy="${y}" r="${r}" ${a}/>`;
+  if (t.shape === "square") return `<rect x="${x - r + 0.5}" y="${y - r + 0.5}" width="${2 * r - 1}" height="${2 * r - 1}" ${a}/>`;
+  return `<path d="M${x} ${y - r - 1}L${x + r + 1} ${y}L${x} ${y + r + 1}L${x - r - 1} ${y}Z" ${a}/>`;
+}
+
+function drawGauge(best) {
+  const W = 800, x0 = 8, x1 = 792, lo = Math.log10(100), hi = Math.log10(6500);
+  const x = v => x0 + (Math.log10(Math.max(100, Math.min(6500, v))) - lo) / (hi - lo) * (x1 - x0);
+  let s = `<rect x="${x0}" y="40" width="${x1 - x0}" height="6" fill="#0c0b0a"/>`;
+  const top = Math.max(BASE.cps, ...best.map(b => b.cps));
+  s += `<rect x="${x0}" y="40" width="${x(top) - x0}" height="6" fill="#e0703a" opacity=".5"/>`;
+  s += `<line x1="${x(BASE.cps)}" y1="34" x2="${x(BASE.cps)}" y2="52" stroke="#857e72"/><text x="${x(BASE.cps)}" y="66" text-anchor="middle">start ${num(BASE.cps)}</text>`;
+  for (const [v, name] of GATES) {
+    s += `<line x1="${x(v)}" y1="34" x2="${x(v)}" y2="52" stroke="#b3ab9d"/><text class="lab" x="${x(v)}" y="66" text-anchor="middle">${name}</text><text x="${x(v)}" y="80" text-anchor="middle">${num(v)}</text>`;
+  }
+  best.forEach((b, i) => {
+    s += mark(b.track, x(b.cps), 22, true, 5) + `<text x="${x(b.cps)}" y="${i % 2 ? 94 : 10}" text-anchor="middle" fill="#ebe5d9">${b.track.id} ${num(b.cps)}</text>`;
+  });
+  $("gauge").innerHTML = s;
+}
+
+function drawChart(runs) {
+  const W = 800, H = 320, L = 54, R = 16, T = 12, B = 30;
+  const pts = runs.filter(standard);
+  const t0 = Math.min(...pts.map(r => r.unix), Date.now() / 1000 - 3600), t1 = Date.now() / 1000;
+  const ymax = Math.max(6500, ...pts.map(r => r.cps * 1.2)), lo = Math.log10(100), hi = Math.log10(ymax);
+  const x = u => L + (u - t0) / Math.max(1, t1 - t0) * (W - L - R);
+  const y = v => T + (1 - (Math.log10(Math.max(100, v)) - lo) / (hi - lo)) * (H - T - B);
+  let s = "";
+  for (const v of [100, 200, 500, 1000, 2000, 5000]) s += `<line x1="${L}" y1="${y(v)}" x2="${W - R}" y2="${y(v)}" stroke="rgba(232,222,205,.05)"/><text x="${L - 8}" y="${y(v) + 4}" text-anchor="end">${num(v)}</text>`;
+  for (const [v, name] of GATES) s += `<line x1="${L}" y1="${y(v)}" x2="${W - R}" y2="${y(v)}" stroke="rgba(232,222,205,.28)" stroke-dasharray="3 5"/><text class="lab" x="${W - R}" y="${y(v) - 5}" text-anchor="end">${name}</text>`;
+  s += `<line x1="${L}" y1="${y(BASE.cps)}" x2="${W - R}" y2="${y(BASE.cps)}" stroke="#857e72"/><text x="${L + 6}" y="${y(BASE.cps) + 14}">where we started, ${num(BASE.cps)}</text>`;
+  const fmt = u => new Date(u * 1000).toISOString().slice(5, 16).replace("T", " ");
+  s += `<text x="${L}" y="${H - 8}">${fmt(t0)} UTC</text><text x="${W - R}" y="${H - 8}" text-anchor="end">now</text>`;
+  const hits = [];
+  for (const t of TRACKS) {
+    const mine = pts.filter(r => r.track === t).sort((a, b) => a.unix - b.unix);
+    const line = mine.filter(clean);
+    if (line.length > 1) s += `<polyline fill="none" stroke="${t.color}" stroke-width="2" stroke-linejoin="round" points="${line.map(r => `${x(r.unix).toFixed(1)},${y(r.cps).toFixed(1)}`).join(" ")}"/>`;
+    for (const r of mine) { s += mark(t, x(r.unix), y(r.cps), clean(r), 4); hits.push({ r, px: x(r.unix), py: y(r.cps) }); }
+    const last = line[line.length - 1];
+    if (last) s += `<text x="${Math.min(W - R - 4, x(last.unix) + 9)}" y="${y(last.cps) - 8}" fill="#ebe5d9" text-anchor="${x(last.unix) > W - 120 ? "end" : "start"}">${t.id}</text>`;
+  }
+  if (!pts.length) s += `<text class="lab" x="${(W + L) / 2}" y="${H / 2}" text-anchor="middle">No runs pushed yet</text>`;
+  const svg = $("chart");
+  svg.innerHTML = s;
+  svg.onmousemove = e => {
+    const b = svg.getBoundingClientRect(), mx = (e.clientX - b.left) / b.width * W, my = (e.clientY - b.top) / b.height * H;
+    let hit = null, d = 26 * 26;
+    for (const h of hits) { const q = (h.px - mx) ** 2 + (h.py - my) ** 2; if (q < d) { d = q; hit = h; } }
+    const tip = $("tip");
+    if (!hit) { tip.style.display = "none"; return; }
+    const r = hit.r;
+    tip.textContent = `${r.track.id}  ${num(r.cps, 1)} chunks/s\n${num(r.ms, 2)} ms core per chunk\ncommit ${r.commit}  ${fmt(r.unix)} UTC\n${clean(r) ? "world unchanged" : "WORLD CHANGED, not counted"}`;
+    tip.style.display = "block";
+    tip.style.left = Math.min(window.innerWidth - 250, e.clientX + 14) + "px";
+    tip.style.top = e.clientY + 14 + "px";
+  };
+  svg.onmouseleave = () => { $("tip").style.display = "none"; };
+  $("legend").innerHTML = TRACKS.map(t => `<span><svg viewBox="0 0 12 12" style="display:inline-block;width:12px;height:12px;margin-right:7px;vertical-align:-1px">${mark(t, 6, 6, true, 4)}</svg>${t.id}</span>`).join("") +
+    `<span class="q">hollow = changed the world</span>`;
+}
+
+function drawTracks(data) {
+  $("tracks").innerHTML = data.map(({ t, runs, log, commits }) => {
+    const std = runs.filter(standard), ok = std.filter(clean);
+    const best = ok.reduce((a, r) => (!a || r.cps > a.cps ? r : a), null), last = std[std.length - 1];
+    const head = commits[0], headAt = head ? Date.parse(head.commit.committer.date) / 1000 : 0;
+    const lastSeen = Math.max(headAt, last ? last.unix : 0);
+    const state = !runs.length && commits.length <= 1 ? ["idle", "not started"] : Date.now() / 1000 - lastSeen < 5400 ? ["", "active " + ago(lastSeen)] : ["idle", "quiet since " + ago(lastSeen)];
+    const dirty = last && !clean(last);
+    return `<div class="box track"><h3><i class="swatch" style="background:${t.color}"></i>${t.id}<span class="state ${state[0]}">${state[1]}</span></h3><div class="pad">` +
+      `<p class="job">${t.job}</p><div class="figs">` +
+      `<div><p class="eyebrow">Best</p><b>${best ? num(best.cps) : "–"}</b><span class="q">${best ? (best.cps / BASE.cps).toFixed(2) + "× start" : "no clean run"}</span></div>` +
+      `<div><p class="eyebrow">Latest</p><b>${last ? num(last.cps) : "–"}</b><span class="q">${last ? ago(last.unix) : ""}</span></div>` +
+      `<div><p class="eyebrow">Runs</p><b>${runs.length}</b><span class="q">${std.length - ok.length} changed world</span></div></div>` +
+      (dirty ? `<p><span class="state bad">Latest run changed the generated world</span></p>` : "") +
+      `<p class="eyebrow">Latest commits on perf/${t.id}</p><ul class="commits">` +
+      (commits.slice(0, 6).map(c => `<li><span class="q">${c.sha.slice(0, 7)}</span><span title="${esc(c.commit.message)}">${esc(c.commit.message.split("\n")[0])}</span></li>`).join("") || `<li><span class="z">–</span><span class="z">could not read commits</span></li>`) +
+      `</ul></div><details${log ? " open" : ""}><summary>Experiment log</summary><pre class="log">${log ? esc(log) : "No log pushed yet."}</pre></details></div>`;
+  }).join("");
+}
+
+function drawRuns(runs) {
+  const rows = [...runs].sort((a, b) => b.unix - a.unix).slice(0, 60);
+  $("runs").innerHTML = `<thead><tr><th>When</th><th>Track</th><th>Commit</th><th class="n">Chunks/s</th><th class="n">ms core / chunk</th><th class="n">× start</th><th>Threads</th><th>World</th></tr></thead><tbody>` +
+    (rows.map(r => `<tr${standard(r) ? "" : ' class="q"'}><td>${ago(r.unix)}</td><td><i class="swatch" style="background:${r.track.color}"></i>${r.track.id}</td><td class="q">${esc(r.commit)}</td>` +
+      `<td class="n">${num(r.cps, 1)}</td><td class="n">${num(r.ms, 2)}</td><td class="n">${standard(r) ? (r.cps / BASE.cps).toFixed(2) : "–"}</td><td>${r.threads}${r.radius !== 16 ? ", radius " + r.radius : ""}</td>` +
+      `<td>${clean(r) ? '<span class="state">unchanged</span>' : '<span class="state bad">changed</span>'}</td></tr>`).join("") ||
+      `<tr><td class="z" colspan="8">No benchmark runs pushed yet. The first one appears a few minutes after a track starts.</td></tr>`) + "</tbody>";
+}
+
+async function refresh() {
+  const data = await Promise.all(TRACKS.map(async t => {
+    const [tsv, log, commits] = await Promise.all([
+      raw("perf/" + t.id, `docs/perf/bench-${t.id}.tsv`),
+      raw("perf/" + t.id, `docs/perf/LOG-${t.id}.md`),
+      fetch(`https://api.github.com/repos/${REPO}/commits?sha=perf/${t.id}&per_page=6`).then(r => (r.ok ? r.json() : []), () => []),
+    ]);
+    return { t, runs: parseRuns(tsv, t), log, commits: Array.isArray(commits) ? commits : [] };
+  }));
+  const runs = data.flatMap(d => d.runs);
+  const best = data.map(d => d.runs.filter(r => standard(r) && clean(r)).reduce((a, r) => (!a || r.cps > a.cps ? r : a), null)).filter(Boolean);
+  const top = best.reduce((a, r) => (!a || r.cps > a.cps ? r : a), null);
+  $("bestv").innerHTML = `${num(top ? top.cps : BASE.cps)}<small>chunks/s</small>`;
+  const reached = GATES.filter(g => (top ? top.cps : 0) >= g[0]).pop(), next = GATES.find(g => (top ? top.cps : 0) < g[0]);
+  $("bestd").innerHTML = top
+    ? `${(top.cps / BASE.cps).toFixed(2)}× where we started, by the <b style="color:var(--bone)">${top.track.id}</b> track.<br>${reached ? "Past " + reached[1] + ". " : ""}${next ? `Next gate ${next[1]} at ${num(next[0])}.` : "Goal reached."}`
+    : `The starting point. No track has pushed a clean run yet.<br>First gate M1 at 400.`;
+  drawGauge(best);
+  drawChart(runs);
+  drawTracks(data);
+  drawRuns(runs);
+  $("stamp").textContent = `checked ${new Date().toISOString().slice(11, 16)} UTC · refreshes every 5 min · data from GitHub`;
+}
+refresh().catch(e => { $("stamp").textContent = "could not load: " + e.message; });
+setInterval(() => refresh().catch(() => {}), 300000);
+</script>
+</body>
+</html>
