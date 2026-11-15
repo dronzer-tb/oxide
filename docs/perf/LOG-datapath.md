@@ -1206,3 +1206,30 @@ E22's unformatted lines in `aquifer.rs` and `carver.rs` (formatting only).
 
 Tests on the box: chunkgen 192 (193 minus the parser test), biome 7, noise 35, core 57, all
 passed.
+
+### Profile of the combined head (b1f77a6; 1 thread, radius 8, 11.15 ms per chunk with the profiler on)
+
+Shares of generation:
+
+| Share | Where | Owner |
+|---|---|---|
+| 34.8% | corner grid | noise |
+| 8.4% | per-block density | noise |
+| 4.5% | ore density sampling | noise |
+| 19.4% | surface: pass 16.1%, `column_state` 3.3% | datapath |
+| 11.9% | aquifer: fill 8.3%, carvers 2.8%, surface level 0.8% | datapath |
+| 8.2% | carvers, excluding their aquifer calls | datapath |
+| 4.9% | fill loop self | datapath |
+| 3.7% | biomes (was 5.3%, before E27) | datapath |
+| 3.5% | ore veins' own code | datapath |
+
+Round 7 (auditor's item 3), two sub-agents on the two largest datapath items. Both only build;
+the master measures with rotating 1-thread holds against two base builds.
+- `datapath-23`, surface. Splits first, then the dominant non-interpreter part. The lead is
+  `column_state`'s exact-column `PreliminarySurfaceLevel` scan: 256 per chunk, where the aquifer
+  memoises the same slot per quart. Is the value quart-constant, given the `flat_cache` snapping?
+- `datapath-24`, aquifer. A column-run memo along -y for the carvers' call order, plus counters
+  on why the fill's row memo still misses.
+
+Item 2 (the combined head against two builds of 0823fd8) is running. The profile dir
+`datapath-p` is deleted.
