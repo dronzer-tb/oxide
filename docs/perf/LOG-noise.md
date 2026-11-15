@@ -82,3 +82,10 @@ is logged; `cargo test -p oxide-chunkgen` runs with `oxide-noise` before every c
 | # | What | Before (cps) | After (cps) | Digest | Verdict |
 |---|---|---|---|---|---|
 | 4 | Memoise `cell_bounds` per cell, keyed by how many corner grids exist | 163.8 | 168.9, 156.6 | ok | **reverted**: inside the noise, and datapath E1 already cuts the calls from ~24k to 768 per chunk in `fill.rs` |
+| 2 (repeat) | 3a1b789 benched again | | 154.6, 169.8 | ok | a 10% spread on identical code: the original 157.4 is not distinguishable from 1's 152.0 at this noise |
+| 3b (repeat) | 4abb9a3 benched again | | 189.1, 181.4 | ok | not comparable: the Minecraft servers on the box were stopped between these runs and the earlier ones |
+
+From here on: all 8 cores are free (both Minecraft servers stopped), the bench script is the new
+one (builds under `flock -s` at nice 10, only the timed run is exclusive), and every other
+build, test or profile on the box uses `flock -s ~/oxide-perf/.lock nice -n 10`. Earlier numbers
+need a quiet re-bench before they can be compared with new ones.
