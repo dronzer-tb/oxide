@@ -1340,3 +1340,25 @@ generation. Next three:
    fill-plus-surface pass per column, writing each block once, may save the kinds rebuild and
    the second scan. It is a larger change and needs a design pass first.
 3. Re-measure with `--radius 24` (2,401 chunks) and 7+ rounds, to get the floor below 2%.
+
+## Session 2, continued: the auditor's picks
+
+The auditor answered the open question:
+- (a) merge noise at 3362440 first;
+- (b) do the fused fill-plus-surface pass, with the design and the exactness argument first;
+- (c) not radius 24: use 7 rounds at radius 16 instead;
+- (d) a bigger lever. 8 threads has stayed at ~700 cps (11.4 ms core per chunk) while 1 thread fell
+  to ~9.4 ms, so ~20% is lost to scaling, and the plan's gates are 8-thread numbers.
+
+### E31: merge `origin/perf/noise` at 3362440
+
+Brings 01528de, lane-batched corner columns with hash reuse (noise: -6 to -9% on 1 thread
+against two bases in a 7-round hold). Merged clean as 10c8523. Tests on the box: noise 38,
+chunkgen 192, core 57, biome 6, all passed.
+
+Two sub-agents, both based on this head:
+- `datapath-25`: the fused fill-plus-surface pass. A written design and exactness argument
+  first, then the implementation, building only.
+- `datapath-26`: where 8-thread scaling is lost: per-chunk allocation and the allocator,
+  thread-local memo footprint against Zen 1's caches, the shared corner-column cache, rayon
+  scheduling. Measured with alternating 8-thread holds of 6+ rounds.
