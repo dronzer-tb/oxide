@@ -288,11 +288,64 @@ per-hash `[gx, gy, gz, 0]` table, no cross-sample queue (the cost that sank 11).
 
 | # | What | Hold | Base (ms core/chunk) | Patched | Digest | Verdict |
 |---|---|---|---|---|---|---|
-| 13 (noise-7) | SIMD within one `ImprovedNoise` sample: the 8 corner dot products as two 4-lane vectors (`[d0,d4,d2,d6]`, `[d1,d5,d3,d7]`) from a shared 32-byte-aligned `GRAD4[16]` table of `[g0,g1,g2,0]`, in-lane unpacks only; x-lerp in 256 bits, y-lerp on the 128-bit halves, z-lerp scalar. Same ops and operands per lane, no FMA. 36 noise tests (640k kernel calls and lattice-edge cases with exact `dx == 1.0` and +/-0) and 190+3 chunkgen tests passed | 1 thread, 5 rounds, one exclusive hold | 9.54, 9.98, 9.96, 8.91, 9.21 (mean 9.52) | 9.77, 9.67, 10.22, 9.38, 9.56 (mean 9.72) | a977961a58122047 all ten | **rejected**: behind in 4 of 5 rounds, about +2% core time. A sample is bound by its dependent-load chain (`p[xm]`, `p[a]`, `p[k]`, gradient row), not by its flops. SIMD cuts instructions but not the chain, and the shuffles add latency, while the scalar code already overlaps independent octaves. Patch kept at `docs/perf/wip/noise-7-simd-within-sample.patch` |
+| 13 (noise-7) | SIMD within one `ImprovedNoise` sample: the 8 corner dot products as two 4-lane vectors (`[d0,d4,d2,d6]`, `[d1,d5,d3,d7]`) from a shared 32-byte-aligned `GRAD4[16]` table of `[g0,g1,g2,0]`, in-lane unpacks only; x-lerp in 256 bits, y-lerp on the 128-bit halves, z-lerp scalar. Same ops and operands per lane, no FMA. 36 noise tests (640k kernel calls and lattice-edge cases with exact `dx == 1.0` and +/-0) and 190+3 chunkgen tests passed | 1 thread, 5 rounds, one exclusive hold | 9.54, 9.98, 9.96, 8.91, 9.21 (mean 9.52) | 9.77, 9.67, 10.22, 9.38, 9.56 (mean 9.72) | a977961a58122047 all ten | **inconclusive, not landed**: behind in 4 of 5 rounds, but only +2% core time, inside the ~4% build-to-build floor datapath measured, so one pair of builds cannot decide it. A sample is bound by its dependent-load chain (`p[xm]`, `p[a]`, `p[k]`, gradient row), not by its flops. SIMD cuts instructions but not the chain, and the shuffles add latency, while the scalar code already overlaps independent octaves. Patch kept at `docs/perf/wip/noise-7-simd-within-sample.patch` |
 
 Three ways to vectorise `ImprovedNoise` have now been tried: scalar lanes across corners (5),
-AVX2 across octaves (11) and SIMD within one sample (13). All lose on Zen 1. What remains is
+AVX2 across octaves (11) and SIMD within one sample (13). None wins on Zen 1: 11 lost about 10%,
+and 5 and 13 are within noise of the base. What remains is
 doing fewer samples (cache or skip) or shortening the load chain, not wider arithmetic.
 
 The CORNER counters were identical on all ten runs (hits 63,296, misses 53,728, evictions
 22,220, contended 0), which also confirms the 1-thread counts logged above.
+
+### Measurement floor (auditor, after 13)
+
+Two separately built binaries of the same source can sit ~4% apart on 1 thread (datapath's
+four-way hold; its two-head-build hold is measuring the floor now). Until that floor is known,
+nothing is kept or rejected on a gap under 5% from one pair of builds; every hold includes a
+second fresh build of the base. Of this session's verdicts, 12 (-6.3%, 5/5 rounds) and 9
+(auditor's hold) clear that band; 13 (+2%) does not and is relabelled inconclusive.
+
+## Handover, session 3 (2026-11-15, at ~80% of the usage limit)
+
+Head of `perf/noise`: **8f3738f**. It contains `perf/datapath` 18bb0f9 plus this session's
+kept work, digest `a977961a58122047` throughout:
+- **9** (d2433fb): corner columns shared across chunks. 1 thread -8.6% core per chunk; 8
+  threads +6.5% (mine) and +17% (auditor). Lock contention ruled out (0.1% of acquisitions).
+  Hit rate 0.541, ceiling 0.5625.
+- **12** (ff02449): gated add. Slide bodies are skipped where their gradient is exactly 0.
+  1 thread -6.3%, 5/5 rounds.
+- 8a85270: the column cache's hit, miss, eviction and contention counters, printed when
+  `OXIDE_CORNER_STATS` is set. They cost nothing measurable.
+
+Reference: head 1-thread ~9.5-9.8 ms of core time per chunk at radius 16 (hold 3, noise-7's
+base). The corner grid is ~28% of generation and its noise leaves just over half of that, so this
+crate's share is now ~16% plus small callers (aquifer, surface, climate).
+
+**In flight**: `noise-8` (Opus sub-agent, worktree `/tmp/noise-8`, bench dirs `noise-8`,
+`ab-*` on the box). It batches the corner grid a column at a time (experiment 5's structure,
+patch in `docs/perf/wip/noise-1-lanes.patch`) and reuses the 8 lattice hashes across
+consecutive lanes of one octave when the cell is unchanged (exact: the hashes depend only on
+the cell). It reports a measured reuse rate and a 5-round 1-thread hold against two fresh base
+builds. If the session ends first, its diff will be at `/tmp/noise-8-final.patch`.
+
+**Tooling** (scratchpad, not in the repo; recreate from these descriptions if it is gone):
+- `vps-run.sh <tree> <name> '<cmd>'` syncs a tree to `~/oxide-perf/<name>` and runs the
+  command under `flock -s ~/oxide-perf/.lock nice -n 10`.
+- `ab.sh <rounds> <threads> <radius> label=tree ...` builds each tree under the shared lock and
+  copies the binary to `~/oxide-perf/ab-bin/<label>`. Then, in one `flock -x` hold, it alternates
+  them, printing `round r label t=<unix> BENCH... CORNER...` and the load average at both ends.
+- The profiler is an LD_PRELOAD SIGPROF sampler in `~/oxide-perf/noise-prof` (`prof2.so`
+  frame-pointer stacks; `sym2.py`, `ana.py`, `ana2.py`). Build with
+  `-C force-frame-pointers=yes` and `CARGO_TARGET_DIR=../noise-prof/target`, and delete that
+  target afterwards (disk).
+- On the box, delete each scratch dir as soon as its experiment is logged.
+
+**Next three things to try**:
+1. Finish noise-8. If hash reuse wins, extend it to the per-block and aquifer callers.
+2. Fewer samples per corner: the noodle-cave toggle (slot 1) and slots 2-4 are four single-
+   octave grids built in every chunk (~10% of the noise-leaf work). A per-cell lazy build saves
+   under 1% (measured above), so only revisit this if the corner grid shrinks further.
+3. With the noise leaves near their Zen 1 floor, the remaining large costs are datapath's
+   (surface, aquifer, fill). Help there through narrow additive APIs in this crate, like the
+   y-independence predicate datapath's E27 needs, rather than with more leaf micro-work.
