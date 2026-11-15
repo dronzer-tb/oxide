@@ -30,3 +30,24 @@ it is the next commit.
 compress + write, each stage timed) with a `BENCH` line and `scripts/bench-pregen-vps.sh`.
 Output digest is blake3 over every chunk's uncompressed NBT, so any later serialiser or
 pipeline change has a byte-exact gate of its own.
+
+**Kept: real pregeneration** (oxide-pregen with `--datapack`, 41f0857). Terrain at radius+2,
+decoration writes at radius+1, finished chunks at radius in `decorated_chunk`'s order,
+heightmaps from `oxide_chunkgen::decorate::heightmaps` (track item 4's decorated
+heightmaps: done), one region write each. `scripts/bench-pregen-vps.sh [name] [radius]
+[threads] [pregen args]` gives the track's number; its rows end `pregen=1` in
+bench-pipeline.tsv. Digest is blake3 over every chunk's uncompressed NBT.
+
+    BENCH chunks=1089 threads=8 secs=15.622 cps=69.7 ms_per_chunk_core=114.76 digest=df701ee858e2bdd3 generate_ms=9474 decorate_ms=5813 serialise_ms=110 compress_ms=198 write_ms=27 compression=zlib6 mb_disk=9.9
+    BENCH chunks=1089 threads=8 secs=20.701 cps=52.6 ms_per_chunk_core=152.07 digest=df701ee858e2bdd3 generate_ms=12515 decorate_ms=7593 serialise_ms=299 compress_ms=266 write_ms=29 compression=zlib6 mb_disk=9.9
+
+(The second ran while the box was still busy, before the Minecraft servers were stopped.)
+Reading: at radius 16 generate is 1369 terrain chunks for 1089 finished (26% edge cost,
+which shrinks with area), decoration is 37% of the path, and serialise + compress + write
+together are about 2%. zlib is ~1.5 ms core per chunk, not the ~3 ms the track file
+guessed. So the non-terrain win in this track is decoration, which lives in
+`oxide-chunkgen/src/decorator/` (outside datapath's ownership per PLAN, and not ours).
+
+**Kept: lock discipline** (d5f0505, 813333c). New bench-vps.sh from feat/native-decoration;
+vps-cargo.sh holds the lock shared with nice 10; bench-pregen-vps.sh builds shared and
+times exclusive.
