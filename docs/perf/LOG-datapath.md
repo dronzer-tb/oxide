@@ -1184,3 +1184,7 @@ Both are applied onto 0823fd8; they touch different files from each other and fr
 Combined tests: biome 7, chunkgen 193, noise 34, all passed. The combined head itself has not yet
 been through a hold against 0823fd8. That is the first thing for the next session, together
 with moving E27's y-independence check into `oxide-noise`.
+
+8-thread row for 841a929 (combined head): `BENCH chunks=1089 threads=8 secs=1.552 cps=701.8 ms_per_chunk_core=11.40 digest=a977961a58122047`.
+Level with 741d96f's 701.5. At 8 threads one run spreads 15-25%, so the 1-thread holds above are
+the measure of record. Box dirs `datapath-20`, `-21`, `-22` and `-h2` are deleted; only `datapath` remains.
