@@ -40,7 +40,7 @@ pub enum RouterSlot {
 
 impl RouterSlot {
     /// The slots in a fixed order, which is the order their compiled programs are stored in.
-    const ALL: [RouterSlot; 16] = [
+    const ALL: [RouterSlot; crate::cache::MEMO_SLOTS] = [
         RouterSlot::Barrier,
         RouterSlot::FluidLevelFloodedness,
         RouterSlot::FluidLevelSpread,
@@ -226,7 +226,55 @@ impl NoiseRouterEvaluator {
             blended: &self.blended,
             caches: Some(caches),
         };
-        self.programs[slot.index()].run(FunctionContext { x, y, z }, &cx)
+        let program = &self.programs[slot.index()];
+        let ctx = FunctionContext { x, y, z };
+        // A program that is only a blend of `interpolated` nodes (`final_density`) is evaluated
+        // a whole cell at a time and then read back per block; see `Program::run_cell`.
+        if program.cell_batchable() {
+            if let Some(value) = caches.sample_via_cell(slot.index(), program, ctx, &cx) {
+                return value;
+            }
+        }
+        program.run(ctx, &cx)
+    }
+
+    /// `slot` at every block of one cell of `caches`, for a caller that fills cell by cell and
+    /// wants no per-block call at all. `out` must hold [`Self::cell_len`] values and is written
+    /// in lane order `(local_y * cell_width + local_z) * cell_width + local_x`, each value
+    /// bit-identical to [`Self::sample_in_chunk`] at that block.
+    ///
+    /// Returns `false`, leaving `out` untouched, when `slot`'s program cannot be evaluated this
+    /// way (it reads something other than `interpolated` nodes) or the cell is outside the
+    /// chunk; the caller then falls back to per-block sampling.
+    pub fn sample_cell(
+        &self,
+        caches: &ChunkCaches,
+        slot: RouterSlot,
+        cell_x: i32,
+        cell_y: i32,
+        cell_z: i32,
+        out: &mut [f64],
+    ) -> bool {
+        let program = &self.programs[slot.index()];
+        if !program.cell_batchable()
+            || !caches.cells_tile_chunk()
+            || !caches.has_cell(cell_x, cell_y, cell_z)
+            || out.len() != caches.cell_lanes()
+        {
+            return false;
+        }
+        let cx = RunCtx {
+            noises: &self.noises,
+            blended: &self.blended,
+            caches: Some(caches),
+        };
+        program.run_cell(caches, (cell_x, cell_y, cell_z), &cx, out);
+        true
+    }
+
+    /// Blocks per cell for `caches`: the length [`Self::sample_cell`] writes.
+    pub fn cell_len(&self, caches: &ChunkCaches) -> usize {
+        caches.cell_lanes()
     }
 
     /// The `interpolated` cache slot that `slot`'s program resolves through, when its result is
@@ -349,6 +397,143 @@ mod tests {
         for seed in [0i64, 1, -1, i64::MAX, i64::MIN] {
             let router = NoiseRouterEvaluator::new(seed, &settings, &df_registry, &noise_registry);
             let _ = router.sample(RouterSlot::Continents, 0, 0, 0);
+        }
+    }
+
+    /// A `final_density`-shaped program: `add(squeeze(interpolated(a)), range_choice(
+    /// interpolated(b), .., const, interpolated(c) + gradient))`, over blended noise so the
+    /// corner grids vary along every axis.
+    fn interpolated_settings() -> NoiseGeneratorSettings {
+        use oxide_datapack::DensityFunctionObject as O;
+        fn obj(o: O) -> DensityFunction {
+            DensityFunction::Object(Box::new(o))
+        }
+        fn blended(xz_scale: f64) -> DensityFunction {
+            obj(O::Interpolated {
+                argument: obj(O::OldBlendedNoise {
+                    xz_scale,
+                    y_scale: 0.125,
+                    xz_factor: 80.0,
+                    y_factor: 160.0,
+                    smear_scale_multiplier: 8.0,
+                }),
+            })
+        }
+        let mut settings = minimal_settings();
+        // `add`, not vanilla's `min`, at the top so a test can tell from the result which
+        // `range_choice` branch a block took (the in-range constant dominates the sum).
+        settings.noise_router.final_density = obj(O::Add {
+            argument1: obj(O::Squeeze {
+                argument: blended(0.25),
+            }),
+            argument2: obj(O::RangeChoice {
+                input: blended(0.5),
+                min_inclusive: -1000000.0,
+                max_exclusive: 0.0,
+                when_in_range: DensityFunction::Constant(64.0),
+                when_out_of_range: obj(O::Add {
+                    argument1: blended(1.0),
+                    argument2: obj(O::YClampedGradient {
+                        from_y: -64,
+                        to_y: 320,
+                        from_value: 0.2,
+                        to_value: -0.2,
+                    }),
+                }),
+            }),
+        });
+        settings
+    }
+
+    /// The whole-cell path must not change a single bit: every block of a chunk, sampled
+    /// through the cell memo and through `sample_cell`, against plain per-block evaluation.
+    #[test]
+    fn whole_cell_evaluation_is_bit_identical_to_per_block() {
+        let settings = interpolated_settings();
+        let df_registry = Registry::default();
+        let noise_registry = Registry::default();
+        let router = NoiseRouterEvaluator::new(7, &settings, &df_registry, &noise_registry);
+        let program = &router.programs[RouterSlot::FinalDensity.index()];
+        assert!(program.cell_batchable());
+
+        for (chunk_x, chunk_z) in [(0, 0), (-3, 5)] {
+            let memo_caches = router.chunk_caches(chunk_x, chunk_z);
+            let plain_caches = router.chunk_caches(chunk_x, chunk_z);
+            let cell_caches = router.chunk_caches(chunk_x, chunk_z);
+            let cx = RunCtx {
+                noises: &router.noises,
+                blended: &router.blended,
+                caches: Some(&plain_caches),
+            };
+            let lanes = router.cell_len(&cell_caches);
+            assert_eq!(lanes, 4 * 8 * 4);
+            // Every cell of the chunk up front, indexed [cell_y][cell_z][cell_x].
+            let mut cells = vec![0.0; 48 * 4 * 4 * lanes];
+            for (index, cell) in cells.chunks_mut(lanes).enumerate() {
+                let (cell_y, cell_z, cell_x) = (index / 16, index / 4 % 4, index % 4);
+                assert!(router.sample_cell(
+                    &cell_caches,
+                    RouterSlot::FinalDensity,
+                    cell_x as i32,
+                    cell_y as i32,
+                    cell_z as i32,
+                    cell
+                ));
+            }
+            let (mut in_range, mut out_of_range) = (0, 0);
+            for y in -64..320 {
+                for local_z in 0..16 {
+                    for local_x in 0..16 {
+                        let (x, z) = (chunk_x * 16 + local_x, chunk_z * 16 + local_z);
+                        let expected = program.run(FunctionContext { x, y, z }, &cx);
+                        let via_memo =
+                            router.sample_in_chunk(&memo_caches, RouterSlot::FinalDensity, x, y, z);
+                        assert_eq!(expected.to_bits(), via_memo.to_bits(), "memo at {x} {y} {z}");
+
+                        let (cell_x, cell_y, cell_z) = (local_x / 4, (y + 64) / 8, local_z / 4);
+                        let cell = ((cell_y * 4 + cell_z) * 4 + cell_x) as usize * lanes;
+                        let lane = (((y + 64) % 8 * 4 + local_z % 4) * 4 + local_x % 4) as usize;
+                        assert_eq!(
+                            expected.to_bits(),
+                            cells[cell + lane].to_bits(),
+                            "cell at {x} {y} {z}"
+                        );
+
+                        if expected > 32.0 {
+                            in_range += 1;
+                        } else {
+                            out_of_range += 1;
+                        }
+                    }
+                }
+            }
+            // Both `range_choice` branches, and cells that mix them, must have been exercised.
+            assert!(in_range > 1000 && out_of_range > 1000, "{in_range} / {out_of_range}");
+        }
+    }
+
+    /// Outside the chunk the memo does not apply and sampling falls back to the per-block path.
+    #[test]
+    fn sampling_outside_the_chunk_matches_per_block() {
+        let settings = interpolated_settings();
+        let df_registry = Registry::default();
+        let noise_registry = Registry::default();
+        let router = NoiseRouterEvaluator::new(7, &settings, &df_registry, &noise_registry);
+        let program = &router.programs[RouterSlot::FinalDensity.index()];
+        let caches = router.chunk_caches(0, 0);
+        let plain = router.chunk_caches(0, 0);
+        let cx = RunCtx {
+            noises: &router.noises,
+            blended: &router.blended,
+            caches: Some(&plain),
+        };
+        for (x, y, z) in [(16, 0, 3), (-1, 10, 0), (4, 320, 4), (4, -65, 4), (5, 9, 16)] {
+            assert_eq!(
+                program.run(FunctionContext { x, y, z }, &cx).to_bits(),
+                router
+                    .sample_in_chunk(&caches, RouterSlot::FinalDensity, x, y, z)
+                    .to_bits()
+            );
         }
     }
 }

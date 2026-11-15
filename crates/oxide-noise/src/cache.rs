@@ -26,6 +26,13 @@ type LastSample = ((i32, i32, i32), f64);
 const COLUMN_SPAN: usize = 17;
 const COLUMNS: usize = COLUMN_SPAN * COLUMN_SPAN;
 
+/// Widest cell the whole-cell evaluation keeps its per-row scratch on the stack for. Vanilla
+/// cells are 4 or 8 blocks wide.
+const MAX_CELL_WIDTH: usize = 16;
+
+/// How many programs can each keep a cell memo: one per router slot.
+pub(crate) const MEMO_SLOTS: usize = 16;
+
 pub struct ChunkCaches {
     /// Horizontal cell size in blocks (`size_horizontal * 4` in vanilla's noise settings).
     cell_width: i32,
@@ -57,6 +64,29 @@ pub struct ChunkCaches {
     two_d: RefCell<Vec<Option<Vec<Option<f64>>>>>,
     /// Slot -> (last position, value).
     once: RefCell<Vec<Option<LastSample>>>,
+
+    /// Blocks per cell: `cell_width * cell_height * cell_width`.
+    cell_lanes: usize,
+    /// Whether this chunk's geometry fits [`CellMemo`]: cells tile the chunk exactly and are
+    /// few and small enough for its fixed-size bookkeeping. True for every vanilla setting.
+    memo_ok: bool,
+    /// One memo per router slot, so two programs sampled alternately (the ore-vein pass reads
+    /// `vein_toggle` and `vein_ridged` at the same block) do not evict each other.
+    memos: RefCell<[CellMemo; MEMO_SLOTS]>,
+}
+
+/// Per-block values of one cell-batchable program for one horizontal layer of cells.
+///
+/// A chunk fill asks for `final_density` block by block, y outermost, so at any moment it is
+/// working through a single layer of cells. Each cell of that layer is evaluated whole on first
+/// touch (see `Program::run_cell`) and the rest of its blocks are then plain loads.
+struct CellMemo {
+    /// The layer the values belong to; `i32::MIN` when empty.
+    cell_y: i32,
+    /// Bit `cell_z * cells_x + cell_x` set when that cell's values are filled.
+    valid: u32,
+    /// `cells_x * cells_z` cells of `cell_lanes` values each; allocated on first use.
+    values: Vec<f64>,
 }
 
 impl ChunkCaches {
@@ -141,6 +171,14 @@ impl ChunkCaches {
     ) -> Self {
         let cell_width = (size_horizontal * 4).max(1);
         let cell_height = (size_vertical * 4).max(1);
+        let cells_x = (16 / cell_width) as usize;
+        let cells_y = (height / cell_height) as usize;
+        let cell_lanes = (cell_width * cell_height * cell_width) as usize;
+        let memo_ok = cell_width as usize <= MAX_CELL_WIDTH
+            && cells_x as i32 * cell_width == 16
+            && cells_y as i32 * cell_height == height
+            && cells_x * cells_x <= 32
+            && cell_lanes <= 4096;
         Self {
             cell_width,
             cell_width_log2: log2_exact(cell_width),
@@ -149,14 +187,186 @@ impl ChunkCaches {
             inv_cell_width: 1.0 / cell_width as f64,
             inv_cell_height: 1.0 / cell_height as f64,
             min_y,
-            cells_x: (16 / cell_width) as usize,
-            cells_y: (height / cell_height) as usize,
-            cells_z: (16 / cell_width) as usize,
+            cells_x,
+            cells_y,
+            cells_z: cells_x,
             origin_x: chunk_min_x,
             origin_z: chunk_min_z,
             interpolated: RefCell::new((0..slots.interpolated).map(|_| None).collect()),
             two_d: RefCell::new((0..slots.two_d).map(|_| None).collect()),
             once: RefCell::new(vec![None; slots.once]),
+            cell_lanes,
+            memo_ok,
+            memos: RefCell::new(std::array::from_fn(|_| CellMemo {
+                cell_y: i32::MIN,
+                valid: 0,
+                values: Vec::new(),
+            })),
+        }
+    }
+
+    /// Blocks per cell, which is the length [`Self::fill_cell_interpolated`] writes.
+    pub(crate) fn cell_lanes(&self) -> usize {
+        self.cell_lanes
+    }
+
+    /// Whether `(cell_x, cell_y, cell_z)` is a cell of this chunk.
+    pub(crate) fn has_cell(&self, cell_x: i32, cell_y: i32, cell_z: i32) -> bool {
+        (cell_x as u32) < self.cells_x as u32
+            && (cell_y as u32) < self.cells_y as u32
+            && (cell_z as u32) < self.cells_z as u32
+    }
+
+    /// Whether whole-cell evaluation is available for this chunk's geometry.
+    pub(crate) fn cells_tile_chunk(&self) -> bool {
+        self.memo_ok
+    }
+
+    /// `program`'s value at `ctx`, through the cell memo: the whole cell containing `ctx` is
+    /// evaluated on first touch and remembered while the caller stays in that layer of cells.
+    /// `None` when the position is outside this chunk or the geometry does not fit, in which
+    /// case the caller evaluates the position on its own.
+    ///
+    /// `program` must be cell-batchable, and `memo_slot` (below [`MEMO_SLOTS`]) must always be
+    /// passed with the same program. Values are bit-identical to `program.run(ctx, ..)`.
+    pub(crate) fn sample_via_cell(
+        &self,
+        memo_slot: usize,
+        program: &Program,
+        ctx: FunctionContext,
+        cx: &RunCtx,
+    ) -> Option<f64> {
+        if !self.memo_ok {
+            return None;
+        }
+        let local_x = ctx.x - self.origin_x;
+        let local_z = ctx.z - self.origin_z;
+        let rel_y = ctx.y - self.min_y;
+        if local_x as u32 >= 16
+            || local_z as u32 >= 16
+            || rel_y as u32 >= (self.cells_y as i32 * self.cell_height) as u32
+        {
+            return None;
+        }
+        let cell_x = div_cell(local_x, self.cell_width, self.cell_width_log2);
+        let cell_z = div_cell(local_z, self.cell_width, self.cell_width_log2);
+        let cell_y = div_cell(rel_y, self.cell_height, self.cell_height_log2);
+        let lanes = self.cell_lanes;
+        let cell_index = cell_z as usize * self.cells_x + cell_x as usize;
+        let lane = (((rel_y - cell_y * self.cell_height) * self.cell_width
+            + (local_z - cell_z * self.cell_width))
+            * self.cell_width
+            + (local_x - cell_x * self.cell_width)) as usize;
+
+        {
+            let memo = &self.memos.borrow()[memo_slot];
+            if memo.cell_y == cell_y && memo.valid & (1 << cell_index) != 0 {
+                return Some(memo.values[cell_index * lanes + lane]);
+            }
+        }
+
+        // Taken out for the evaluation, which reads the corner grids but never the memos.
+        let mut values = std::mem::take(&mut self.memos.borrow_mut()[memo_slot].values);
+        if values.is_empty() {
+            values = vec![0.0; self.cells_x * self.cells_z * lanes];
+        }
+        program.run_cell(
+            self,
+            (cell_x, cell_y, cell_z),
+            cx,
+            &mut values[cell_index * lanes..(cell_index + 1) * lanes],
+        );
+        let value = values[cell_index * lanes + lane];
+
+        let memo = &mut self.memos.borrow_mut()[memo_slot];
+        if memo.cell_y != cell_y {
+            memo.cell_y = cell_y;
+            memo.valid = 0;
+        }
+        memo.valid |= 1 << cell_index;
+        memo.values = values;
+        Some(value)
+    }
+
+    /// One `interpolated` slot at every block of the cell `(cell_x, cell_y, cell_z)`, written
+    /// to `dst` in lane order `(local_y * cell_width + local_z) * cell_width + local_x`.
+    ///
+    /// Bit-identical to [`Self::interpolated`] at each block: `lerp3` blends along x, then y,
+    /// then z, and this performs those same lerps on the same operands. The x stage depends
+    /// only on `local_x` and the y stage only on `(local_x, local_y)`, so they are computed
+    /// once and reused -- 1.6 lerps per block instead of 7.
+    pub(crate) fn fill_cell_interpolated(
+        &self,
+        slot: usize,
+        argument: &Program,
+        cell: (i32, i32, i32),
+        cx: &RunCtx,
+        dst: &mut [f64],
+    ) {
+        self.ensure_corner_grid(slot, argument, cx);
+        let grids = self.interpolated.borrow();
+        let grid = grids[slot].as_ref().expect("just built");
+
+        let cw = self.cell_width as usize;
+        let ch = self.cell_height as usize;
+        debug_assert!(cw <= MAX_CELL_WIDTH && dst.len() == cw * ch * cw);
+        let x_stride = 1usize;
+        let z_stride = self.cells_x + 1;
+        let y_stride = z_stride * (self.cells_z + 1);
+        let base = cell.1 as usize * y_stride + cell.2 as usize * z_stride + cell.0 as usize;
+        let v000 = grid[base];
+        let v100 = grid[base + x_stride];
+        let v010 = grid[base + y_stride];
+        let v110 = grid[base + y_stride + x_stride];
+        let v001 = grid[base + z_stride];
+        let v101 = grid[base + z_stride + x_stride];
+        let v011 = grid[base + y_stride + z_stride];
+        let v111 = grid[base + y_stride + z_stride + x_stride];
+
+        let mut x00 = [0.0f64; MAX_CELL_WIDTH];
+        let mut x10 = [0.0f64; MAX_CELL_WIDTH];
+        let mut x01 = [0.0f64; MAX_CELL_WIDTH];
+        let mut x11 = [0.0f64; MAX_CELL_WIDTH];
+        for lx in 0..cw {
+            let dx = lx as f64 * self.inv_cell_width;
+            x00[lx] = lerp(dx, v000, v100);
+            x10[lx] = lerp(dx, v010, v110);
+            x01[lx] = lerp(dx, v001, v101);
+            x11[lx] = lerp(dx, v011, v111);
+        }
+        for ly in 0..ch {
+            let dy = ly as f64 * self.inv_cell_height;
+            let mut y0 = [0.0f64; MAX_CELL_WIDTH];
+            let mut y1 = [0.0f64; MAX_CELL_WIDTH];
+            for lx in 0..cw {
+                y0[lx] = lerp(dy, x00[lx], x10[lx]);
+                y1[lx] = lerp(dy, x01[lx], x11[lx]);
+            }
+            for lz in 0..cw {
+                let dz = lz as f64 * self.inv_cell_width;
+                let row = &mut dst[(ly * cw + lz) * cw..(ly * cw + lz + 1) * cw];
+                for lx in 0..cw {
+                    row[lx] = lerp(dz, y0[lx], y1[lx]);
+                }
+            }
+        }
+    }
+
+    /// `f(block_y)` for every block of a cell in layer `cell_y`, in the same lane order.
+    pub(crate) fn fill_cell_by_y(&self, cell_y: i32, dst: &mut [f64], f: impl Fn(i32) -> f64) {
+        let per_y = (self.cell_width * self.cell_width) as usize;
+        let base_y = self.min_y + cell_y * self.cell_height;
+        for (ly, row) in dst.chunks_mut(per_y).enumerate() {
+            row.fill(f(base_y + ly as i32));
+        }
+    }
+
+    fn ensure_corner_grid(&self, slot: usize, argument: &Program, cx: &RunCtx) {
+        if self.interpolated.borrow()[slot].is_none() {
+            // Built outside the borrow: evaluating a corner recurses back through the evaluator,
+            // which may consult this same cache.
+            let grid = self.build_corner_grid(argument, cx);
+            self.interpolated.borrow_mut()[slot] = Some(grid);
         }
     }
 
@@ -192,12 +402,7 @@ impl ChunkCaches {
         ctx: FunctionContext,
         cx: &RunCtx,
     ) -> f64 {
-        if self.interpolated.borrow()[slot].is_none() {
-            // Built outside the borrow: evaluating a corner recurses back through the evaluator,
-            // which may consult this same cache.
-            let grid = self.build_corner_grid(argument, cx);
-            self.interpolated.borrow_mut()[slot] = Some(grid);
-        }
+        self.ensure_corner_grid(slot, argument, cx);
 
         let local_x = ctx.x - self.origin_x;
         let local_z = ctx.z - self.origin_z;

@@ -182,6 +182,49 @@ pub(crate) enum CompiledSplineValue {
 /// A lowered density function. The last instruction's register is the result.
 pub(crate) struct Program {
     ops: Vec<Op>,
+    /// Whether [`Program::run_cell`] can evaluate this program for a whole cell at once: its
+    /// only position-dependent leaves are `interpolated` caches and y gradients. True of
+    /// `final_density` in every vanilla-shaped router, which is the program a chunk fill runs
+    /// once per block.
+    cell_batchable: bool,
+}
+
+/// See [`Program::cell_batchable`]. Requires at least one `interpolated` leaf: a program
+/// without one gains nothing from being evaluated a cell at a time.
+fn is_cell_batchable(ops: &[Op]) -> bool {
+    fn all_supported(ops: &[Op]) -> bool {
+        ops.iter().all(|op| match op {
+            Op::Const(_)
+            | Op::YClampedGradient(_)
+            | Op::Add(..)
+            | Op::Mul(..)
+            | Op::Min(..)
+            | Op::Max(..)
+            | Op::Abs(_)
+            | Op::Square(_)
+            | Op::Cube(_)
+            | Op::HalfNegative(_)
+            | Op::QuarterNegative(_)
+            | Op::Squeeze(_)
+            | Op::Invert(_)
+            | Op::Clamp(_) => true,
+            Op::Cache { kind, .. } => *kind == CacheKind::Interpolated,
+            Op::RangeChoice(r) => {
+                all_supported(&r.when_in_range.ops) && all_supported(&r.when_out_of_range.ops)
+            }
+            _ => false,
+        })
+    }
+    fn has_interpolated(ops: &[Op]) -> bool {
+        ops.iter().any(|op| match op {
+            Op::Cache { kind, .. } => *kind == CacheKind::Interpolated,
+            Op::RangeChoice(r) => {
+                has_interpolated(&r.when_in_range.ops) || has_interpolated(&r.when_out_of_range.ops)
+            }
+            _ => false,
+        })
+    }
+    all_supported(ops) && has_interpolated(ops)
 }
 
 impl Program {
@@ -208,43 +251,250 @@ pub(crate) struct RunCtx<'a> {
 const INLINE_REGISTERS: usize = 16;
 
 impl Program {
-    /// One line per instruction, for diagnosing why a shortcut does or does not apply.
-    pub(crate) fn dump(&self) -> Vec<String> {
-        self.ops
-            .iter()
-            .enumerate()
-            .map(|(i, op)| {
-                let name = match op {
-                    Op::Const(v) => return format!("{i:3}: Const({v})"),
-                    Op::Noise(_) => "Noise",
-                    Op::ShiftedNoise(_) => "ShiftedNoise",
-                    Op::Add(..) => "Add",
-                    Op::Mul(..) => "Mul",
-                    Op::Min(..) => "Min",
-                    Op::Max(..) => "Max",
-                    Op::Squeeze(_) => "Squeeze",
-                    Op::Clamp(_) => "Clamp",
-                    Op::Spline(_) => "Spline",
-                    Op::RangeChoice(_) => "RangeChoice",
-                    Op::Shift { .. } => "Shift",
-                    Op::OldBlendedNoise(_) => "OldBlendedNoise",
-                    Op::WeirdScaledSampler(_) => "WeirdScaledSampler",
-                    Op::YClampedGradient(_) => "YClampedGradient",
-                    Op::Abs(_) => "Abs",
-                    Op::Square(_) => "Square",
-                    Op::Cube(_) => "Cube",
-                    Op::HalfNegative(_) => "HalfNegative",
-                    Op::QuarterNegative(_) => "QuarterNegative",
-                    Op::Invert(_) => "Invert",
-                    Op::IntervalSelect(_) => "IntervalSelect",
-                    Op::FindTopSurface(_) => "FindTopSurface",
-                    Op::Cache { kind, slot, .. } => {
-                        return format!("{i:3}: Cache(kind={kind:?}, slot={slot})")
+    /// Appends a byte string that is equal for two programs exactly when they are structurally
+    /// identical: same instructions, same constants bit for bit, same noises, same nested
+    /// programs. Nested cache nodes contribute their `(kind, slot)`, which is already canonical
+    /// because slots are themselves assigned by fingerprint, bottom up.
+    fn fingerprint(&self, out: &mut Vec<u8>) {
+        fn u(out: &mut Vec<u8>, v: u32) {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        fn f(out: &mut Vec<u8>, v: f64) {
+            out.extend_from_slice(&v.to_bits().to_le_bytes());
+        }
+        fn spline(out: &mut Vec<u8>, s: &CompiledSpline) {
+            s.coordinate.fingerprint(out);
+            u(out, s.points.len() as u32);
+            for p in &s.points {
+                u(out, p.location.to_bits());
+                u(out, p.derivative.to_bits());
+                match &p.value {
+                    CompiledSplineValue::Constant(c) => {
+                        out.push(0);
+                        u(out, c.to_bits());
                     }
-                };
-                format!("{i:3}: {name}")
-            })
-            .collect()
+                    CompiledSplineValue::Spline(inner) => {
+                        out.push(1);
+                        spline(out, inner);
+                    }
+                }
+            }
+        }
+
+        u(out, self.ops.len() as u32);
+        for op in &self.ops {
+            match op {
+                Op::Const(v) => {
+                    out.push(0);
+                    f(out, *v);
+                }
+                Op::Noise(n) => {
+                    out.push(1);
+                    u(out, n.noise);
+                    f(out, n.xz_scale);
+                    f(out, n.y_scale);
+                }
+                Op::ShiftedNoise(n) => {
+                    out.push(2);
+                    u(out, n.noise);
+                    f(out, n.xz_scale);
+                    f(out, n.y_scale);
+                    u(out, n.shift_x);
+                    u(out, n.shift_y);
+                    u(out, n.shift_z);
+                }
+                Op::Shift { noise, kind } => {
+                    out.push(3);
+                    u(out, *noise);
+                    out.push(*kind as u8);
+                }
+                Op::OldBlendedNoise(p) => {
+                    out.push(4);
+                    f(out, p.xz_scale);
+                    f(out, p.y_scale);
+                    f(out, p.xz_factor);
+                    f(out, p.y_factor);
+                    f(out, p.smear_scale_multiplier);
+                }
+                Op::WeirdScaledSampler(w) => {
+                    out.push(5);
+                    u(out, w.input);
+                    u(out, w.noise);
+                    out.extend_from_slice(format!("{:?};", w.mapper).as_bytes());
+                }
+                Op::YClampedGradient(g) => {
+                    out.push(6);
+                    u(out, g.from_y as u32);
+                    u(out, g.to_y as u32);
+                    f(out, g.from_value);
+                    f(out, g.to_value);
+                }
+                Op::Add(a, b) | Op::Mul(a, b) | Op::Min(a, b) | Op::Max(a, b) => {
+                    out.push(match op {
+                        Op::Add(..) => 7,
+                        Op::Mul(..) => 8,
+                        Op::Min(..) => 9,
+                        _ => 10,
+                    });
+                    u(out, *a);
+                    u(out, *b);
+                }
+                Op::Abs(a)
+                | Op::Square(a)
+                | Op::Cube(a)
+                | Op::HalfNegative(a)
+                | Op::QuarterNegative(a)
+                | Op::Squeeze(a)
+                | Op::Invert(a) => {
+                    out.push(match op {
+                        Op::Abs(_) => 11,
+                        Op::Square(_) => 12,
+                        Op::Cube(_) => 13,
+                        Op::HalfNegative(_) => 14,
+                        Op::QuarterNegative(_) => 15,
+                        Op::Squeeze(_) => 16,
+                        _ => 17,
+                    });
+                    u(out, *a);
+                }
+                Op::Clamp(c) => {
+                    out.push(18);
+                    u(out, c.input);
+                    f(out, c.min);
+                    f(out, c.max);
+                }
+                Op::Spline(s) => {
+                    out.push(19);
+                    spline(out, s);
+                }
+                Op::RangeChoice(r) => {
+                    out.push(20);
+                    u(out, r.input);
+                    f(out, r.min_inclusive);
+                    f(out, r.max_exclusive);
+                    r.when_in_range.fingerprint(out);
+                    r.when_out_of_range.fingerprint(out);
+                }
+                Op::IntervalSelect(s) => {
+                    out.push(21);
+                    u(out, s.input);
+                    u(out, s.thresholds.len() as u32);
+                    for t in &s.thresholds {
+                        f(out, *t);
+                    }
+                    u(out, s.functions.len() as u32);
+                    for program in &s.functions {
+                        program.fingerprint(out);
+                    }
+                }
+                Op::FindTopSurface(t) => {
+                    out.push(22);
+                    u(out, t.cell_height as u32);
+                    u(out, t.lower_bound as u32);
+                    u(out, t.upper_bound);
+                    t.density.fingerprint(out);
+                }
+                Op::Cache { kind, slot, .. } => {
+                    out.push(23);
+                    out.push(*kind as u8);
+                    u(out, *slot);
+                }
+            }
+        }
+    }
+
+    /// One line per instruction, for diagnosing why a shortcut does or does not apply. Nested
+    /// programs (lazy branches, cache arguments, spline coordinates) are listed indented under
+    /// the instruction that owns them.
+    pub(crate) fn dump(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        self.dump_into(0, &mut out);
+        out
+    }
+
+    fn dump_into(&self, depth: usize, out: &mut Vec<String>) {
+        let pad = "  ".repeat(depth);
+        for (i, op) in self.ops.iter().enumerate() {
+            let mut nested: Vec<(&str, &Program)> = Vec::new();
+            let text = match op {
+                Op::Const(v) => format!("Const({v})"),
+                Op::Noise(n) => format!("Noise(#{} xz={} y={})", n.noise, n.xz_scale, n.y_scale),
+                Op::ShiftedNoise(n) => format!(
+                    "ShiftedNoise(#{} xz={} y={} shift=r{},r{},r{})",
+                    n.noise, n.xz_scale, n.y_scale, n.shift_x, n.shift_y, n.shift_z
+                ),
+                Op::Add(a, b) => format!("Add(r{a}, r{b})"),
+                Op::Mul(a, b) => format!("Mul(r{a}, r{b})"),
+                Op::Min(a, b) => format!("Min(r{a}, r{b})"),
+                Op::Max(a, b) => format!("Max(r{a}, r{b})"),
+                Op::Squeeze(a) => format!("Squeeze(r{a})"),
+                Op::Clamp(c) => format!("Clamp(r{}, {}, {})", c.input, c.min, c.max),
+                Op::Spline(s) => {
+                    fn walk<'a>(s: &'a CompiledSpline, nested: &mut Vec<(&'static str, &'a Program)>) {
+                        nested.push(("coordinate", &s.coordinate));
+                        for p in &s.points {
+                            if let CompiledSplineValue::Spline(inner) = &p.value {
+                                walk(inner, nested);
+                            }
+                        }
+                    }
+                    let mut all = Vec::new();
+                    walk(s, &mut all);
+                    let text = format!("Spline({} coordinate programs)", all.len());
+                    // Listing every nested coordinate drowns the output; the first is enough to
+                    // see what kind of program a spline coordinate is.
+                    nested.extend(all.into_iter().take(1));
+                    text
+                }
+                Op::RangeChoice(r) => {
+                    nested.push(("in_range", &r.when_in_range));
+                    nested.push(("out_of_range", &r.when_out_of_range));
+                    format!(
+                        "RangeChoice(r{} in [{}, {}))",
+                        r.input, r.min_inclusive, r.max_exclusive
+                    )
+                }
+                Op::Shift { noise, kind } => format!("Shift(#{noise} {kind:?})"),
+                Op::OldBlendedNoise(_) => "OldBlendedNoise".to_string(),
+                Op::WeirdScaledSampler(_) => "WeirdScaledSampler".to_string(),
+                Op::YClampedGradient(g) => format!(
+                    "YClampedGradient({}..{} -> {}..{})",
+                    g.from_y, g.to_y, g.from_value, g.to_value
+                ),
+                Op::Abs(a) => format!("Abs(r{a})"),
+                Op::Square(a) => format!("Square(r{a})"),
+                Op::Cube(a) => format!("Cube(r{a})"),
+                Op::HalfNegative(a) => format!("HalfNegative(r{a})"),
+                Op::QuarterNegative(a) => format!("QuarterNegative(r{a})"),
+                Op::Invert(a) => format!("Invert(r{a})"),
+                Op::IntervalSelect(s) => {
+                    for f in &s.functions {
+                        nested.push(("function", f));
+                    }
+                    format!("IntervalSelect(r{} {:?})", s.input, s.thresholds)
+                }
+                Op::FindTopSurface(f) => {
+                    nested.push(("density", &f.density));
+                    format!(
+                        "FindTopSurface(upper=r{} lower={} step={})",
+                        f.upper_bound, f.lower_bound, f.cell_height
+                    )
+                }
+                Op::Cache {
+                    kind,
+                    slot,
+                    argument,
+                } => {
+                    nested.push(("argument", argument));
+                    format!("Cache(kind={kind:?}, slot={slot})")
+                }
+            };
+            out.push(format!("{pad}{i:3}: {text}"));
+            for (label, program) in nested {
+                out.push(format!("{pad}     {label}:"));
+                program.dump_into(depth + 3, out);
+            }
+        }
     }
 
     /// A conservative bound on this program's value across one whole cell, computed from the
@@ -268,9 +518,16 @@ impl Program {
         cell_z: i32,
     ) -> Option<(f64, f64)> {
         let n = self.ops.len();
-        let mut lo = vec![0.0f64; n];
-        let mut hi = vec![0.0f64; n];
-        let mut known = vec![false; n];
+        // On the stack for every real program: this runs once per cell row of a chunk fill,
+        // and three heap allocations per call were most of its cost.
+        let mut inline = ([0.0f64; INLINE_REGISTERS], [0.0f64; INLINE_REGISTERS], [false; INLINE_REGISTERS]);
+        let mut spilled;
+        let (lo, hi, known): (&mut [f64], &mut [f64], &mut [bool]) = if n <= INLINE_REGISTERS {
+            (&mut inline.0[..n], &mut inline.1[..n], &mut inline.2[..n])
+        } else {
+            spilled = (vec![0.0f64; n], vec![0.0f64; n], vec![false; n]);
+            (&mut spilled.0, &mut spilled.1, &mut spilled.2)
+        };
 
         for i in 0..n {
             let bounds: Option<(f64, f64)> = match &self.ops[i] {
@@ -285,29 +542,29 @@ impl Program {
 
                 // Monotonic non-decreasing unary ops: bounds map straight through.
                 Op::Squeeze(a) => {
-                    let (l, h) = get(&lo, &hi, &known, *a)?;
+                    let (l, h) = get(lo, hi, known, *a)?;
                     Some((squeeze(l), squeeze(h)))
                 }
                 Op::HalfNegative(a) => {
-                    let (l, h) = get(&lo, &hi, &known, *a)?;
+                    let (l, h) = get(lo, hi, known, *a)?;
                     Some((half_negative(l), half_negative(h)))
                 }
                 Op::QuarterNegative(a) => {
-                    let (l, h) = get(&lo, &hi, &known, *a)?;
+                    let (l, h) = get(lo, hi, known, *a)?;
                     Some((quarter_negative(l), quarter_negative(h)))
                 }
                 Op::Cube(a) => {
-                    let (l, h) = get(&lo, &hi, &known, *a)?;
+                    let (l, h) = get(lo, hi, known, *a)?;
                     Some((l * l * l, h * h * h))
                 }
                 Op::Clamp(c) => {
-                    let (l, h) = get(&lo, &hi, &known, c.input)?;
+                    let (l, h) = get(lo, hi, known, c.input)?;
                     Some((l.clamp(c.min, c.max), h.clamp(c.min, c.max)))
                 }
 
                 Op::Add(a, b) => {
-                    let (al, ah) = get(&lo, &hi, &known, *a)?;
-                    let (bl, bh) = get(&lo, &hi, &known, *b)?;
+                    let (al, ah) = get(lo, hi, known, *a)?;
+                    let (bl, bh) = get(lo, hi, known, *b)?;
                     Some((al + bl, ah + bh))
                 }
                 // `min` only ever lowers its result, so an upper bound on EITHER side is an
@@ -321,8 +578,8 @@ impl Program {
                 // caller (which claims "all air", never "all solid"); f64::NEG_INFINITY is the
                 // honest value when one side is unknown.
                 Op::Min(a, b) => {
-                    let ba = get(&lo, &hi, &known, *a);
-                    let bb = get(&lo, &hi, &known, *b);
+                    let ba = get(lo, hi, known, *a);
+                    let bb = get(lo, hi, known, *b);
                     match (ba, bb) {
                         (Some((al, ah)), Some((bl, bh))) => Some((al.min(bl), ah.min(bh))),
                         (Some((_, ah)), None) => Some((f64::NEG_INFINITY, ah)),
@@ -333,8 +590,8 @@ impl Program {
                 // Mirror of `min`: `max` only ever raises, so a lower bound on either side
                 // bounds the whole from below. The upper bound needs both.
                 Op::Max(a, b) => {
-                    let ba = get(&lo, &hi, &known, *a);
-                    let bb = get(&lo, &hi, &known, *b);
+                    let ba = get(lo, hi, known, *a);
+                    let bb = get(lo, hi, known, *b);
                     match (ba, bb) {
                         (Some((al, ah)), Some((bl, bh))) => Some((al.max(bl), ah.max(bh))),
                         (Some((al, _)), None) => Some((al, f64::INFINITY)),
@@ -343,8 +600,8 @@ impl Program {
                     }
                 }
                 Op::Mul(a, b) => {
-                    let (al, ah) = get(&lo, &hi, &known, *a)?;
-                    let (bl, bh) = get(&lo, &hi, &known, *b)?;
+                    let (al, ah) = get(lo, hi, known, *a)?;
+                    let (bl, bh) = get(lo, hi, known, *b)?;
                     // Sign-agnostic: the extremes of a product are among the corner products.
                     let c = [al * bl, al * bh, ah * bl, ah * bh];
                     let mut mn = c[0];
@@ -380,6 +637,99 @@ impl Program {
         } else {
             None
         }
+    }
+
+    pub(crate) fn cell_batchable(&self) -> bool {
+        self.cell_batchable
+    }
+
+    /// Evaluates this program at every block of one cell of `caches`, writing `out` in the
+    /// lane order [`ChunkCaches::fill_cell_interpolated`] defines. Only valid when
+    /// [`Program::cell_batchable`] is true.
+    ///
+    /// Each lane sees exactly the arithmetic [`Program::run`] would do at that block -- the
+    /// same operations on the same operands in the same order, no FMA, no reassociation -- so
+    /// the values are bit-identical to per-block evaluation. What changes is that dispatch is
+    /// paid once per instruction per cell, and the trilinear blend shares its x and y stages
+    /// across the cell instead of redoing all seven lerps for every block.
+    ///
+    /// `range_choice` stays lazy at cell granularity: a branch no lane selects is never run, so
+    /// the corner grids only that branch reads are still built only when needed.
+    pub(crate) fn run_cell(
+        &self,
+        caches: &ChunkCaches,
+        cell: (i32, i32, i32),
+        cx: &RunCtx,
+        out: &mut [f64],
+    ) {
+        fn unary(dst: &mut [f64], a: &[f64], f: impl Fn(f64) -> f64) {
+            for (d, a) in dst.iter_mut().zip(a) {
+                *d = f(*a);
+            }
+        }
+        fn binary(dst: &mut [f64], a: &[f64], b: &[f64], f: impl Fn(f64, f64) -> f64) {
+            for ((d, a), b) in dst.iter_mut().zip(a).zip(b) {
+                *d = f(*a, *b);
+            }
+        }
+
+        let lanes = out.len();
+        let n = self.ops.len();
+        let mut regs = vec![0.0f64; n * lanes];
+        for i in 0..n {
+            let (done, rest) = regs.split_at_mut(i * lanes);
+            let dst = &mut rest[..lanes];
+            let reg = |r: u32| &done[r as usize * lanes..(r as usize + 1) * lanes];
+            match &self.ops[i] {
+                Op::Const(v) => dst.fill(*v),
+                Op::Cache {
+                    kind: CacheKind::Interpolated,
+                    slot,
+                    argument,
+                } => caches.fill_cell_interpolated(*slot as usize, argument, cell, cx, dst),
+                Op::YClampedGradient(g) => caches.fill_cell_by_y(cell.1, dst, |y| {
+                    clamped_lerp(y, g.from_y, g.to_y, g.from_value, g.to_value)
+                }),
+
+                Op::Add(a, b) => binary(dst, reg(*a), reg(*b), |a, b| a + b),
+                Op::Mul(a, b) => binary(dst, reg(*a), reg(*b), |a, b| a * b),
+                Op::Min(a, b) => binary(dst, reg(*a), reg(*b), |a, b| a.min(b)),
+                Op::Max(a, b) => binary(dst, reg(*a), reg(*b), |a, b| a.max(b)),
+
+                Op::Abs(a) => unary(dst, reg(*a), |v| v.abs()),
+                Op::Square(a) => unary(dst, reg(*a), |v| v * v),
+                Op::Cube(a) => unary(dst, reg(*a), |v| v * v * v),
+                Op::HalfNegative(a) => unary(dst, reg(*a), half_negative),
+                Op::QuarterNegative(a) => unary(dst, reg(*a), quarter_negative),
+                Op::Squeeze(a) => unary(dst, reg(*a), squeeze),
+                Op::Invert(a) => unary(dst, reg(*a), |v| 1.0 / v),
+                Op::Clamp(c) => unary(dst, reg(c.input), |v| v.clamp(c.min, c.max)),
+
+                Op::RangeChoice(r) => {
+                    let input = reg(r.input);
+                    let inside = |v: f64| v >= r.min_inclusive && v < r.max_exclusive;
+                    let any_in = input.iter().any(|v| inside(*v));
+                    let any_out = input.iter().any(|v| !inside(*v));
+                    if any_in {
+                        r.when_in_range.run_cell(caches, cell, cx, dst);
+                    }
+                    if any_out && !any_in {
+                        r.when_out_of_range.run_cell(caches, cell, cx, dst);
+                    } else if any_out {
+                        let mut other = vec![0.0f64; lanes];
+                        r.when_out_of_range.run_cell(caches, cell, cx, &mut other);
+                        for ((d, o), v) in dst.iter_mut().zip(&other).zip(input) {
+                            if !inside(*v) {
+                                *d = *o;
+                            }
+                        }
+                    }
+                }
+
+                _ => unreachable!("run_cell on a program that is not cell_batchable"),
+            }
+        }
+        out.copy_from_slice(&regs[(n - 1) * lanes..]);
     }
 
     pub(crate) fn run(&self, ctx: FunctionContext, cx: &RunCtx) -> f64 {
@@ -640,9 +990,13 @@ pub struct CacheSlotCounts {
 pub(crate) struct Compiler<'a> {
     registry: &'a Registry<DensityFunction>,
     noise_index: &'a HashMap<ResourceLocation, u32>,
-    /// Cache node address -> slot within its kind. Addresses are stable: the registry owns
-    /// every node for the router's lifetime and never mutates it.
-    slots: HashMap<usize, u32>,
+    /// `(kind, argument fingerprint)` -> slot within its kind. Keyed by structure rather than
+    /// by node address: a datapack reaches the same subtree (`sloped_cheese`, most expensively)
+    /// through several distinct `cache_once` nodes, and vanilla's `NoiseChunk.wrap` shares one
+    /// cache between structurally equal markers. Sharing never changes a value -- equal
+    /// arguments are equal functions of position -- it only stops the subtree, blended noise
+    /// and all, being evaluated once per marker at every cell corner.
+    slots: HashMap<Vec<u8>, u32>,
     counts: CacheSlotCounts,
     /// `Reference` nodes currently being inlined, so a cyclic pack cannot recurse forever.
     resolving: Vec<usize>,
@@ -672,7 +1026,11 @@ impl<'a> Compiler<'a> {
         if ops.is_empty() {
             ops.push(Op::Const(0.0));
         }
-        Program { ops }
+        let cell_batchable = is_cell_batchable(&ops);
+        Program {
+            ops,
+            cell_batchable,
+        }
     }
 
     fn noise(&self, id: &ResourceLocation) -> u32 {
@@ -704,11 +1062,12 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// A cache node's slot, assigned once per distinct node so that a node reached through two
-    /// references shares one cache entry.
-    fn slot_for(&mut self, obj: &DensityFunctionObject, kind: CacheKind) -> u32 {
-        let address = obj as *const DensityFunctionObject as usize;
-        if let Some(slot) = self.slots.get(&address) {
+    /// A cache node's slot, assigned once per distinct `(kind, argument)` so that equal cache
+    /// nodes share one entry however the datapack reached them.
+    fn slot_for(&mut self, kind: CacheKind, argument: &Program) -> u32 {
+        let mut key = vec![kind as u8];
+        argument.fingerprint(&mut key);
+        if let Some(slot) = self.slots.get(&key) {
             return *slot;
         }
         let counter = match kind {
@@ -718,19 +1077,18 @@ impl<'a> Compiler<'a> {
         };
         let slot = *counter as u32;
         *counter += 1;
-        self.slots.insert(address, slot);
+        self.slots.insert(key, slot);
         slot
     }
 
     fn emit_cache(
         &mut self,
-        obj: &DensityFunctionObject,
         kind: CacheKind,
         argument: &DensityFunction,
         ops: &mut Vec<Op>,
     ) -> u32 {
-        let slot = self.slot_for(obj, kind);
         let argument = Box::new(self.compile(argument));
+        let slot = self.slot_for(kind, &argument);
         push(
             ops,
             Op::Cache {
@@ -863,12 +1221,12 @@ impl<'a> Compiler<'a> {
             }
 
             Interpolated { argument } => {
-                self.emit_cache(obj, CacheKind::Interpolated, argument, ops)
+                self.emit_cache(CacheKind::Interpolated, argument, ops)
             }
-            FlatCache { argument } => self.emit_cache(obj, CacheKind::FlatCache, argument, ops),
-            Cache2d { argument } => self.emit_cache(obj, CacheKind::Cache2d, argument, ops),
+            FlatCache { argument } => self.emit_cache(CacheKind::FlatCache, argument, ops),
+            Cache2d { argument } => self.emit_cache(CacheKind::Cache2d, argument, ops),
             CacheOnce { argument } | CacheAllInCell { argument } => {
-                self.emit_cache(obj, CacheKind::Once, argument, ops)
+                self.emit_cache(CacheKind::Once, argument, ops)
             }
 
             Add {

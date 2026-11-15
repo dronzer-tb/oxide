@@ -1,0 +1,84 @@
+# Log: noise track
+
+Bench: `scripts/bench-vps.sh noise 16 8`. Digest gate at radius 16: `a977961a58122047`.
+
+## Tooling notes (read before profiling)
+
+- `perf` is unusable on the bench VPS for the `bench` user (`perf_event_paranoid = 4`, no sudo).
+- Substitute: an `LD_PRELOAD` SIGPROF sampler kept on the VPS in `~/oxide-perf/noise-prof/`
+  (`prof.so` flat, `prof2.so` with frame-pointer stacks; `sym.py`, `sym2.py`, `ana.py` to
+  symbolize and aggregate). Stacks need a build with
+  `RUSTFLAGS="-C target-cpu=native -C force-frame-pointers=yes"` and
+  `CARGO_TARGET_DIR=../noise-prof/target`. Run everything under `flock ~/oxide-perf/.lock`.
+- The agent host is aarch64 with no C linker and no `reference/`: nothing compiles locally.
+  Build, `cargo test` and the program dump all run on the VPS.
+- A whole-process profile is ~43% digest work (`build_merkle`, blake3, `BlockState` Display).
+  That is outside the timed section; exclude stacks containing `merkle`/`blake3`.
+
+## Baseline profile, 2026-11-15 (commit 726d38c, radius 12, 8 threads, generation only)
+
+The noise crate is 46.7% of generation time, inclusive. By entry point:
+
+| Share | Entry | Caller |
+|---|---|---|
+| 15.4% | `sample_in_chunk(FinalDensity)` per block | `fill.rs:190` |
+| 11.9% | corner-grid build (first sample; the Perlin leaves) | `fill.rs:96` |
+| 9.6% | `cell_bounds` | `fill.rs:162` |
+| 3.6% | `sample_in_chunk` | `Aquifer::preliminary_surface_level` |
+| 3.0% | `sample_in_chunk` (vein toggle/ridged) | `ore_veins::vein_state` |
+| <1% each | surface, biome climate, aquifer `sample` | |
+
+Other inclusive figures: `ImprovedNoise::noise_with_scale` 10.7%, `ChunkCaches::interpolated`
+21.9%, `ChunkCaches::once` 10.1%, `SurfaceSystem::apply` 27.5% (datapath's), allocator ~11%.
+
+`final_density` compiles to 5 ops: `interpolated(0) -> squeeze`, `interpolated(1) ->
+range_choice`, `min`. So the per-block cost is cache lookups and lerps, not dispatch.
+
+## Experiments
+
+| # | What | Before (cps) | After (cps) | Digest | Verdict |
+|---|---|---|---|---|---|
+| 0 | Baseline, 726d38c | - | 142.7 | ok | - |
+| 1 | `cell_bounds`: registers on the stack, not three `Vec`s per call | 142.7 | 151.7, 152.0 | ok | **kept** |
+| 2 | Cache slots keyed by structure, not node address: `sloped_cheese` (with its blended noise) was three `cache_once` slots, evaluated twice per cell corner | 152.0 | 157.4 (one run; strictly less work) | ok | **kept** |
+| 3a | Whole-cell evaluation of cell-batchable programs (`Program::run_cell`) behind `sample_in_chunk`, one shared layer memo | 157.4 | 155.1 | ok | superseded by 3b: fill's per-block share fell 15.4% -> 4.3%, but the ore-vein pass alternates `vein_toggle`/`vein_ridged` per block and evicted the single memo on every call (ore veins 3% -> 11%) |
+| 3b | Same, one layer memo per router slot | 157.4 | 163.8 | ok | **kept** |
+
+## Handover, 2026-11-15 (session stopped at its usage limit)
+
+Current: `BENCH chunks=1089 threads=8 secs=6.650 cps=163.8 ms_per_chunk_core=48.85
+digest=a977961a58122047` at 4abb9a3 (baseline 142.7, +15%). Exactness is not negotiable: the
+target is to beat PumpkinMC on speed while staying byte exact, so the digest gate stays as is.
+
+Profile after 3a (radius 12, generation only): noise crate 36% inclusive, of which corner-grid
+build 10.3%, `cell_bounds` 4.4%, aquifer `preliminary_surface_level` 3.4%, ore veins (should
+now be ~3% with 3b; not re-profiled). Outside this track: `SurfaceSystem::apply` 34%,
+`BlockState` clone/drop ~10%, allocator ~9%.
+
+Nothing is in flight; the tree is clean and pushed. No PR has been opened yet.
+
+New API for the datapath track: `NoiseRouterEvaluator::sample_cell` / `cell_len` fill one whole
+cell of `final_density` (lane order `(ly * cw + lz) * cw + lx`), bit-identical to
+`sample_in_chunk`. The per-slot memo behind `sample_in_chunk` assumes callers work one layer of
+cells at a time (y outermost); a column-wise caller (y innermost) should use `sample_cell`.
+
+Next three things to try:
+1. Memoise `cell_bounds` per cell in the layer memo (24.5k calls per chunk, 768 distinct
+   cells). Memoise only `Some` results: `None` means a corner grid is not built yet.
+2. Corner-grid build, the remaining Perlin cost: evaluate the grid a column or the whole
+   lattice at a time and vectorise `ImprovedNoise` with AVX2, each lane in scalar order (no
+   FMA). The 2D subtrees under `sloped_cheese` are already cached per column.
+3. `preliminary_surface_level` (14 ops with `FindTopSurface`, called from the aquifer with
+   y = 0): dump the program (extend `dump_program` in oxide-ffi to other slots) and see whether
+   its inner density scan can reuse corner values instead of re-running the tree per step.
+
+## Session 2, 2026-11-15
+
+Auditor notes taken on board: every VPS build, run *and* profile symbolization goes under
+`~/oxide-perf/.lock` (session 1's `addr2line`/python passes and a ~1 s `program_sizes` run
+did not, and that disturbed datapath's repeats); every gain under 10% is benched twice before it
+is logged; `cargo test -p oxide-chunkgen` runs with `oxide-noise` before every commit.
+
+| # | What | Before (cps) | After (cps) | Digest | Verdict |
+|---|---|---|---|---|---|
+| 4 | Memoise `cell_bounds` per cell, keyed by how many corner grids exist | 163.8 | 168.9, 156.6 | ok | **reverted**: inside the noise, and datapath E1 already cuts the calls from ~24k to 768 per chunk in `fill.rs` |

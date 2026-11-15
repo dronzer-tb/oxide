@@ -1,0 +1,8 @@
+1794705028	3fd5cf6	16	chunks=1089 threads=8 secs=7.632 cps=142.7 ms_per_chunk_core=56.07 digest=a977961a58122047
+1794706680	3fd5cf6+	16	chunks=1089 threads=8 secs=7.180 cps=151.7 ms_per_chunk_core=52.75 digest=a977961a58122047
+1794706881	3fd5cf6+	16	chunks=1089 threads=8 secs=7.165 cps=152.0 ms_per_chunk_core=52.64 digest=a977961a58122047
+1794707559	200bb53+	16	chunks=1089 threads=8 secs=6.919 cps=157.4 ms_per_chunk_core=50.82 digest=a977961a58122047
+1794708302	3a1b789+	16	chunks=1089 threads=8 secs=7.022 cps=155.1 ms_per_chunk_core=51.59 digest=a977961a58122047
+1794709507	3a1b789+	16	chunks=1089 threads=8 secs=6.650 cps=163.8 ms_per_chunk_core=48.85 digest=a977961a58122047
+1794710177	945cbde+	16	chunks=1089 threads=8 secs=6.449 cps=168.9 ms_per_chunk_core=47.38 digest=a977961a58122047
+1794710498	945cbde+	16	chunks=1089 threads=8 secs=6.954 cps=156.6 ms_per_chunk_core=51.08 digest=a977961a58122047
