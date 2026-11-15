@@ -43,3 +43,10 @@ panic = "unwind"
 
 [profile.bench]
 lto = "fat"
+
+# Opt-in, for timing runs only (`OXIDE_BENCH_PROFILE=fatbench scripts/bench-vps.sh`): release
+# with whole-program LTO. The default release profile above is what ships.
+[profile.fatbench]
+inherits = "release"
+lto = "fat"
+codegen-units = 1

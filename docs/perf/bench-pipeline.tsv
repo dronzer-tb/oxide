@@ -2,3 +2,4 @@
 1794710593	3627ca2	16	chunks=1089 threads=8 secs=7.930 cps=137.3 ms_per_chunk_core=58.25 digest=a977961a58122047
 1794711208	41f0857	16	chunks=1089 threads=8 secs=15.622 cps=69.7 ms_per_chunk_core=114.76 digest=df701ee858e2bdd3 generate_ms=9474 decorate_ms=5813 serialise_ms=110 compress_ms=198 write_ms=27 compression=zlib6 mb_disk=9.9 pregen=1
 1794711761	813333c	16	chunks=1089 threads=8 secs=20.701 cps=52.6 ms_per_chunk_core=152.07 digest=df701ee858e2bdd3 generate_ms=12515 decorate_ms=7593 serialise_ms=299 compress_ms=266 write_ms=29 compression=zlib6 mb_disk=9.9 pregen=1
+1794711866	b565d37	16	chunks=1089 threads=3 secs=44.349 cps=24.6 ms_per_chunk_core=122.17 digest=df701ee858e2bdd3 generate_ms=26217 decorate_ms=17247 serialise_ms=328 compress_ms=525 write_ms=33 compression=zlib6 mb_disk=9.9 pregen=1

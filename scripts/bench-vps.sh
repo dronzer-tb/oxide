@@ -17,6 +17,8 @@ name="${1:-$(git branch --show-current | tr '/' '-')}"
 radius="${2:-16}"
 threads="${3:-8}"
 host="${OXIDE_BENCH_HOST:-s5}"
+# Cargo profile to build with: release by default; `fatbench` (Cargo.toml) adds fat LTO.
+profile="${OXIDE_BENCH_PROFILE:-release}"
 # Relative to the remote home: /root for the laptop (host s5), /home/bench for the agents on
 # oci-v3 (host bench-s5).
 dir="oxide-perf/$name"
@@ -37,16 +39,21 @@ else
     # No game data on this machine (the agent host): use the copy kept on the bench box.
     ssh -o BatchMode=yes "$host" "test -e '$dir/reference' || ln -s ~/oxide-perf/reference '$dir/reference'"
 fi
-line="$(ssh -o BatchMode=yes "$host" "
+out="$(ssh -o BatchMode=yes "$host" "
     set -eu
     cd '$dir'
     # Builds share the lock, so several tracks compile at once; the timed run takes it alone,
     # so it waits for builds in progress and nothing else runs while it is measured. Any other
     # build or profile on this box must also hold it shared: flock -s ~/oxide-perf/.lock ...
-    flock -s ~/oxide-perf/.lock nice -n 10 ~/.cargo/bin/cargo build --release -p oxide-harness 2>&1 | tail -n 3
-    flock -x ~/oxide-perf/.lock ./target/release/oxide-harness --datapack reference --seed 12345 \
+    start=\$(date +%s)
+    flock -s ~/oxide-perf/.lock nice -n 10 ~/.cargo/bin/cargo build --profile $profile -p oxide-harness 2>&1 | tail -n 3
+    build=\$((\$(date +%s) - start))
+    flock -x ~/oxide-perf/.lock ./target/$profile/oxide-harness --datapack reference --seed 12345 \
         --radius $radius --time-only --threads $threads | grep ^BENCH
-" | tee /dev/stderr | grep '^BENCH')"
+    echo BUILD \$build
+" | tee /dev/stderr)"
+build="$(printf '%s\n' "$out" | sed -n 's/^BUILD //p')"
+line="$(printf '%s\n' "$out" | grep '^BENCH') profile=$profile build_s=$build"
 # unix time, commit (with + when the tree has uncommitted changes), radius, then the BENCH fields.
 commit="$(git rev-parse --short HEAD)"
 if [ -n "$(git status --porcelain -- crates)" ]; then
