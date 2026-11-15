@@ -155,3 +155,14 @@ committed under `docs/perf/wip/` and apply on top of 6dfa05a merged with `origin
    this box spread 13% even with all 8 cores free.
 3. Real AVX2 `ImprovedNoise` across a column of corners (gathers on the doubled table). Scalar
    lane interleaving (5) gave nothing, so this only pays with SIMD arithmetic.
+
+## Session 3, 2026-11-15
+
+`perf/noise` fast-forwarded to `origin/perf/datapath` 18bb0f9, which already contains this
+branch up to f2b239a and benches at about 614 cps. New experiments are A/B'd against that head,
+two pairs each. Datapath's profile puts the corner-grid build at 44.5% of generation.
+
+| # | What | Verdict |
+|---|---|---|
+| 8 (noise-5) | Shared per-column memo of `preliminary_surface_level`, gated on a compile-time y-independence proof (34 noise + 192 chunkgen tests passed) | **dropped unbenched**: datapath landed the same idea as E18 (a6c1fcd, a per-thread memo keyed by `NoiseRouterEvaluator::id()`, +3.8%), and two memos of one value must not both land. The patch is kept at `docs/perf/wip/noise-5-shared-surface-memo.patch` for its `y_independent_ops`/`cache_pure` analysis |
+| 9 (noise-4) | Corner columns shared across chunks: a set-associative cache (64 sharded `Mutex`es x 128 sets x 4 ways, about 13 MB) on `NoiseRouterEvaluator` stores full `(slot, x, z)` keys. `build_corner_grid` reads a chunk's 16 edge columns from it and computes the rest as before. Geometry is checked before it is attached. The bit-identity test asserts the expected hit counts on shared edges | 571.0, 636.2 (A/B baselines at 18bb0f9) | 686.2, 641.8 | a977961a58122047 all four | **kept**: mean +10% (664.0 vs 603.6). The pairs disagree (+20%, +1%), but patched is higher in both |

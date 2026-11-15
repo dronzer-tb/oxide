@@ -14,6 +14,7 @@
 //! must not be shared across threads. Chunks in different Folia regions each build their own.
 
 use std::cell::RefCell;
+use std::sync::{Arc, Mutex};
 
 use crate::compiled::{CacheKind, CacheSlotCounts, Program, RunCtx};
 use crate::density::FunctionContext;
@@ -73,6 +74,10 @@ pub struct ChunkCaches {
     /// One memo per router slot, so two programs sampled alternately (the ore-vein pass reads
     /// `vein_toggle` and `vein_ridged` at the same block) do not evict each other.
     memos: RefCell<[CellMemo; MEMO_SLOTS]>,
+
+    /// Corner columns shared with the other chunks of the same router, when this chunk's
+    /// geometry matches the one the shared cache was built for. See [`CornerColumns`].
+    shared_columns: Option<Arc<CornerColumns>>,
 }
 
 /// Per-block values of one cell-batchable program for one horizontal layer of cells.
@@ -202,7 +207,25 @@ impl ChunkCaches {
                 valid: 0,
                 values: Vec::new(),
             })),
+            shared_columns: None,
         }
+    }
+
+    /// Lets this chunk read and fill `shared`'s corner columns. Ignored -- the chunk keeps
+    /// computing every corner itself -- unless the geometry is the one `shared` was sized for
+    /// and the chunk's origin sits on the cell lattice, so that a shared column always means
+    /// the same 49 (`cells_y + 1`) positions.
+    pub(crate) fn with_shared_columns(mut self, shared: &Arc<CornerColumns>) -> Self {
+        if shared.min_y == self.min_y
+            && shared.cells_y == self.cells_y
+            && shared.cell_height == self.cell_height
+            && shared.cell_width == self.cell_width
+            && self.origin_x.rem_euclid(self.cell_width) == 0
+            && self.origin_z.rem_euclid(self.cell_width) == 0
+        {
+            self.shared_columns = Some(Arc::clone(shared));
+        }
+        self
     }
 
     /// Blocks per cell, which is the length [`Self::fill_cell_interpolated`] writes.
@@ -365,7 +388,7 @@ impl ChunkCaches {
         if self.interpolated.borrow()[slot].is_none() {
             // Built outside the borrow: evaluating a corner recurses back through the evaluator,
             // which may consult this same cache.
-            let grid = self.build_corner_grid(argument, cx);
+            let grid = self.build_corner_grid(slot, argument, cx);
             self.interpolated.borrow_mut()[slot] = Some(grid);
         }
     }
@@ -445,7 +468,10 @@ impl ChunkCaches {
         )
     }
 
-    fn build_corner_grid(&self, argument: &Program, cx: &RunCtx) -> Vec<f64> {
+    fn build_corner_grid(&self, slot: usize, argument: &Program, cx: &RunCtx) -> Vec<f64> {
+        if let Some(shared) = self.shared_columns.as_deref() {
+            return self.build_corner_grid_shared(shared, slot, argument, cx);
+        }
         let mut grid =
             Vec::with_capacity((self.cells_x + 1) * (self.cells_y + 1) * (self.cells_z + 1));
         for cy in 0..=self.cells_y {
@@ -459,6 +485,62 @@ impl ChunkCaches {
             }
         }
         grid
+    }
+
+    /// [`Self::build_corner_grid`], one corner column at a time, taking the columns on the
+    /// chunk's edge from `shared` when a neighbour already computed them.
+    ///
+    /// Same values: a corner's value is a pure function of its block position (the caches the
+    /// argument reads are keyed by position and their arguments do not depend on evaluation
+    /// order), so neither the column-major order nor a column computed by another chunk can
+    /// change a bit. Interior columns are never shared by two chunks, so they bypass `shared`.
+    fn build_corner_grid_shared(
+        &self,
+        shared: &CornerColumns,
+        slot: usize,
+        argument: &Program,
+        cx: &RunCtx,
+    ) -> Vec<f64> {
+        let nx = self.cells_x + 1;
+        let nz = self.cells_z + 1;
+        let ny = self.cells_y + 1;
+        let y_stride = nx * nz;
+        let mut grid = vec![0.0; y_stride * ny];
+        let mut column = vec![0.0; ny];
+        for cz in 0..nz {
+            let z = self.origin_z + cz as i32 * self.cell_width;
+            for cx_index in 0..nx {
+                let x = self.origin_x + cx_index as i32 * self.cell_width;
+                let base = cz * nx + cx_index;
+                let edge = cx_index == 0 || cx_index == nx - 1 || cz == 0 || cz == nz - 1;
+                if edge && shared.get(slot, x, z, &mut column) {
+                    for (cy, value) in column.iter().enumerate() {
+                        grid[cy * y_stride + base] = *value;
+                    }
+                    continue;
+                }
+                for (cy, value) in column.iter_mut().enumerate() {
+                    let y = self.min_y + cy as i32 * self.cell_height;
+                    *value = argument.run(FunctionContext { x, y, z }, cx);
+                    grid[cy * y_stride + base] = *value;
+                }
+                if edge {
+                    shared.insert(slot, x, z, &column);
+                }
+            }
+        }
+        grid
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_shared_columns(&self) -> bool {
+        self.shared_columns.is_some()
+    }
+
+    /// The corner grid of one `interpolated` slot, if built, for tests that compare grids.
+    #[cfg(test)]
+    pub(crate) fn corner_grid(&self, slot: usize) -> Option<Vec<f64>> {
+        self.interpolated.borrow().get(slot)?.clone()
     }
 
     /// One value per (x, z) within this chunk's span, stored densely. A position outside the
@@ -518,6 +600,187 @@ impl ChunkCaches {
         let value = argument.run(ctx, cx);
         self.once.borrow_mut()[slot] = Some((position, value));
         value
+    }
+}
+
+/// Ways per set in [`CornerColumns`].
+const COLUMN_WAYS: usize = 4;
+/// Independently locked shards of [`CornerColumns`].
+const COLUMN_SHARDS: usize = 64;
+/// Sets per shard: 64 shards x 128 sets x 4 ways = 32768 columns, ~13 MB for a 384-tall world
+/// (49 values each). A radius-16 pregen touches ~8k distinct edge columns per slot, and only a
+/// neighbour generated soon after needs one, so this keeps the useful ones resident.
+const COLUMN_SETS: usize = 128;
+
+/// Interpolation corner columns shared by every chunk of one router, across threads.
+///
+/// A chunk's corner columns at local x = 16 / z = 16 are the x = 0 / z = 0 columns of its +x
+/// / +z neighbours, so 9 of a chunk's 25 columns are computed by two or four chunks. A column
+/// is a pure function of `(slot, x, z)` for fixed geometry, so whichever chunk computes it
+/// first can hand it to the others.
+///
+/// Bounded and lossy: set-associative with FIFO replacement inside a set, fixed capacity, one
+/// lock per shard. Every entry keeps its full key, so a hit is always the exact column and an
+/// eviction only costs a recomputation.
+pub(crate) struct CornerColumns {
+    min_y: i32,
+    cells_y: usize,
+    cell_height: i32,
+    cell_width: i32,
+    /// `cells_y + 1` values per column.
+    column_len: usize,
+    shards: Box<[Mutex<ColumnShard>]>,
+    #[cfg(test)]
+    hits: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    misses: std::sync::atomic::AtomicUsize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ColumnKey {
+    slot: u32,
+    x: i32,
+    z: i32,
+}
+
+impl ColumnKey {
+    const EMPTY: ColumnKey = ColumnKey {
+        slot: u32::MAX,
+        x: 0,
+        z: 0,
+    };
+}
+
+struct ColumnShard {
+    /// `COLUMN_SETS * COLUMN_WAYS` keys, way-minor.
+    keys: Box<[ColumnKey]>,
+    /// `column_len` values per key, in the same order; allocated on the first insert.
+    values: Vec<f64>,
+    /// Per set, the way the next insert replaces.
+    next_way: Box<[u8]>,
+}
+
+impl CornerColumns {
+    /// Sized for the geometry [`ChunkCaches::new`] derives from the same arguments.
+    pub(crate) fn new(min_y: i32, height: i32, size_horizontal: i32, size_vertical: i32) -> Self {
+        let cell_width = (size_horizontal * 4).max(1);
+        let cell_height = (size_vertical * 4).max(1);
+        let cells_y = (height / cell_height) as usize;
+        let shards = (0..COLUMN_SHARDS)
+            .map(|_| {
+                Mutex::new(ColumnShard {
+                    keys: vec![ColumnKey::EMPTY; COLUMN_SETS * COLUMN_WAYS].into_boxed_slice(),
+                    values: Vec::new(),
+                    next_way: vec![0; COLUMN_SETS].into_boxed_slice(),
+                })
+            })
+            .collect();
+        Self {
+            min_y,
+            cells_y,
+            cell_height,
+            cell_width,
+            column_len: cells_y + 1,
+            shards,
+            #[cfg(test)]
+            hits: Default::default(),
+            #[cfg(test)]
+            misses: Default::default(),
+        }
+    }
+
+    /// Shard index and set index within it.
+    #[inline]
+    fn locate(&self, slot: usize, x: i32, z: i32) -> (usize, usize) {
+        // splitmix64 finaliser over the packed key.
+        let packed = ((x as u32 as u64) << 32) | (z as u32 as u64);
+        let mut h = packed ^ (slot as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        h = (h ^ (h >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        h = (h ^ (h >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        h ^= h >> 31;
+        let shard = (h as usize) % COLUMN_SHARDS;
+        let set = ((h >> 32) as usize) % COLUMN_SETS;
+        (shard, set)
+    }
+
+    fn lock(&self, shard: usize) -> std::sync::MutexGuard<'_, ColumnShard> {
+        // A panic elsewhere while holding the lock leaves only whole entries behind: keys are
+        // written after their values.
+        self.shards[shard]
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Copies the column into `out` (`column_len` long) and returns `true` when present.
+    fn get(&self, slot: usize, x: i32, z: i32, out: &mut [f64]) -> bool {
+        debug_assert_eq!(out.len(), self.column_len);
+        let key = ColumnKey {
+            slot: slot as u32,
+            x,
+            z,
+        };
+        let (shard, set) = self.locate(slot, x, z);
+        let found = {
+            let guard = self.lock(shard);
+            let ways = &guard.keys[set * COLUMN_WAYS..(set + 1) * COLUMN_WAYS];
+            match ways.iter().position(|k| *k == key) {
+                Some(way) => {
+                    let start = (set * COLUMN_WAYS + way) * self.column_len;
+                    out.copy_from_slice(&guard.values[start..start + self.column_len]);
+                    true
+                }
+                None => false,
+            }
+        };
+        #[cfg(test)]
+        {
+            use std::sync::atomic::Ordering::Relaxed;
+            if found {
+                self.hits.fetch_add(1, Relaxed);
+            } else {
+                self.misses.fetch_add(1, Relaxed);
+            }
+        }
+        found
+    }
+
+    /// Stores `column`, unless another chunk stored the same one in the meantime.
+    fn insert(&self, slot: usize, x: i32, z: i32, column: &[f64]) {
+        debug_assert_eq!(column.len(), self.column_len);
+        let key = ColumnKey {
+            slot: slot as u32,
+            x,
+            z,
+        };
+        let (shard, set) = self.locate(slot, x, z);
+        let mut guard = self.lock(shard);
+        let shard = &mut *guard;
+        let ways = &shard.keys[set * COLUMN_WAYS..(set + 1) * COLUMN_WAYS];
+        if ways.contains(&key) {
+            return;
+        }
+        let way = match ways.iter().position(|k| *k == ColumnKey::EMPTY) {
+            Some(way) => way,
+            None => {
+                let way = shard.next_way[set] as usize;
+                shard.next_way[set] = ((way + 1) % COLUMN_WAYS) as u8;
+                way
+            }
+        };
+        if shard.values.is_empty() {
+            shard.values = vec![0.0; COLUMN_SETS * COLUMN_WAYS * self.column_len];
+        }
+        let index = set * COLUMN_WAYS + way;
+        let start = index * self.column_len;
+        shard.values[start..start + self.column_len].copy_from_slice(column);
+        shard.keys[index] = key;
+    }
+
+    /// `(hits, misses)` of edge-column lookups so far.
+    #[cfg(test)]
+    pub(crate) fn counts(&self) -> (usize, usize) {
+        use std::sync::atomic::Ordering::Relaxed;
+        (self.hits.load(Relaxed), self.misses.load(Relaxed))
     }
 }
 
