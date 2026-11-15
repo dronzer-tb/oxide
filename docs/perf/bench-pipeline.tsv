@@ -5,3 +5,5 @@
 1794711866	b565d37	16	chunks=1089 threads=3 secs=44.349 cps=24.6 ms_per_chunk_core=122.17 digest=df701ee858e2bdd3 generate_ms=26217 decorate_ms=17247 serialise_ms=328 compress_ms=525 write_ms=33 compression=zlib6 mb_disk=9.9 pregen=1
 1794713480	a6a92a0	16	chunks=1089 threads=8 secs=8.711 cps=125.0 ms_per_chunk_core=63.99 digest=a977961a58122047 profile=release build_s=0
 1794714642	d19a869	16	chunks=1089 threads=8 secs=8.045 cps=135.4 ms_per_chunk_core=59.10 digest=a977961a58122047 profile=release build_s=0
+1794715931	997843a	16	chunks=1089 threads=8 secs=7.496 cps=145.3 ms_per_chunk_core=55.07 digest=a977961a58122047 profile=fatbench build_s=750
+1794715969	997843a	16	chunks=1089 threads=8 secs=7.780 cps=140.0 ms_per_chunk_core=57.15 digest=a977961a58122047 profile=release build_s=18

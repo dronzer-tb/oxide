@@ -1,8 +1,8 @@
 #!/bin/sh
 # Runs a cargo command for this working tree on the bench VPS, for machines with no C
 # toolchain of their own (the agent host cannot link, so `cargo check` and `cargo test` fail
-# there). Copies the sources the way bench-vps.sh does and goes through scripts/bench-lock.sh
-# build: shared with other builds, queued behind any timed run.
+# there). Copies the sources the way bench-vps.sh does and holds the bench lock shared at
+# nice 10, as every build, test or profile on the box must.
 #
 #   scripts/vps-cargo.sh <name> <cargo arguments...>
 #   scripts/vps-cargo.sh pipeline test -p oxide-anvil
@@ -31,4 +31,4 @@ args=""
 for a in "$@"; do
     args="$args '$(printf %s "$a" | sed "s/'/'\\\\''/g")'"
 done
-ssh -o BatchMode=yes "$host" "cd '$dir' && sh scripts/bench-lock.sh build ~/.cargo/bin/cargo $args"
+ssh -o BatchMode=yes "$host" "cd '$dir' && flock -s ~/oxide-perf/.lock nice -n 10 ~/.cargo/bin/cargo $args"

@@ -144,3 +144,35 @@ build) skips the gate and can still starve timed runs. The rule for all tracks b
 of oxide-chunkgen, and changes there go through the auditor. Gate: the pregen digest stays
 `df701ee858e2bdd3` at radius 16 unless a change is shown to be a bug fix; no float
 reordering. Order of work: finish the LTO/PGO job, then decoration.
+
+**Reverted: the gate and `--bench-lock`** (auditor, urgent, from the user). The box is mixed:
+noise and datapath take `.lock` directly and never pass the gate. `--bench-lock` loaded the
+datapack before taking `.lock` and ran the 8-thread digest after dropping it, so those
+phases held no lock and could land inside another track's timed run. Now:
+- All three scripts use bench-vps.sh's locking exactly: build, test and profile under
+  `flock -s ~/oxide-perf/.lock nice -n 10`, the whole timed process under `flock -x`. That
+  covers the sub-agents too; both were told, and both now use bare flock.
+- `--bench-lock` is gone from the harness. The parallel digest stays: under a whole-run
+  `flock -x` it only shortens our exclusive hold. The digest is unchanged in every run.
+- `scripts/bench-lock.sh` stays in the tree, marked PROPOSAL ONLY and run by nothing.
+  **Proposal for the user (feat/native-decoration):** flock(1) is not fair, and a steady
+  stream of shared builds starves exclusive waiters. A second lock, `.gate`, fixes that: a
+  timed run holds it while it waits and runs, and a build must pass it before taking
+  `.lock` shared. It works only if every script on the box adopts it at once. A fair harness
+  lock would also need to hold `.lock` shared through load and digest, upgrading only for
+  generation.
+- `build_s` now comes from cargo's own `Finished … in` line. Before, it counted time waiting
+  on the lock (one cached build showed 173 s).
+
+**fatbench (fat LTO) A/B, partial.** Same code in every run (the commits differ only in
+docs); every digest is a977961a58122047:
+
+| profile | cps |
+|---|---|
+| release | 125.0, 135.4, 140.0 |
+| fatbench | 145.3 |
+
+The release runs from the same session give 135.4 and 140.0; the 125.0 run ran on a loaded
+box. Against those, fatbench is +5%, inside the noise. A second fatbench run is owed: the
+loop was stopped by the urgent lock change. Build time is not recorded yet; these rows
+predate the fix.

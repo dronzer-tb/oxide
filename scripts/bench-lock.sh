@@ -1,4 +1,9 @@
 #!/bin/sh
+# PROPOSAL ONLY, NOT IN USE. The box runs one locking scheme for everyone, bench-vps.sh's
+# (plain flock -s for builds, flock -x for the whole timed run); this gate only helps if every
+# track adopts it at once, which is the user's call on feat/native-decoration. See
+# docs/perf/LOG-pipeline.md.
+#
 # Runs a command on the bench box under its locks, fairly. Runs on the box, from a synced tree.
 #
 #   scripts/bench-lock.sh build <command...>   build, test or profile: shared, at nice 10

@@ -72,11 +72,6 @@ struct Args {
     /// re-generation, so a timing run measures generation and nothing else.
     #[arg(long)]
     time_only: bool,
-    /// With `--time-only`: hold an exclusive `flock` on this file around the timed
-    /// generation only, so a shared bench box is locked for the measured seconds and not for
-    /// the datapack load or the digest pass. `scripts/bench-lock.sh` passes it.
-    #[arg(long)]
-    bench_lock: Option<PathBuf>,
     /// Threads to generate on. Only honoured with `--time-only`: the invariant pass reports
     /// per-chunk findings in a fixed order, and generation itself is what threading is being
     /// measured for. One shared router and carver setup serve every thread.
@@ -253,23 +248,9 @@ fn main() -> Result<()> {
     if args.time_only {
         // No parity pass here on purpose: --time-only exists to measure generation and nothing
         // else, and reading region files off disk mid-run would be measured along with it.
-        let lock = match &args.bench_lock {
-            Some(path) => {
-                let file = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)
-                    .with_context(|| format!("opening the bench lock {}", path.display()))?;
-                file.lock()
-                    .with_context(|| format!("locking {}", path.display()))?;
-                Some(file)
-            }
-            None => None,
-        };
         let started = std::time::Instant::now();
         let chunks = generate_all(&positions);
         let secs = started.elapsed().as_secs_f64();
-        drop(lock); // Closing the file releases the lock.
         std::hint::black_box(&chunks);
         println!(
             "generated {} chunks on {} thread(s)",
