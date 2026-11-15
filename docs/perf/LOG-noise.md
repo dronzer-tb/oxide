@@ -71,3 +71,14 @@ Next three things to try:
 3. `preliminary_surface_level` (14 ops with `FindTopSurface`, called from the aquifer with
    y = 0): dump the program (extend `dump_program` in oxide-ffi to other slots) and see whether
    its inner density scan can reuse corner values instead of re-running the tree per step.
+
+## Session 2, 2026-11-15
+
+Auditor notes taken on board: every VPS build, run *and* profile symbolization goes under
+`~/oxide-perf/.lock` (session 1's `addr2line`/python passes and a ~1 s `program_sizes` run
+did not, and that disturbed datapath's repeats); every gain under 10% is benched twice before it
+is logged; `cargo test -p oxide-chunkgen` runs with `oxide-noise` before every commit.
+
+| # | What | Before (cps) | After (cps) | Digest | Verdict |
+|---|---|---|---|---|---|
+| 4 | Memoise `cell_bounds` per cell, keyed by how many corner grids exist | 163.8 | 168.9, 156.6 | ok | **reverted**: inside the noise, and datapath E1 already cuts the calls from ~24k to 768 per chunk in `fill.rs` |
