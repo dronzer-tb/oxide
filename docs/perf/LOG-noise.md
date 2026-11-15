@@ -500,3 +500,14 @@ columns crossing cells, negative and wrapped x/z, `dx == 1.0` exactly, and y-sme
 against `PerlinNoise::get_value` and `BlendedNoise::compute` per lane, plus the non-uniform
 fallback. To be measured after 17:00 CET with a 5-round 1-thread hold against two fresh bases
 (labels `n11b1`, `n11b2`, `n11`).
+
+Draft of 17 written while s5 was reserved: `docs/perf/wip/noise-11-column-xz-DRAFT.patch`
+(worktree `/tmp/noise-11`). It has not been compiled, because this host has no linker. It adds
+`ImprovedNoise::column_xz` and `sample_y`, a `ColumnCell` memo holding each corner's `A`, `g1`
+and `C`, and `uniform_xz`. `PerlinNoise::get_values` and `BlendedNoise::compute_chunk` (main and
+both limit stacks) branch on `uniform` with a plain if/else, so the per-octave
+`freq`/`amp`/`pow` updates stay single. Three new tests: `column_path_is_bit_identical_along_columns`
+(32 seeds, 6 x/z incl. -0.0, tiny and wrapped-large, 3 smear modes, reuse asserted),
+`get_values_column_path_matches_get_value` (uniform and mixed batches) and
+`compute_lanes_column_path_matches_compute` (overworld, nether and end parameters). Next: once
+the box is free, `cargo fmt`, both crates' tests, then the two-base hold.
