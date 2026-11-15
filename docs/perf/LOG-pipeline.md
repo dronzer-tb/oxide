@@ -901,3 +901,31 @@ digest df701ee858e2bdd3.
   column near spawn (1188 of 1225 decorate calls run the lush features), so "no lush quart in the
   whole column" is rare. Next: gate on only the quarts the scan can reach (y + span of the quiet run).
 - Stone ores are all body: the remaining cost is the ore shape loop itself.
+
+## Lush caves again: biome gate on the quarts the scan can reach; kept, -10.1% decorate
+
+The rejected lush change (b7d68dd) plus one refinement (d2b4b14): the gate now bounds the y the
+biome filter will see. Each quiet modifier before `biome` reports a y-span (environment_scan up:
+(0, max_steps), down: (-max_steps, 0); y-only constant random_offset: (dy, dy); quiet predicate:
+(0, 0); heightmap-like: unbounded). A center-chunk position entering the run is dropped only when no
+quart in `[y+lo, y+hi]` of its 4x4 column (clamped into the world, as `DecorationRegion::biome`
+clamps) has a biome listing the feature. `DecorationRegion::center_biome_levels` builds the
+per-quart-level column bits once per placed-feature run. The skipped positions draw nothing, write
+nothing and tally nothing, so it is exact; the digest confirms it.
+
+**Hold** (rows from this run in `bench-pipeline-ab.tsv`). Both trees: b36dcf1 (this branch merged
+with origin/perf/datapath **c38344f**) + sculk 5dcb571; pipeline-lg adds 7ac51b8 + d2b4b14.
+
+| | run 1 | run 2 | run 3 | mean |
+|---|---|---|---|---|
+| base decorate_ms | 10122 | 10659 | 10992 | 10591 |
+| lush + gate decorate_ms | 9769 | 9583 | 9208 | 9520 |
+| base cpu_user_s | 27.10 | 27.68 | 28.04 | 27.61 |
+| lush + gate cpu_user_s | 27.54 | 25.96 | 26.24 | 26.58 |
+| java_cpu_s_per_10s (base / lush) | 0.19 / 0.25 | 0.26 / 0.25 | 0.23 / 0.19 | |
+
+-10.1% decorate_ms, ahead 3/3; -3.7% user CPU per run (decoration is about a third of it). The Java
+server was quiet (all rounds far under 2 CPU-s per 10 s), so every round counts. df701ee858e2bdd3 on
+every row. Tests on the tree: chunkgen 194 pass (1 ignored), pregen pass. Landed on the branch as
+the two cherry-picked commits; the column-only version alone was -0.7% (entry above), so the gain is
+the y-window.
