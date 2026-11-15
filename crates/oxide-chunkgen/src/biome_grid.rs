@@ -25,54 +25,57 @@ pub(crate) fn fill_biomes(
         return;
     }
 
-    // Fast-path: check the 8 corners of the 4x4x4 quart section.
-    // In >80% of underground and open sections, all 8 corners resolve to the exact same biome.
-    let sample_corner = |qx: usize, qy: usize, qz: usize| -> Option<oxide_core::ResourceLocation> {
+    let nearest = |qx: usize, qy: usize, qz: usize| -> Option<&oxide_core::ResourceLocation> {
         let block_x = pos.min_block_x() + (qx * 4) as i32 + 2;
         let y = section_min_y + (qy * 4) as i32 + 2;
         let block_z = pos.min_block_z() + (qz * 4) as i32 + 2;
         let sample = ClimateSample::sample_in_chunk(router, caches, block_x, y, block_z);
-        tree.nearest(sample).cloned()
+        tree.nearest(sample)
     };
 
-    let c000 = sample_corner(0, 0, 0);
-    let c300 = sample_corner(3, 0, 0);
-    let c003 = sample_corner(0, 0, 3);
-    let c303 = sample_corner(3, 0, 3);
-    let c030 = sample_corner(0, 3, 0);
-    let c330 = sample_corner(3, 3, 0);
-    let c033 = sample_corner(0, 3, 3);
-    let c333 = sample_corner(3, 3, 3);
-
-    if c000.is_some()
-        && c000 == c300
-        && c000 == c003
-        && c000 == c303
-        && c000 == c030
-        && c000 == c330
-        && c000 == c033
-        && c000 == c333
-    {
-        // Entire 64-quart section is homogenous
-        let biome = c000.unwrap();
-        for i in 0..64 {
-            section.biomes.set(i, biome.clone());
+    // Fast-path: check the 8 corners of the 4x4x4 quart section.
+    // In >80% of underground and open sections, all 8 corners resolve to the exact same biome.
+    // Compared by reference into the tree -- no id is cloned to answer "same biome?".
+    let corners = [
+        nearest(0, 0, 0),
+        nearest(3, 0, 0),
+        nearest(0, 0, 3),
+        nearest(3, 0, 3),
+        nearest(0, 3, 0),
+        nearest(3, 3, 0),
+        nearest(0, 3, 3),
+        nearest(3, 3, 3),
+    ];
+    if let Some(biome) = corners[0] {
+        if corners.iter().all(|corner| *corner == Some(biome)) {
+            // Entire 64-quart section is homogenous: one palette entry, written by index.
+            let index = section.biomes.index_of_or_insert(biome.clone());
+            for i in 0..64 {
+                section.biomes.set_index(i, index);
+            }
+            return;
         }
-        return;
     }
 
-    // Boundary section: sample all 64 quart cells
+    // Boundary section: sample all 64 quart cells. Neighbouring cells usually repeat a biome,
+    // so the palette index of the last one written is reused while the tree keeps returning
+    // the same entry.
+    let mut last: Option<(&oxide_core::ResourceLocation, u32)> = None;
     for qy in 0..4usize {
-        let y = section_min_y + (qy * 4) as i32 + 2;
         for qz in 0..4usize {
-            let block_z = pos.min_block_z() + (qz * 4) as i32 + 2;
             for qx in 0..4usize {
-                let block_x = pos.min_block_x() + (qx * 4) as i32 + 2;
-                let sample = ClimateSample::sample_in_chunk(router, caches, block_x, y, block_z);
-                if let Some(biome) = tree.nearest(sample) {
+                if let Some(biome) = nearest(qx, qy, qz) {
+                    let index = match last {
+                        Some((known, index)) if std::ptr::eq(known, biome) => index,
+                        _ => {
+                            let index = section.biomes.index_of_or_insert(biome.clone());
+                            last = Some((biome, index));
+                            index
+                        }
+                    };
                     section
                         .biomes
-                        .set(local_biome_index(qx, qy, qz), biome.clone());
+                        .set_index(local_biome_index(qx, qy, qz), index);
                 }
             }
         }

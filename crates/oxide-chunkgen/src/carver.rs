@@ -619,16 +619,16 @@ fn section_of(world: &CarverWorld, y: i32) -> Option<usize> {
     Some(((y - world.min_y()) / 16) as usize)
 }
 
-fn get_block(
-    chunk: &ChunkData,
+fn get_block<'c>(
+    chunk: &'c ChunkData,
     world: &CarverWorld,
     x: usize,
     y: i32,
     z: usize,
-) -> Option<BlockState> {
+) -> Option<&'c BlockState> {
     let section = chunk.sections.get(section_of(world, y)?)?;
     let local_y = (y - world.min_y()).rem_euclid(16) as usize;
-    Some(section.block_states.get(local_index(x, local_y, z)).clone())
+    Some(section.block_states.get(local_index(x, local_y, z)))
 }
 
 fn set_block(

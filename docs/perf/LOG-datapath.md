@@ -41,3 +41,26 @@ The harness does not show the 17% libc share the live-server profile had: most o
 the JVM side and the decorator. Allocation here is a few percent, spread through the rows
 above. The largest single lever inside this track's files is how often the fill loop asks for
 a density sample, not `BlockState` churn.
+
+Tests cannot run on the agent host (no `cc`), so they run on the bench box in the track's
+own directory, under the same lock: rsync as `bench-vps.sh` does, then
+`cargo test -p oxide-chunkgen -p oxide-biome` there.
+
+### E1: integer block ids in fill, aquifer, ore veins, heightmaps -- kept
+
+- `fill.rs`: the per-cell "all air" bound is computed once per cell (768 a chunk) into a
+  table, instead of once per row of blocks crossing a cell (~24k calls, each allocating three
+  vectors inside `Program::cell_bounds`). The loop writes palette indices for the three
+  states it can place; no `BlockState` is built per block.
+- `aquifer.rs`: new `compute_kind` returns a `FluidKind` tag; `compute_substance` wraps it
+  for the carver. Additive, nothing renamed.
+- `ore_veins.rs`: "is this the default block" is a palette-index compare.
+- `compute_heightmaps`: palette classified once per section; all-air sections skipped.
+- `biome_grid.rs`: corners compared by reference, sections written by palette index.
+- `carver.rs`: `get_block` returns a reference instead of a clone.
+
+Before: `BENCH chunks=1089 threads=8 secs=7.880 cps=138.2 ms_per_chunk_core=57.89 digest=a977961a58122047`
+After:  `BENCH chunks=1089 threads=8 secs=5.898 cps=184.6 ms_per_chunk_core=43.33 digest=a977961a58122047`
+Repeat: `BENCH chunks=1089 threads=8 secs=6.386 cps=170.5 ms_per_chunk_core=46.91 digest=a977961a58122047`
+
+Digest unchanged. Tests: chunkgen 189 passed, biome 5 passed.

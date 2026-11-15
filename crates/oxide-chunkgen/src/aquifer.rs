@@ -55,8 +55,8 @@ const SURFACE_SAMPLING_OFFSETS_IN_CHUNKS: [[i32; 2]; 13] = [
 /// `BlockState`, which owns a `BTreeMap<String, String>` -- cloning one per block meant a map
 /// allocation on every position in the chunk, and `global_fluid` alone built two of them for
 /// every block it was asked about.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum FluidKind {
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FluidKind {
     Air,
     Sea,
     Lava,
@@ -218,7 +218,8 @@ impl<'a> Aquifer<'a> {
         y > self.skip_sampling_above_y && self.global_fluid(y).at_kind(y) == FluidKind::Air
     }
 
-    fn block_for(&self, kind: FluidKind) -> BlockState {
+    /// The block state a [`FluidKind`] stands for.
+    pub fn block_for(&self, kind: FluidKind) -> BlockState {
         match kind {
             FluidKind::Air => self.air.clone(),
             FluidKind::Sea => self.sea_fluid.clone(),
@@ -234,15 +235,23 @@ impl<'a> Aquifer<'a> {
         z: i32,
         density: f64,
     ) -> Option<BlockState> {
+        self.compute_kind(x, y, z, density)
+            .map(|kind| self.block_for(kind))
+    }
+
+    /// [`Self::compute_substance`] as a tag instead of a `BlockState`, for a caller that
+    /// resolves palette indices itself: the fill loop asks this for every non-solid block, and
+    /// building then dropping a `BlockState` each time was two heap allocations per block.
+    pub fn compute_kind(&mut self, x: i32, y: i32, z: i32, density: f64) -> Option<FluidKind> {
         if density > 0.0 {
             return None;
         }
         let global = self.global_fluid(y);
         if y > self.skip_sampling_above_y {
-            return Some(self.block_for(global.at_kind(y)));
+            return Some(global.at_kind(y));
         }
         if global.at_kind(y) == FluidKind::Lava {
-            return Some(self.lava.clone());
+            return Some(FluidKind::Lava);
         }
 
         let anchor_x = grid_x(x + SAMPLE_OFFSET_X);
@@ -278,10 +287,10 @@ impl<'a> Aquifer<'a> {
         let similarity12 = similarity(best[0].0, best[1].0);
         let fluid = status1.at_kind(y);
         if similarity12 <= 0.0 {
-            return Some(self.block_for(fluid));
+            return Some(fluid);
         }
         if fluid == FluidKind::Sea && self.global_fluid(y - 1).at_kind(y - 1) == FluidKind::Lava {
-            return Some(self.block_for(fluid));
+            return Some(fluid);
         }
 
         // Where two aquifers of different levels meet, barrier pressure can make the boundary
@@ -313,7 +322,7 @@ impl<'a> Aquifer<'a> {
                 return None;
             }
         }
-        Some(self.block_for(fluid))
+        Some(fluid)
     }
 
     fn index(&self, gx: i32, gy: i32, gz: i32) -> usize {

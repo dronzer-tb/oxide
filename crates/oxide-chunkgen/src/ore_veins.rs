@@ -74,13 +74,38 @@ pub fn apply_ore_veins(
     let band_min = IRON.min_y.min(COPPER.min_y);
     let band_max = IRON.max_y.max(COPPER.max_y);
 
+    // Where the default block sits in each section's palette, resolved once. A vein write can
+    // only append palette entries, never move one, so these stay valid for the whole pass --
+    // and "is this the default block?" becomes an integer compare instead of a `BlockState`
+    // clone and comparison per position.
+    let default_index: Vec<Option<u32>> = chunk
+        .sections
+        .iter()
+        .map(|section| {
+            section
+                .block_states
+                .palette()
+                .iter()
+                .position(|state| *state == settings.default_block)
+                .map(|index| index as u32)
+        })
+        .collect();
+
     for y in band_min.max(min_y)..=band_max.min(min_y + height - 1) {
+        let Some(section_index) = section_of(settings, y) else {
+            continue;
+        };
+        let Some(Some(default_index)) = default_index.get(section_index).copied() else {
+            continue;
+        };
+        let local_y = (y - min_y).rem_euclid(16) as usize;
         for local_z in 0..16usize {
             let block_z = pos.min_block_z() + local_z as i32;
             for local_x in 0..16usize {
                 let block_x = pos.min_block_x() + local_x as i32;
-                if get_block(chunk, settings, local_x, y, local_z).as_ref()
-                    != Some(&settings.default_block)
+                if chunk.sections[section_index].block_states.indices()
+                    [local_index(local_x, local_y, local_z)]
+                    != default_index
                 {
                     continue;
                 }
@@ -170,18 +195,6 @@ fn section_of(settings: &NoiseGeneratorSettings, y: i32) -> Option<usize> {
         return None;
     }
     Some(((y - min_y) / 16) as usize)
-}
-
-fn get_block(
-    chunk: &ChunkData,
-    settings: &NoiseGeneratorSettings,
-    x: usize,
-    y: i32,
-    z: usize,
-) -> Option<BlockState> {
-    let section = chunk.sections.get(section_of(settings, y)?)?;
-    let local_y = (y - settings.noise.min_y).rem_euclid(16) as usize;
-    Some(section.block_states.get(local_index(x, local_y, z)).clone())
 }
 
 fn set_block(

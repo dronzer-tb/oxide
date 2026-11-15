@@ -104,141 +104,144 @@ pub fn fill_chunk_culling(
     let cell_width = caches.cell_width();
     let cell_height = caches.cell_height();
 
+    // "Is this whole cell provably non-solid?", resolved once per cell for the chunk rather
+    // than once per row of blocks crossing it: the interval walk behind `cell_bounds`
+    // allocates, and asking per (y, z) row called it ~24k times a chunk for 768 cells.
+    //
+    // Only the "all air" direction is claimed. `final_density` is
+    // `min(squeeze(interpolated(..)), noodle_caves)` in a real overworld router: the `min`
+    // means an unbounded cave term can pull any position down, so a positive lower bound on
+    // the interpolated part would NOT prove the cell is solid. An upper bound of <= 0 is safe
+    // in spite of the `min`, because `min` only ever lowers the value further.
+    let cells_xz = (16 / cell_width).max(1) as usize;
+    let cells_y = (height / cell_height).max(0) as usize;
+    let mut air_cells = vec![false; cells_xz * cells_xz * cells_y];
+    if cull {
+        for cell_y in 0..cells_y {
+            for cell_z in 0..cells_xz {
+                for cell_x in 0..cells_xz {
+                    #[cfg(feature = "cull-stats")]
+                    crate::CULL_CONSIDERED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let bounds = router.cell_bounds(
+                        caches,
+                        RouterSlot::FinalDensity,
+                        cell_x as i32,
+                        cell_y as i32,
+                        cell_z as i32,
+                    );
+                    #[cfg(feature = "cull-stats")]
+                    if let Some((_, hi)) = bounds {
+                        crate::CULL_BOUNDED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if hi <= 0.0 {
+                            crate::CULL_HI_NEG.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                    air_cells[(cell_y * cells_xz + cell_z) * cells_xz + cell_x] =
+                        bounds.is_some_and(|(_, hi)| hi <= 0.0);
+                }
+            }
+        }
+    }
+    let cell_is_air = |cell_x: usize, cell_y: i32, cell_z: usize| -> bool {
+        cell_y >= 0
+            && cell_x < cells_xz
+            && cell_z < cells_xz
+            && air_cells
+                .get((cell_y as usize * cells_xz + cell_z) * cells_xz + cell_x)
+                .copied()
+                .unwrap_or(false)
+    };
+
+    // The three states the fill can place besides air. Each is interned into a section's
+    // palette on first use (so palettes hold exactly what the section contains, in the order
+    // it was first written) and written by index after that -- no `BlockState` is built,
+    // hashed or dropped per block.
+    const DEFAULT: usize = 0;
+    const SEA: usize = 1;
+    const LAVA: usize = 2;
+    let lava = BlockState::new(ResourceLocation::minecraft("lava"));
+    let placeable: [&BlockState; 3] = [&settings.default_block, &settings.default_fluid, &lava];
+    // A fluid that *is* air needs no write: air is every section's palette default.
+    let skip: [bool; 3] = [false, settings.default_fluid == air, false];
+
     for i in 0..section_count {
         let section_y = min_y / 16 + i as i32;
         let mut section = ChunkSection::new(section_y as i8, air.clone(), default_biome.clone());
         let section_min_y = section_y * 16;
-        let mut default_block_index: Option<u32> = None;
+        let mut palette_index: [Option<u32>; 3] = [None; 3];
 
         for local_y in 0..16i32 {
             let y = section_min_y + local_y;
-            // Which cell this row of blocks sits in, and what the density is known to do
-            // across it. `None` = no shortcut available, evaluate exactly.
             let cell_y = (y - min_y).div_euclid(cell_height);
+            // Per row, because a cell spans several y and the answer changes with it.
+            //
+            // With aquifers off: above sea level a non-solid position is air.
+            // With aquifers on: above `skip_sampling_above_y` the aquifer answers from its
+            // global fluid alone -- no grid sampling and no mutation of its memo state -- so
+            // the result is predictable here and skipping the call cannot change what any
+            // later call returns.
+            let air_if_not_solid = match aquifer.as_deref() {
+                None => y > settings.sea_level,
+                Some(aq) => aq.air_above_skip(y),
+            };
             for local_z in 0..16usize {
                 let block_z = pos.min_block_z() + local_z as i32;
-                let cell_z = (local_z as i32).div_euclid(cell_width);
-                // Bounds are a property of the CELL, so they are resolved once per cell here
-                // rather than once per block. Computing them per position cost a 5-op interval
-                // walk 98k times a chunk and ate the entire saving.
-                let mut cached_cell_x = i32::MIN;
-                let mut cached_all_air = false;
+                let cell_z = (local_z as i32).div_euclid(cell_width) as usize;
                 for local_x in 0..16usize {
                     let block_x = pos.min_block_x() + local_x as i32;
-                    let cell_x = (local_x as i32).div_euclid(cell_width);
+                    let cell_x = (local_x as i32).div_euclid(cell_width) as usize;
 
-                    // Uniform-cell shortcut, taken before any density evaluation.
-                    //
-                    // Only the "all air" direction is claimed. `final_density` is
-                    // `min(squeeze(interpolated(..)), noodle_caves)` in a real overworld router:
-                    // the `min` means an unbounded cave term can pull any position down, so a
-                    // positive lower bound on the interpolated part would NOT prove the cell is
-                    // solid. An upper bound of <= 0 is safe in spite of the `min`, because `min`
-                    // only ever lowers the value further.
-                    #[cfg(feature = "cull-stats")]
-                    {
-                        crate::CULL_CONSIDERED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        if cull {
-                            if let Some((_, hi)) = router.cell_bounds(
-                                caches,
-                                RouterSlot::FinalDensity,
-                                cell_x,
-                                cell_y,
-                                cell_z,
-                            ) {
-                                crate::CULL_BOUNDED
-                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                if hi <= 0.0 {
-                                    crate::CULL_HI_NEG
-                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                }
-                            }
-                        }
-                    }
-                    if cell_x != cached_cell_x {
-                        cached_cell_x = cell_x;
-                        cached_all_air = cull
-                            && router
-                                .cell_bounds(
-                                    caches,
-                                    RouterSlot::FinalDensity,
-                                    cell_x,
-                                    cell_y,
-                                    cell_z,
-                                )
-                                .is_some_and(|(_, hi)| hi <= 0.0);
-                    }
-                    // Per block, because a cell spans several y and the answer changes with it.
-                    //
-                    // With aquifers off: above sea level a non-solid position is air.
-                    // With aquifers on: above `skip_sampling_above_y` the aquifer answers from
-                    // its global fluid alone -- no grid sampling and no mutation of its memo
-                    // state -- so the result is predictable here and skipping the call cannot
-                    // change what any later call returns.
-                    let all_air = cached_all_air
-                        && match aquifer.as_deref() {
-                            None => y > settings.sea_level,
-                            Some(aq) => aq.air_above_skip(y),
-                        };
-
-                    let block = if all_air {
-                        // Above sea level with aquifers off, a non-solid position is air, which
-                        // is already the section's palette default -- nothing to write.
+                    // Uniform-cell shortcut, taken before any density evaluation: air is
+                    // already the section's palette default, so there is nothing to write.
+                    if air_if_not_solid && cell_is_air(cell_x, cell_y, cell_z) {
                         continue;
-                    } else {
-                        {
-                            let density = router.sample_in_chunk(
-                                caches,
-                                RouterSlot::FinalDensity,
-                                block_x,
-                                y,
-                                block_z,
-                            );
-                            // The aquifer decides what a non-solid position holds -- air, water
-                            // or lava, at a level that varies per underground body. `None` means
-                            // solid, so the default block goes in. Vanilla runs exactly this as
-                            // the first filler in its noise fill.
-                            match aquifer.as_deref_mut() {
-                                Some(aquifer) => {
-                                    match aquifer.compute_substance(block_x, y, block_z, density) {
-                                        None => None,
-                                        // Air is already the section's default palette entry.
-                                        Some(state) if state == air => continue,
-                                        Some(state) => Some(state),
-                                    }
-                                }
-                                // Aquifers disabled by the settings: solid below the surface,
-                                // the dimension's fluid up to sea level, air above.
-                                None => {
-                                    if density > 0.0 {
-                                        None
-                                    } else if y <= settings.sea_level {
-                                        Some(settings.default_fluid.clone())
-                                    } else {
-                                        continue;
-                                    }
-                                }
+                    }
+
+                    let density = router.sample_in_chunk(
+                        caches,
+                        RouterSlot::FinalDensity,
+                        block_x,
+                        y,
+                        block_z,
+                    );
+                    // The aquifer decides what a non-solid position holds -- air, water or
+                    // lava, at a level that varies per underground body. Vanilla runs exactly
+                    // this as the first filler in its noise fill.
+                    let kind = match aquifer.as_deref_mut() {
+                        Some(aquifer) => match aquifer.compute_kind(block_x, y, block_z, density) {
+                            None => DEFAULT,
+                            Some(crate::aquifer::FluidKind::Air) => continue,
+                            Some(crate::aquifer::FluidKind::Sea) => SEA,
+                            Some(crate::aquifer::FluidKind::Lava) => LAVA,
+                        },
+                        // Aquifers disabled by the settings: solid below the surface, the
+                        // dimension's fluid up to sea level, air above.
+                        None => {
+                            if density > 0.0 {
+                                DEFAULT
+                            } else if y <= settings.sea_level {
+                                SEA
+                            } else {
+                                continue;
                             }
                         }
                     };
-                    let slot = local_index(local_x, local_y as usize, local_z);
-                    match block {
-                        // `None` is the default block, the common case.
-                        None => {
-                            let index = match default_block_index {
-                                Some(index) => index,
-                                None => {
-                                    let index = section
-                                        .block_states
-                                        .index_of_or_insert(settings.default_block.clone());
-                                    default_block_index = Some(index);
-                                    index
-                                }
-                            };
-                            section.block_states.set_index(slot, index);
-                        }
-                        Some(state) => section.block_states.set(slot, state),
+                    if skip[kind] {
+                        continue;
                     }
+                    let index = match palette_index[kind] {
+                        Some(index) => index,
+                        None => {
+                            let index = section
+                                .block_states
+                                .index_of_or_insert(placeable[kind].clone());
+                            palette_index[kind] = Some(index);
+                            index
+                        }
+                    };
+                    section
+                        .block_states
+                        .set_index(local_index(local_x, local_y as usize, local_z), index);
                 }
             }
         }
@@ -342,41 +345,60 @@ pub(crate) fn compute_heightmaps(
 
     let default_fluid = &settings.default_fluid;
 
+    // Each section's palette classified once -- a handful of entries -- so the column scan
+    // below reads a palette index and a table byte per block instead of comparing strings.
+    const AIR: u8 = 0;
+    const FLUID: u8 = 1;
+    const SOLID: u8 = 2;
+    let classes: Vec<Vec<u8>> = chunk
+        .sections
+        .iter()
+        .map(|section| {
+            section
+                .block_states
+                .palette()
+                .iter()
+                .map(|state| {
+                    if state.name.namespace() == "minecraft" && state.name.path() == "air" {
+                        AIR
+                    } else if state == default_fluid {
+                        FLUID
+                    } else {
+                        SOLID
+                    }
+                })
+                .collect()
+        })
+        .collect();
+
     for local_z in 0..16usize {
         for local_x in 0..16usize {
-            let mut found_ocean_floor = false;
             let mut found_world_surface = false;
 
-            for section_index in (0..chunk.section_count()).rev() {
+            'column: for section_index in (0..chunk.section_count()).rev() {
                 let section = &chunk.sections[section_index];
+                let class = &classes[section_index];
+                // A section holding only air cannot end either scan.
+                if class.len() == 1 && class[0] == AIR {
+                    continue;
+                }
+                let indices = section.block_states.indices();
                 let section_base_y = min_y + (section_index as i32 * 16);
 
                 for local_y in (0..16usize).rev() {
                     let y = section_base_y + local_y as i32;
-                    let slot = local_index(local_x, local_y, local_z);
-                    let state = section.block_states.get(slot);
-
-                    let is_air =
-                        state.name.namespace() == "minecraft" && state.name.path() == "air";
-                    let is_fluid = state == default_fluid;
-
-                    if !is_air && !found_world_surface {
+                    let kind = class[indices[local_index(local_x, local_y, local_z)] as usize];
+                    if kind == AIR {
+                        continue;
+                    }
+                    if !found_world_surface {
                         world_surface.set(local_x, local_z, y - min_y + 1);
                         found_world_surface = true;
                     }
-
-                    if !is_air && !is_fluid && !found_ocean_floor {
+                    if kind == SOLID {
                         ocean_floor.set(local_x, local_z, y - min_y + 1);
-                        found_ocean_floor = true;
+                        break 'column;
                     }
-
-                    if found_ocean_floor && found_world_surface {
-                        break;
-                    }
-                }
-
-                if found_ocean_floor && found_world_surface {
-                    break;
                 }
             }
         }
