@@ -391,11 +391,11 @@ a977961a58122047.
     merge release  cps 632.2 657.6
     merge pgo      cps 593.3 684.9
     HEAD  release  cps 135.9 130.5   (7252db9)
-    HEAD  pgo      cps 167.7 (second run pending)
+    HEAD  pgo      cps 167.7 159.4   (second row tagged a91e803: docs-only commit, same code)
 
 - **Decoration share:** with ~4.5x faster terrain, pregen goes from ~85 to ~178 cps, and decoration is now
   about half the pregen wall time (2.8-3.3 s of ~6 s). It is the main pregen lever now.
-- **PGO depends on the code:** on HEAD (old terrain), PGO gains +25% over the same-commit release (167.7 vs
+- **PGO depends on the code:** on HEAD (old terrain), PGO gains +23% over the same-commit release (163.6 vs
   133.2 mean). On the merge it is a wash, 639 vs 645 mean, with one run either side of release. The
   datapath work seems to have taken the wins PGO was finding (branch layout and inlining in
   the noise and density paths). Recommendation: do not make `profile=pgo` the headline. Re-test PGO

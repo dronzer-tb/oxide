@@ -30,3 +30,4 @@
 1794731214	7252db9	16	chunks=1089 threads=8 secs=8.015 cps=135.9 ms_per_chunk_core=58.88 digest=a977961a58122047 profile=release build_s=1m46s
 1794731690	7252db9	16	chunks=1089 threads=8 secs=8.347 cps=130.5 ms_per_chunk_core=61.32 digest=a977961a58122047 profile=release build_s=0.28s
 1794733478	7252db9	16	chunks=1089 threads=8 secs=6.493 cps=167.7 ms_per_chunk_core=47.70 digest=a977961a58122047 profile=pgo build_s=5m38s+3m41s
+1794735342	a91e803	16	chunks=1089 threads=8 secs=6.832 cps=159.4 ms_per_chunk_core=50.19 digest=a977961a58122047 profile=pgo build_s=1.33s+3m20s
