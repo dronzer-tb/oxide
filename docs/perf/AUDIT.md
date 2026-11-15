@@ -638,3 +638,41 @@ Stopped reading at: noise 3362440, datapath bf577ba, pipeline 1732883
   do not count.**
 - Live Chunky with the datapath head: 85 cps at first, 115 cps with the box free and lz4 region
   files. With `native-decoration=true`: about 10 cps (pipeline has been told).
+
+## Pass 15, 15:35 UTC
+
+Read only. The box is still reserved (builds stopped, live server running); resume at 15:55 UTC.
+
+- **Gate hole found by datapath.** The terrain digest `a977961a58122047` hashes
+  `block.to_string()` per position (`oxide-harness/src/merkle.rs`). It does not see palette
+  order, biomes or heightmaps. Datapath changed all three (E1, E12, E27 biomes; E1 heightmaps;
+  E1, E2, E9-E11, E16, E22 palettes). Its reading review found no violation. Interim evidence:
+  the pregen digest is over chunk NBT, and pipeline's merged trees (up to datapath 2127bd7)
+  gave `df701ee858e2bdd3`. Interim rule sent: each kept terrain change also passes a pregen
+  run on a tree merged with pipeline. Widening the harness digest is for the user to assign.
+- **noise 33fc192** (code fd4bfe2). `is_quart_invariant(slot)` added for datapath's E29 (API,
+  test, no speed change). Aquifer point memo (`noise-9`) rejected. Column-uniform x/z
+  (`noise-11`) designed, not built. Best still 9.15 ms on 1 thread at 01528de; that commit has
+  no 8-thread measurement. Limit 76%.
+- **datapath a95c316** (code 0f15cef = b1f77a6 + noise 3362440). Fused fill-plus-surface pass
+  stopped at design: ceiling 1-1.5%. One 8-thread row of 392.9 cps at 14:56 UTC, minutes before
+  the reservation: not counted; the hold against b1f77a6 runs after the box is back.
+- **pipeline d7d5ea8**. Kept, each on 1-thread holds on merged terrain, digest
+  `df701ee858e2bdd3` on every row: ore floor scan skip 14617 against 15382 ms (ahead in 4 of 6
+  pairs, 5%; thin); sculk 3x3x3 neighbourhood 16370 against 17971 ms (3 of 3). Files: `sculk.rs`,
+  `ore.rs`, `region.rs`. Branch-head tests wait for the box.
+  Live 10 cps with `native-decoration=true`, by reading: (1) the Vertex hook does not take the
+  FEATURES stage, so vanilla features run on top of native ones (cost and a wrong world);
+  (2) one finished chunk needs 25 terrain chunks and 9 feature runs unless cached, and the
+  cache is 256 terrain chunks, FIFO. Fixes are in the plugin and `oxide-ffi`, owned by no track.
+- Box: disk 68%; stopped builds are waiting as the user said. No OmniRoute calls. Sub-agents
+  in total: noise 15, datapath 22, pipeline 6.
+
+Messages: datapath (interim pregen gate; 392.9 row suspect, hold first), noise (01528de needs
+an 8-thread hold, datapath runs it; handover), pipeline (plugin and oxide-ffi are not its
+files; log the merged datapath commit in each row).
+
+Open for the user: who widens the harness digest and at which commit the new value is set;
+who fixes the Vertex stage registration and the decoration cache in `oxide-ffi`.
+
+Stopped reading at: noise 33fc192, datapath a95c316, pipeline d7d5ea8
