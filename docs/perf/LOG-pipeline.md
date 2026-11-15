@@ -822,3 +822,28 @@ this branch at 4e1b187 merged with origin/perf/datapath **c38344f** (scratch mer
 -7.8%, ahead 3/3, df701ee858e2bdd3 on every row. The Java server was using 1.1-2.1 cores during the
 hold; with 1-thread alternating rounds both trees saw the same load. Tests on the merged tree:
 chunkgen 194 pass (1 ignored), pregen pass.
+
+## Lush caves: biome gate before the scan, one read per scan step, cached patch tests; rejected (-0.7%)
+
+**Change** (sub-agent commit b7d68dd; patch at `docs/perf/rejected-lush-caves-scan.patch`):
+- a placed chain whose `biome` filter follows only draw-free, column-keeping, non-tallying modifiers
+  (`environment_scan`, y-only constant `random_offset`, ...) drops a center-chunk position early
+  when no quart of its 4x4 column has a biome listing the feature;
+- `environment_scan` with local predicates reads each cell once (`DecorationRegion::probe`) and
+  caches (allowed, target) per `StateKey`;
+- `face_full` answers from one probe; `vegetation_patch` reuses air-walk answers, writes a constant
+  ground state by id, caches name/replaceable tests per key.
+
+**Hold** (rows 1794767525; same trees as the sculk hold, merged with datapath **c38344f**):
+
+| | run 1 | run 2 | run 3 | mean |
+|---|---|---|---|---|
+| base decorate_ms | 13293 | 13209 | 12945 | 13149 |
+| lush decorate_ms | 13268 | 13134 | 12760 | 13054 |
+| java_cpu_pct | 331 | 62 | 54 | |
+
+-0.7%: ahead 3/3 but by 25-185 ms, inside run-to-run spread. The profile gave the four lush features
+18.5% of decorate CPU, so the change did not reach where that time goes. **Rejected** (454 lines for a
+gain inside noise). Digest df701ee858e2bdd3 held on every row. Next: a timed profile of this tree to
+see whether the lush time is before the gate (count/height_range draws) or in the features
+themselves on the lush columns.

@@ -1,0 +1,738 @@
+From 9283571760ffd3a4af7d39b08ae61f8457836f1a Mon Sep 17 00:00:00 2001
+From: Kasniya <36neelansh@gmail.com>
+Date: Sun, 15 Nov 2026 17:58:57 +0000
+Subject: [PATCH] perf(decorate): biome-gate lush cave scans; one read per scan
+ step and face test; cache patch ground tests
+
+- placement: a placed chain whose biome filter is preceded by draw-free, column-keeping,
+  non-tallying modifiers (environment_scan, constant y-only random_offset, ...) drops a
+  center-chunk position before that run when no quart of its 4x4 column has a biome listing
+  the feature (DecorationRegion::center_biome_columns). The skipped run neither draws nor
+  writes nor tallies, so output is unchanged.
+- environment_scan with local predicates reads each position once (DecorationRegion::probe)
+  and caches (allowed, target) per StateKey within the scan.
+- face_full answers every fact from one probe and asks only the facts it needs.
+- vegetation_patch: the air walks reuse the last answer instead of re-reading; a constant
+  ground state is interned on its first landing write, and the name/replaceable tests are
+  cached per StateKey; flood water is interned on first landing write.
+
+Random draws, write order and state-table order are unchanged; pregen digest df701ee858e2bdd3.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../oxide-chunkgen/src/decorator/feature.rs   |  25 ++-
+ .../oxide-chunkgen/src/decorator/placement.rs | 159 +++++++++++++++++-
+ .../oxide-chunkgen/src/decorator/predicate.rs |  95 +++++++++++
+ .../src/decorator/vegetation/patch.rs         |  90 +++++++++-
+ .../src/decorator/vegetation/support.rs       |  23 ++-
+ crates/oxide-chunkgen/src/region.rs           |  86 ++++++++++
+ 6 files changed, 454 insertions(+), 24 deletions(-)
+
+diff --git a/crates/oxide-chunkgen/src/decorator/feature.rs b/crates/oxide-chunkgen/src/decorator/feature.rs
+index e199405..1e1a105 100644
+--- a/crates/oxide-chunkgen/src/decorator/feature.rs
++++ b/crates/oxide-chunkgen/src/decorator/feature.rs
+@@ -33,7 +33,7 @@ use super::end::EndFeature;
+ use super::ground::GroundFeature;
+ use super::nether::NetherFeature;
+ use super::ore::OreFeature;
+-use super::placement::{run, Modifier};
++use super::placement::{biome_gate, run, Gate, Modifier};
+ use super::spring::SpringFeature;
+ use super::state_provider::{StateProvider, Unsupported};
+ use super::templated::{TemplateLibrary, TemplatedFeature};
+@@ -46,6 +46,8 @@ use super::water::WaterFeature;
+ pub struct Placed {
+     pub modifiers: Vec<Modifier>,
+     pub feature: Arc<Feature>,
++    /// [`biome_gate`] of `modifiers`.
++    pub biome_gate: Option<usize>,
+ }
+ 
+ /// A configured feature, compiled.
+@@ -205,7 +207,12 @@ impl<'d> Compiler<'d> {
+                 },
+                 Holder::Inline(config) => Arc::new(self.feature(config)?),
+             };
+-            Ok(Placed { modifiers, feature })
++            let biome_gate = biome_gate(&modifiers);
++            Ok(Placed {
++                modifiers,
++                feature,
++                biome_gate,
++            })
+         })();
+         self.depth -= 1;
+         result
+@@ -379,7 +386,19 @@ pub fn place_placed(
+     top_feature: Option<u32>,
+ ) -> bool {
+     let saved = std::mem::replace(&mut cx.top_feature, top_feature);
+-    let result = run(&placed.modifiers, cx, origin, &placed.feature);
++    let gate = match (placed.biome_gate, top_feature) {
++        (Some(start), Some(key)) => {
++            let env = cx.env;
++            Some(Gate {
++                remaining: placed.modifiers.len() - start,
++                columns: cx
++                    .region
++                    .center_biome_columns(|biome| env.biome_lists(biome, key)),
++            })
++        }
++        _ => None,
++    };
++    let result = run(&placed.modifiers, cx, origin, &placed.feature, gate);
+     cx.top_feature = saved;
+     result
+ }
+diff --git a/crates/oxide-chunkgen/src/decorator/placement.rs b/crates/oxide-chunkgen/src/decorator/placement.rs
+index 5485a0f..0ccf894 100644
+--- a/crates/oxide-chunkgen/src/decorator/placement.rs
++++ b/crates/oxide-chunkgen/src/decorator/placement.rs
+@@ -19,6 +19,7 @@ use super::feature::{place_configured_feature, Feature};
+ use super::predicate::Predicate;
+ use super::provider::{next_bounded, sample_height, sample_int};
+ use super::simplex::info_noise;
++use crate::region::StateKey;
+ use oxide_datapack::BlockFact;
+ 
+ #[derive(Debug, Clone)]
+@@ -45,6 +46,8 @@ pub enum Modifier {
+         target: Predicate,
+         allowed: Predicate,
+         max_steps: i32,
++        /// Both predicates are [`Predicate::is_local`]: each step reads its position once.
++        local: bool,
+     },
+     CountOnEveryLayer(IntProvider),
+     NoiseThresholdCount {
+@@ -109,12 +112,17 @@ impl Modifier {
+                 target_condition,
+                 allowed_search_condition,
+                 max_steps,
+-            } => Self::EnvironmentScan {
+-                upwards: matches!(direction_of_search, SearchDirection::Up),
+-                target: Predicate::compile(target_condition, facts)?,
+-                allowed: Predicate::compile(allowed_search_condition, facts)?,
+-                max_steps: *max_steps,
+-            },
++            } => {
++                let target = Predicate::compile(target_condition, facts)?;
++                let allowed = Predicate::compile(allowed_search_condition, facts)?;
++                Self::EnvironmentScan {
++                    upwards: matches!(direction_of_search, SearchDirection::Up),
++                    local: target.is_local() && allowed.is_local(),
++                    target,
++                    allowed,
++                    max_steps: *max_steps,
++                }
++            }
+             PlacementModifier::CountOnEveryLayer { count } => {
+                 Self::CountOnEveryLayer(count.clone())
+             }
+@@ -238,8 +246,14 @@ impl Modifier {
+                 target,
+                 allowed,
+                 max_steps,
++                local,
+             } => {
+-                if let Some(found) = scan(cx, pos, *upwards, target, allowed, *max_steps) {
++                let found = if *local {
++                    scan_local(cx, pos, *upwards, target, allowed, *max_steps)
++                } else {
++                    scan(cx, pos, *upwards, target, allowed, *max_steps)
++                };
++                if let Some(found) = found {
+                     out.push(found);
+                 }
+             }
+@@ -307,6 +321,70 @@ fn scan(
+     target.test(cx, pos).then_some(pos)
+ }
+ 
++/// Answers already worked out during one scan: `(key, allowed, target)` per [`StateKey`], in a
++/// few direct-mapped slots. The predicates are local, so their answers depend on the state alone
++/// -- except `inside_world_bounds`, which a scan never needs at a position outside the world.
++type ScanCache = [Option<(StateKey, bool, bool)>; 4];
++
++/// `allowed` and `target` at `pos`, both local, from one read of the position.
++fn test_both(
++    cx: &mut FeatureContext<'_, '_, '_>,
++    pos: BlockPos,
++    allowed: &Predicate,
++    target: &Predicate,
++    cache: &mut ScanCache,
++) -> (bool, bool) {
++    let (min_y, max_y) = (cx.region.min_y(), cx.region.max_y());
++    match cx.region.probe(pos) {
++        Some(probe) => {
++            let slot = &mut cache[probe.key.slot() & 3];
++            if let Some((key, ok, hit)) = *slot {
++                if key == probe.key {
++                    return (ok, hit);
++                }
++            }
++            let ok = allowed.test_probe(cx.env, &probe, pos, min_y, max_y);
++            let hit = target.test_probe(cx.env, &probe, pos, min_y, max_y);
++            *slot = Some((probe.key, ok, hit));
++            (ok, hit)
++        }
++        None => (allowed.test(cx, pos), target.test(cx, pos)),
++    }
++}
++
++/// [`scan`] for local predicates. They are pure in the position's state and never tally, so
++/// testing both at each position, from one read, gives the same answers in the same places.
++fn scan_local(
++    cx: &mut FeatureContext<'_, '_, '_>,
++    start: BlockPos,
++    upwards: bool,
++    target: &Predicate,
++    allowed: &Predicate,
++    max_steps: i32,
++) -> Option<BlockPos> {
++    let mut cache: ScanCache = [None; 4];
++    let mut pos = start;
++    let (ok, mut hit) = test_both(cx, pos, allowed, target, &mut cache);
++    if !ok {
++        return None;
++    }
++    for _ in 0..max_steps {
++        if hit {
++            return Some(pos);
++        }
++        pos.y = pos.y.wrapping_add(if upwards { 1 } else { -1 });
++        if cx.outside_build_height(pos.y) {
++            return None;
++        }
++        let (ok, next_hit) = test_both(cx, pos, allowed, target, &mut cache);
++        hit = next_hit;
++        if !ok {
++            break;
++        }
++    }
++    hit.then_some(pos)
++}
++
+ #[derive(Clone, Copy, PartialEq, Eq)]
+ enum Layer {
+     Empty,
+@@ -379,6 +457,59 @@ fn on_every_layer(
+     }
+ }
+ 
++/// The constant an int provider always answers without drawing, if it is one.
++fn constant_int(provider: &IntProvider) -> Option<i32> {
++    match provider {
++        IntProvider::Constant(value) => Some(*value),
++        IntProvider::Tagged(tagged) => match &**tagged {
++            oxide_datapack::placement::TaggedIntProvider::Constant { value } => Some(*value),
++            _ => None,
++        },
++    }
++}
++
++impl Modifier {
++    /// Whether the modifier emits at most one position per input, in the input's column, with no
++    /// random draw and no effect besides its answer.
++    fn keeps_column_quietly(&self) -> bool {
++        match self {
++            Self::EnvironmentScan {
++                target, allowed, ..
++            } => target.is_quiet() && allowed.is_quiet(),
++            Self::RandomOffset {
++                xz_spread,
++                y_spread,
++            } => constant_int(xz_spread) == Some(0) && constant_int(y_spread).is_some(),
++            Self::Predicate(predicate) => predicate.is_quiet(),
++            Self::Heightmap(_) | Self::SurfaceWaterDepth(_) | Self::SurfaceRelative { .. } => true,
++            _ => false,
++        }
++    }
++}
++
++/// Where a chain may drop a position early because the biome filter later on would drop it:
++/// the index of the first modifier of a run of [`Modifier::keeps_column_quietly`] modifiers
++/// that ends in a `biome` modifier. Such a run neither draws nor leaves its column, so a
++/// position entering it whose column holds no biome that lists the feature cannot pass the
++/// filter, and skipping the run for it changes nothing but the time spent.
++pub fn biome_gate(modifiers: &[Modifier]) -> Option<usize> {
++    let biome = modifiers.iter().position(|m| matches!(m, Modifier::Biome))?;
++    let mut start = biome;
++    while start > 0 && modifiers[start - 1].keeps_column_quietly() {
++        start -= 1;
++    }
++    (start < biome).then_some(start)
++}
++
++/// A [`biome_gate`] resolved for one run: positions entering the chain with `remaining`
++/// modifiers left are dropped when they are in the center chunk and their 4x4 column's bit in
++/// `columns` (see `DecorationRegion::center_biome_columns`) is clear.
++#[derive(Clone, Copy)]
++pub struct Gate {
++    pub remaining: usize,
++    pub columns: u16,
++}
++
+ /// Runs `modifiers` from `pos`, then `feature` at every position that comes out, depth first.
+ /// Returns whether any placement reported success.
+ pub fn run(
+@@ -386,7 +517,19 @@ pub fn run(
+     cx: &mut FeatureContext<'_, '_, '_>,
+     pos: BlockPos,
+     feature: &Feature,
++    gate: Option<Gate>,
+ ) -> bool {
++    if let Some(gate) = gate {
++        if modifiers.len() == gate.remaining {
++            let center = cx.region.center();
++            if pos.x >> 4 == center.x
++                && pos.z >> 4 == center.z
++                && gate.columns >> (((pos.z >> 2) & 3) * 4 + ((pos.x >> 2) & 3)) & 1 == 0
++            {
++                return false;
++            }
++        }
++    }
+     let Some((modifier, rest)) = modifiers.split_first() else {
+         cx.origin = pos;
+         return place_configured_feature(feature, cx);
+@@ -395,7 +538,7 @@ pub fn run(
+     modifier.positions(cx, pos, &mut emitted);
+     let mut placed = false;
+     for next in emitted {
+-        placed |= run(rest, cx, next, feature);
++        placed |= run(rest, cx, next, feature, gate);
+     }
+     placed
+ }
+diff --git a/crates/oxide-chunkgen/src/decorator/predicate.rs b/crates/oxide-chunkgen/src/decorator/predicate.rs
+index 1046260..ad339a2 100644
+--- a/crates/oxide-chunkgen/src/decorator/predicate.rs
++++ b/crates/oxide-chunkgen/src/decorator/predicate.rs
+@@ -15,6 +15,7 @@ use oxide_datapack::{BlockFact, BlockFacts, TagSet};
+ 
+ use super::context::{block_in, Environment, FeatureContext};
+ use super::state_provider::state_from_spec;
++use crate::region::Probe;
+ 
+ /// A set of blocks or fluids written as one id, a list of ids, or a `#tag`.
+ #[derive(Debug, Clone)]
+@@ -93,6 +94,26 @@ fn fluid_path(facts: &BlockFacts, state: &BlockState) -> &'static str {
+     }
+ }
+ 
++/// [`fluid_path`] answered through a probe's fact cache.
++fn fluid_path_probe(probe: &Probe<'_>) -> &'static str {
++    let source = probe.is(BlockFact::FluidSource);
++    if probe.is(BlockFact::Water) {
++        if source {
++            "water"
++        } else {
++            "flowing_water"
++        }
++    } else if probe.is(BlockFact::Lava) {
++        if source {
++            "lava"
++        } else {
++            "flowing_lava"
++        }
++    } else {
++        "empty"
++    }
++}
++
+ #[derive(Debug, Clone)]
+ pub enum Direction {
+     Up,
+@@ -184,6 +205,80 @@ impl Predicate {
+         })
+     }
+ 
++    /// Whether the predicate reads nothing but the state at the tested position itself and the
++    /// position's height, and never tallies: then [`Self::test_probe`] answers it from one read.
++    pub fn is_local(&self) -> bool {
++        match self {
++            Self::True => true,
++            Self::Not(inner) => inner.is_local(),
++            Self::AllOf(list) | Self::AnyOf(list) => list.iter().all(Self::is_local),
++            Self::MatchingBlocks { offset, .. }
++            | Self::MatchingBlockTag { offset, .. }
++            | Self::MatchingFluids { offset, .. }
++            | Self::Replaceable { offset }
++            | Self::Solid { offset }
++            | Self::InsideWorldBounds { offset } => *offset == [0, 0, 0],
++            Self::HasSturdyFace { direction, offset } => {
++                *offset == [0, 0, 0] && !matches!(direction, Direction::Horizontal)
++            }
++            Self::WouldSurvive { .. } => false,
++        }
++    }
++
++    /// Whether testing the predicate has no effect besides its answer: it never tallies.
++    pub fn is_quiet(&self) -> bool {
++        match self {
++            Self::Not(inner) => inner.is_quiet(),
++            Self::AllOf(list) | Self::AnyOf(list) => list.iter().all(Self::is_quiet),
++            Self::WouldSurvive { .. } => false,
++            Self::HasSturdyFace { direction, .. } => !matches!(direction, Direction::Horizontal),
++            _ => true,
++        }
++    }
++
++    /// [`Self::test`] for an [`Self::is_local`] predicate at `pos`, whose state `probe` holds.
++    pub fn test_probe(
++        &self,
++        env: &Environment,
++        probe: &Probe<'_>,
++        pos: BlockPos,
++        min_y: i32,
++        max_y: i32,
++    ) -> bool {
++        match self {
++            Self::True => true,
++            Self::Not(inner) => !inner.test_probe(env, probe, pos, min_y, max_y),
++            Self::AllOf(all) => all
++                .iter()
++                .all(|predicate| predicate.test_probe(env, probe, pos, min_y, max_y)),
++            Self::AnyOf(any) => any
++                .iter()
++                .any(|predicate| predicate.test_probe(env, probe, pos, min_y, max_y)),
++            Self::MatchingBlocks { blocks, .. } => blocks.contains_block(env, &probe.state.name),
++            Self::MatchingBlockTag { tag, .. } => env.block_tags.contains(tag, &probe.state.name),
++            Self::MatchingFluids { fluids, .. } => {
++                let path = fluid_path_probe(probe);
++                match fluids {
++                    IdSet::Ids(ids) => ids
++                        .iter()
++                        .any(|id| id.namespace() == "minecraft" && id.path() == path),
++                    IdSet::Tag(tag) => env
++                        .fluid_tags
++                        .contains(tag, &ResourceLocation::minecraft(path)),
++                }
++            }
++            Self::Replaceable { .. } => probe.is(BlockFact::Replaceable),
++            Self::Solid { .. } => probe.is(BlockFact::Solid),
++            Self::InsideWorldBounds { .. } => pos.y >= min_y && pos.y < max_y,
++            Self::HasSturdyFace { direction, .. } => match direction {
++                Direction::Up => probe.is(BlockFact::SturdyTop),
++                Direction::Down => probe.is(BlockFact::SturdyBottom),
++                Direction::Horizontal => unreachable!("not a local predicate"),
++            },
++            Self::WouldSurvive { .. } => unreachable!("not a local predicate"),
++        }
++    }
++
+     /// Evaluates the predicate at `pos`. `all_of` and `any_of` short-circuit in list order.
+     pub fn test(&self, cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos) -> bool {
+         match self {
+diff --git a/crates/oxide-chunkgen/src/decorator/vegetation/patch.rs b/crates/oxide-chunkgen/src/decorator/vegetation/patch.rs
+index ddfd958..5a2942a 100644
+--- a/crates/oxide-chunkgen/src/decorator/vegetation/patch.rs
++++ b/crates/oxide-chunkgen/src/decorator/vegetation/patch.rs
+@@ -24,6 +24,7 @@ use crate::decorator::feature::Placed;
+ use crate::decorator::predicate::IdSet;
+ use crate::decorator::provider::sample_int;
+ use crate::decorator::state_provider::{StateProvider, Unsupported};
++use crate::region::StateKey;
+ 
+ #[derive(Debug)]
+ pub struct PatchFeature {
+@@ -72,7 +73,8 @@ impl PatchFeature {
+         let origin = cx.origin;
+         let x_radius = sample_int(&self.xz_radius, &mut *cx.random).wrapping_add(1);
+         let z_radius = sample_int(&self.xz_radius, &mut *cx.random).wrapping_add(1);
+-        let mut surface = self.ground_patch(cx, origin, x_radius, z_radius);
++        let mut ground = GroundCache::default();
++        let mut surface = self.ground_patch(cx, origin, x_radius, z_radius, &mut ground);
+         if self.waterlogged {
+             surface = self.flood(cx, &surface);
+         }
+@@ -99,8 +101,14 @@ impl PatchFeature {
+                 sealed.insert(pos);
+             }
+         }
++        let mut water = None;
+         for pos in sealed.iter_java_order() {
+-            cx.region.set_block_ref(pos, &self.water);
++            // Interned on the first write that lands, so the region's state table fills in the
++            // same order `set_block_ref` would fill it.
++            if cx.region.contains(pos) {
++                let id = *water.get_or_insert_with(|| cx.region.intern(&self.water));
++                cx.region.set_block_id(pos, id);
++            }
+         }
+         sealed
+     }
+@@ -136,6 +144,7 @@ impl PatchFeature {
+         origin: BlockPos,
+         x_radius: i32,
+         z_radius: i32,
++        ground: &mut GroundCache,
+     ) -> PosSet {
+         let inwards = self.inwards;
+         let outwards = inwards.opposite();
+@@ -154,24 +163,29 @@ impl PatchFeature {
+                         || (self.extra_edge_column_chance != 0.0
+                             && cx.random.next_float() <= self.extra_edge_column_chance))
+                 {
++                    // Vanilla asks `isAir` of the position each loop ends on once more in the
++                    // next test; the answer is pure, so each position is read once.
+                     let mut pos = offset(origin, dx, 0, dz);
++                    let mut air = is_air(cx, pos);
+                     let mut walked = 0;
+-                    while is_air(cx, pos) && walked < self.vertical_range {
++                    while air && walked < self.vertical_range {
+                         pos = relative(pos, inwards, 1);
+                         walked += 1;
++                        air = is_air(cx, pos);
+                     }
+                     let mut walked = 0;
+-                    while !is_air(cx, pos) && walked < self.vertical_range {
++                    while !air && walked < self.vertical_range {
+                         pos = relative(pos, outwards, 1);
+                         walked += 1;
++                        air = is_air(cx, pos);
+                     }
+                     let below = relative(pos, inwards, 1);
+-                    if is_air(cx, pos) && face_full(cx, below, outwards, Shape::Support) {
++                    if air && face_full(cx, below, outwards, Shape::Support) {
+                         let extra = self.extra_bottom_block_chance > 0.0
+                             && cx.random.next_float() < self.extra_bottom_block_chance;
+                         let depth =
+                             sample_int(&self.depth, &mut *cx.random).wrapping_add(i32::from(extra));
+-                        if self.place_ground(cx, below, depth) {
++                        if self.place_ground(cx, below, depth, ground) {
+                             surface.insert(below);
+                         }
+                     }
+@@ -190,7 +204,11 @@ impl PatchFeature {
+         cx: &mut FeatureContext<'_, '_, '_>,
+         mut below: BlockPos,
+         depth: i32,
++        ground: &mut GroundCache,
+     ) -> bool {
++        if let StateProvider::Simple(state) = &self.ground {
++            return self.place_simple_ground(cx, below, depth, state, ground);
++        }
+         for step in 0..depth {
+             let state = match self.ground.state(cx, below) {
+                 Ok(Some(state)) => state,
+@@ -211,4 +229,64 @@ impl PatchFeature {
+         }
+         true
+     }
++
++    /// [`Self::place_ground`] for a constant ground state, which draws nothing: the name and
++    /// `replaceable` tests are pure in the existing state, so they are cached by its key, and
++    /// the state is interned once instead of cloned and hashed per write.
++    fn place_simple_ground(
++        &self,
++        cx: &mut FeatureContext<'_, '_, '_>,
++        mut below: BlockPos,
++        depth: i32,
++        state: &BlockState,
++        ground: &mut GroundCache,
++    ) -> bool {
++        for step in 0..depth {
++            let (same, replaceable) = match cx.region.probe(below) {
++                Some(probe) => {
++                    let slot = &mut ground.slots[probe.key.slot() & (GROUND_SLOTS - 1)];
++                    match *slot {
++                        Some((key, same, replaceable)) if key == probe.key => (same, replaceable),
++                        _ => {
++                            let same = state.name == probe.state.name;
++                            let replaceable =
++                                self.replaceable.contains_block(cx.env, &probe.state.name);
++                            *slot = Some((probe.key, same, replaceable));
++                            (same, replaceable)
++                        }
++                    }
++                }
++                None => {
++                    let existing = block_in(cx.region, below);
++                    (
++                        state.name == existing.name,
++                        self.replaceable.contains_block(cx.env, &existing.name),
++                    )
++                }
++            };
++            if !same {
++                if !replaceable {
++                    return step != 0;
++                }
++                // `set_block` writes nothing outside the window; intern only on a write that
++                // lands, so the region's state table fills in the same order.
++                if cx.region.contains(below) {
++                    let id = *ground.id.get_or_insert_with(|| cx.region.intern(state));
++                    cx.region.set_block_id(below, id);
++                }
++                below = relative(below, self.inwards, 1);
++            }
++        }
++        true
++    }
++}
++
++const GROUND_SLOTS: usize = 8;
++
++/// Per `place` call: the ground state's interned id once written, and per existing state key
++/// whether it has the ground's name and whether `replaceable` holds for it.
++#[derive(Default)]
++struct GroundCache {
++    id: Option<u32>,
++    slots: [Option<(StateKey, bool, bool)>; GROUND_SLOTS],
+ }
+diff --git a/crates/oxide-chunkgen/src/decorator/vegetation/support.rs b/crates/oxide-chunkgen/src/decorator/vegetation/support.rs
+index 6714e2d..ccea821 100644
+--- a/crates/oxide-chunkgen/src/decorator/vegetation/support.rs
++++ b/crates/oxide-chunkgen/src/decorator/vegetation/support.rs
+@@ -42,8 +42,17 @@ pub(super) fn face_full(
+     face: Dir,
+     shape: Shape,
+ ) -> bool {
+-    let fact = |cx: &FeatureContext<'_, '_, '_>, fact: BlockFact| cx.region.is(pos, fact);
+-    let full_collision = fact(cx, BlockFact::FullCollision);
++    // One read answers every fact asked below; facts are pure in the state, so asking only the
++    // ones the answer needs changes nothing.
++    let Some(probe) = cx.region.probe(pos) else {
++        // Outside the window no fact holds (`DecorationRegion::is`), while the block reads as
++        // `void_air`.
++        if !matches!(face, Dir::Up | Dir::Down) {
++            let name = block_in(cx.region, pos).name.to_string();
++            cx.unsupported.record("shape", &name);
++        }
++        return false;
++    };
+     match face {
+         Dir::Up | Dir::Down => {
+             let sturdy = if face == Dir::Up {
+@@ -51,16 +60,16 @@ pub(super) fn face_full(
+             } else {
+                 BlockFact::SturdyBottom
+             };
+-            fact(cx, sturdy) || (shape == Shape::Collision && full_collision)
++            probe.is(sturdy) || (shape == Shape::Collision && probe.is(BlockFact::FullCollision))
+         }
+         _ => {
+-            if fact(cx, BlockFact::Air) || fact(cx, BlockFact::NoCollision) {
++            if probe.is(BlockFact::Air) || probe.is(BlockFact::NoCollision) {
+                 return false;
+             }
+-            if full_collision {
+-                return shape == Shape::Collision || fact(cx, BlockFact::SturdyTop);
++            if probe.is(BlockFact::FullCollision) {
++                return shape == Shape::Collision || probe.is(BlockFact::SturdyTop);
+             }
+-            let name = block_in(cx.region, pos).name.to_string();
++            let name = probe.state.name.to_string();
+             cx.unsupported.record("shape", &name);
+             false
+         }
+diff --git a/crates/oxide-chunkgen/src/region.rs b/crates/oxide-chunkgen/src/region.rs
+index 4540645..c8155c1 100644
+--- a/crates/oxide-chunkgen/src/region.rs
++++ b/crates/oxide-chunkgen/src/region.rs
+@@ -275,6 +275,76 @@ impl<'a> DecorationRegion<'a> {
+         Some(cache[entry].is(self.facts, &states.palette()[entry], fact))
+     }
+ 
++    /// One read of `pos` that answers its state, its [`StateKey`] and any number of facts, or
++    /// `None` outside the window: what [`Self::block_keyed`] and [`Self::fact_at`] each answer,
++    /// for the price of one lookup.
++    pub fn probe(&self, pos: BlockPos) -> Option<Probe<'_>> {
++        if let Some(&i) = self.overlay.get(&pos) {
++            let id = self.writes[i].1;
++            return Some(Probe {
++                key: StateKey(1 << 63 | u64::from(id)),
++                state: &self.states[id as usize],
++                cache: &self.state_facts[id as usize],
++                facts: self.facts,
++            });
++        }
++        if pos.y < self.min_y || pos.y >= self.max_y() {
++            return None;
++        }
++        let dx = (pos.x >> 4) - self.center.x;
++        let dz = (pos.z >> 4) - self.center.z;
++        if !(-1..=1).contains(&dx) || !(-1..=1).contains(&dz) {
++            return None;
++        }
++        let chunk_index = ((dz + 1) * 3 + (dx + 1)) as usize;
++        let chunk = self.chunks[chunk_index];
++        let section_index = ((pos.y - self.min_y) >> 4) as usize;
++        let section = chunk.sections.get(section_index)?;
++        let slot = local_index(
++            (pos.x & 15) as usize,
++            ((pos.y - self.min_y) & 15) as usize,
++            (pos.z & 15) as usize,
++        );
++        let states = &section.block_states;
++        let entry = states.indices()[slot] as usize;
++        let section_key = chunk_index * chunk.sections.len() + section_index;
++        let cache = self.terrain_facts[section_key]
++            .get_or_init(|| (0..states.palette().len()).map(|_| FactCache::default()).collect());
++        Some(Probe {
++            key: StateKey((section_key as u64) << 32 | entry as u64),
++            state: &states.palette()[entry],
++            cache: &cache[entry],
++            facts: self.facts,
++        })
++    }
++
++    /// The 4x4 biome columns of the center chunk where some stored quart, at any height, has a
++    /// biome `wanted` accepts: bit `qz * 4 + qx`, with `qx = (x >> 2) & 3`, `qz = (z >> 2) & 3`.
++    /// [`Self::biome`] at any position of the center chunk whose column bit is clear answers a
++    /// biome `wanted` rejects (or `None`).
++    pub fn center_biome_columns(&self, mut wanted: impl FnMut(&BiomeId) -> bool) -> u16 {
++        let mut columns = 0u16;
++        let mut accepted: Vec<bool> = Vec::new();
++        for section in &self.chunks[4].sections {
++            let biomes = &section.biomes;
++            accepted.clear();
++            accepted.extend(biomes.palette().iter().map(&mut wanted));
++            if !accepted.iter().any(|&yes| yes) {
++                continue;
++            }
++            for (slot, &entry) in biomes.indices().iter().enumerate() {
++                if accepted[entry as usize] {
++                    // A biome slot is `((qy * 4 + qz) * 4 + qx)`.
++                    columns |= 1 << (slot & 15);
++                }
++            }
++            if columns == u16::MAX {
++                break;
++            }
++        }
++        columns
++    }
++
+     /// Writes `state` at `pos`. Returns `false`, writing nothing, outside the window -- the
+     /// same refusal vanilla's region gives a feature that reaches past its write radius.
+     pub fn set_block(&mut self, pos: BlockPos, state: BlockState) -> bool {
+@@ -474,6 +544,22 @@ impl<'a> DecorationRegion<'a> {
+     }
+ }
+ 
++/// One position's state as [`DecorationRegion::probe`] read it.
++pub struct Probe<'r> {
++    pub key: StateKey,
++    pub state: &'r BlockState,
++    cache: &'r FactCache,
++    facts: &'r BlockFacts,
++}
++
++impl Probe<'_> {
++    /// Whether `fact` holds for the state, through the region's per-state fact cache.
++    #[inline]
++    pub fn is(&self, fact: BlockFact) -> bool {
++        self.cache.is(self.facts, self.state, fact)
++    }
++}
++
+ /// The facts already looked up for one block state: bit `f` of the low half says fact `f` has
+ /// been asked, the same bit of the high half holds the answer. Every `BlockFact` is one bit.
+ #[derive(Default)]
+-- 
+2.43.0
+
