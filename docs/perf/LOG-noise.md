@@ -285,3 +285,14 @@ per-hash `[gx, gy, gz, 0]` table, no cross-sample queue (the cost that sank 11).
 - The bench box disk was at 96%. My finished dirs there are deleted (`noise-1` to `noise-6`,
   `noise-merged`, `count`, the finished `ab-*` trees and their binaries, `noise-prof/target`).
   From here on each scratch dir is deleted as soon as its experiment is logged.
+
+| # | What | Hold | Base (ms core/chunk) | Patched | Digest | Verdict |
+|---|---|---|---|---|---|---|
+| 13 (noise-7) | SIMD within one `ImprovedNoise` sample: the 8 corner dot products as two 4-lane vectors (`[d0,d4,d2,d6]`, `[d1,d5,d3,d7]`) from a shared 32-byte-aligned `GRAD4[16]` table of `[g0,g1,g2,0]`, in-lane unpacks only; x-lerp in 256 bits, y-lerp on the 128-bit halves, z-lerp scalar. Same ops and operands per lane, no FMA. 36 noise tests (640k kernel calls and lattice-edge cases with exact `dx == 1.0` and +/-0) and 190+3 chunkgen tests passed | 1 thread, 5 rounds, one exclusive hold | 9.54, 9.98, 9.96, 8.91, 9.21 (mean 9.52) | 9.77, 9.67, 10.22, 9.38, 9.56 (mean 9.72) | a977961a58122047 all ten | **rejected**: behind in 4 of 5 rounds, about +2% core time. A sample is bound by its dependent-load chain (`p[xm]`, `p[a]`, `p[k]`, gradient row), not by its flops. SIMD cuts instructions but not the chain, and the shuffles add latency, while the scalar code already overlaps independent octaves. Patch kept at `docs/perf/wip/noise-7-simd-within-sample.patch` |
+
+Three ways to vectorise `ImprovedNoise` have now been tried: scalar lanes across corners (5),
+AVX2 across octaves (11) and SIMD within one sample (13). All lose on Zen 1. What remains is
+doing fewer samples (cache or skip) or shortening the load chain, not wider arithmetic.
+
+The CORNER counters were identical on all ten runs (hits 63,296, misses 53,728, evictions
+22,220, contended 0), which also confirms the 1-thread counts logged above.
