@@ -649,3 +649,17 @@ caches, even at 8 threads. The patch stays in `docs/perf/wip/noise-12-scratch-po
   guidance. 25 s of each run is the untimed digest. A `--time-only` flag that skips the
   digest would halve hold length, but it would also drop the per-run byte-exactness check, so
   it is not proposed. The digest stays.
+
+## Handover, session 5 (2026-11-15)
+
+Head of `perf/noise`: 3534f6a. The code head is still **fd4bfe2**: nothing landed this
+session, and the digest is unchanged.
+- 18 (scratch pool) is decided: no effect on generation CPU (see above). The patch is in wip.
+- The measurement tooling is in this session's scratchpad (not in the repo):
+  `noise-holdloop.sh` (rotating rounds, `gen_cpu_s` via a fifo plus `/proc/<pid>/stat`,
+  `cpu_s` via `/usr/bin/time`, `java_cpu_s`) and `ab-analyze.py` (drops rounds where Java
+  used more than 2 CPU-s per 10 s, then compares `gen_cpu_s` first). **Decide on `gen_cpu_s`,
+  not `cpu_s`**: the latter is 70% digest.
+- Next: 17 (column x/z, `wip/noise-11-column-xz.patch`) was judged on cps under a busy Java
+  server. Re-hold it on `gen_cpu_s` at 1 thread first. It is the only open candidate with a
+  plausible exact gain inside this crate.
