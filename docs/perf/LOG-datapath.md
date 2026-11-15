@@ -1500,3 +1500,34 @@ regression from the 3362440 noise merge.
 
 **New rule (auditor):** log `pgrep -c java` and the java CPU at the start of every hold, and do
 not trust an 8-thread hold taken while it is busy. `ab1.sh` now does this every round.
+
+### Noise merge bd442e7 (`is_quart_invariant`, fd4bfe2): tests pass
+
+Tests on the box: chunkgen 192 and noise 39 passed. This merge was pushed with 1b0682e before its tests
+had finished, which was a process slip; they passed afterwards, so nothing needs reverting.
+
+### E29 + E30 together, against two head builds: rejected
+
+E29 now uses `router.is_quart_invariant(RouterSlot::PreliminarySurfaceLevel)` instead of parsing
+`dump_program`; the surface pass samples at y 0, so quart invariance alone is enough. Its two tests stay. E30
+(aquifer anchor slab and -y column run) is unchanged. Both are applied on bd442e7. Tests: chunkgen
+194, noise 39, all passed.
+
+Rotating 1-thread hold, 7 rounds, ms core per chunk:
+
+| | r1 | r2 | r3 | r4 | r5 | r6 | r7 | mean |
+|---|---|---|---|---|---|---|---|---|
+| head build 1 | 9.60 | 9.30 | 9.67 | 10.44 | 9.60 | 9.67 | 10.05 | 9.76 |
+| head build 2 | 9.77 | 9.62 | 9.45 | 8.98 | 9.83 | 9.57 | 9.71 | 9.56 |
+| + E29 + E30 | 9.50 | 10.02 | 9.92 | 10.15 | 9.26 | 10.25 | 10.13 | 9.89 |
+
+All twenty-one `digest=a977961a58122047`. +2.3% (slower) against the head builds' mean. Rejected.
+The diff is at `docs/perf/rejected-E29-E30-combined.diff`.
+
+Caveat: one java process was present in every round. My log printed `ps -o pcpu` (124-167%), which is
+a lifetime average, not the current load. A one-second `/proc` sample right after the hold showed
+java at **98% of one core**, so the hold ran with roughly one of 8 cores busy outside the lock. A
+rotating 1-thread hold should tolerate that, but it is noted. The helper now samples java over 1 s
+from `/proc/<pid>/stat` at each round.
+
+Box dirs `datapath-27` and `datapath-h2` are deleted.
