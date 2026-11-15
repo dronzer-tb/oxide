@@ -1,0 +1,625 @@
+diff --git a/crates/oxide-noise/src/compiled.rs b/crates/oxide-noise/src/compiled.rs
+index 2454080..70af295 100644
+--- a/crates/oxide-noise/src/compiled.rs
++++ b/crates/oxide-noise/src/compiled.rs
+@@ -227,6 +227,122 @@ fn is_cell_batchable(ops: &[Op]) -> bool {
+     all_supported(ops) && has_interpolated(ops)
+ }
+ 
++/// For each instruction of `ops`, whether its value is provably the same at every `ctx.y` for
++/// a fixed x and z -- bit for bit, not merely mathematically. Stated for evaluation through a
++/// chunk's caches of a program that [`cache_pure`] accepts (see [`Program::column_invariant`]
++/// for the whole argument).
++///
++/// Conservative: anything not listed reads y (gradients, 3D noise, blended noise,
++/// `interpolated`) or is not worth proving (`weird_scaled_sampler`).
++///
++/// The one subtle leaf is `shifted_noise` with `y_scale == 0`: its y input is
++/// `block_y * 0.0 + shift_y`, and `block_y * 0.0` is `+0.0` or `-0.0` depending on the sign of
++/// `block_y`. Adding `shift_y` erases that sign exactly when `shift_y` is not `-0.0` and not NaN
++/// (`-0.0 + 0.0 == +0.0` in round-to-nearest; any nonzero or infinite value absorbs a zero), so
++/// that is only accepted with a constant `shift_y` known to be neither. Vanilla's 2D noises
++/// (`continents`, `erosion`, `ridges`) are all of this shape with `shift_y` = 0. A plain `noise`
++/// with `y_scale == 0` would pass the signed zero straight through and is not accepted.
++///
++/// `find_top_surface` reads `ctx.x`, `ctx.z` and its upper-bound register, never `ctx.y`: its
++/// density program runs at the scan's own heights. So it is y-independent when its upper bound
++/// is, whatever its density program reads.
++///
++/// Cache nodes are accepted when their whole argument is: `cache_2d`/`flat_cache` return the
++/// argument at the caller's y and the (possibly snapped) column, or a value it gave at that
++/// column at some other y; `cache_once` returns the argument at exactly the caller's position.
++pub(crate) fn y_independent_ops(ops: &[Op]) -> Vec<bool> {
++    fn whole(p: &Program) -> bool {
++        y_independent_ops(&p.ops).iter().all(|v| *v)
++    }
++    fn spline(s: &CompiledSpline) -> bool {
++        whole(&s.coordinate)
++            && s.points.iter().all(|p| match &p.value {
++                CompiledSplineValue::Constant(_) => true,
++                CompiledSplineValue::Spline(inner) => spline(inner),
++            })
++    }
++    let mut indep = vec![false; ops.len()];
++    for (i, op) in ops.iter().enumerate() {
++        let r = |a: &u32| indep.get(*a as usize).copied().unwrap_or(false);
++        indep[i] = match op {
++            Op::Const(_) => true,
++            Op::Shift { kind, .. } => *kind != ShiftKind::Xyz,
++            Op::ShiftedNoise(n) => {
++                let sign_safe_y = match ops.get(n.shift_y as usize) {
++                    Some(Op::Const(c)) => !c.is_nan() && c.to_bits() != (-0.0f64).to_bits(),
++                    _ => false,
++                };
++                n.y_scale == 0.0 && sign_safe_y && r(&n.shift_x) && r(&n.shift_z)
++            }
++            Op::Add(a, b) | Op::Mul(a, b) | Op::Min(a, b) | Op::Max(a, b) => r(a) && r(b),
++            Op::Abs(a)
++            | Op::Square(a)
++            | Op::Cube(a)
++            | Op::HalfNegative(a)
++            | Op::QuarterNegative(a)
++            | Op::Squeeze(a)
++            | Op::Invert(a) => r(a),
++            Op::Clamp(c) => r(&c.input),
++            Op::Spline(s) => spline(s),
++            Op::RangeChoice(c) => {
++                r(&c.input) && whole(&c.when_in_range) && whole(&c.when_out_of_range)
++            }
++            Op::IntervalSelect(s) => r(&s.input) && s.functions.iter().all(whole),
++            Op::FindTopSurface(f) => r(&f.upper_bound),
++            Op::Cache { kind, argument, .. } => {
++                *kind != CacheKind::Interpolated && whole(argument)
++            }
++            Op::Noise(_)
++            | Op::OldBlendedNoise(_)
++            | Op::WeirdScaledSampler(_)
++            | Op::YClampedGradient(_) => false,
++        };
++    }
++    indep
++}
++
++/// Whether every value `ops` computes through a chunk's caches is independent of which chunk's
++/// caches they are and of what those caches already hold: the program gives the same bits
++/// through any `ChunkCaches`, fresh or used, as it would through a fresh one.
++///
++/// Requires, at every depth (lazy branches, spline coordinates, `find_top_surface` densities,
++/// cache arguments):
++/// - no `interpolated` node: its value is a blend of *this chunk's* cell corners, and a
++///   position outside the chunk is clamped into the chunk's corner grid;
++/// - every `cache_2d`/`flat_cache` argument y-independent and itself pure: a column slot is
++///   filled at whichever y first asks for it, and read back at every other y;
++/// - every `cache_once` argument pure: its slot is keyed by the full position, so a hit
++///   returns the argument at exactly that position.
++///
++/// Slot sharing between programs does not break this: two cache nodes share a slot only when
++/// their arguments' fingerprints are equal, which is a full structural serialisation, so
++/// whichever program filled a slot computed it with an identical argument.
++pub(crate) fn cache_pure(ops: &[Op]) -> bool {
++    fn spline(s: &CompiledSpline) -> bool {
++        cache_pure(&s.coordinate.ops)
++            && s.points.iter().all(|p| match &p.value {
++                CompiledSplineValue::Constant(_) => true,
++                CompiledSplineValue::Spline(inner) => spline(inner),
++            })
++    }
++    ops.iter().all(|op| match op {
++        Op::Cache { kind, argument, .. } => match kind {
++            CacheKind::Interpolated => false,
++            CacheKind::Cache2d | CacheKind::FlatCache => {
++                cache_pure(&argument.ops) && y_independent_ops(&argument.ops).iter().all(|v| *v)
++            }
++            CacheKind::Once => cache_pure(&argument.ops),
++        },
++        Op::Spline(s) => spline(s),
++        Op::RangeChoice(c) => {
++            cache_pure(&c.when_in_range.ops) && cache_pure(&c.when_out_of_range.ops)
++        }
++        Op::IntervalSelect(s) => s.functions.iter().all(|p| cache_pure(&p.ops)),
++        Op::FindTopSurface(f) => cache_pure(&f.density.ops),
++        _ => true,
++    })
++}
++
+ impl Program {
+     /// Number of instructions, i.e. how many `f64` registers [`Program::run`] needs. Exposed so
+     /// the register budget can be checked against what real datapacks actually compile to.
+@@ -643,6 +759,38 @@ impl Program {
+         self.cell_batchable
+     }
+ 
++    /// Whether this program's value through a chunk's caches is a function of x and z alone:
++    /// bit-identical at every `ctx.y`, and whichever chunk's caches it runs through, in
++    /// whatever state. Such a value can be memoised per column and shared between chunks.
++    ///
++    /// The argument, by induction over nesting depth:
++    /// 1. [`cache_pure`] makes every cache node return exactly what evaluating its argument
++    ///    would at the cache's sample position (the full position for `cache_once`; the column,
++    ///    snapped for `flat_cache`, at the caller's y for `cache_2d`/`flat_cache`, whose
++    ///    argument is y-independent so the y it was first filled at does not matter). With no
++    ///    `interpolated` node nothing reads the chunk's geometry, so the value is a fixed
++    ///    function of the position, the seeded noises and the program -- not of the caches.
++    /// 2. Under that fixed function, [`y_independent_ops`] holds for the result: `ctx.y` only
++    ///    enters through the leaves it rejects (3D noise, gradients, blended noise, `shift`,
++    ///    a `shifted_noise` whose y input keeps the sign of `block_y * 0.0`), every accepted
++    ///    operator is a deterministic function of registers that are themselves y-independent,
++    ///    and `find_top_surface` replaces y with heights derived from its upper bound.
++    ///
++    /// Floating point is deterministic for identical inputs, so identical inputs at every
++    /// instruction give identical bits, NaN payloads included.
++    pub(crate) fn column_invariant(&self) -> bool {
++        !self.cell_batchable
++            && cache_pure(&self.ops)
++            && y_independent_ops(&self.ops).last().copied().unwrap_or(false)
++    }
++
++    /// Whether this program scans with `find_top_surface` at its top level: one evaluation is
++    /// tens of runs of the scan's density program, which is what makes a shared memo pay for
++    /// its lock.
++    pub(crate) fn has_top_level_scan(&self) -> bool {
++        self.ops.iter().any(|op| matches!(op, Op::FindTopSurface(_)))
++    }
++
+     /// Evaluates this program at every block of one cell of `caches`, writing `out` in the
+     /// lane order [`ChunkCaches::fill_cell_interpolated`] defines. Only valid when
+     /// [`Program::cell_batchable`] is true.
+diff --git a/crates/oxide-noise/src/lib.rs b/crates/oxide-noise/src/lib.rs
+index c846de9..4986e3c 100644
+--- a/crates/oxide-noise/src/lib.rs
++++ b/crates/oxide-noise/src/lib.rs
+@@ -16,6 +16,7 @@
+ 
+ mod blended_noise;
+ mod cache;
++mod column_memo;
+ mod compiled;
+ mod density;
+ mod improved_noise;
+diff --git a/crates/oxide-noise/src/router.rs b/crates/oxide-noise/src/router.rs
+index db88ceb..bd3f980 100644
+--- a/crates/oxide-noise/src/router.rs
++++ b/crates/oxide-noise/src/router.rs
+@@ -11,6 +11,7 @@ use oxide_datapack::{
+ 
+ use crate::blended_noise::BlendedNoise;
+ use crate::cache::ChunkCaches;
++use crate::column_memo::ColumnMemo;
+ use crate::compiled::{CacheSlotCounts, Compiler, Program, RunCtx};
+ use crate::density::FunctionContext;
+ use crate::normal_noise::NormalNoise;
+@@ -114,6 +115,13 @@ pub struct NoiseRouterEvaluator {
+     /// `"minecraft:terrain"` random, so the stacks are identical and only the per-node scaling
+     /// constants differ -- those travel with the node and are applied at evaluation.
+     blended: BlendedNoise,
++    /// Per slot, in `RouterSlot::ALL` order: a memo of the slot's value per (x, z) column,
++    /// shared by every chunk and thread, for the slots whose program is proven
++    /// [`Program::column_invariant`] and expensive enough to be worth a lock
++    /// ([`Program::has_top_level_scan`]) -- `preliminary_surface_level` in a vanilla router,
++    /// which the aquifer samples at columns far outside the calling chunk, so neighbouring
++    /// chunks otherwise recompute the same columns.
++    column_memos: Vec<Option<ColumnMemo>>,
+ }
+ 
+ impl NoiseRouterEvaluator {
+@@ -167,13 +175,15 @@ impl NoiseRouterEvaluator {
+         // shared between two of them has to share one cache slot the way vanilla's shared
+         // instances do.
+         let mut compiler = Compiler::new(df_registry, &noise_index);
+-        let programs = RouterSlot::ALL
++        let programs: Vec<Program> = RouterSlot::ALL
+             .iter()
+             .map(|slot| compiler.compile(slot_df(&settings.noise_router, *slot)))
+             .collect();
+         let cache_slots = compiler.counts();
++        let column_memos = column_memos_for(&programs);
+ 
+         Self {
++            column_memos,
+             programs,
+             cache_slots,
+             noises,
+@@ -228,6 +238,16 @@ impl NoiseRouterEvaluator {
+         };
+         let program = &self.programs[slot.index()];
+         let ctx = FunctionContext { x, y, z };
++        // Proven to give these bits at every y and through any chunk's caches, so any chunk's
++        // earlier evaluation of this column is the answer. See `Program::column_invariant`.
++        if let Some(memo) = &self.column_memos[slot.index()] {
++            if let Some(value) = memo.get(x, z) {
++                return value;
++            }
++            let value = program.run(ctx, &cx);
++            memo.insert(x, z, value);
++            return value;
++        }
+         // A program that is only a blend of `interpolated` nodes (`final_density`) is evaluated
+         // a whole cell at a time and then read back per block; see `Program::run_cell`.
+         if program.cell_batchable() {
+@@ -281,6 +301,22 @@ impl NoiseRouterEvaluator {
+     /// exactly one such cache node -- which `final_density` is in every vanilla-shaped router.
+     /// Lets a caller read that slot's cell-corner bounds via [`ChunkCaches::cell_bounds`] and
+     /// skip per-block evaluation for cells that are uniformly solid or uniformly empty.
++    /// The slots whose programs are proven [`Program::column_invariant`] (first) and the subset
++    /// that [`Self::sample_in_chunk`] memoises per column (second), for diagnostics.
++    pub fn column_invariant_slots(&self) -> (Vec<&'static str>, Vec<&'static str>) {
++        let mut invariant = Vec::new();
++        let mut memoised = Vec::new();
++        for (i, slot) in RouterSlot::ALL.iter().enumerate() {
++            if self.programs[i].column_invariant() {
++                invariant.push(slot.name());
++            }
++            if self.column_memos[i].is_some() {
++                memoised.push(slot.name());
++            }
++        }
++        (invariant, memoised)
++    }
++
+     /// Instruction listing for one slot's program, for diagnostics.
+     pub fn dump_program(&self, slot: RouterSlot) -> Vec<String> {
+         self.programs[slot.index()].dump()
+@@ -313,6 +349,15 @@ impl NoiseRouterEvaluator {
+     }
+ }
+ 
++/// One column memo for each program proven [`Program::column_invariant`] whose evaluation is a
++/// whole `find_top_surface` scan; `None` for every other program.
++fn column_memos_for(programs: &[Program]) -> Vec<Option<ColumnMemo>> {
++    programs
++        .iter()
++        .map(|p| (p.column_invariant() && p.has_top_level_scan()).then(ColumnMemo::new))
++        .collect()
++}
++
+ /// The density function a named router slot holds.
+ fn slot_df(router: &NoiseRouter, slot: RouterSlot) -> &DensityFunction {
+     match slot {
+@@ -536,4 +581,347 @@ mod tests {
+             );
+         }
+     }
++
++    // ---- the per-column memo ----
++
++    mod column_memo {
++        use std::collections::HashMap;
++
++        use oxide_datapack::{
++            CubicSpline, DensityFunctionObject as O, ResourceLocation, SplinePoint, SplineValue,
++        };
++
++        use super::super::*;
++        use super::minimal_settings;
++
++        fn obj(o: O) -> DensityFunction {
++            DensityFunction::Object(Box::new(o))
++        }
++
++        fn noise_id() -> ResourceLocation {
++            ResourceLocation::new("test", "n")
++        }
++
++        /// `shifted_noise` read in 2D the way vanilla's `continents`/`erosion` are.
++        fn noise_2d(xz_scale: f64, shift_y: f64) -> DensityFunction {
++            obj(O::ShiftedNoise {
++                noise: noise_id(),
++                xz_scale,
++                y_scale: 0.0,
++                shift_x: obj(O::ShiftA {
++                    argument: noise_id(),
++                }),
++                shift_y: DensityFunction::Constant(shift_y),
++                shift_z: obj(O::ShiftB {
++                    argument: noise_id(),
++                }),
++            })
++        }
++
++        fn noise_3d() -> DensityFunction {
++            obj(O::Noise {
++                noise: noise_id(),
++                xz_scale: 0.5,
++                y_scale: 0.5,
++            })
++        }
++
++        fn gradient() -> DensityFunction {
++            obj(O::YClampedGradient {
++                from_y: -64,
++                to_y: 320,
++                from_value: 1.5,
++                to_value: -1.5,
++            })
++        }
++
++        fn spline_over(coordinate: DensityFunction) -> DensityFunction {
++            let point = |location, value, derivative| SplinePoint {
++                location,
++                value: SplineValue::Constant(value),
++                derivative,
++            };
++            obj(O::Spline {
++                spline: CubicSpline {
++                    coordinate,
++                    points: vec![
++                        point(-0.5, -0.3, 0.2),
++                        point(0.1, 0.4, -0.1),
++                        point(0.6, 0.9, 0.0),
++                    ],
++                },
++            })
++        }
++
++        /// The `cache_2d` factor, shared (same fingerprint, so same slot) with `final_density`.
++        fn factor() -> DensityFunction {
++            obj(O::Cache2d {
++                argument: obj(O::Add {
++                    argument1: DensityFunction::Constant(3.0),
++                    argument2: obj(O::Abs {
++                        argument: noise_2d(1.0, 0.0),
++                    }),
++                }),
++            })
++        }
++
++        /// Shaped like vanilla's `preliminary_surface_level` density: a y gradient scaled and
++        /// offset by 2D terms (a spline over a flat-cached 2D noise, a cached 2D factor),
++        /// plus a genuinely 3D noise behind a y-reading lazy branch.
++        fn surface_density() -> DensityFunction {
++            let offset = obj(O::CacheOnce {
++                argument: spline_over(obj(O::FlatCache {
++                    argument: noise_2d(0.25, 0.0),
++                })),
++            });
++            let shaped = obj(O::Mul {
++                argument1: obj(O::Add {
++                    argument1: gradient(),
++                    argument2: offset,
++                }),
++                argument2: factor(),
++            });
++            let detail = obj(O::RangeChoice {
++                input: gradient(),
++                min_inclusive: -0.2,
++                max_exclusive: 0.2,
++                when_in_range: noise_3d(),
++                when_out_of_range: DensityFunction::Constant(0.0),
++            });
++            obj(O::Add {
++                argument1: shaped,
++                argument2: detail,
++            })
++        }
++
++        /// A 2D upper bound: 120 + 160 * cache_2d(spline(2D noise)).
++        fn upper_bound(shift_y: f64) -> DensityFunction {
++            obj(O::Add {
++                argument1: DensityFunction::Constant(120.0),
++                argument2: obj(O::Mul {
++                    argument1: DensityFunction::Constant(160.0),
++                    argument2: obj(O::Cache2d {
++                        argument: spline_over(noise_2d(0.5, shift_y)),
++                    }),
++                }),
++            })
++        }
++
++        fn scan(upper_bound: DensityFunction, density: DensityFunction) -> DensityFunction {
++            obj(O::FindTopSurface {
++                cell_height: 8,
++                lower_bound: -64,
++                upper_bound,
++                density,
++            })
++        }
++
++        fn settings_with(preliminary_surface_level: DensityFunction) -> NoiseGeneratorSettings {
++            let mut settings = minimal_settings();
++            settings.noise_router.preliminary_surface_level = preliminary_surface_level;
++            // Shares the factor's `cache_2d` slot, and has an `interpolated` node, so a chunk's
++            // caches are also filled by a program that is not column-invariant.
++            settings.noise_router.final_density = obj(O::Add {
++                argument1: obj(O::Interpolated {
++                    argument: noise_3d(),
++                }),
++                argument2: factor(),
++            });
++            settings.noise_router.continents = obj(O::FlatCache {
++                argument: noise_2d(1.0, 0.0),
++            });
++            settings
++        }
++
++        /// The router `new` builds, with one real seeded noise wired in (an empty noise
++        /// registry would make every noise read 0.0).
++        fn router_for(settings: &NoiseGeneratorSettings) -> NoiseRouterEvaluator {
++            let df_registry = Registry::default();
++            let mut router =
++                NoiseRouterEvaluator::new(7, settings, &df_registry, &Registry::default());
++            let mut noise_index = HashMap::new();
++            noise_index.insert(noise_id(), 0u32);
++            router.noises = vec![NormalNoise::create(
++                &mut WorldRandom::new(7, false),
++                -7,
++                vec![1.0, 1.0, 1.0],
++            )];
++            let mut compiler = Compiler::new(&df_registry, &noise_index);
++            router.programs = RouterSlot::ALL
++                .iter()
++                .map(|slot| compiler.compile(slot_df(&settings.noise_router, *slot)))
++                .collect();
++            router.cache_slots = compiler.counts();
++            router.column_memos = column_memos_for(&router.programs);
++            router.noise_index = noise_index;
++            router
++        }
++
++        /// The unmemoised path: the program run straight through `caches`.
++        fn run_through(
++            router: &NoiseRouterEvaluator,
++            program: &Program,
++            ctx: FunctionContext,
++            caches: &ChunkCaches,
++        ) -> f64 {
++            let cx = RunCtx {
++                noises: &router.noises,
++                blended: &router.blended,
++                caches: Some(caches),
++            };
++            program.run(ctx, &cx)
++        }
++
++        fn memoised(router: &NoiseRouterEvaluator, slot: RouterSlot) -> bool {
++            router.column_memos[slot.index()].is_some()
++        }
++
++        /// Through the memo, every sample must equal plain evaluation of the program at that
++        /// exact position -- through a long-lived cache of the calling chunk and through a
++        /// fresh one -- however many other chunks, ys and programs filled the memo and the
++        /// caches first.
++        #[test]
++        fn memoised_samples_are_bit_identical() {
++            let router = router_for(&settings_with(scan(upper_bound(0.0), surface_density())));
++            let slot = RouterSlot::PreliminarySurfaceLevel;
++            assert!(memoised(&router, slot));
++            let program = &router.programs[slot.index()];
++
++            let mut checked = 0;
++            let mut mid_range = 0;
++            for repeat in 0..2 {
++                for (chunk_x, chunk_z) in [(0, 0), (-1, 2), (3, -2)] {
++                    let caches = router.chunk_caches(chunk_x, chunk_z);
++                    let reference = router.chunk_caches(chunk_x, chunk_z);
++                    // Fill the shared `cache_2d` slot from `final_density` at other ys first.
++                    for (x, y, z) in [(0, -60, 0), (5, 200, 9), (16, 33, 16)] {
++                        let (x, z) = (chunk_x * 16 + x, chunk_z * 16 + z);
++                        let _ = router.sample_in_chunk(&caches, RouterSlot::FinalDensity, x, y, z);
++                        let _ =
++                            router.sample_in_chunk(&reference, RouterSlot::FinalDensity, x, y, z);
++                    }
++                    // Inside this chunk's columns, past its edge, and far outside it.
++                    for x in (-40..56).step_by(3) {
++                        for z in (-40..56).step_by(5) {
++                            for y in [-64, -1, 0, 1, 250] {
++                                // A different y order per chunk, so memo entries are filled at
++                                // varying heights.
++                                let y = if (chunk_x + x) & 1 == 0 { y } else { -y };
++                                let got = router.sample_in_chunk(&caches, slot, x, y, z);
++                                let ctx = FunctionContext { x, y, z };
++                                let expected = run_through(&router, program, ctx, &reference);
++                                assert_eq!(got.to_bits(), expected.to_bits(), "{x} {y} {z}");
++                                if repeat == 0 && y == 0 {
++                                    let fresh = router.chunk_caches(chunk_x, chunk_z);
++                                    let expected = run_through(&router, program, ctx, &fresh);
++                                    assert_eq!(got.to_bits(), expected.to_bits(), "fresh {x} {z}");
++                                }
++                                assert!(router.column_memos[slot.index()]
++                                    .as_ref()
++                                    .unwrap()
++                                    .get(x, z)
++                                    .is_some());
++                                checked += 1;
++                                if got > -64.0 && got < 270.0 {
++                                    mid_range += 1;
++                                }
++                            }
++                        }
++                    }
++                }
++            }
++            assert!(checked > 10_000, "{checked}");
++            // The scans must stop mid-range often, or this compares only the bounds.
++            assert!(mid_range > checked / 4, "{mid_range} of {checked}");
++        }
++
++        /// Programs that read y, or whose value can depend on which chunk's caches it runs
++        /// through, are not memoised.
++        #[test]
++        fn y_or_cache_dependent_programs_are_not_memoised() {
++            let slot = RouterSlot::PreliminarySurfaceLevel;
++            let cases = [
++                (
++                    "upper bound is a y gradient",
++                    scan(gradient(), surface_density()),
++                ),
++                (
++                    "upper bound reads 3D noise",
++                    scan(noise_3d(), surface_density()),
++                ),
++                (
++                    "2D noise with shift_y -0.0",
++                    scan(upper_bound(-0.0), surface_density()),
++                ),
++                (
++                    "2D noise with shift_y NaN",
++                    scan(upper_bound(f64::NAN), surface_density()),
++                ),
++                (
++                    "interpolated in the density",
++                    scan(
++                        upper_bound(0.0),
++                        obj(O::Add {
++                            argument1: surface_density(),
++                            argument2: obj(O::Interpolated {
++                                argument: noise_3d(),
++                            }),
++                        }),
++                    ),
++                ),
++                (
++                    "cache_2d over a y-dependent argument in the density",
++                    scan(
++                        upper_bound(0.0),
++                        obj(O::Add {
++                            argument1: surface_density(),
++                            argument2: obj(O::Cache2d {
++                                argument: gradient(),
++                            }),
++                        }),
++                    ),
++                ),
++                (
++                    "no scan at all",
++                    obj(O::Add {
++                        argument1: gradient(),
++                        argument2: factor(),
++                    }),
++                ),
++            ];
++            for (what, df) in cases {
++                let router = router_for(&settings_with(df));
++                assert!(!memoised(&router, slot), "{what}");
++                assert!(!router.programs[slot.index()].column_invariant(), "{what}");
++            }
++
++            // A y gradient upper bound genuinely moves with y: memoising it would be wrong.
++            let moving = obj(O::Mul {
++                argument1: DensityFunction::Constant(100.0),
++                argument2: gradient(),
++            });
++            let router = router_for(&settings_with(scan(moving, surface_density())));
++            let caches = router.chunk_caches(0, 0);
++            let low = router.sample_in_chunk(&caches, slot, 3, -64, 3);
++            let high = router.sample_in_chunk(&caches, slot, 3, 300, 3);
++            assert_ne!(low.to_bits(), high.to_bits());
++
++            // Sign-safe constant shift_y values are accepted.
++            for shift_y in [0.0, 2.0, f64::INFINITY] {
++                let router = router_for(&settings_with(scan(
++                    upper_bound(shift_y),
++                    surface_density(),
++                )));
++                assert!(memoised(&router, slot), "shift_y {shift_y}");
++            }
++
++            // Proven y- and cache-independent, but a cheap 2D lookup with no scan: not worth a
++            // lock, so left to the chunk's own 2D cache.
++            let router = router_for(&settings_with(scan(upper_bound(0.0), surface_density())));
++            let (invariant, memoised_slots) = router.column_invariant_slots();
++            assert!(invariant.contains(&"continents"));
++            assert!(!invariant.contains(&"final_density"));
++            assert_eq!(memoised_slots, vec!["preliminary_surface_level"]);
++        }
++    }
+ }

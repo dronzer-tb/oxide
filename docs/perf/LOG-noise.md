@@ -130,3 +130,28 @@ In flight: `noise-4`, corner columns shared across chunks (9 of a chunk's 25 cor
 its neighbours' edge columns). `noise-5`, a shared per-column memo of `preliminary_surface_level`,
 gated on a compile-time proof that the program does not depend on y. Both caches store the
 full key with each entry, so a hit is exact.
+
+## Handover, session 2 (stopped at the usage limit)
+
+Head of `perf/noise`: 6dfa05a plus log commits. Kept this session: 7 (doubled permutation table).
+On this branch merged with datapath: patched 443.5 against baseline 385.7. Baselines on identical
+merged code spread from 385.7 to 438.3, so the size of the gain is unconfirmed. Digest unchanged:
+`a977961a58122047`.
+
+**In flight when stopped.** Both were stopped mid-bench, with no BENCH line recorded. Diffs are
+committed under `docs/perf/wip/` and apply on top of 6dfa05a merged with `origin/perf/datapath`:
+- `noise-4-shared-corner-columns.patch`: corner columns shared across chunks through a
+  direct-mapped, sharded cache on `NoiseRouterEvaluator` that stores full keys. The agent
+  reported both crates' tests passing before it queued its patched bench.
+- `noise-5-shared-surface-memo.patch`: a shared per-column memo of slots proven y-independent
+  at compile time (`preliminary_surface_level`). `oxide-noise` tests passed; `oxide-chunkgen`
+  test status was not reported before it stopped.
+
+**Next three things to try:**
+1. Finish noise-4 and noise-5: re-run both crates' tests on the merged tree, then one A/B pair
+   each. These target the two largest costs left in this crate: the corner-grid build (33%) and
+   the surface level outside the chunk (10%).
+2. To measure gains under ~15%: bench A and B back to back two or three times. Single pairs on
+   this box spread 13% even with all 8 cores free.
+3. Real AVX2 `ImprovedNoise` across a column of corners (gathers on the doubled table). Scalar
+   lane interleaving (5) gave nothing, so this only pays with SIMD arithmetic.
