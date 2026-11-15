@@ -1,0 +1,4 @@
+1794736373	a1f3a32	16	chunks=1089 threads=8 secs=5.609 cps=194.2 ms_per_chunk_core=41.20 digest=df701ee858e2bdd3 generate_ms=2371 decorate_ms=3052 serialise_ms=89 compress_ms=77 write_ms=19 compression=zlib6 mb_disk=10.1 pregen=1
+1794736572	a1f3a32	16	chunks=1089 threads=8 secs=5.938 cps=183.4 ms_per_chunk_core=43.62 digest=df701ee858e2bdd3 generate_ms=2664 decorate_ms=3081 serialise_ms=90 compress_ms=89 write_ms=14 compression=zlib6 mb_disk=10.1 pregen=1
+1794737859	a1f3a32	16	chunks=1089 threads=8 secs=1.798 cps=605.6 ms_per_chunk_core=13.21 digest=a977961a58122047 profile=release build_s=2m04s
+1794738355	a1f3a32	16	chunks=1089 threads=8 secs=1.567 cps=695.1 ms_per_chunk_core=11.51 digest=a977961a58122047 profile=release build_s=1.00s

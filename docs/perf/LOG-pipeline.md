@@ -403,3 +403,20 @@ a977961a58122047.
 
 Next: a fresh sub-agent (pipeline-2) is splitting `set_block`'s cost and cutting owned
 `BlockState` traffic. The next scratch merge will be based on origin/perf/noise.
+
+## Merge with origin/perf/noise (both terrain tracks)
+
+Scratch merge a1f3a32 = 27e2f9b + origin/perf/noise e6ecc65 (bench-vps.sh conflict resolved
+with ours; not pushed; rows in `bench-pipeline-merge2.tsv`). Tests pass (chunkgen + pregen,
+release). Digests held.
+
+    pregen   cps 194.2 183.4   generate_ms 2371 2664   decorate_ms 3052 3081
+    release  cps 605.6 695.1
+
+Decoration (about 3.05 s) now takes more time than terrain generation (2.4-2.7 s) in pregen.
+
+**Disk incident:** the first two PGO builds failed with `No space left on device` (box at
+99%, 2.8 GB free). I deleted only this track's finished outputs (~9 GB): `pipeline-merge/`,
+plus the fatbench, pgo-gen, pgo-use and debug dirs under `pipeline/target`. The box is back to 12 GB free. It
+is still 94% full. ~/oxide-perf holds 73 GB, mostly the other tracks' numbered scratch dirs at
+about 2 GB each, and I left those alone. PGO scratch dirs are now deleted after each run.
