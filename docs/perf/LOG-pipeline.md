@@ -995,3 +995,19 @@ body needs its own split (sphere setup vs per-cell test vs cell read/match vs wr
 df701ee858e2bdd3 on every row; tests chunkgen 194 pass (1 ignored), pregen pass. Under 10%, so a
 second hold on a fresh base (branch head merged with the current origin/perf/datapath) decides it.
 (The hold finished 21:47 UTC; this entry is late because I missed its completion.)
+
+### Dense write overlay, base 2: -8.4%; kept
+
+pipeline-b2 = this branch at b84621e merged with origin/perf/datapath **26f512f** (scratch merge
+3709e62); pipeline-ov3 adds the change (7c7ca06).
+
+| | run 1 | run 2 | run 3 | mean |
+|---|---|---|---|---|
+| base decorate_ms | 10693 | 9554 | 9053 | 9767 |
+| overlay decorate_ms | 8642 | 10012 | 8197 | 8950 |
+| base / overlay cpu_user_s | 27.83 / 25.75 | 26.59 / 27.49 | 25.57 / 24.02 | 26.66 / 25.75 |
+| java_cpu_s_per_10s | 0.32 / 0.24 | 0.24 / 0.34 | 0.21 / 0.20 | |
+
+-8.4% decorate and -3.4% user CPU, ahead 2/3 on both. With base 1 (-9.1%, 3/3) it is ahead in 5 of
+6 rounds on two bases. Java quiet, all rounds count; df701ee858e2bdd3 on every row; tests chunkgen 194
+pass. **Kept**, cherry-picked onto the branch.
