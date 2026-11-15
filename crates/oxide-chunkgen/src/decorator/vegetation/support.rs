@@ -42,8 +42,17 @@ pub(super) fn face_full(
     face: Dir,
     shape: Shape,
 ) -> bool {
-    let fact = |cx: &FeatureContext<'_, '_, '_>, fact: BlockFact| cx.region.is(pos, fact);
-    let full_collision = fact(cx, BlockFact::FullCollision);
+    // One read answers every fact asked below; facts are pure in the state, so asking only the
+    // ones the answer needs changes nothing.
+    let Some(probe) = cx.region.probe(pos) else {
+        // Outside the window no fact holds (`DecorationRegion::is`), while the block reads as
+        // `void_air`.
+        if !matches!(face, Dir::Up | Dir::Down) {
+            let name = block_in(cx.region, pos).name.to_string();
+            cx.unsupported.record("shape", &name);
+        }
+        return false;
+    };
     match face {
         Dir::Up | Dir::Down => {
             let sturdy = if face == Dir::Up {
@@ -51,16 +60,16 @@ pub(super) fn face_full(
             } else {
                 BlockFact::SturdyBottom
             };
-            fact(cx, sturdy) || (shape == Shape::Collision && full_collision)
+            probe.is(sturdy) || (shape == Shape::Collision && probe.is(BlockFact::FullCollision))
         }
         _ => {
-            if fact(cx, BlockFact::Air) || fact(cx, BlockFact::NoCollision) {
+            if probe.is(BlockFact::Air) || probe.is(BlockFact::NoCollision) {
                 return false;
             }
-            if full_collision {
-                return shape == Shape::Collision || fact(cx, BlockFact::SturdyTop);
+            if probe.is(BlockFact::FullCollision) {
+                return shape == Shape::Collision || probe.is(BlockFact::SturdyTop);
             }
-            let name = block_in(cx.region, pos).name.to_string();
+            let name = probe.state.name.to_string();
             cx.unsupported.record("shape", &name);
             false
         }

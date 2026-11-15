@@ -24,6 +24,7 @@ use crate::decorator::feature::Placed;
 use crate::decorator::predicate::IdSet;
 use crate::decorator::provider::sample_int;
 use crate::decorator::state_provider::{StateProvider, Unsupported};
+use crate::region::StateKey;
 
 #[derive(Debug)]
 pub struct PatchFeature {
@@ -72,7 +73,8 @@ impl PatchFeature {
         let origin = cx.origin;
         let x_radius = sample_int(&self.xz_radius, &mut *cx.random).wrapping_add(1);
         let z_radius = sample_int(&self.xz_radius, &mut *cx.random).wrapping_add(1);
-        let mut surface = self.ground_patch(cx, origin, x_radius, z_radius);
+        let mut ground = GroundCache::default();
+        let mut surface = self.ground_patch(cx, origin, x_radius, z_radius, &mut ground);
         if self.waterlogged {
             surface = self.flood(cx, &surface);
         }
@@ -99,8 +101,14 @@ impl PatchFeature {
                 sealed.insert(pos);
             }
         }
+        let mut water = None;
         for pos in sealed.iter_java_order() {
-            cx.region.set_block_ref(pos, &self.water);
+            // Interned on the first write that lands, so the region's state table fills in the
+            // same order `set_block_ref` would fill it.
+            if cx.region.contains(pos) {
+                let id = *water.get_or_insert_with(|| cx.region.intern(&self.water));
+                cx.region.set_block_id(pos, id);
+            }
         }
         sealed
     }
@@ -136,6 +144,7 @@ impl PatchFeature {
         origin: BlockPos,
         x_radius: i32,
         z_radius: i32,
+        ground: &mut GroundCache,
     ) -> PosSet {
         let inwards = self.inwards;
         let outwards = inwards.opposite();
@@ -154,24 +163,29 @@ impl PatchFeature {
                         || (self.extra_edge_column_chance != 0.0
                             && cx.random.next_float() <= self.extra_edge_column_chance))
                 {
+                    // Vanilla asks `isAir` of the position each loop ends on once more in the
+                    // next test; the answer is pure, so each position is read once.
                     let mut pos = offset(origin, dx, 0, dz);
+                    let mut air = is_air(cx, pos);
                     let mut walked = 0;
-                    while is_air(cx, pos) && walked < self.vertical_range {
+                    while air && walked < self.vertical_range {
                         pos = relative(pos, inwards, 1);
                         walked += 1;
+                        air = is_air(cx, pos);
                     }
                     let mut walked = 0;
-                    while !is_air(cx, pos) && walked < self.vertical_range {
+                    while !air && walked < self.vertical_range {
                         pos = relative(pos, outwards, 1);
                         walked += 1;
+                        air = is_air(cx, pos);
                     }
                     let below = relative(pos, inwards, 1);
-                    if is_air(cx, pos) && face_full(cx, below, outwards, Shape::Support) {
+                    if air && face_full(cx, below, outwards, Shape::Support) {
                         let extra = self.extra_bottom_block_chance > 0.0
                             && cx.random.next_float() < self.extra_bottom_block_chance;
                         let depth =
                             sample_int(&self.depth, &mut *cx.random).wrapping_add(i32::from(extra));
-                        if self.place_ground(cx, below, depth) {
+                        if self.place_ground(cx, below, depth, ground) {
                             surface.insert(below);
                         }
                     }
@@ -190,7 +204,11 @@ impl PatchFeature {
         cx: &mut FeatureContext<'_, '_, '_>,
         mut below: BlockPos,
         depth: i32,
+        ground: &mut GroundCache,
     ) -> bool {
+        if let StateProvider::Simple(state) = &self.ground {
+            return self.place_simple_ground(cx, below, depth, state, ground);
+        }
         for step in 0..depth {
             let state = match self.ground.state(cx, below) {
                 Ok(Some(state)) => state,
@@ -211,4 +229,64 @@ impl PatchFeature {
         }
         true
     }
+
+    /// [`Self::place_ground`] for a constant ground state, which draws nothing: the name and
+    /// `replaceable` tests are pure in the existing state, so they are cached by its key, and
+    /// the state is interned once instead of cloned and hashed per write.
+    fn place_simple_ground(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        mut below: BlockPos,
+        depth: i32,
+        state: &BlockState,
+        ground: &mut GroundCache,
+    ) -> bool {
+        for step in 0..depth {
+            let (same, replaceable) = match cx.region.probe(below) {
+                Some(probe) => {
+                    let slot = &mut ground.slots[probe.key.slot() & (GROUND_SLOTS - 1)];
+                    match *slot {
+                        Some((key, same, replaceable)) if key == probe.key => (same, replaceable),
+                        _ => {
+                            let same = state.name == probe.state.name;
+                            let replaceable =
+                                self.replaceable.contains_block(cx.env, &probe.state.name);
+                            *slot = Some((probe.key, same, replaceable));
+                            (same, replaceable)
+                        }
+                    }
+                }
+                None => {
+                    let existing = block_in(cx.region, below);
+                    (
+                        state.name == existing.name,
+                        self.replaceable.contains_block(cx.env, &existing.name),
+                    )
+                }
+            };
+            if !same {
+                if !replaceable {
+                    return step != 0;
+                }
+                // `set_block` writes nothing outside the window; intern only on a write that
+                // lands, so the region's state table fills in the same order.
+                if cx.region.contains(below) {
+                    let id = *ground.id.get_or_insert_with(|| cx.region.intern(state));
+                    cx.region.set_block_id(below, id);
+                }
+                below = relative(below, self.inwards, 1);
+            }
+        }
+        true
+    }
+}
+
+const GROUND_SLOTS: usize = 8;
+
+/// Per `place` call: the ground state's interned id once written, and per existing state key
+/// whether it has the ground's name and whether `replaceable` holds for it.
+#[derive(Default)]
+struct GroundCache {
+    id: Option<u32>,
+    slots: [Option<(StateKey, bool, bool)>; GROUND_SLOTS],
 }

@@ -19,6 +19,7 @@ use super::feature::{place_configured_feature, Feature};
 use super::predicate::Predicate;
 use super::provider::{next_bounded, sample_height, sample_int};
 use super::simplex::info_noise;
+use crate::region::StateKey;
 use oxide_datapack::BlockFact;
 
 #[derive(Debug, Clone)]
@@ -45,6 +46,8 @@ pub enum Modifier {
         target: Predicate,
         allowed: Predicate,
         max_steps: i32,
+        /// Both predicates are [`Predicate::is_local`]: each step reads its position once.
+        local: bool,
     },
     CountOnEveryLayer(IntProvider),
     NoiseThresholdCount {
@@ -109,12 +112,17 @@ impl Modifier {
                 target_condition,
                 allowed_search_condition,
                 max_steps,
-            } => Self::EnvironmentScan {
-                upwards: matches!(direction_of_search, SearchDirection::Up),
-                target: Predicate::compile(target_condition, facts)?,
-                allowed: Predicate::compile(allowed_search_condition, facts)?,
-                max_steps: *max_steps,
-            },
+            } => {
+                let target = Predicate::compile(target_condition, facts)?;
+                let allowed = Predicate::compile(allowed_search_condition, facts)?;
+                Self::EnvironmentScan {
+                    upwards: matches!(direction_of_search, SearchDirection::Up),
+                    local: target.is_local() && allowed.is_local(),
+                    target,
+                    allowed,
+                    max_steps: *max_steps,
+                }
+            }
             PlacementModifier::CountOnEveryLayer { count } => {
                 Self::CountOnEveryLayer(count.clone())
             }
@@ -238,8 +246,14 @@ impl Modifier {
                 target,
                 allowed,
                 max_steps,
+                local,
             } => {
-                if let Some(found) = scan(cx, pos, *upwards, target, allowed, *max_steps) {
+                let found = if *local {
+                    scan_local(cx, pos, *upwards, target, allowed, *max_steps)
+                } else {
+                    scan(cx, pos, *upwards, target, allowed, *max_steps)
+                };
+                if let Some(found) = found {
                     out.push(found);
                 }
             }
@@ -305,6 +319,70 @@ fn scan(
         }
     }
     target.test(cx, pos).then_some(pos)
+}
+
+/// Answers already worked out during one scan: `(key, allowed, target)` per [`StateKey`], in a
+/// few direct-mapped slots. The predicates are local, so their answers depend on the state alone
+/// -- except `inside_world_bounds`, which a scan never needs at a position outside the world.
+type ScanCache = [Option<(StateKey, bool, bool)>; 4];
+
+/// `allowed` and `target` at `pos`, both local, from one read of the position.
+fn test_both(
+    cx: &mut FeatureContext<'_, '_, '_>,
+    pos: BlockPos,
+    allowed: &Predicate,
+    target: &Predicate,
+    cache: &mut ScanCache,
+) -> (bool, bool) {
+    let (min_y, max_y) = (cx.region.min_y(), cx.region.max_y());
+    match cx.region.probe(pos) {
+        Some(probe) => {
+            let slot = &mut cache[probe.key.slot() & 3];
+            if let Some((key, ok, hit)) = *slot {
+                if key == probe.key {
+                    return (ok, hit);
+                }
+            }
+            let ok = allowed.test_probe(cx.env, &probe, pos, min_y, max_y);
+            let hit = target.test_probe(cx.env, &probe, pos, min_y, max_y);
+            *slot = Some((probe.key, ok, hit));
+            (ok, hit)
+        }
+        None => (allowed.test(cx, pos), target.test(cx, pos)),
+    }
+}
+
+/// [`scan`] for local predicates. They are pure in the position's state and never tally, so
+/// testing both at each position, from one read, gives the same answers in the same places.
+fn scan_local(
+    cx: &mut FeatureContext<'_, '_, '_>,
+    start: BlockPos,
+    upwards: bool,
+    target: &Predicate,
+    allowed: &Predicate,
+    max_steps: i32,
+) -> Option<BlockPos> {
+    let mut cache: ScanCache = [None; 4];
+    let mut pos = start;
+    let (ok, mut hit) = test_both(cx, pos, allowed, target, &mut cache);
+    if !ok {
+        return None;
+    }
+    for _ in 0..max_steps {
+        if hit {
+            return Some(pos);
+        }
+        pos.y = pos.y.wrapping_add(if upwards { 1 } else { -1 });
+        if cx.outside_build_height(pos.y) {
+            return None;
+        }
+        let (ok, next_hit) = test_both(cx, pos, allowed, target, &mut cache);
+        hit = next_hit;
+        if !ok {
+            break;
+        }
+    }
+    hit.then_some(pos)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -379,6 +457,59 @@ fn on_every_layer(
     }
 }
 
+/// The constant an int provider always answers without drawing, if it is one.
+fn constant_int(provider: &IntProvider) -> Option<i32> {
+    match provider {
+        IntProvider::Constant(value) => Some(*value),
+        IntProvider::Tagged(tagged) => match &**tagged {
+            oxide_datapack::placement::TaggedIntProvider::Constant { value } => Some(*value),
+            _ => None,
+        },
+    }
+}
+
+impl Modifier {
+    /// Whether the modifier emits at most one position per input, in the input's column, with no
+    /// random draw and no effect besides its answer.
+    fn keeps_column_quietly(&self) -> bool {
+        match self {
+            Self::EnvironmentScan {
+                target, allowed, ..
+            } => target.is_quiet() && allowed.is_quiet(),
+            Self::RandomOffset {
+                xz_spread,
+                y_spread,
+            } => constant_int(xz_spread) == Some(0) && constant_int(y_spread).is_some(),
+            Self::Predicate(predicate) => predicate.is_quiet(),
+            Self::Heightmap(_) | Self::SurfaceWaterDepth(_) | Self::SurfaceRelative { .. } => true,
+            _ => false,
+        }
+    }
+}
+
+/// Where a chain may drop a position early because the biome filter later on would drop it:
+/// the index of the first modifier of a run of [`Modifier::keeps_column_quietly`] modifiers
+/// that ends in a `biome` modifier. Such a run neither draws nor leaves its column, so a
+/// position entering it whose column holds no biome that lists the feature cannot pass the
+/// filter, and skipping the run for it changes nothing but the time spent.
+pub fn biome_gate(modifiers: &[Modifier]) -> Option<usize> {
+    let biome = modifiers.iter().position(|m| matches!(m, Modifier::Biome))?;
+    let mut start = biome;
+    while start > 0 && modifiers[start - 1].keeps_column_quietly() {
+        start -= 1;
+    }
+    (start < biome).then_some(start)
+}
+
+/// A [`biome_gate`] resolved for one run: positions entering the chain with `remaining`
+/// modifiers left are dropped when they are in the center chunk and their 4x4 column's bit in
+/// `columns` (see `DecorationRegion::center_biome_columns`) is clear.
+#[derive(Clone, Copy)]
+pub struct Gate {
+    pub remaining: usize,
+    pub columns: u16,
+}
+
 /// Runs `modifiers` from `pos`, then `feature` at every position that comes out, depth first.
 /// Returns whether any placement reported success.
 pub fn run(
@@ -386,7 +517,19 @@ pub fn run(
     cx: &mut FeatureContext<'_, '_, '_>,
     pos: BlockPos,
     feature: &Feature,
+    gate: Option<Gate>,
 ) -> bool {
+    if let Some(gate) = gate {
+        if modifiers.len() == gate.remaining {
+            let center = cx.region.center();
+            if pos.x >> 4 == center.x
+                && pos.z >> 4 == center.z
+                && gate.columns >> (((pos.z >> 2) & 3) * 4 + ((pos.x >> 2) & 3)) & 1 == 0
+            {
+                return false;
+            }
+        }
+    }
     let Some((modifier, rest)) = modifiers.split_first() else {
         cx.origin = pos;
         return place_configured_feature(feature, cx);
@@ -395,7 +538,7 @@ pub fn run(
     modifier.positions(cx, pos, &mut emitted);
     let mut placed = false;
     for next in emitted {
-        placed |= run(rest, cx, next, feature);
+        placed |= run(rest, cx, next, feature, gate);
     }
     placed
 }

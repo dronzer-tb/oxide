@@ -15,6 +15,7 @@ use oxide_datapack::{BlockFact, BlockFacts, TagSet};
 
 use super::context::{block_in, Environment, FeatureContext};
 use super::state_provider::state_from_spec;
+use crate::region::Probe;
 
 /// A set of blocks or fluids written as one id, a list of ids, or a `#tag`.
 #[derive(Debug, Clone)]
@@ -83,6 +84,26 @@ fn fluid_path(facts: &BlockFacts, state: &BlockState) -> &'static str {
             "flowing_water"
         }
     } else if facts.is(state, BlockFact::Lava) {
+        if source {
+            "lava"
+        } else {
+            "flowing_lava"
+        }
+    } else {
+        "empty"
+    }
+}
+
+/// [`fluid_path`] answered through a probe's fact cache.
+fn fluid_path_probe(probe: &Probe<'_>) -> &'static str {
+    let source = probe.is(BlockFact::FluidSource);
+    if probe.is(BlockFact::Water) {
+        if source {
+            "water"
+        } else {
+            "flowing_water"
+        }
+    } else if probe.is(BlockFact::Lava) {
         if source {
             "lava"
         } else {
@@ -182,6 +203,80 @@ impl Predicate {
                 offset: offset_of(offset),
             },
         })
+    }
+
+    /// Whether the predicate reads nothing but the state at the tested position itself and the
+    /// position's height, and never tallies: then [`Self::test_probe`] answers it from one read.
+    pub fn is_local(&self) -> bool {
+        match self {
+            Self::True => true,
+            Self::Not(inner) => inner.is_local(),
+            Self::AllOf(list) | Self::AnyOf(list) => list.iter().all(Self::is_local),
+            Self::MatchingBlocks { offset, .. }
+            | Self::MatchingBlockTag { offset, .. }
+            | Self::MatchingFluids { offset, .. }
+            | Self::Replaceable { offset }
+            | Self::Solid { offset }
+            | Self::InsideWorldBounds { offset } => *offset == [0, 0, 0],
+            Self::HasSturdyFace { direction, offset } => {
+                *offset == [0, 0, 0] && !matches!(direction, Direction::Horizontal)
+            }
+            Self::WouldSurvive { .. } => false,
+        }
+    }
+
+    /// Whether testing the predicate has no effect besides its answer: it never tallies.
+    pub fn is_quiet(&self) -> bool {
+        match self {
+            Self::Not(inner) => inner.is_quiet(),
+            Self::AllOf(list) | Self::AnyOf(list) => list.iter().all(Self::is_quiet),
+            Self::WouldSurvive { .. } => false,
+            Self::HasSturdyFace { direction, .. } => !matches!(direction, Direction::Horizontal),
+            _ => true,
+        }
+    }
+
+    /// [`Self::test`] for an [`Self::is_local`] predicate at `pos`, whose state `probe` holds.
+    pub fn test_probe(
+        &self,
+        env: &Environment,
+        probe: &Probe<'_>,
+        pos: BlockPos,
+        min_y: i32,
+        max_y: i32,
+    ) -> bool {
+        match self {
+            Self::True => true,
+            Self::Not(inner) => !inner.test_probe(env, probe, pos, min_y, max_y),
+            Self::AllOf(all) => all
+                .iter()
+                .all(|predicate| predicate.test_probe(env, probe, pos, min_y, max_y)),
+            Self::AnyOf(any) => any
+                .iter()
+                .any(|predicate| predicate.test_probe(env, probe, pos, min_y, max_y)),
+            Self::MatchingBlocks { blocks, .. } => blocks.contains_block(env, &probe.state.name),
+            Self::MatchingBlockTag { tag, .. } => env.block_tags.contains(tag, &probe.state.name),
+            Self::MatchingFluids { fluids, .. } => {
+                let path = fluid_path_probe(probe);
+                match fluids {
+                    IdSet::Ids(ids) => ids
+                        .iter()
+                        .any(|id| id.namespace() == "minecraft" && id.path() == path),
+                    IdSet::Tag(tag) => env
+                        .fluid_tags
+                        .contains(tag, &ResourceLocation::minecraft(path)),
+                }
+            }
+            Self::Replaceable { .. } => probe.is(BlockFact::Replaceable),
+            Self::Solid { .. } => probe.is(BlockFact::Solid),
+            Self::InsideWorldBounds { .. } => pos.y >= min_y && pos.y < max_y,
+            Self::HasSturdyFace { direction, .. } => match direction {
+                Direction::Up => probe.is(BlockFact::SturdyTop),
+                Direction::Down => probe.is(BlockFact::SturdyBottom),
+                Direction::Horizontal => unreachable!("not a local predicate"),
+            },
+            Self::WouldSurvive { .. } => unreachable!("not a local predicate"),
+        }
     }
 
     /// Evaluates the predicate at `pos`. `all_of` and `any_of` short-circuit in list order.

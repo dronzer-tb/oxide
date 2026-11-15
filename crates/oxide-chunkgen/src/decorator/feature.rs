@@ -33,7 +33,7 @@ use super::end::EndFeature;
 use super::ground::GroundFeature;
 use super::nether::NetherFeature;
 use super::ore::OreFeature;
-use super::placement::{run, Modifier};
+use super::placement::{biome_gate, run, Gate, Modifier};
 use super::spring::SpringFeature;
 use super::state_provider::{StateProvider, Unsupported};
 use super::templated::{TemplateLibrary, TemplatedFeature};
@@ -46,6 +46,8 @@ use super::water::WaterFeature;
 pub struct Placed {
     pub modifiers: Vec<Modifier>,
     pub feature: Arc<Feature>,
+    /// [`biome_gate`] of `modifiers`.
+    pub biome_gate: Option<usize>,
 }
 
 /// A configured feature, compiled.
@@ -205,7 +207,12 @@ impl<'d> Compiler<'d> {
                 },
                 Holder::Inline(config) => Arc::new(self.feature(config)?),
             };
-            Ok(Placed { modifiers, feature })
+            let biome_gate = biome_gate(&modifiers);
+            Ok(Placed {
+                modifiers,
+                feature,
+                biome_gate,
+            })
         })();
         self.depth -= 1;
         result
@@ -379,7 +386,19 @@ pub fn place_placed(
     top_feature: Option<u32>,
 ) -> bool {
     let saved = std::mem::replace(&mut cx.top_feature, top_feature);
-    let result = run(&placed.modifiers, cx, origin, &placed.feature);
+    let gate = match (placed.biome_gate, top_feature) {
+        (Some(start), Some(key)) => {
+            let env = cx.env;
+            Some(Gate {
+                remaining: placed.modifiers.len() - start,
+                columns: cx
+                    .region
+                    .center_biome_columns(|biome| env.biome_lists(biome, key)),
+            })
+        }
+        _ => None,
+    };
+    let result = run(&placed.modifiers, cx, origin, &placed.feature, gate);
     cx.top_feature = saved;
     result
 }

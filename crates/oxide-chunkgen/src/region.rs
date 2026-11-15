@@ -275,6 +275,76 @@ impl<'a> DecorationRegion<'a> {
         Some(cache[entry].is(self.facts, &states.palette()[entry], fact))
     }
 
+    /// One read of `pos` that answers its state, its [`StateKey`] and any number of facts, or
+    /// `None` outside the window: what [`Self::block_keyed`] and [`Self::fact_at`] each answer,
+    /// for the price of one lookup.
+    pub fn probe(&self, pos: BlockPos) -> Option<Probe<'_>> {
+        if let Some(&i) = self.overlay.get(&pos) {
+            let id = self.writes[i].1;
+            return Some(Probe {
+                key: StateKey(1 << 63 | u64::from(id)),
+                state: &self.states[id as usize],
+                cache: &self.state_facts[id as usize],
+                facts: self.facts,
+            });
+        }
+        if pos.y < self.min_y || pos.y >= self.max_y() {
+            return None;
+        }
+        let dx = (pos.x >> 4) - self.center.x;
+        let dz = (pos.z >> 4) - self.center.z;
+        if !(-1..=1).contains(&dx) || !(-1..=1).contains(&dz) {
+            return None;
+        }
+        let chunk_index = ((dz + 1) * 3 + (dx + 1)) as usize;
+        let chunk = self.chunks[chunk_index];
+        let section_index = ((pos.y - self.min_y) >> 4) as usize;
+        let section = chunk.sections.get(section_index)?;
+        let slot = local_index(
+            (pos.x & 15) as usize,
+            ((pos.y - self.min_y) & 15) as usize,
+            (pos.z & 15) as usize,
+        );
+        let states = &section.block_states;
+        let entry = states.indices()[slot] as usize;
+        let section_key = chunk_index * chunk.sections.len() + section_index;
+        let cache = self.terrain_facts[section_key]
+            .get_or_init(|| (0..states.palette().len()).map(|_| FactCache::default()).collect());
+        Some(Probe {
+            key: StateKey((section_key as u64) << 32 | entry as u64),
+            state: &states.palette()[entry],
+            cache: &cache[entry],
+            facts: self.facts,
+        })
+    }
+
+    /// The 4x4 biome columns of the center chunk where some stored quart, at any height, has a
+    /// biome `wanted` accepts: bit `qz * 4 + qx`, with `qx = (x >> 2) & 3`, `qz = (z >> 2) & 3`.
+    /// [`Self::biome`] at any position of the center chunk whose column bit is clear answers a
+    /// biome `wanted` rejects (or `None`).
+    pub fn center_biome_columns(&self, mut wanted: impl FnMut(&BiomeId) -> bool) -> u16 {
+        let mut columns = 0u16;
+        let mut accepted: Vec<bool> = Vec::new();
+        for section in &self.chunks[4].sections {
+            let biomes = &section.biomes;
+            accepted.clear();
+            accepted.extend(biomes.palette().iter().map(&mut wanted));
+            if !accepted.iter().any(|&yes| yes) {
+                continue;
+            }
+            for (slot, &entry) in biomes.indices().iter().enumerate() {
+                if accepted[entry as usize] {
+                    // A biome slot is `((qy * 4 + qz) * 4 + qx)`.
+                    columns |= 1 << (slot & 15);
+                }
+            }
+            if columns == u16::MAX {
+                break;
+            }
+        }
+        columns
+    }
+
     /// Writes `state` at `pos`. Returns `false`, writing nothing, outside the window -- the
     /// same refusal vanilla's region gives a feature that reaches past its write radius.
     pub fn set_block(&mut self, pos: BlockPos, state: BlockState) -> bool {
@@ -471,6 +541,22 @@ impl<'a> DecorationRegion<'a> {
             writes: self.writes,
             states: self.states,
         }
+    }
+}
+
+/// One position's state as [`DecorationRegion::probe`] read it.
+pub struct Probe<'r> {
+    pub key: StateKey,
+    pub state: &'r BlockState,
+    cache: &'r FactCache,
+    facts: &'r BlockFacts,
+}
+
+impl Probe<'_> {
+    /// Whether `fact` holds for the state, through the region's per-state fact cache.
+    #[inline]
+    pub fn is(&self, fact: BlockFact) -> bool {
+        self.cache.is(self.facts, self.state, fact)
     }
 }
 
