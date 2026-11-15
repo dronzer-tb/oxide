@@ -84,3 +84,61 @@ any branch; best clean numbers are unchanged (noise 163.8, datapath 282.4, pipel
 - To verify next pass: each track acted on its message; pipeline has a tsv row and a log.
 
 Stopped reading at: noise 945cbde, datapath 5c1bae1, pipeline f5d0545.
+
+## Pass 3, 2026-11-15 02:52-03:04 UTC
+
+| Track | Head | Best clean number (8 threads, r16) | Digest |
+|---|---|---|---|
+| noise | bc60b65 | 185 cps, 43.2 ms core (4abb9a3 repeated on the quiet box: 189.1, 181.4) | ok |
+| datapath | bea73ad | 282.4 cps, 28.33 ms core (unchanged; E5 runs 309.3/277.7/258.1 and 304.6/258.4 are too spread to move it) | ok |
+| pipeline | 813333c | terrain baseline only (98.3, 137.3 on a loaded box); no pregen row pushed yet | ok |
+| **noise + datapath** | scratch merge 8c12604 (bea73ad + c5dc61f) | **401.0, 421.3 cps; 19.95, 18.99 ms core** | ok |
+
+**First combined number: about 411 cps, M1 (400) reached** on an unpushed scratch merge
+benched by the auditor (`bench-audit-combined.tsv`). The merge is textually clean (the tracks
+touch disjoint crates) and the digest holds. This is before datapath's fill loop calls
+`sample_cell` directly. The merge is not on any branch: datapath must push its own.
+
+### Changes read
+
+- noise c5dc61f: experiment 4 (`cell_bounds` memo) benched 168.9/156.6 and reverted. bc60b65:
+  took the new bench script and repeated its earlier steps. Log now commits to the lock,
+  to repeats, and to running chunkgen tests.
+- datapath cb83ffb (E5, `oxide-core` paletted container: no index array for single-value
+  sections, linear search for small palettes). Inside its crates, tests logged (core 20,
+  anvil 6, chunkgen 189), no `unsafe`. Gain not established; kept as less memory. fe61f27:
+  margin on the cell-bound skips, as asked in pass 2. bea73ad: new bench script.
+- pipeline: six commits since pass 1. Bulk region writer and compression in `oxide-anvil`,
+  real generation with per-stage timings in `oxide-pregen`, `vps-cargo.sh`,
+  `bench-pregen-vps.sh`, baseline and log. All inside its crates and `scripts/`. Its scripts
+  already use shared lock for builds and tests, exclusive for the timed run.
+
+### Bench box
+
+Both Minecraft servers are stopped (user); all 8 cores are ours. The chunkgen test binary
+seen at ~6 cores at 02:58 was datapath's, by then under `flock -s` with `nice -n 10`. All
+three tracks now carry the shared-lock `bench-vps.sh` from `feat/native-decoration`.
+
+### Sub-agents (user instruction: 2 or 3 Opus sub-agents per track, plus OmniRoute workers)
+
+`/srv/oxide-lab/agents/tree.json` at 03:03: noise 1, datapath 0, pipeline 0. Not chased this
+pass: the user's instruction and two auditor messages were still queued in each session.
+Chase next pass any track still at 0.
+
+### Messages sent (two rounds this pass, on the user's instructions)
+
+- all: take the new bench script; every build, test and profile on the box under
+  `flock -s ~/oxide-perf/.lock` with `nice -n 10`; servers are stopped; GitHub Actions
+  pre-compilation allowed but shared-lock builds preferred.
+- noise: go on with the corner-grid build.
+- datapath: merge `origin/perf/noise` first and bench it twice; re-reference on the quiet box.
+- pipeline: new job from the user: opt-in fat-LTO, `codegen-units = 1` profile with a switch
+  in `bench-vps.sh`, then PGO on the harness run; digest kept, A/B on the same commit, two
+  runs a side, build time logged.
+
+### To verify next pass
+
+Datapath pushed the merge and its numbers agree with ~411; pipeline has LTO/PGO A/B rows and
+a pregen row; sub-agent counts; noise's sub-10% rule on new experiments.
+
+Stopped reading at: noise bc60b65, datapath bea73ad, pipeline 813333c.
