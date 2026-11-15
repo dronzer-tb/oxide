@@ -719,3 +719,28 @@ unconfirmed". Merged anyway, so this branch carries both tracks' kept work.
   generation and the largest single cost left. It is the best next lever, and it is noise-crate work.
 
 Reference after this hold: **~614 cps** (pre-merge and merged both).
+
+### Profile of the merged head (0e3cf61; 1 thread, radius 8, generation only)
+
+| Share | Where | Owner |
+|---|---|---|
+| 44.5% | corner-grid build | noise |
+| 5.8% | per-block density (`run_cell` etc.) | noise |
+| 3.9% | ore veins' density sampling | noise |
+| 14.2% | surface pass | datapath |
+| 10.4% | aquifer (9.4% per block from the fill, 1.0% surface level) | datapath |
+| 8.3% | carvers (1.4% of it in the aquifer) | datapath |
+| 4.8% | fill loop self | datapath |
+| 4.5% | biomes | datapath |
+| 3.1% | ore veins' own code | datapath |
+
+The noise crate is now over half of generation. Removing every datapath cost outright would
+take this to ~2x, so further datapath gains are a few percent each, and each needs an
+interleaved A/B to see through the box's ~15% spread. The biggest lever is the noise track's
+corner grid (`wip/noise-4`).
+
+Round 5, on 0e3cf61:
+- `datapath-13`: the aquifer's per-block cost in the fill (incremental integer distances,
+  provable whole-row answers).
+- `datapath-14`: carvers with no cross-chunk state (per-step savings in the walk,
+  `carve_ellipsoid`).
