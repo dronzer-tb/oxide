@@ -188,3 +188,28 @@ relying on no value ever landing on the edge. It can only make fewer cells skip.
 `BENCH chunks=1089 threads=8 secs=4.214 cps=258.4 ms_per_chunk_core=30.95 digest=a977961a58122047`
 
 Same digest and the same spread as E5's runs: no measurable cost. Tests: chunkgen 189 passed.
+
+### E7 (next-three #2): merge `origin/perf/noise` -- first combined number
+
+Merged `origin/perf/noise` at 945cbde (whole-cell `final_density` behind `sample_in_chunk`,
+cache slots shared between equal nodes, `cell_bounds` on the stack). Clean merge, no
+conflicts: the noise track touched only `crates/oxide-noise`. The fill already walks y
+outermost within a section, which is the order the noise track's per-slot layer memo
+expects, so it picks up the cell batching with no change here.
+
+Tests (on the box, shared lock): noise 30, core 20+57, chunkgen 189 passed.
+
+First combined: `BENCH chunks=1089 threads=8 secs=2.771 cps=392.9 ms_per_chunk_core=20.36 digest=a977961a58122047`
+Repeat:         `BENCH chunks=1089 threads=8 secs=3.139 cps=346.9 ms_per_chunk_core=23.06 digest=a977961a58122047`
+
+The repeat ran while the box was loaded (load 20 from other tracks' test builds just
+before). Auditor's scratch merge of the two heads: 401 and 421 cps, same digest. Datapath
+alone was ~280 to 300 on a busy box, noise alone 163.8; started at 138.2.
+
+### Process notes
+
+- OmniRoute is not used any more (user instruction). The one OmniRoute attempt this session
+  failed before doing anything: `auto/kimi` has no tool-calling target, and
+  `gemini-3-flash-preview` returned 429.
+- Parallel experiments run as Opus sub-agents in `/tmp/datapath-<n>` worktrees, benching
+  under `datapath-<n>`; the master reviews diffs and commits winners here.

@@ -13,3 +13,5 @@
 1794710207	5c1bae1+	16	chunks=1089 threads=8 secs=4.220 cps=258.1 ms_per_chunk_core=31.00 digest=a977961a58122047
 1794711115	cb83ffb+	16	chunks=1089 threads=8 secs=3.576 cps=304.6 ms_per_chunk_core=26.27 digest=a977961a58122047
 1794711393	cb83ffb+	16	chunks=1089 threads=8 secs=4.214 cps=258.4 ms_per_chunk_core=30.95 digest=a977961a58122047
+1794711790	0e5afee	16	chunks=1089 threads=8 secs=2.771 cps=392.9 ms_per_chunk_core=20.36 digest=a977961a58122047
+1794713445	0e5afee	16	chunks=1089 threads=8 secs=3.139 cps=346.9 ms_per_chunk_core=23.06 digest=a977961a58122047
