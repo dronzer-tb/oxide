@@ -516,3 +516,27 @@ directly. Since `apply_writes` compares by reference, palette order and the dige
 That change is on scratch tree /tmp/pipeline-4 (535525c + 704fea5 + the pregen switch). A
 3-round alternating hold against this branch's HEAD is running.
 Terrain digest after the change: a977961a58122047. Tests: chunkgen 189 and pregen pass.
+
+## Sculk read memo (pipeline-3 sub-agent)
+
+Commit 1a19e6b (sub-agent worktree, only `decorator/cave/sculk.rs`, +325/-66). Each
+`place()` memoises what it read per position: sculk/vein, the blockers, water, the 6 vein faces, the
+fire / sculk_replaceable / sculk_replaceable_world_gen / inhibitor tags, and facts. The memo is a
+reused thread-local box (+-16 x/z, +-32 y, about 1.1 MB per thread) cleared by a generation counter, and
+every spreader write invalidates its own entry first. RNG calls, write order and the states written are
+unchanged. The digest is df701ee858e2bdd3 on every run.
+
+1-thread timer profile (same patch on both, `--threads 1 --no-write`):
+
+| | before 28286bb | after 1a19e6b |
+|---|---|---|
+| decorate_ms | 25138 | 24079 |
+| sculk cpu_ms (505 runs) | 5173 (23.8%), 10.2 ms/run | 3678 (17.5%), 7.3 ms/run |
+| sculk `block` / `is` calls | 21.8M / 14.3M | 3.0M / 52k |
+| all `block` / `is` calls | 44.6M / 37.2M | 25.8M / 23.0M |
+
+The 8-thread decorate_ms runs are inconclusive: before 3171 / 5485, after 3732 / 3753. The two
+before runs differ by 73% because the box was heavily shared. The read counts are exact. The CPU
+saving (-1.5 s, -29% for sculk, about -4% of decoration) comes from one profile each, so a 1-thread
+alternating hold is next. Misses still go through `fact_at`, so a region call that returns all fact
+bits at once would cut more; that is region.rs work, after interning lands.
