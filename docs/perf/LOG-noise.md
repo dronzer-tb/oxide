@@ -559,3 +559,14 @@ the head, which contains 01528de, at **601.9 and 596.9 cps** on 8 threads (per r
 392.9 row, so it points to that row being disturbed rather than a regression. Datapath's own
 8-thread hold of the merge is still the measure of record. Box note: the Java server started for
 the live test (16:13 CET) was still running at 17:07, idle by `top`. Holds were started under it.
+
+| # | What | Holds | Bases | Patched | Digest | Verdict |
+|---|---|---|---|---|---|---|
+| 18 | Per-thread reusable scratch (`scratch.rs`: a `thread_local!` free list per element type, RAII `Scratch<T>` returning on drop, at most 64 buffers of up to 1M elements). It replaces every per-call allocation on the batch and cell paths: `run_lanes` (`bx/by/bz`, `sx/sy/sz`, `regs`), `run_cell` (`regs`, `other`), the range-choice partitions, `interval_select` (per-lane index, then function order: no nested `Vec<Vec>`), the gated add's `open`/`body`, `cache_once`'s `missing` and per-batch memo slots, `run_subset`, and `Program::run`'s spill above 16 registers. There is no arithmetic change: `Scratch::filled(n, v)` gives exactly `vec![v; n]`'s contents. Tests: noise 40 (new `reused_buffers_start_as_fresh_ones`), chunkgen 190 + 1 + 1 + 1 | 5 rounds, two fresh bases at the head, 1 thread and 8 threads, labels scb1/scb2/scr | 1 t: 98.0, 97.1 cps; 8 t: 584.2, 623.9 | 1 t: 101.5; 8 t: 586.0 | a977961a58122047 all thirty | **unmeasured, not landed: the box was disturbed.** The Java server on s5 (pid 1742511, restarted after the reservation) used **64 CPU-seconds per ~10.5 s run on average (max 99)** during the 1-thread hold and 51 (max 110) during the 8-thread hold, i.e. ~5-6 cores busy while timing. On 1 thread the change was +3.6% / +4.5%, ahead 4/5 against both; on 8 threads +0.3% / -6.1%, ahead 2/5, with 397/453 cps outlier rounds. Neither hold can decide it. Patch at `docs/perf/wip/noise-12-scratch-pool.patch`. Re-hold when the Java server is stopped or idle (`java_cpu_s` near 0 per run) |
+
+**For the auditor:** `ab.sh`'s timed loop now runs `ab-bin/noise-holdloop.sh` on the box, which
+prints `java_cpu_s` (the server's utime+stime delta during each run) on every round line. The
+reading shows the Java server is not idle. A one-off `top` snapshot at 17:07 said it was, but it
+peaked above 6 cores during this hold, and over 5 s afterwards it used 1.4 cores (129% average
+over its 45-minute life). Every hold on s5 while it runs, datapath's included, is suspect unless
+its per-round Java CPU is near zero.
