@@ -435,3 +435,15 @@ thread. The earlier 8-thread rows (593/685 against 632/658) were separate holds 
 show it. An 8-thread alternating hold (5 rounds) is queued to decide whether the gain survives
 8 threads. If it does, PGO stays as an opt-in release step (about 7 min of build), still not the
 headline.
+
+8-thread alternating hold, same commit and setup (`OXIDE_PGO_AB=5 ... 16 8`), digest
+a977961a58122047 on all ten:
+
+    cps  release 635.4 626.5 702.5 708.9 738.5   mean 682.4
+         pgo     679.6 610.6 778.7 702.6 847.0   mean 723.7   (+6.1%, PGO ahead in 3/5)
+
+**PGO verdict:** a real gain on one thread (-12% core time, 5/5). At 8 threads it is smaller and
+inside the noise (+6%, 3/5), so most of the per-core saving does not show up as wall time at full load.
+It stays an opt-in script (`bench-pgo-vps.sh`, about 7 min of build) for a release build. It is
+not the progress-page headline, and nothing else depends on it. Closed as an experiment.
+The `pipeline-merge2` box dir was deleted once these rows were logged.

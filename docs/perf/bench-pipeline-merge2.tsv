@@ -12,3 +12,13 @@
 1794740002	a1f3a32	16	chunks=1089 threads=1 secs=9.770 cps=111.5 ms_per_chunk_core=8.97 digest=a977961a58122047 profile=ab-pgo
 1794740002	a1f3a32	16	chunks=1089 threads=1 secs=11.529 cps=94.5 ms_per_chunk_core=10.59 digest=a977961a58122047 profile=ab-release
 1794740002	a1f3a32	16	chunks=1089 threads=1 secs=10.108 cps=107.7 ms_per_chunk_core=9.28 digest=a977961a58122047 profile=ab-pgo
+1794742177	a1f3a32	16	chunks=1089 threads=8 secs=1.714 cps=635.4 ms_per_chunk_core=12.59 digest=a977961a58122047 profile=ab-release
+1794742177	a1f3a32	16	chunks=1089 threads=8 secs=1.603 cps=679.6 ms_per_chunk_core=11.77 digest=a977961a58122047 profile=ab-pgo
+1794742177	a1f3a32	16	chunks=1089 threads=8 secs=1.738 cps=626.5 ms_per_chunk_core=12.77 digest=a977961a58122047 profile=ab-release
+1794742177	a1f3a32	16	chunks=1089 threads=8 secs=1.784 cps=610.6 ms_per_chunk_core=13.10 digest=a977961a58122047 profile=ab-pgo
+1794742177	a1f3a32	16	chunks=1089 threads=8 secs=1.550 cps=702.5 ms_per_chunk_core=11.39 digest=a977961a58122047 profile=ab-release
+1794742177	a1f3a32	16	chunks=1089 threads=8 secs=1.398 cps=778.7 ms_per_chunk_core=10.27 digest=a977961a58122047 profile=ab-pgo
+1794742177	a1f3a32	16	chunks=1089 threads=8 secs=1.536 cps=708.9 ms_per_chunk_core=11.29 digest=a977961a58122047 profile=ab-release
+1794742177	a1f3a32	16	chunks=1089 threads=8 secs=1.550 cps=702.6 ms_per_chunk_core=11.39 digest=a977961a58122047 profile=ab-pgo
+1794742177	a1f3a32	16	chunks=1089 threads=8 secs=1.475 cps=738.5 ms_per_chunk_core=10.83 digest=a977961a58122047 profile=ab-release
+1794742177	a1f3a32	16	chunks=1089 threads=8 secs=1.286 cps=847.0 ms_per_chunk_core=9.45 digest=a977961a58122047 profile=ab-pgo
