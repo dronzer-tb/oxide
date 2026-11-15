@@ -138,3 +138,9 @@ two causes:
 `bench-lock.sh`. A bare `flock -s ~/oxide-perf/.lock` (a hand-run test, or a sub-agent's
 build) skips the gate and can still starve timed runs. The rule for all tracks becomes:
 `sh scripts/bench-lock.sh build <cmd>` for any build, test or profile on the box.
+
+**Scope change (from the user):** this track now owns decoration:
+`crates/oxide-chunkgen/src/decorator/`, `decorate.rs` and `region.rs`. Datapath keeps the rest
+of oxide-chunkgen, and changes there go through the auditor. Gate: the pregen digest stays
+`df701ee858e2bdd3` at radius 16 unless a change is shown to be a bug fix; no float
+reordering. Order of work: finish the LTO/PGO job, then decoration.

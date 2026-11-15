@@ -1,6 +1,8 @@
 # Track: pipeline
 
-You own `crates/oxide-pregen`, `crates/oxide-anvil` and `scripts/`. Read `docs/perf/PLAN.md`
+You own `crates/oxide-pregen`, `crates/oxide-anvil`, `scripts/`, and decoration:
+`crates/oxide-chunkgen/src/decorator/`, `decorate.rs` and `region.rs` (given 2026-11-15; datapath
+keeps the rest of `oxide-chunkgen`, coordinate through the auditor). Read `docs/perf/PLAN.md`
 first. Worktree `~/oxide-wt/pipeline`, branch `perf/pipeline`, bench name `pipeline`.
 
 Terrain speed means nothing if the rest of the path is slow. On the live server the JVM side
@@ -21,3 +23,6 @@ Work:
    a server recomputes on load. Do heightmaps; scope light and report before starting it.
 5. Check a pregenerated region loads on the live server only by handing the user exact
    steps. Do not touch the server yourself.
+6. Decoration is 37% of pregen time: the lever after the LTO/PGO job. Pregen rows keep their
+   own digest (`df701ee858e2bdd3` at radius 16) unless a change is shown to be a bug fix; no
+   float reordering.
