@@ -268,3 +268,21 @@ Run 3: `BENCH chunks=1089 threads=8 secs=2.396 cps=454.5 ms_per_chunk_core=17.60
 
 Inside the base's range. Kept as strictly less work with the digest unchanged. Run 1 came
 before the tests (launched before the tests-first rule). Tests: chunkgen 189 passed.
+
+### E10: carvers on palette indices -- kept, gain not established
+
+Sub-agent experiment in `/tmp/datapath-3`, bench name `datapath-3`. `apply_carvers` wraps the
+chunk in a private `Target` with per-section caches; its public signature is unchanged.
+`can_replace` is a table read on the raw palette index. The table is classified from the
+palette once and extended when the palette grows. Carving calls `compute_kind`, not
+`compute_substance`. Each of five result states (carver `lava[level=0]`, plain air, and the
+aquifer's air, water and lava) is interned at its first write into a section, the same point
+the old per-block `set` added it, and written by index after that. Geometry and float code
+untouched.
+
+Base (merged head): 386 to 459 in the E4 A/B.
+Run 1: `BENCH chunks=1089 threads=8 secs=2.620 cps=415.7 ms_per_chunk_core=19.25 digest=a977961a58122047`
+Run 2: `BENCH chunks=1089 threads=8 secs=2.553 cps=426.6 ms_per_chunk_core=18.75 digest=a977961a58122047`
+
+Inside the base's range (carvers were ~5% of the profile). Kept: strictly less work, digest
+unchanged. Tests: chunkgen 189 passed.

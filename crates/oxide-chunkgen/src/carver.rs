@@ -21,6 +21,7 @@ use oxide_datapack::{
     VerticalAnchor,
 };
 
+use crate::aquifer::FluidKind;
 use crate::fill::local_index;
 
 /// Chunks either side of the one being generated that may carve into it. Vanilla's
@@ -111,6 +112,7 @@ pub fn apply_carvers(
 ) {
     let mut mask = CarvingMask::new(world.min_y(), world.height());
     let mut random = LegacyRandom::new(0);
+    let chunk = &mut Target::new(chunk);
 
     for dx in -CARVER_CHUNK_RANGE..=CARVER_CHUNK_RANGE {
         for dz in -CARVER_CHUNK_RANGE..=CARVER_CHUNK_RANGE {
@@ -159,7 +161,7 @@ pub fn apply_carvers(
 /// `CaveWorldCarver#carve`.
 #[allow(clippy::too_many_arguments)]
 fn carve_cave(
-    chunk: &mut ChunkData,
+    chunk: &mut Target,
     pos: ChunkPos,
     world: &CarverWorld,
     config: &CaveCarverConfig,
@@ -249,7 +251,7 @@ fn cave_thickness(random: &mut LegacyRandom) -> f32 {
 /// `CaveWorldCarver#createRoom`.
 #[allow(clippy::too_many_arguments)]
 fn carve_room(
-    chunk: &mut ChunkData,
+    chunk: &mut Target,
     pos: ChunkPos,
     world: &CarverWorld,
     config: &CarverConfig,
@@ -287,7 +289,7 @@ fn carve_room(
 /// `CaveWorldCarver#createTunnel`.
 #[allow(clippy::too_many_arguments)]
 fn carve_tunnel(
-    chunk: &mut ChunkData,
+    chunk: &mut Target,
     pos: ChunkPos,
     world: &CarverWorld,
     config: &CarverConfig,
@@ -410,7 +412,7 @@ fn carve_tunnel(
 /// straight walls instead of vanilla's rippled ones.
 #[allow(clippy::too_many_arguments)]
 fn carve_canyon(
-    chunk: &mut ChunkData,
+    chunk: &mut Target,
     pos: ChunkPos,
     world: &CarverWorld,
     config: &CanyonCarverConfig,
@@ -518,7 +520,7 @@ fn can_reach(
 /// `WorldCarver#carveEllipsoid`.
 #[allow(clippy::too_many_arguments)]
 fn carve_ellipsoid(
-    chunk: &mut ChunkData,
+    chunk: &mut Target,
     pos: ChunkPos,
     world: &CarverWorld,
     config: &CarverConfig,
@@ -549,8 +551,6 @@ fn carve_ellipsoid(
     let max_z = ((z + horizontal_radius).floor() as i32 - chunk_min_z).min(15);
 
     let lava_level = world.resolve_anchor(&config.lava_level);
-    let lava = BlockState::new(ResourceLocation::minecraft("lava")).with_property("level", "0");
-    let air = BlockState::new(ResourceLocation::minecraft("air"));
 
     for local_x in min_x..=max_x {
         let world_x = chunk_min_x + local_x;
@@ -579,16 +579,19 @@ fn carve_ellipsoid(
                 // table, water inside a flooded one, and nothing at all -- left solid -- where
                 // the aquifer says so. Below the carver's lava_level it is lava regardless,
                 // checked first exactly as getCarveState does.
-                let state = if world_y <= lava_level {
-                    Some(lava.clone())
+                let carved = if world_y <= lava_level {
+                    Carved::CarverLava
                 } else {
                     match aquifer.as_deref_mut() {
-                        Some(aquifer) => aquifer.compute_substance(world_x, world_y, world_z, 0.0),
-                        None => Some(air.clone()),
+                        Some(aquifer) => match aquifer.compute_kind(world_x, world_y, world_z, 0.0)
+                        {
+                            Some(FluidKind::Air) => Carved::AquiferAir,
+                            Some(FluidKind::Sea) => Carved::AquiferSea,
+                            Some(FluidKind::Lava) => Carved::AquiferLava,
+                            None => continue,
+                        },
+                        None => Carved::Air,
                     }
-                };
-                let Some(state) = state else {
-                    continue;
                 };
                 set_block(
                     chunk,
@@ -596,20 +599,87 @@ fn carve_ellipsoid(
                     local_x as usize,
                     world_y,
                     local_z as usize,
-                    state,
+                    carved,
+                    aquifer.as_deref(),
                 );
             }
         }
     }
 }
 
+/// What a carved position becomes. The carver's own lava (below `lava_level`) carries a
+/// `level=0` property and the aquifer's does not, so the two are distinct states and distinct
+/// slots here; `Air` is the plain air written when there is no aquifer.
+#[derive(Clone, Copy)]
+enum Carved {
+    CarverLava = 0,
+    Air = 1,
+    AquiferAir = 2,
+    AquiferSea = 3,
+    AquiferLava = 4,
+}
+
+const NOT_INTERNED: u32 = u32::MAX;
+
+/// Per-section palette bookkeeping, valid for one `apply_carvers` call. Palettes only ever
+/// append, so a palette index, once classified or resolved, keeps its meaning.
+struct SectionCache {
+    /// `can_replace` per palette index, for the prefix of the palette classified so far.
+    replaceable: Vec<bool>,
+    /// Palette index of each [`Carved`] state in this section, once it has been written here.
+    written: [u32; 5],
+}
+
+/// The chunk being carved, plus per-section palette caches so the per-block path compares and
+/// writes palette indices instead of hashing and cloning `BlockState`s.
+struct Target<'c> {
+    chunk: &'c mut ChunkData,
+    sections: Vec<SectionCache>,
+    lava: BlockState,
+    air: BlockState,
+}
+
+impl<'c> Target<'c> {
+    fn new(chunk: &'c mut ChunkData) -> Self {
+        let sections = (0..chunk.sections.len())
+            .map(|_| SectionCache {
+                replaceable: Vec::new(),
+                written: [NOT_INTERNED; 5],
+            })
+            .collect();
+        Self {
+            chunk,
+            sections,
+            lava: BlockState::new(ResourceLocation::minecraft("lava")).with_property("level", "0"),
+            air: BlockState::new(ResourceLocation::minecraft("air")),
+        }
+    }
+}
+
 /// PARITY-CHECK: stands in for vanilla's `replaceable` block tag -- see the module doc.
-fn can_replace(chunk: &ChunkData, world: &CarverWorld, x: usize, y: i32, z: usize) -> bool {
-    let Some(state) = get_block(chunk, world, x, y, z) else {
-        return false;
-    };
+fn is_replaceable(state: &BlockState) -> bool {
     let name = state.name.path();
     name != "air" && name != "bedrock" && name != "water" && name != "lava"
+}
+
+fn can_replace(target: &mut Target, world: &CarverWorld, x: usize, y: i32, z: usize) -> bool {
+    let Some(index) = section_of(world, y) else {
+        return false;
+    };
+    let Some(section) = target.chunk.sections.get(index) else {
+        return false;
+    };
+    let local_y = (y - world.min_y()).rem_euclid(16) as usize;
+    let palette_index = section.block_states.indices()[local_index(x, local_y, z)] as usize;
+    let cache = &mut target.sections[index];
+    if palette_index >= cache.replaceable.len() {
+        let palette = section.block_states.palette();
+        let known = cache.replaceable.len();
+        cache
+            .replaceable
+            .extend(palette[known..].iter().map(is_replaceable));
+    }
+    cache.replaceable[palette_index]
 }
 
 fn section_of(world: &CarverWorld, y: i32) -> Option<usize> {
@@ -619,32 +689,37 @@ fn section_of(world: &CarverWorld, y: i32) -> Option<usize> {
     Some(((y - world.min_y()) / 16) as usize)
 }
 
-fn get_block<'c>(
-    chunk: &'c ChunkData,
-    world: &CarverWorld,
-    x: usize,
-    y: i32,
-    z: usize,
-) -> Option<&'c BlockState> {
-    let section = chunk.sections.get(section_of(world, y)?)?;
-    let local_y = (y - world.min_y()).rem_euclid(16) as usize;
-    Some(section.block_states.get(local_index(x, local_y, z)))
-}
-
 fn set_block(
-    chunk: &mut ChunkData,
+    target: &mut Target,
     world: &CarverWorld,
     x: usize,
     y: i32,
     z: usize,
-    state: BlockState,
+    carved: Carved,
+    aquifer: Option<&crate::aquifer::Aquifer>,
 ) {
     let Some(index) = section_of(world, y) else {
         return;
     };
-    let Some(section) = chunk.sections.get_mut(index) else {
+    let Some(section) = target.chunk.sections.get_mut(index) else {
         return;
     };
     let local_y = (y - world.min_y()).rem_euclid(16) as usize;
-    section.block_states.set(local_index(x, local_y, z), state);
+    let slot = &mut target.sections[index].written[carved as usize];
+    if *slot == NOT_INTERNED {
+        // First write of this state into this section: intern it now, at the same point the
+        // per-block `set` used to, so palette order is unchanged.
+        let state = match (carved, aquifer) {
+            (Carved::CarverLava, _) => target.lava.clone(),
+            (Carved::Air, _) => target.air.clone(),
+            (Carved::AquiferAir, Some(aquifer)) => aquifer.block_for(FluidKind::Air),
+            (Carved::AquiferSea, Some(aquifer)) => aquifer.block_for(FluidKind::Sea),
+            (Carved::AquiferLava, Some(aquifer)) => aquifer.block_for(FluidKind::Lava),
+            _ => unreachable!("aquifer states are only produced with an aquifer"),
+        };
+        *slot = section.block_states.index_of_or_insert(state);
+    }
+    section
+        .block_states
+        .set_index(local_index(x, local_y, z), *slot);
 }
