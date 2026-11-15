@@ -629,11 +629,31 @@ pub(crate) struct CornerColumns {
     cell_width: i32,
     /// `cells_y + 1` values per column.
     column_len: usize,
-    shards: Box<[Mutex<ColumnShard>]>,
-    #[cfg(test)]
-    hits: std::sync::atomic::AtomicUsize,
-    #[cfg(test)]
-    misses: std::sync::atomic::AtomicUsize,
+    shards: Box<[Shard]>,
+    /// Print [`ColumnStats`] to stderr when dropped: `OXIDE_CORNER_STATS` set at construction.
+    report: bool,
+}
+
+struct Shard {
+    entries: Mutex<ColumnShard>,
+    /// Lock acquisitions that found the shard already held by another thread. Counted outside
+    /// the lock (that is the point); an uncontended acquire never touches it.
+    contended: std::sync::atomic::AtomicU64,
+}
+
+/// Totals over every shard, for ruling lock contention in or out rather than assuming it.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ColumnStats {
+    /// Edge-column lookups answered from the cache.
+    pub hits: u64,
+    /// Edge-column lookups that had to compute the column.
+    pub misses: u64,
+    /// Inserts that displaced another column.
+    pub evictions: u64,
+    /// Lock acquisitions (lookups and inserts) that had to wait for another thread.
+    pub contended: u64,
+    /// All lock acquisitions.
+    pub acquisitions: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -658,6 +678,11 @@ struct ColumnShard {
     values: Vec<f64>,
     /// Per set, the way the next insert replaces.
     next_way: Box<[u8]>,
+    /// Counted under the lock, which is already held, so they cost nothing extra.
+    hits: u64,
+    misses: u64,
+    evictions: u64,
+    acquisitions: u64,
 }
 
 impl CornerColumns {
@@ -668,11 +693,19 @@ impl CornerColumns {
         let cells_y = (height / cell_height) as usize;
         let shards = (0..COLUMN_SHARDS)
             .map(|_| {
-                Mutex::new(ColumnShard {
-                    keys: vec![ColumnKey::EMPTY; COLUMN_SETS * COLUMN_WAYS].into_boxed_slice(),
-                    values: Vec::new(),
-                    next_way: vec![0; COLUMN_SETS].into_boxed_slice(),
-                })
+                Shard {
+                    entries: Mutex::new(ColumnShard {
+                        keys: vec![ColumnKey::EMPTY; COLUMN_SETS * COLUMN_WAYS]
+                            .into_boxed_slice(),
+                        values: Vec::new(),
+                        next_way: vec![0; COLUMN_SETS].into_boxed_slice(),
+                        hits: 0,
+                        misses: 0,
+                        evictions: 0,
+                        acquisitions: 0,
+                    }),
+                    contended: Default::default(),
+                }
             })
             .collect();
         Self {
@@ -682,10 +715,7 @@ impl CornerColumns {
             cell_width,
             column_len: cells_y + 1,
             shards,
-            #[cfg(test)]
-            hits: Default::default(),
-            #[cfg(test)]
-            misses: Default::default(),
+            report: std::env::var_os("OXIDE_CORNER_STATS").is_some(),
         }
     }
 
@@ -706,9 +736,39 @@ impl CornerColumns {
     fn lock(&self, shard: usize) -> std::sync::MutexGuard<'_, ColumnShard> {
         // A panic elsewhere while holding the lock leaves only whole entries behind: keys are
         // written after their values.
-        self.shards[shard]
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        let shard = &self.shards[shard];
+        let mut guard = match shard.entries.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                shard
+                    .contended
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                shard
+                    .entries
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+            }
+        };
+        guard.acquisitions += 1;
+        guard
+    }
+
+    /// Totals so far over every shard.
+    pub(crate) fn stats(&self) -> ColumnStats {
+        let mut total = ColumnStats::default();
+        for shard in self.shards.iter() {
+            let guard = shard
+                .entries
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            total.hits += guard.hits;
+            total.misses += guard.misses;
+            total.evictions += guard.evictions;
+            total.acquisitions += guard.acquisitions;
+            total.contended += shard.contended.load(std::sync::atomic::Ordering::Relaxed);
+        }
+        total
     }
 
     /// Copies the column into `out` (`column_len` long) and returns `true` when present.
@@ -720,28 +780,20 @@ impl CornerColumns {
             z,
         };
         let (shard, set) = self.locate(slot, x, z);
-        let found = {
-            let guard = self.lock(shard);
-            let ways = &guard.keys[set * COLUMN_WAYS..(set + 1) * COLUMN_WAYS];
-            match ways.iter().position(|k| *k == key) {
-                Some(way) => {
-                    let start = (set * COLUMN_WAYS + way) * self.column_len;
-                    out.copy_from_slice(&guard.values[start..start + self.column_len]);
-                    true
-                }
-                None => false,
+        let mut guard = self.lock(shard);
+        let ways = &guard.keys[set * COLUMN_WAYS..(set + 1) * COLUMN_WAYS];
+        match ways.iter().position(|k| *k == key) {
+            Some(way) => {
+                let start = (set * COLUMN_WAYS + way) * self.column_len;
+                out.copy_from_slice(&guard.values[start..start + self.column_len]);
+                guard.hits += 1;
+                true
             }
-        };
-        #[cfg(test)]
-        {
-            use std::sync::atomic::Ordering::Relaxed;
-            if found {
-                self.hits.fetch_add(1, Relaxed);
-            } else {
-                self.misses.fetch_add(1, Relaxed);
+            None => {
+                guard.misses += 1;
+                false
             }
         }
-        found
     }
 
     /// Stores `column`, unless another chunk stored the same one in the meantime.
@@ -764,6 +816,7 @@ impl CornerColumns {
             None => {
                 let way = shard.next_way[set] as usize;
                 shard.next_way[set] = ((way + 1) % COLUMN_WAYS) as u8;
+                shard.evictions += 1;
                 way
             }
         };
@@ -779,8 +832,28 @@ impl CornerColumns {
     /// `(hits, misses)` of edge-column lookups so far.
     #[cfg(test)]
     pub(crate) fn counts(&self) -> (usize, usize) {
-        use std::sync::atomic::Ordering::Relaxed;
-        (self.hits.load(Relaxed), self.misses.load(Relaxed))
+        let stats = self.stats();
+        (stats.hits as usize, stats.misses as usize)
+    }
+}
+
+impl Drop for CornerColumns {
+    fn drop(&mut self) {
+        if self.report {
+            let s = self.stats();
+            let lookups = (s.hits + s.misses).max(1);
+            let acquisitions = s.acquisitions.max(1);
+            eprintln!(
+                "CORNER hits={} misses={} hit_rate={:.3} evictions={} contended={} acquisitions={} contended_rate={:.5}",
+                s.hits,
+                s.misses,
+                s.hits as f64 / lookups as f64,
+                s.evictions,
+                s.contended,
+                s.acquisitions,
+                s.contended as f64 / acquisitions as f64,
+            );
+        }
     }
 }
 
