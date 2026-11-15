@@ -39,7 +39,7 @@ h2 { margin: 0 0 var(--u); font: 600 13px/1.2 var(--label); letter-spacing: .16e
 .q { color: var(--dust); }
 
 /* The three accounts as one strip: who is logged in, who is working, who is waiting. */
-.strip { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: calc(var(--u) * 8); }
+.strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: calc(var(--u) * 8); }
 .slot { padding: calc(var(--u) * 4); border-left: 1px solid var(--seam-soft); }
 .slot:first-child { border-left: 0; }
 .slot .name { font: 600 18px/1 var(--label); letter-spacing: .12em; text-transform: uppercase; display: flex; align-items: center; gap: 10px; }
@@ -95,6 +95,7 @@ code { font: 12.5px var(--data); background: var(--pit); border: 1px solid var(-
 .pad { padding: calc(var(--u) * 4); }
 .fault { border: 1px solid rgba(229, 83, 75, .4); background: rgba(229, 83, 75, .06); padding: calc(var(--u) * 4); margin-top: calc(var(--u) * 6); }
 
+@media (max-width: 1000px) { .strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 760px) {
   .wrap { padding: 0 calc(var(--u) * 4) calc(var(--u) * 16); }
   .strip { grid-template-columns: 1fr; }
@@ -141,6 +142,7 @@ const TRACKS = [
   { id: "noise", color: "#e0703a", job: "density functions and Perlin sampling" },
   { id: "datapath", color: "#4f9bd9", job: "allocation, block ids, surface, biomes" },
   { id: "pipeline", color: "#8f9a2c", job: "offline pregen and region writing" },
+  { id: "audit", color: "#b3ab9d", job: "master: reviews the three tracks once an hour" },
 ];
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -176,7 +178,7 @@ let last = {};
 function drawStrip() {
   const tt = tree ? Object.fromEntries(tree.tracks.map(t => [t.track, t])) : {};
   $("strip").innerHTML = TRACKS.map(t => {
-    const v = read(last[t.id]), x = tt[t.id];
+    const x = tt[t.id], v = read(t.id === "audit" ? x && x.state : last[t.id]);
     return `<div class="slot"><div class="name"><i style="background:${t.color}"></i>${t.id}</div>` +
       `<div class="now"><span class="state ${v.cls}">${esc(v.now)}</span></div><div class="why">${esc(v.why)}</div>` +
       (x ? limitBars(x.limits) + `<div class="spend">${esc(x.model || "")}${x.cost_usd != null ? ` · $${x.cost_usd.toFixed(2)} of API-equivalent use this session` : ""}${x.context_pct != null ? ` · context ${x.context_pct}%` : ""}</div>` : "") + `</div>`;
@@ -236,7 +238,7 @@ async function refresh() {
     last = by;
     drawStrip();
     for (const t of TRACKS) {
-      const s = by[t.id], v = read(s), el = $("s-" + t.id);
+      const s = t.id === "audit" ? tree && tree.tracks.find(a => a.track === "audit")?.state : by[t.id], v = read(s), el = $("s-" + t.id);
       el.className = "state " + v.cls;
       el.textContent = s ? `${v.now} · idle ${mins(s.idle_min)}` : v.now;
     }
