@@ -6,8 +6,8 @@
 //! "where is the surface of this column" needs the game's own answer, not a guess by block name.
 
 use crate::error::{DatapackError, Result};
-use oxide_core::{BlockState, ResourceLocation};
 use ahash::AHashMap;
+use oxide_core::{BlockState, ResourceLocation};
 use std::path::Path;
 use std::str::FromStr;
 
@@ -125,6 +125,12 @@ impl BlockFacts {
         self.flags
             .get(state)
             .is_some_and(|bits| bits & fact as u32 != 0)
+    }
+
+    /// Every fact of `state` at once, as `BlockFact` bits: `bits(state) & fact as u32 != 0` is
+    /// `is(state, fact)`. A state the table does not know has none.
+    pub fn bits(&self, state: &BlockState) -> u32 {
+        self.flags.get(state).copied().unwrap_or(0)
     }
 
     /// Whether the table lists `state` at all: a guard against writing a state the game lacks.

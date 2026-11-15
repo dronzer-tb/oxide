@@ -121,7 +121,7 @@ pub struct FeatureContext<'e, 'a, 'r> {
     pub(super) top_feature: Option<u32>,
 }
 
-static VOID_AIR: LazyLock<BlockState> =
+pub(crate) static VOID_AIR: LazyLock<BlockState> =
     LazyLock::new(|| BlockState::new(ResourceLocation::minecraft("void_air")));
 
 /// The block at `pos`, with `void_air` outside the window: what vanilla's level answers above

@@ -21,23 +21,30 @@
 //! export does not have. The tag is used when a pack provides it; otherwise the set is
 //! `sculk_sensor` and `sculk_shrieker`. The three sculk blockers (`sculk`, `sculk_catalyst`,
 //! `moving_piston`) are likewise named blocks, as in `multiface_growth`. Confirm both against 26.2.
+//!
+//! Every read goes through [`Info`]: what the spreader asks of a state (its name tests, tags,
+//! vein faces and facts) worked out once per [`StateKey`] per run. A vein the spreader writes is
+//! named by its faces and waterlogging and written by a pre-interned id, never built as a
+//! `BlockState` per write.
 
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::ops::Deref;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use oxide_core::{BlockPos, BlockState, RandomSource, ResourceLocation};
 use oxide_datapack::cave_feature::SculkPatchConfig;
 use oxide_datapack::placement::IntProvider;
 use oxide_datapack::{BlockFact, BlockFacts};
 
 use super::support::{
-    any_fluid, can_attach_to, dist_manhattan, face_full, has, is_block, offset, relative, shuffle,
-    state_has, water_source, waterlogged, Dir,
+    dist_manhattan, face_full, has, is_block, offset, relative, shuffle, state_has, waterlogged,
+    Dir,
 };
-use crate::decorator::context::{block_in, fact_in, FeatureContext};
+use crate::decorator::context::{block_in, FeatureContext, VOID_AIR};
 use crate::decorator::provider::sample_int;
 use crate::decorator::state_provider::state_from_spec;
+use crate::region::StateKey;
 
 const GROWTH_SPAWN_COST: i32 = 50;
 const NO_GROWTH_RADIUS: i32 = 1;
@@ -67,9 +74,20 @@ struct Cursor {
     charge: i32,
     update_delay: i32,
     decay_delay: i32,
-    /// The faces of the vein or sculk the cursor last moved onto, as a [`face_mask`].
+    /// The faces of the vein or sculk the cursor last moved onto, as a face mask.
     facings: Option<u8>,
 }
+
+/// The properties a sculk vein has: its six faces and `waterlogged`.
+const VEIN_KEYS: [&str; 7] = [
+    "down",
+    "up",
+    "north",
+    "south",
+    "west",
+    "east",
+    "waterlogged",
+];
 
 #[derive(Debug)]
 pub struct SculkPatchFeature {
@@ -81,10 +99,11 @@ pub struct SculkPatchFeature {
     extra_rare_growths: IntProvider,
     catalyst_chance: f32,
     sculk: BlockState,
+    /// The default vein: every key of [`VEIN_KEYS`] and nothing else, all `false`.
     vein: BlockState,
     catalyst: BlockState,
-    shrieker: BlockState,
-    sensor: BlockState,
+    /// `shrieker` and `sensor`, then each waterlogged when it has the property.
+    growths: [(BlockState, Option<BlockState>); 2],
     water: BlockState,
     air: BlockState,
 }
@@ -111,6 +130,23 @@ impl SculkPatchFeature {
         if !in_range {
             return Ok(None);
         }
+        let vein = default_of("sculk_vein", facts)?;
+        // Writes name a vein by its faces and waterlogging alone, which holds when the default
+        // vein has exactly those properties, all off.
+        if vein.properties.len() != VEIN_KEYS.len()
+            || !VEIN_KEYS
+                .iter()
+                .all(|key| vein.properties.get(*key).is_some_and(|v| v == "false"))
+        {
+            bail!("unexpected default sculk vein {vein}");
+        }
+        let growth = |state: BlockState| {
+            let wet = state
+                .properties
+                .contains_key("waterlogged")
+                .then(|| waterlogged(state.clone(), true));
+            (state, wet)
+        };
         Ok(Some(Self {
             charge_count: config.charge_count,
             amount_per_charge: config.amount_per_charge,
@@ -120,10 +156,12 @@ impl SculkPatchFeature {
             extra_rare_growths: config.extra_rare_growths.clone(),
             catalyst_chance: config.catalyst_chance,
             sculk: default_of("sculk", facts)?,
-            vein: default_of("sculk_vein", facts)?,
+            vein,
             catalyst: default_of("sculk_catalyst", facts)?,
-            shrieker: default_of("sculk_shrieker", facts)?.with_property("can_summon", "true"),
-            sensor: default_of("sculk_sensor", facts)?,
+            growths: [
+                growth(default_of("sculk_shrieker", facts)?.with_property("can_summon", "true")),
+                growth(default_of("sculk_sensor", facts)?),
+            ],
             water: default_of("water", facts)?,
             air: default_of("air", facts)?,
         }))
@@ -131,21 +169,185 @@ impl SculkPatchFeature {
 
     /// `SculkPatchFeature.place`.
     pub fn place(&self, cx: &mut FeatureContext<'_, '_, '_>) -> bool {
+        let origin = cx.origin;
+        if !self.can_spread_from(cx, origin) {
+            return false;
+        }
         let tags = &cx.env.block_tags;
         let tag = |path: &str| tags.get(&ResourceLocation::minecraft(path));
-        let spreader = Spreader {
+        let mut spreader = Spreader {
             feature: self,
             fire: tag("fire"),
             replaceable: tag("sculk_replaceable"),
             replaceable_world_gen: tag("sculk_replaceable_world_gen"),
             inhibitors: tag("sculk_growth_inhibitors"),
+            infos: (0..INFO_SLOTS).map(|_| Cell::new(None)).collect(),
+            outside: Info::default(),
+            ids: Ids::default(),
+        };
+        let void = spreader.describe(cx.region.facts(), &VOID_AIR);
+        spreader.outside = Info {
+            names: void.names | I_OUTSIDE,
+            is: 0,
+            fact_in: void.fact_in,
         };
         spreader.place(cx)
     }
+
+    fn behaviour(&self, state: &BlockState) -> Behaviour {
+        if state.name == self.sculk.name {
+            Behaviour::Sculk
+        } else if state.name == self.vein.name {
+            Behaviour::Vein
+        } else {
+            Behaviour::Default
+        }
+    }
+
+    /// `SculkPatchFeature.canSpreadFrom`.
+    fn can_spread_from(&self, cx: &mut FeatureContext<'_, '_, '_>, origin: BlockPos) -> bool {
+        let start = block_in(cx.region, origin);
+        if self.behaviour(start) != Behaviour::Default {
+            return true;
+        }
+        let water_source_block =
+            is_block(start, "water") && state_has(cx, start, BlockFact::FluidSource);
+        if !state_has(cx, start, BlockFact::Air) && !water_source_block {
+            return false;
+        }
+        Dir::ALL
+            .into_iter()
+            .any(|direction| has(cx, relative(origin, direction, 1), BlockFact::FullCollision))
+    }
+}
+
+// What the spreader knows of a state, as `Info::names` keeps it.
+/// Set on every `Info` read from the region; a `Near` slot without it is unread.
+const I_READ: u32 = 1 << 0;
+/// Outside the region's window, where the block is `void_air`.
+const I_OUTSIDE: u32 = 1 << 1;
+const I_SCULK: u32 = 1 << 2;
+const I_VEIN: u32 = 1 << 3;
+/// A vein with exactly the default vein's properties, each `true` or `false`: its faces and
+/// waterlogging name it.
+const I_CANONICAL: u32 = 1 << 4;
+/// `sculk`, `sculk_catalyst` or `moving_piston`: what a vein may not spread against.
+const I_BLOCKER: u32 = 1 << 5;
+/// `minecraft:water`, whatever its properties.
+const I_WATER: u32 = 1 << 6;
+const I_FIRE: u32 = 1 << 7;
+const I_REPLACEABLE: u32 = 1 << 8;
+const I_REPLACEABLE_WORLD_GEN: u32 = 1 << 9;
+const I_INHIBITOR: u32 = 1 << 10;
+const I_WATERLOGGED: u32 = 1 << 11;
+/// The six faces set (`<face>=true`), bit `i` for `Dir::ALL[i]`.
+const I_FACE_SHIFT: u32 = 12;
+
+/// Direct-mapped `Info` slots per run.
+const INFO_SLOTS: usize = 256;
+
+/// One block as the spreader reads it.
+#[derive(Clone, Copy, Default)]
+struct Info {
+    names: u32,
+    /// `BlockFact` bits as `region.is` answers them: none outside the window.
+    is: u32,
+    /// `BlockFact` bits as `fact_in` answers them: `void_air`'s outside the window.
+    fact_in: u32,
+}
+
+impl Info {
+    fn has(self, bit: u32) -> bool {
+        self.names & bit != 0
+    }
+
+    fn faces(self) -> u8 {
+        (self.names >> I_FACE_SHIFT) as u8 & 0x3f
+    }
+
+    fn has_face(self, face: Dir) -> bool {
+        self.faces() & face_bit(face) != 0
+    }
+
+    fn is(self, fact: BlockFact) -> bool {
+        self.is & fact as u32 != 0
+    }
+
+    fn fact_in(self, fact: BlockFact) -> bool {
+        self.fact_in & fact as u32 != 0
+    }
+
+    fn any_fluid(self) -> bool {
+        self.fact_in(BlockFact::Water) || self.fact_in(BlockFact::Lava)
+    }
+
+    fn behaviour(self) -> Behaviour {
+        if self.has(I_SCULK) {
+            Behaviour::Sculk
+        } else if self.has(I_VEIN) {
+            Behaviour::Vein
+        } else {
+            Behaviour::Default
+        }
+    }
+}
+
+/// A block the cursor read and may write back changed later: a vein that is not canonical
+/// keeps its state, which the writes then derive from as vanilla does.
+struct Read {
+    info: Info,
+    state: Option<BlockState>,
+}
+
+/// What a spread writes: a pre-interned id, or (for a vein that is not canonical) a state.
+enum Placement {
+    Id(u32),
+    State(BlockState),
+}
+
+const NO_ID: u32 = u32::MAX;
+
+/// Region ids of the states the spreader writes, interned on first use.
+struct Ids {
+    sculk: Cell<u32>,
+    water: Cell<u32>,
+    air: Cell<u32>,
+    /// Per growth (as `SculkPatchFeature::growths`), dry then waterlogged.
+    growths: [[Cell<u32>; 2]; 2],
+    /// Per vein: face mask, plus 64 when waterlogged.
+    veins: [Cell<u32>; 128],
+}
+
+impl Default for Ids {
+    fn default() -> Self {
+        let none = || Cell::new(NO_ID);
+        Self {
+            sculk: none(),
+            water: none(),
+            air: none(),
+            growths: std::array::from_fn(|_| std::array::from_fn(|_| none())),
+            veins: std::array::from_fn(|_| none()),
+        }
+    }
+}
+
+fn face_index(face: Dir) -> usize {
+    match face {
+        Dir::Down => 0,
+        Dir::Up => 1,
+        Dir::North => 2,
+        Dir::South => 3,
+        Dir::West => 4,
+        Dir::East => 5,
+    }
+}
+
+fn face_bit(face: Dir) -> u8 {
+    1 << face_index(face)
 }
 
 /// One `place` call's view of the feature: the block tags it tests, resolved once rather than
-/// looked up by a freshly built id on every test.
+/// looked up by a freshly built id on every test, and what it has read of each state.
 struct Spreader<'s, 'e> {
     feature: &'s SculkPatchFeature,
     fire: Option<&'e HashSet<ResourceLocation>>,
@@ -153,6 +355,11 @@ struct Spreader<'s, 'e> {
     replaceable_world_gen: Option<&'e HashSet<ResourceLocation>>,
     /// `None` when the pack has no `sculk_growth_inhibitors` tag (see the module doc).
     inhibitors: Option<&'e HashSet<ResourceLocation>>,
+    /// Per `StateKey::slot`, the last state described there.
+    infos: Box<[Cell<Option<(StateKey, Info)>>]>,
+    /// The `Info` outside the window.
+    outside: Info,
+    ids: Ids,
 }
 
 impl Deref for Spreader<'_, '_> {
@@ -161,19 +368,6 @@ impl Deref for Spreader<'_, '_> {
     fn deref(&self) -> &SculkPatchFeature {
         self.feature
     }
-}
-
-/// The faces `state` has set, in `Dir::ALL` order.
-fn faces_of(state: &BlockState) -> [bool; 6] {
-    Dir::ALL.map(|face| Spreader::has_face(state, face))
-}
-
-/// The faces `state` has set, bit `i` for `Dir::ALL[i]`.
-fn face_mask(state: &BlockState) -> u8 {
-    faces_of(state)
-        .into_iter()
-        .enumerate()
-        .fold(0, |mask, (i, set)| mask | (u8::from(set) << i))
 }
 
 /// A block's offset from the source of one spread, each coordinate in `-1..=1`.
@@ -186,41 +380,20 @@ fn step(at: Local, direction: Dir) -> Local {
     [at[0] + dx, at[1] + dy, at[2] + dz]
 }
 
-// What one read of a block tells a spread, as `Near` keeps it.
-const NEAR_READ: u16 = 1 << 0;
-/// `sculk`, `sculk_catalyst` or `moving_piston`: what a vein may not spread against.
-const NEAR_BLOCKER: u16 = 1 << 1;
-const NEAR_VEIN: u16 = 1 << 2;
-/// `minecraft:water`, whatever its properties.
-const NEAR_WATER: u16 = 1 << 3;
-const NEAR_FIRE: u16 = 1 << 4;
-/// A vein's six faces from here, in `Dir::ALL` order.
-const NEAR_FACE_SHIFT: u32 = 5;
-
-/// What a spread has read of one block: its name bits and the facts asked so far.
-#[derive(Clone, Copy, Default)]
-struct Slot {
-    names: u16,
-    /// The block is outside the region's window, where `fact_at` has no answer.
-    outside: bool,
-    asked: u32,
-    facts: u32,
-}
-
 /// The 3x3x3 blocks around the source of one `spread_all`, read from the region as first
 /// asked. Every block a spread looks at -- its targets, what they spread against, the faces they
 /// attach to -- is the source, a face neighbour or an edge neighbour, and the spread itself is
 /// the only writer while it runs; it forgets the block it writes.
 struct Near {
     source: BlockPos,
-    slots: [Slot; 27],
+    slots: [Info; 27],
 }
 
 impl Near {
     fn new(source: BlockPos) -> Self {
         Self {
             source,
-            slots: [Slot::default(); 27],
+            slots: [Info::default(); 27],
         }
     }
 
@@ -234,69 +407,147 @@ impl Near {
     }
 
     fn forget(&mut self, at: Local) {
-        self.slots[Self::index(at)] = Slot::default();
+        self.slots[Self::index(at)] = Info::default();
     }
 
-    /// `DecorationRegion::fact_at` for the block at `at`.
-    fn fact_at(
+    fn get(
         &mut self,
+        spreader: &Spreader<'_, '_>,
         cx: &FeatureContext<'_, '_, '_>,
         at: Local,
-        fact: BlockFact,
-    ) -> Option<bool> {
-        let pos = self.pos(at);
-        let slot = &mut self.slots[Self::index(at)];
-        let bit = fact as u32;
-        if slot.outside {
-            return None;
+    ) -> Info {
+        let index = Self::index(at);
+        if !self.slots[index].has(I_READ) {
+            self.slots[index] = spreader.info(cx, self.pos(at));
         }
-        if slot.asked & bit == 0 {
-            let Some(answer) = cx.region.fact_at(pos, fact) else {
-                slot.outside = true;
-                return None;
-            };
-            slot.asked |= bit;
-            if answer {
-                slot.facts |= bit;
-            }
-        }
-        Some(slot.facts & bit != 0)
+        self.slots[index]
     }
-
-    /// `region.is`: nothing holds outside the window.
-    fn is(&mut self, cx: &FeatureContext<'_, '_, '_>, at: Local, fact: BlockFact) -> bool {
-        self.fact_at(cx, at, fact).unwrap_or(false)
-    }
-
-    /// `fact_in`: outside the window the block is `void_air`.
-    fn fact_in(&mut self, cx: &FeatureContext<'_, '_, '_>, at: Local, fact: BlockFact) -> bool {
-        match self.fact_at(cx, at, fact) {
-            Some(answer) => answer,
-            None => fact_in(cx.region, self.pos(at), fact),
-        }
-    }
-}
-
-fn face_index(face: Dir) -> usize {
-    Dir::ALL
-        .iter()
-        .position(|&d| d == face)
-        .expect("a direction")
 }
 
 impl Spreader<'_, '_> {
-    fn behaviour(&self, state: &BlockState) -> Behaviour {
-        if state.name == self.sculk.name {
-            Behaviour::Sculk
-        } else if state.name == self.vein.name {
-            Behaviour::Vein
-        } else {
-            Behaviour::Default
+    fn member(tag: Option<&HashSet<ResourceLocation>>, state: &BlockState) -> bool {
+        tag.is_some_and(|members| members.contains(&state.name))
+    }
+
+    /// Whether `state` counts toward the cap on nearby sensors and shriekers.
+    fn is_inhibitor(&self, state: &BlockState) -> bool {
+        match self.inhibitors {
+            Some(members) => members.contains(&state.name),
+            None => state.name == self.growths[1].0.name || is_block(state, "sculk_shrieker"),
         }
     }
 
-    fn is_vein(&self, state: &BlockState) -> bool {
-        state.name == self.vein.name
+    /// Everything the spreader asks of `state`, worked out from scratch.
+    fn describe(&self, facts: &BlockFacts, state: &BlockState) -> Info {
+        let mut names = I_READ;
+        if state.name == self.sculk.name {
+            names |= I_SCULK;
+        }
+        if state.name == self.vein.name {
+            names |= I_VEIN;
+            let canonical = state.properties.len() == VEIN_KEYS.len()
+                && VEIN_KEYS.iter().all(|key| {
+                    state
+                        .properties
+                        .get(*key)
+                        .is_some_and(|v| v == "true" || v == "false")
+                });
+            if canonical {
+                names |= I_CANONICAL;
+            }
+        }
+        if ["sculk", "sculk_catalyst", "moving_piston"]
+            .iter()
+            .any(|blocker| is_block(state, blocker))
+        {
+            names |= I_BLOCKER;
+        }
+        if is_block(state, "water") {
+            names |= I_WATER;
+        }
+        for (tag, bit) in [
+            (self.fire, I_FIRE),
+            (self.replaceable, I_REPLACEABLE),
+            (self.replaceable_world_gen, I_REPLACEABLE_WORLD_GEN),
+        ] {
+            if Self::member(tag, state) {
+                names |= bit;
+            }
+        }
+        if self.is_inhibitor(state) {
+            names |= I_INHIBITOR;
+        }
+        let set = |key: &str| state.properties.get(key).is_some_and(|v| v == "true");
+        if set("waterlogged") {
+            names |= I_WATERLOGGED;
+        }
+        for (i, face) in Dir::ALL.into_iter().enumerate() {
+            if set(face.name()) {
+                names |= 1 << (I_FACE_SHIFT + i as u32);
+            }
+        }
+        let bits = facts.bits(state);
+        Info {
+            names,
+            is: bits,
+            fact_in: bits,
+        }
+    }
+
+    /// The block at `pos`, described once per state key.
+    fn info(&self, cx: &FeatureContext<'_, '_, '_>, pos: BlockPos) -> Info {
+        let Some((key, state)) = cx.region.block_keyed(pos) else {
+            return self.outside;
+        };
+        let slot = &self.infos[key.slot() & (INFO_SLOTS - 1)];
+        if let Some((known, info)) = slot.get() {
+            if known == key {
+                return info;
+            }
+        }
+        let info = self.describe(cx.region.facts(), state);
+        slot.set(Some((key, info)));
+        info
+    }
+
+    /// [`Self::info`], keeping the state of a vein that is not canonical.
+    fn read(&self, cx: &FeatureContext<'_, '_, '_>, pos: BlockPos) -> Read {
+        let info = self.info(cx, pos);
+        let state =
+            (info.has(I_VEIN) && !info.has(I_CANONICAL)).then(|| block_in(cx.region, pos).clone());
+        Read { info, state }
+    }
+
+    fn id(cx: &mut FeatureContext<'_, '_, '_>, slot: &Cell<u32>, state: &BlockState) -> u32 {
+        let id = slot.get();
+        if id != NO_ID {
+            return id;
+        }
+        let id = cx.region.intern(state);
+        slot.set(id);
+        id
+    }
+
+    /// The default vein with the faces in `faces` set, waterlogged if `wet`.
+    fn vein_id(&self, cx: &mut FeatureContext<'_, '_, '_>, faces: u8, wet: bool) -> u32 {
+        let slot = &self.ids.veins[usize::from(faces) | usize::from(wet) << 6];
+        if slot.get() != NO_ID {
+            return slot.get();
+        }
+        let mut state = self.vein.clone();
+        for face in Dir::ALL {
+            if faces & face_bit(face) != 0 {
+                state = Self::with_face(state, face, true);
+            }
+        }
+        if wet {
+            state = waterlogged(state, true);
+        }
+        Self::id(cx, slot, &state)
+    }
+
+    fn write_id(cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos, id: u32) -> bool {
+        cx.region.set_block_id(pos, id)
     }
 
     fn has_face(state: &BlockState, face: Dir) -> bool {
@@ -310,50 +561,9 @@ impl Spreader<'_, '_> {
         state.with_property(face.name(), value.to_string())
     }
 
-    fn state_at(cx: &FeatureContext<'_, '_, '_>, pos: BlockPos) -> BlockState {
-        block_in(cx.region, pos).clone()
-    }
-
-    fn member(tag: Option<&HashSet<ResourceLocation>>, state: &BlockState) -> bool {
-        tag.is_some_and(|members| members.contains(&state.name))
-    }
-
-    fn write(cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos, state: BlockState) -> bool {
-        cx.region.set_block(pos, state)
-    }
-
-    /// The `NEAR_*` name bits of the block at `at`, read once per slot.
-    fn names(&self, cx: &FeatureContext<'_, '_, '_>, near: &mut Near, at: Local) -> u16 {
-        let index = Near::index(at);
-        if near.slots[index].names & NEAR_READ == 0 {
-            let state = block_in(cx.region, near.pos(at));
-            let mut names = NEAR_READ;
-            if ["sculk", "sculk_catalyst", "moving_piston"]
-                .iter()
-                .any(|blocker| is_block(state, blocker))
-            {
-                names |= NEAR_BLOCKER;
-            }
-            if self.is_vein(state) {
-                names |= NEAR_VEIN | (u16::from(face_mask(state)) << NEAR_FACE_SHIFT);
-            }
-            if is_block(state, "water") {
-                names |= NEAR_WATER;
-            }
-            if Self::member(self.fire, state) {
-                names |= NEAR_FIRE;
-            }
-            near.slots[index].names = names;
-        }
-        near.slots[index].names
-    }
-
     /// `SculkPatchFeature.place`.
     fn place(&self, cx: &mut FeatureContext<'_, '_, '_>) -> bool {
         let origin = cx.origin;
-        if !self.can_spread_from(cx, origin) {
-            return false;
-        }
         let mut cursors: Vec<Cursor> = Vec::new();
         for round in 0..self.spread_rounds + self.growth_rounds {
             for _ in 0..self.charge_count {
@@ -388,7 +598,7 @@ impl Spreader<'_, '_> {
         if cx.random.next_float() <= self.catalyst_chance
             && has(cx, below, BlockFact::FullCollision)
         {
-            Self::write(cx, origin, self.catalyst.clone());
+            cx.region.set_block_ref(origin, &self.catalyst);
         }
         let extra = sample_int(&self.extra_rare_growths, cx.random);
         for _ in 0..extra {
@@ -397,25 +607,9 @@ impl Spreader<'_, '_> {
             let pos = offset(origin, dx, 0, dz);
             let below = offset(pos, 0, -1, 0);
             if has(cx, pos, BlockFact::Air) && face_full(cx, below, Dir::Up, false) {
-                Self::write(cx, pos, self.shrieker.clone());
+                cx.region.set_block_ref(pos, &self.growths[0].0);
             }
         }
-    }
-
-    /// `SculkPatchFeature.canSpreadFrom`.
-    fn can_spread_from(&self, cx: &mut FeatureContext<'_, '_, '_>, origin: BlockPos) -> bool {
-        let start = block_in(cx.region, origin);
-        if self.behaviour(start) != Behaviour::Default {
-            return true;
-        }
-        let water_source_block =
-            is_block(start, "water") && state_has(cx, start, BlockFact::FluidSource);
-        if !state_has(cx, start, BlockFact::Air) && !water_source_block {
-            return false;
-        }
-        Dir::ALL
-            .into_iter()
-            .any(|direction| has(cx, relative(origin, direction, 1), BlockFact::FullCollision))
     }
 
     /// `SculkSpreader.updateCursors`.
@@ -478,40 +672,34 @@ impl Spreader<'_, '_> {
             cursor.update_delay -= 1;
             return;
         }
-        let mut state = Self::state_at(cx, cursor.pos);
-        let mut behaviour = self.behaviour(&state);
+        let mut here = self.read(cx, cursor.pos);
+        let mut behaviour = here.info.behaviour();
         if spread_veins
-            && self.attempt_spread_vein(
-                cx,
-                behaviour,
-                cursor.pos,
-                &state,
-                cursor.facings,
-            )
+            && self.attempt_spread_vein(cx, behaviour, cursor.pos, here.info, cursor.facings)
             && behaviour != Behaviour::Sculk
         {
-            state = Self::state_at(cx, cursor.pos);
-            behaviour = self.behaviour(&state);
+            here = self.read(cx, cursor.pos);
+            behaviour = here.info.behaviour();
         }
         cursor.charge = self.attempt_use_charge(cx, origin, behaviour, cursor, spread_veins);
         if cursor.charge <= 0 {
-            self.on_discharged(cx, behaviour, &state, cursor.pos);
+            self.on_discharged(cx, behaviour, &here, cursor.pos);
             return;
         }
         match self.valid_movement(cx, cursor.pos, origin) {
             Some(target) => {
-                self.on_discharged(cx, behaviour, &state, cursor.pos);
+                self.on_discharged(cx, behaviour, &here, cursor.pos);
                 cursor.pos = target;
             }
             None => {
-                self.on_discharged(cx, behaviour, &state, cursor.pos);
+                self.on_discharged(cx, behaviour, &here, cursor.pos);
                 cursor.charge = 0;
                 return;
             }
         }
-        let arrived = block_in(cx.region, cursor.pos);
-        if self.behaviour(arrived) != Behaviour::Default {
-            cursor.facings = Some(face_mask(arrived));
+        let arrived = self.info(cx, cursor.pos);
+        if arrived.behaviour() != Behaviour::Default {
+            cursor.facings = Some(arrived.faces());
         }
         cursor.decay_delay = match behaviour {
             Behaviour::Default => (cursor.decay_delay - 1).max(0),
@@ -526,28 +714,28 @@ impl Spreader<'_, '_> {
         cx: &mut FeatureContext<'_, '_, '_>,
         behaviour: Behaviour,
         pos: BlockPos,
-        state: &BlockState,
+        here: Info,
         facings: Option<u8>,
     ) -> bool {
-        // `state` is the block at `pos`: nothing has written since the cursor read it, so the
-        // region's cached facts at `pos` answer for it.
+        let source = here.has(I_VEIN).then(|| here.faces());
+        // `here` is the block at `pos`: nothing has written since the cursor read it.
         if behaviour == Behaviour::Default {
             match facings {
                 None => {
-                    return self.spread_all(cx, state, pos, &[Spread::SamePosition]) > 0;
+                    return self.spread_all(cx, source, pos, &[Spread::SamePosition]) > 0;
                 }
                 Some(faces) if faces != 0 => {
                     let water_source_here =
-                        has(cx, pos, BlockFact::Water) && has(cx, pos, BlockFact::FluidSource);
-                    if !has(cx, pos, BlockFact::Air) && !water_source_here {
+                        here.fact_in(BlockFact::Water) && here.fact_in(BlockFact::FluidSource);
+                    if !here.fact_in(BlockFact::Air) && !water_source_here {
                         return false;
                     }
-                    return self.regrow(cx, pos, faces);
+                    return self.regrow(cx, pos, here, faces);
                 }
                 Some(_) => {}
             }
         }
-        self.spread_all(cx, state, pos, &ALL_SPREADS) > 0
+        self.spread_all(cx, source, pos, &ALL_SPREADS) > 0
     }
 
     /// `SculkVeinBlock.regrow`.
@@ -555,49 +743,101 @@ impl Spreader<'_, '_> {
         &self,
         cx: &mut FeatureContext<'_, '_, '_>,
         pos: BlockPos,
+        here: Info,
         faces: u8,
     ) -> bool {
-        let mut state = self.vein.clone();
-        let mut any = false;
-        for (i, face) in Dir::ALL.into_iter().enumerate() {
-            if faces & (1 << i) != 0 && can_attach_to(cx, pos, face) {
-                state = Self::with_face(state, face, true);
-                any = true;
+        let mut attached = 0;
+        for face in Dir::ALL {
+            if faces & face_bit(face) != 0 && self.can_attach_to(cx, pos, face) {
+                attached |= face_bit(face);
             }
         }
-        if !any {
+        if attached == 0 {
             return false;
         }
         // The block at `pos` is still the one the cursor read.
-        if has(cx, pos, BlockFact::Water) || has(cx, pos, BlockFact::Lava) {
-            state = waterlogged(state, true);
-        }
-        Self::write(cx, pos, state);
+        let id = self.vein_id(cx, attached, here.any_fluid());
+        Self::write_id(cx, pos, id);
         true
     }
 
-    /// `MultifaceSpreader.spreadAll` with the sculk vein spreader's configuration. `state` gives
-    /// the source's veinness and faces; the blocks around it are read through one [`Near`].
+    /// `support::face_full` for `info`, the block at `pos`.
+    fn face_full_of(
+        cx: &mut FeatureContext<'_, '_, '_>,
+        info: Info,
+        pos: BlockPos,
+        face: Dir,
+        collision: bool,
+    ) -> bool {
+        match face {
+            Dir::Up | Dir::Down => {
+                let sturdy = if face == Dir::Up {
+                    BlockFact::SturdyTop
+                } else {
+                    BlockFact::SturdyBottom
+                };
+                info.is(sturdy) || (collision && info.is(BlockFact::FullCollision))
+            }
+            _ => {
+                if info.is(BlockFact::Air) || info.is(BlockFact::NoCollision) {
+                    return false;
+                }
+                if info.is(BlockFact::FullCollision) {
+                    return collision || info.is(BlockFact::SturdyTop);
+                }
+                let name = block_in(cx.region, pos).name.to_string();
+                cx.unsupported.record("shape", &name);
+                false
+            }
+        }
+    }
+
+    /// `support::face_full` for the block at `pos`.
+    fn face_full(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        pos: BlockPos,
+        face: Dir,
+        collision: bool,
+    ) -> bool {
+        let info = self.info(cx, pos);
+        Self::face_full_of(cx, info, pos, face, collision)
+    }
+
+    /// `MultifaceBlock.canAttachTo` for the block at `pos` looking at `direction`.
+    fn can_attach_to(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        pos: BlockPos,
+        direction: Dir,
+    ) -> bool {
+        self.face_full(cx, relative(pos, direction, 1), direction.opposite(), true)
+    }
+
+    /// `MultifaceSpreader.spreadAll` with the sculk vein spreader's configuration, from a vein
+    /// with faces `source`, or from another block when `None`. The blocks around it are read
+    /// through one [`Near`].
     fn spread_all(
         &self,
         cx: &mut FeatureContext<'_, '_, '_>,
-        state: &BlockState,
+        source: Option<u8>,
         pos: BlockPos,
         types: &[Spread],
     ) -> i64 {
-        let other_source = !self.is_vein(state);
-        let faces = faces_of(state);
+        let other_source = source.is_none();
+        let faces = source.unwrap_or(0);
         let mut near = Near::new(pos);
         let mut count = 0;
-        for (i, face) in Dir::ALL.into_iter().enumerate() {
-            if !(other_source || faces[i]) {
+        for face in Dir::ALL {
+            let on_face = faces & face_bit(face) != 0;
+            if !(other_source || on_face) {
                 continue;
             }
-            for (j, direction) in Dir::ALL.into_iter().enumerate() {
+            for direction in Dir::ALL {
                 if direction.axis() == face.axis() {
                     continue;
                 }
-                if !(other_source || (faces[i] && !faces[j])) {
+                if !(other_source || (on_face && faces & face_bit(direction) == 0)) {
                     continue;
                 }
                 let mut target = None;
@@ -605,10 +845,9 @@ impl Spreader<'_, '_> {
                     let candidate = match kind {
                         Spread::SamePosition => (SOURCE, direction),
                         Spread::SamePlane => (step(SOURCE, direction), face),
-                        Spread::WrapAround => (
-                            step(step(SOURCE, direction), face),
-                            direction.opposite(),
-                        ),
+                        Spread::WrapAround => {
+                            (step(step(SOURCE, direction), face), direction.opposite())
+                        }
                     };
                     if self.can_spread_into(cx, &mut near, candidate.0, candidate.1) {
                         target = Some(candidate);
@@ -621,7 +860,11 @@ impl Spreader<'_, '_> {
                 let Some(new) = self.state_for_placement(cx, &mut near, target, face_to) else {
                     continue;
                 };
-                let written = Self::write(cx, near.pos(target), new);
+                let at = near.pos(target);
+                let written = match new {
+                    Placement::Id(id) => Self::write_id(cx, at, id),
+                    Placement::State(state) => cx.region.set_block(at, state),
+                };
                 near.forget(target);
                 if written {
                     count += 1;
@@ -631,45 +874,28 @@ impl Spreader<'_, '_> {
         count
     }
 
-    /// `support::face_full` for the block at `at`, its facts read through `near`.
+    /// `support::face_full` for the block at `at`, read through `near`.
     fn near_face_full(
+        &self,
         cx: &mut FeatureContext<'_, '_, '_>,
         near: &mut Near,
         at: Local,
         face: Dir,
         collision: bool,
     ) -> bool {
-        match face {
-            Dir::Up | Dir::Down => {
-                let sturdy = if face == Dir::Up {
-                    BlockFact::SturdyTop
-                } else {
-                    BlockFact::SturdyBottom
-                };
-                near.is(cx, at, sturdy) || (collision && near.is(cx, at, BlockFact::FullCollision))
-            }
-            _ => {
-                if near.is(cx, at, BlockFact::Air) || near.is(cx, at, BlockFact::NoCollision) {
-                    return false;
-                }
-                if near.is(cx, at, BlockFact::FullCollision) {
-                    return collision || near.is(cx, at, BlockFact::SturdyTop);
-                }
-                let name = block_in(cx.region, near.pos(at)).name.to_string();
-                cx.unsupported.record("shape", &name);
-                false
-            }
-        }
+        let info = near.get(self, cx, at);
+        Self::face_full_of(cx, info, near.pos(at), face, collision)
     }
 
     /// `MultifaceBlock.canAttachTo` for the block at `at` looking at `direction`.
     fn near_can_attach_to(
+        &self,
         cx: &mut FeatureContext<'_, '_, '_>,
         near: &mut Near,
         at: Local,
         direction: Dir,
     ) -> bool {
-        Self::near_face_full(cx, near, step(at, direction), direction.opposite(), true)
+        self.near_face_full(cx, near, step(at, direction), direction.opposite(), true)
     }
 
     /// `SculkVeinBlock.getStateForPlacement` for the block now at `at`. `can_spread_into` has
@@ -680,23 +906,26 @@ impl Spreader<'_, '_> {
         near: &mut Near,
         at: Local,
         face: Dir,
-    ) -> Option<BlockState> {
-        let names = self.names(cx, near, at);
-        let vein = names & NEAR_VEIN != 0;
-        let has_face = names & (1 << (NEAR_FACE_SHIFT + face_index(face) as u32)) != 0;
-        if (vein && has_face) || !Self::near_can_attach_to(cx, near, at, face) {
+    ) -> Option<Placement> {
+        let existing = near.get(self, cx, at);
+        let vein = existing.has(I_VEIN);
+        if (vein && existing.has_face(face)) || !self.near_can_attach_to(cx, near, at, face) {
             return None;
         }
-        let base = if vein {
-            block_in(cx.region, near.pos(at)).clone()
-        } else if near.fact_in(cx, at, BlockFact::Water)
-            && near.fact_in(cx, at, BlockFact::FluidSource)
-        {
-            waterlogged(self.vein.clone(), true)
+        Some(if vein && !existing.has(I_CANONICAL) {
+            let state = block_in(cx.region, near.pos(at)).clone();
+            Placement::State(Self::with_face(state, face, true))
+        } else if vein {
+            Placement::Id(self.vein_id(
+                cx,
+                existing.faces() | face_bit(face),
+                existing.has(I_WATERLOGGED),
+            ))
         } else {
-            self.vein.clone()
-        };
-        Some(Self::with_face(base, face, true))
+            let wet =
+                existing.fact_in(BlockFact::Water) && existing.fact_in(BlockFact::FluidSource);
+            Placement::Id(self.vein_id(cx, face_bit(face), wet))
+        })
     }
 
     /// `MultifaceSpreader.canSpreadInto` with the sculk vein spreader's rules, from the source
@@ -708,34 +937,34 @@ impl Spreader<'_, '_> {
         target: Local,
         face: Dir,
     ) -> bool {
-        if self.names(cx, near, step(target, face)) & NEAR_BLOCKER != 0 {
+        if near.get(self, cx, step(target, face)).has(I_BLOCKER) {
             return false;
         }
         // `distManhattan(source, target)`: exact for offsets this small.
         if target.iter().map(|c| c.abs()).sum::<i32>() == 2 {
             let neighbor = step(SOURCE, face.opposite());
-            if Self::near_face_full(cx, near, neighbor, face, false) {
+            if self.near_face_full(cx, near, neighbor, face, false) {
                 return false;
             }
         }
-        let existing = self.names(cx, near, target);
-        let water = near.fact_in(cx, target, BlockFact::Water);
-        let any_fluid_here = water || near.fact_in(cx, target, BlockFact::Lava);
-        let water_source_here = water && near.fact_in(cx, target, BlockFact::FluidSource);
+        let existing = near.get(self, cx, target);
+        let water = existing.fact_in(BlockFact::Water);
+        let any_fluid_here = water || existing.fact_in(BlockFact::Lava);
+        let water_source_here = water && existing.fact_in(BlockFact::FluidSource);
         if any_fluid_here && !water_source_here {
             return false;
         }
-        if existing & NEAR_FIRE != 0 {
+        if existing.has(I_FIRE) {
             return false;
         }
-        let replaceable = near.fact_in(cx, target, BlockFact::Replaceable)
-            || near.fact_in(cx, target, BlockFact::Air)
-            || existing & NEAR_VEIN != 0
-            || (existing & NEAR_WATER != 0 && water_source_here);
-        let has_face = existing & (1 << (NEAR_FACE_SHIFT + face_index(face) as u32)) != 0;
+        let vein = existing.has(I_VEIN);
+        let replaceable = existing.fact_in(BlockFact::Replaceable)
+            || existing.fact_in(BlockFact::Air)
+            || vein
+            || (existing.has(I_WATER) && water_source_here);
         replaceable
-            && !(existing & NEAR_VEIN != 0 && has_face)
-            && Self::near_can_attach_to(cx, near, target, face)
+            && !(vein && existing.has_face(face))
+            && self.near_can_attach_to(cx, near, target, face)
     }
 
     /// `SculkBehaviour.attemptUseCharge` for the three behaviours.
@@ -779,17 +1008,20 @@ impl Spreader<'_, '_> {
                 if !close && self.can_place_growth(cx, pos) {
                     if cx.random.next_int_bounded(GROWTH_SPAWN_COST) < charge {
                         let above = offset(pos, 0, 1, 0);
-                        let mut growth = if cx.random.next_int_bounded(11) == 0 {
-                            self.shrieker.clone()
+                        let which = if cx.random.next_int_bounded(11) == 0 {
+                            0
                         } else {
-                            self.sensor.clone()
+                            1
                         };
-                        if growth.properties.contains_key("waterlogged")
-                            && any_fluid(cx, block_in(cx.region, above))
-                        {
-                            growth = waterlogged(growth, true);
-                        }
-                        Self::write(cx, above, growth);
+                        let (dry, wet) = &self.growths[which];
+                        let slots = &self.ids.growths[which];
+                        let id = match wet {
+                            Some(wet) if self.info(cx, above).any_fluid() => {
+                                Self::id(cx, &slots[1], wet)
+                            }
+                            _ => Self::id(cx, &slots[0], dry),
+                        };
+                        Self::write_id(cx, above, id);
                     }
                     return 0.max(charge - GROWTH_SPAWN_COST);
                 }
@@ -809,19 +1041,13 @@ impl Spreader<'_, '_> {
         }
     }
 
-    /// Whether `state` counts toward the cap on nearby sensors and shriekers.
-    fn is_inhibitor(&self, state: &BlockState) -> bool {
-        match self.inhibitors {
-            Some(members) => members.contains(&state.name),
-            None => state.name == self.sensor.name || is_block(state, "sculk_shrieker"),
-        }
-    }
-
     /// `SculkBlock.canPlaceGrowth`.
     fn can_place_growth(&self, cx: &FeatureContext<'_, '_, '_>, pos: BlockPos) -> bool {
-        let above = block_in(cx.region, offset(pos, 0, 1, 0));
-        let open = state_has(cx, above, BlockFact::Air)
-            || (is_block(above, "water") && water_source(cx, above));
+        let above = self.info(cx, offset(pos, 0, 1, 0));
+        let open = above.fact_in(BlockFact::Air)
+            || (above.has(I_WATER)
+                && above.fact_in(BlockFact::Water)
+                && above.fact_in(BlockFact::FluidSource));
         if !open {
             return false;
         }
@@ -830,7 +1056,7 @@ impl Spreader<'_, '_> {
         for dz in -4..=4 {
             for dy in 0..=2 {
                 for dx in -4..=4 {
-                    if self.is_inhibitor(block_in(cx.region, offset(pos, dx, dy, dz))) {
+                    if self.info(cx, offset(pos, dx, dy, dz)).has(I_INHIBITOR) {
                         matched += 1;
                         if matched >= 3 {
                             return false;
@@ -844,28 +1070,28 @@ impl Spreader<'_, '_> {
 
     /// `SculkVeinBlock.attemptPlaceSculk`: turns the block a vein clings to into sculk.
     fn place_sculk(&self, cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos) -> bool {
-        let faces = faces_of(block_in(cx.region, pos));
+        let faces = self.info(cx, pos).faces();
         let mut directions = Dir::ALL;
         shuffle(&mut directions, cx.random);
         for support in directions {
-            if !faces[face_index(support)] {
+            if faces & face_bit(support) == 0 {
                 continue;
             }
             let support_pos = relative(pos, support, 1);
-            let support_state = block_in(cx.region, support_pos);
-            if !Self::member(self.replaceable_world_gen, support_state) {
+            if !self.info(cx, support_pos).has(I_REPLACEABLE_WORLD_GEN) {
                 continue;
             }
-            Self::write(cx, support_pos, self.sculk.clone());
-            self.spread_all(cx, &self.sculk, support_pos, &ALL_SPREADS);
+            let sculk = Self::id(cx, &self.ids.sculk, &self.sculk);
+            Self::write_id(cx, support_pos, sculk);
+            self.spread_all(cx, None, support_pos, &ALL_SPREADS);
             let skip = support.opposite();
             for direction in Dir::ALL {
                 if direction == skip {
                     continue;
                 }
                 let vein_pos = relative(support_pos, direction, 1);
-                if self.is_vein(block_in(cx.region, vein_pos)) {
-                    let possible = Self::state_at(cx, vein_pos);
+                let possible = self.read(cx, vein_pos);
+                if possible.info.has(I_VEIN) {
                     self.on_discharged(cx, Behaviour::Vein, &possible, vein_pos);
                 }
             }
@@ -880,16 +1106,46 @@ impl Spreader<'_, '_> {
         &self,
         cx: &mut FeatureContext<'_, '_, '_>,
         behaviour: Behaviour,
+        read: &Read,
+        pos: BlockPos,
+    ) {
+        if behaviour != Behaviour::Vein || !read.info.has(I_VEIN) {
+            return;
+        }
+        if let Some(state) = &read.state {
+            return self.on_discharged_state(cx, state, pos);
+        }
+        let mut faces = read.info.faces();
+        for direction in Dir::ALL {
+            if faces & face_bit(direction) != 0
+                && self.info(cx, relative(pos, direction, 1)).has(I_SCULK)
+            {
+                faces &= !face_bit(direction);
+            }
+        }
+        let id = if faces == 0 {
+            if self.info(cx, pos).any_fluid() {
+                Self::id(cx, &self.ids.water, &self.water)
+            } else {
+                Self::id(cx, &self.ids.air, &self.air)
+            }
+        } else {
+            self.vein_id(cx, faces, read.info.has(I_WATERLOGGED))
+        };
+        Self::write_id(cx, pos, id);
+    }
+
+    /// [`Self::on_discharged`] for a vein that is not canonical, worked on its state.
+    fn on_discharged_state(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
         state: &BlockState,
         pos: BlockPos,
     ) {
-        if behaviour != Behaviour::Vein || !self.is_vein(state) {
-            return;
-        }
         let mut state = state.clone();
         for direction in Dir::ALL {
             if Self::has_face(&state, direction)
-                && block_in(cx.region, relative(pos, direction, 1)).name == self.sculk.name
+                && self.info(cx, relative(pos, direction, 1)).has(I_SCULK)
             {
                 state = Self::with_face(state, direction, false);
             }
@@ -898,14 +1154,13 @@ impl Spreader<'_, '_> {
             .into_iter()
             .any(|direction| Self::has_face(&state, direction))
         {
-            let here = block_in(cx.region, pos);
-            state = if any_fluid(cx, here) {
+            state = if self.info(cx, pos).any_fluid() {
                 self.water.clone()
             } else {
                 self.air.clone()
             };
         }
-        Self::write(cx, pos, state);
+        cx.region.set_block(pos, state);
     }
 
     /// `ChargeCursor.getValidMovementPos`.
@@ -938,23 +1193,21 @@ impl Spreader<'_, '_> {
             if dx.wrapping_mul(dx).wrapping_add(dz.wrapping_mul(dz)) > 144 {
                 continue;
             }
-            let transferee = block_in(cx.region, neighbour);
-            if self.behaviour(transferee) == Behaviour::Default {
+            let transferee = self.info(cx, neighbour);
+            if transferee.behaviour() == Behaviour::Default {
                 continue;
             }
-            let is_vein = self.is_vein(transferee);
-            let faces = faces_of(transferee);
             if !self.unobstructed_move(cx, pos, neighbour) {
                 continue;
             }
             best = neighbour;
-            if is_vein {
-                let substrate = Dir::ALL.into_iter().enumerate().any(|(i, direction)| {
-                    faces[i]
-                        && Self::member(
-                            self.replaceable,
-                            block_in(cx.region, relative(neighbour, direction, 1)),
-                        )
+            if transferee.has(I_VEIN) {
+                let faces = transferee.faces();
+                let substrate = Dir::ALL.into_iter().any(|direction| {
+                    faces & face_bit(direction) != 0
+                        && self
+                            .info(cx, relative(neighbour, direction, 1))
+                            .has(I_REPLACEABLE)
                 });
                 if substrate {
                     break;
@@ -991,11 +1244,16 @@ impl Spreader<'_, '_> {
         } else {
             (dir_x, dir_y)
         };
-        Self::unobstructed(cx, from, a) || Self::unobstructed(cx, from, b)
+        self.unobstructed(cx, from, a) || self.unobstructed(cx, from, b)
     }
 
-    fn unobstructed(cx: &mut FeatureContext<'_, '_, '_>, from: BlockPos, direction: Dir) -> bool {
-        !face_full(
+    fn unobstructed(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        from: BlockPos,
+        direction: Dir,
+    ) -> bool {
+        !self.face_full(
             cx,
             relative(from, direction, 1),
             direction.opposite(),

@@ -132,16 +132,6 @@ pub(super) fn is_block(state: &BlockState, path: &str) -> bool {
     state.name.namespace() == "minecraft" && state.name.path() == path
 }
 
-/// Whether the fluid in `state` is any fluid: water or lava, in a block or waterlogged.
-pub(super) fn any_fluid(cx: &FeatureContext<'_, '_, '_>, state: &BlockState) -> bool {
-    state_has(cx, state, BlockFact::Water) || state_has(cx, state, BlockFact::Lava)
-}
-
-/// Whether `state`'s fluid is a water source.
-pub(super) fn water_source(cx: &FeatureContext<'_, '_, '_>, state: &BlockState) -> bool {
-    state_has(cx, state, BlockFact::Water) && state_has(cx, state, BlockFact::FluidSource)
-}
-
 /// `state.with(waterlogged, value)`.
 pub(super) fn waterlogged(state: BlockState, value: bool) -> BlockState {
     state.with_property("waterlogged", value.to_string())
@@ -183,16 +173,6 @@ pub(super) fn face_full(
             false
         }
     }
-}
-
-/// `MultifaceBlock.canAttachTo` for a block at `pos` looking at `direction`: whether the
-/// neighbour that way presents a full face back.
-pub(super) fn can_attach_to(
-    cx: &mut FeatureContext<'_, '_, '_>,
-    pos: BlockPos,
-    direction: Dir,
-) -> bool {
-    face_full(cx, relative(pos, direction, 1), direction.opposite(), true)
 }
 
 /// The smallest and largest value `provider` can produce, as the codecs' range checks and
