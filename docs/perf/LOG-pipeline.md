@@ -286,3 +286,20 @@ Tests: oxide-chunkgen 189 + oxide-datapack, all pass.
 The profile's sampled per-call costs implied 1.2-1.7 s; the measured saving is about 0.6 s.
 Hashing was real but smaller than the timers made it look. In flight: sculk by reference
 with tags resolved once (pipeline-2).
+
+**Kept: sculk by reference, tags resolved once** (9accc32, by the pipeline-2 sub-agent,
+reviewed by me). It covers `cave/sculk.rs` only. The four tag sets are resolved once per
+`place()` into a `Spreader`. States are borrowed, not cloned; each borrowed read either comes
+before the same check it fed before, or is re-read after a call that only touches the
+unsupported tally. Snapshots that are read across writes (`update`, `attempt_spread_vein`,
+`on_discharged`) keep their clone. Tests: oxide-chunkgen 189, all pass. With the timers on,
+sculk CPU went 20.5 s -> 13.4 s with **identical set_block (524,495) and fact-query
+(41,666,003) counts**.
+
+    sub-agent, on ff3f031:  decorate_ms=7218 5433 6287 (baseline) -> 4781 4470 (change)
+    mine, 9accc32 (sculk + ahash):  decorate_ms=3753 4307   cps 77.0 / 71.9
+    digest df701ee858e2bdd3 on every run
+
+**Pregen path now** (median of the last two runs): about 74 cps; decorate about 4.0 s, down
+from about 6.5 s this morning (-38%). Generate (terrain, about 10.3 s for 1369 chunks) is now
+71% of the path, and it belongs to the noise and datapath tracks.

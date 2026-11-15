@@ -21,3 +21,5 @@
 1794721856	bc0265c	16	chunks=1089 threads=8 secs=8.194 cps=132.9 ms_per_chunk_core=60.19 digest=a977961a58122047 profile=release build_s=1m46s
 1794721891	bc0265c	16	chunks=1089 threads=8 secs=14.779 cps=73.7 ms_per_chunk_core=108.57 digest=df701ee858e2bdd3 generate_ms=9752 decorate_ms=4615 serialise_ms=221 compress_ms=169 write_ms=22 compression=zlib6 mb_disk=10.1 pregen=1
 1794721926	bc0265c	16	chunks=1089 threads=8 secs=15.962 cps=68.2 ms_per_chunk_core=117.26 digest=df701ee858e2bdd3 generate_ms=9590 decorate_ms=5806 serialise_ms=410 compress_ms=126 write_ms=30 compression=zlib6 mb_disk=10.1 pregen=1
+1794722852	9accc32	16	chunks=1089 threads=8 secs=14.146 cps=77.0 ms_per_chunk_core=103.92 digest=df701ee858e2bdd3 generate_ms=10144 decorate_ms=3753 serialise_ms=115 compress_ms=99 write_ms=35 compression=zlib6 mb_disk=10.1 pregen=1
+1794723494	9accc32	16	chunks=1089 threads=8 secs=15.149 cps=71.9 ms_per_chunk_core=111.29 digest=df701ee858e2bdd3 generate_ms=10585 decorate_ms=4307 serialise_ms=121 compress_ms=92 write_ms=44 compression=zlib6 mb_disk=10.1 pregen=1
