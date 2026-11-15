@@ -68,7 +68,7 @@ impl UnderwaterMagmaFeature {
         let mut placed = false;
         for pos in between_closed(from, to) {
             if cx.random.next_float() < self.probability && self.valid(cx, pos) {
-                cx.region.set_block(pos, self.magma.clone());
+                cx.region.set_block_ref(pos, &self.magma);
                 placed = true;
             }
         }

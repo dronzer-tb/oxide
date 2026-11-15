@@ -78,7 +78,7 @@ impl Blocks {
         pos: BlockPos,
     ) -> bool {
         if self.is_replaceable(cx, block_in(cx.region, pos)) {
-            cx.region.set_block(pos, self.base.clone());
+            cx.region.set_block_ref(pos, &self.base);
             return true;
         }
         false

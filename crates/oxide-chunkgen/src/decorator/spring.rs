@@ -103,6 +103,6 @@ impl SpringFeature {
         if rocks != self.rock_count || holes != self.hole_count {
             return false;
         }
-        cx.region.set_block(pos, self.state.clone())
+        cx.region.set_block_ref(pos, &self.state)
     }
 }

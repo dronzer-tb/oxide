@@ -55,7 +55,7 @@ impl BlockBlobFeature {
                 let dy = f64::from(pos.y - origin.y);
                 let dz = f64::from(pos.z - origin.z);
                 if dx * dx + dy * dy + dz * dz <= f64::from(radius * radius) {
-                    cx.region.set_block(pos, self.state.clone());
+                    cx.region.set_block_ref(pos, &self.state);
                 }
             }
             origin = BlockPos::new(

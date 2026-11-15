@@ -100,7 +100,7 @@ impl PatchFeature {
             }
         }
         for pos in sealed.iter_java_order() {
-            cx.region.set_block(pos, self.water.clone());
+            cx.region.set_block_ref(pos, &self.water);
         }
         sealed
     }

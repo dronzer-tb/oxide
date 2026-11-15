@@ -86,7 +86,7 @@ impl ChorusPlantFeature {
                 mask |= 1 << bit;
             }
         }
-        cx.region.set_block(pos, self.plant[mask].clone());
+        cx.region.set_block_ref(pos, &self.plant[mask]);
     }
 
     /// Whether the four horizontal neighbours of `pos` are air, ignoring side `except`.
@@ -139,7 +139,7 @@ impl ChorusPlantFeature {
             }
         }
         if !branched {
-            cx.region.set_block(top, self.flower.clone());
+            cx.region.set_block_ref(top, &self.flower);
         }
     }
 }

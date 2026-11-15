@@ -162,7 +162,7 @@ impl MultifaceFeature {
             let Some(state) = self.state_for_placement(cx, old, pos, direction) else {
                 return false;
             };
-            cx.region.set_block(pos, state.clone());
+            cx.region.set_block_ref(pos, &state);
             if cx.random.next_float() < self.chance_of_spreading {
                 let mut all = Dir::ALL;
                 shuffle(&mut all, &mut *cx.random);

@@ -56,11 +56,17 @@ pub struct DecorationRegion<'a> {
     height: i32,
     /// Index into `writes` of each written position.
     overlay: AHashMap<BlockPos, usize>,
-    /// Every write in the order its position was first written, each with its latest state:
-    /// already the deterministic write list `into_writes` hands back.
-    writes: Vec<BlockWrite>,
-    /// Per write, the facts already answered for its current state (see [`FactCache`]).
-    write_facts: Vec<FactCache>,
+    /// Every write in the order its position was first written, each with the id (into
+    /// `states`) of its latest state: `into_writes` hands this list back with the ids resolved.
+    writes: Vec<(BlockPos, u32)>,
+    /// Every distinct state written so far, in first-written order. A region writes a few dozen
+    /// distinct states thousands of times, so writes keep a `u32` instead of an owned
+    /// `BlockState` (two heap strings and a map) each.
+    states: Vec<BlockState>,
+    /// `states` the other way round.
+    state_ids: AHashMap<BlockState, u32>,
+    /// Per entry of `states`, the facts already answered for it (see [`FactCache`]).
+    state_facts: Vec<FactCache>,
     /// Per terrain section (`chunk * sections + section`), per palette entry, the facts already
     /// answered for that entry; made on the section's first fact query.
     terrain_facts: Vec<OnceCell<Box<[FactCache]>>>,
@@ -85,7 +91,9 @@ impl<'a> DecorationRegion<'a> {
             height: middle.height,
             overlay: AHashMap::with_capacity(RESERVED_WRITES),
             writes: Vec::with_capacity(RESERVED_WRITES),
-            write_facts: Vec::with_capacity(RESERVED_WRITES),
+            states: Vec::new(),
+            state_ids: AHashMap::default(),
+            state_facts: Vec::new(),
             terrain_facts: (0..9 * middle.sections.len())
                 .map(|_| OnceCell::new())
                 .collect(),
@@ -150,7 +158,7 @@ impl<'a> DecorationRegion<'a> {
     /// The block at `pos` as decoration so far left it, or `None` outside the window.
     pub fn block(&self, pos: BlockPos) -> Option<&BlockState> {
         match self.overlay.get(&pos) {
-            Some(&i) => Some(&self.writes[i].1),
+            Some(&i) => Some(&self.states[self.writes[i].1 as usize]),
             None => self.terrain_block(pos),
         }
     }
@@ -165,7 +173,8 @@ impl<'a> DecorationRegion<'a> {
     /// asks the table at most once per fact.
     pub fn fact_at(&self, pos: BlockPos, fact: BlockFact) -> Option<bool> {
         if let Some(&i) = self.overlay.get(&pos) {
-            return Some(self.write_facts[i].is(self.facts, &self.writes[i].1, fact));
+            let id = self.writes[i].1 as usize;
+            return Some(self.state_facts[id].is(self.facts, &self.states[id], fact));
         }
         if pos.y < self.min_y || pos.y >= self.max_y() {
             return None;
@@ -197,22 +206,51 @@ impl<'a> DecorationRegion<'a> {
         if !self.contains(pos) {
             return false;
         }
+        let id = match self.state_ids.get(&state) {
+            Some(&id) => id,
+            None => self.add_state(state),
+        };
+        self.write_id(pos, id);
+        true
+    }
+
+    /// [`Self::set_block`] for a state the caller keeps, such as one from a feature's config:
+    /// the state is cloned only the first time this region sees it.
+    pub fn set_block_ref(&mut self, pos: BlockPos, state: &BlockState) -> bool {
+        if !self.contains(pos) {
+            return false;
+        }
+        let id = match self.state_ids.get(state) {
+            Some(&id) => id,
+            None => self.add_state(state.clone()),
+        };
+        self.write_id(pos, id);
+        true
+    }
+
+    /// Interns a state `state_ids` does not hold yet.
+    fn add_state(&mut self, state: BlockState) -> u32 {
+        let id = self.states.len() as u32;
+        self.state_ids.insert(state.clone(), id);
+        self.states.push(state);
+        self.state_facts.push(FactCache::default());
+        id
+    }
+
+    /// Records the write of state `id` at `pos`, which must be inside the window.
+    fn write_id(&mut self, pos: BlockPos, id: u32) {
         match self.overlay.entry(pos) {
             std::collections::hash_map::Entry::Occupied(entry) => {
-                let i = *entry.get();
-                self.writes[i].1 = state;
-                self.write_facts[i] = FactCache::default();
+                self.writes[*entry.get()].1 = id;
             }
             std::collections::hash_map::Entry::Vacant(entry) => {
                 entry.insert(self.writes.len());
-                self.writes.push((pos, state));
-                self.write_facts.push(FactCache::default());
+                self.writes.push((pos, id));
             }
         }
         let column = self.column(pos.x, pos.z);
         let top = &mut self.written_top[column];
         *top = if *top == NEVER_WRITTEN { pos.y } else { (*top).max(pos.y) };
-        true
     }
 
     /// The first free Y above the highest block `kind` counts in the column at `(x, z)`: what
@@ -290,7 +328,11 @@ impl<'a> DecorationRegion<'a> {
 
     /// Every write, in the order positions were first written, each with its final state.
     pub fn into_writes(self) -> Vec<BlockWrite> {
+        let states = &self.states;
         self.writes
+            .iter()
+            .map(|&(pos, id)| (pos, states[id as usize].clone()))
+            .collect()
     }
 }
 

@@ -123,12 +123,12 @@ impl DeltaFeature {
             return;
         }
         if has_rim {
-            cx.region.set_block(pos, self.rim.clone());
+            cx.region.set_block_ref(pos, &self.rim);
             *placed = true;
         }
         let shifted = offset(pos, rim_x, 0, rim_z);
         if self.is_clear(cx, shifted) {
-            cx.region.set_block(shifted, self.contents.clone());
+            cx.region.set_block_ref(shifted, &self.contents);
             *placed = true;
         }
     }

@@ -35,7 +35,7 @@ impl EndIslandFeature {
                 for z in low..=high {
                     if (x * x + z * z) as f32 <= (radius + 1.0) * (radius + 1.0) {
                         cx.region
-                            .set_block(offset(origin, x, y, z), self.end_stone.clone());
+                            .set_block_ref(offset(origin, x, y, z), &self.end_stone);
                     }
                 }
             }

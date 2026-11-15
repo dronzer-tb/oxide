@@ -49,7 +49,7 @@ pub(super) fn update_shapes(cx: &mut FeatureContext<'_, '_, '_>, placed: &[Block
         let neighbour = block_in(cx.region, neighbour_pos).clone();
         let new_state = update_shape(cx, &state, pos, direction);
         if new_state != state {
-            cx.region.set_block(pos, new_state.clone());
+            cx.region.set_block_ref(pos, &new_state);
         }
         let new_neighbour = update_shape(cx, &neighbour, neighbour_pos, direction.opposite());
         if new_neighbour != neighbour {

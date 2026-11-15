@@ -69,7 +69,7 @@ impl CoralFeature {
         if !((is_water(cx, pos) || in_tag_at(cx, pos, "corals")) && is_water(cx, above)) {
             return false;
         }
-        cx.region.set_block(pos, state.clone());
+        cx.region.set_block_ref(pos, &state);
         if cx.random.next_float() < 0.25 {
             if let Some(coral) = random_member(cx, "corals") {
                 if let Some(top) = member_default(cx, &coral) {

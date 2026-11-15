@@ -55,7 +55,7 @@ impl KelpFeature {
                         cx.region.set_block(pos, head);
                         placed += 1;
                     } else {
-                        cx.region.set_block(pos, self.plant.clone());
+                        cx.region.set_block_ref(pos, &self.plant);
                     }
                 } else if h > 0 {
                     let below = relative(pos, Dir::Down, 1);

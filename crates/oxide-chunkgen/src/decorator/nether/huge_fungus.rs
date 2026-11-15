@@ -111,10 +111,10 @@ impl HugeFungusFeature {
                     }
                     if corner {
                         if cx.random.next_float() < 0.1 {
-                            cx.region.set_block(pos, self.stem.clone());
+                            cx.region.set_block_ref(pos, &self.stem);
                         }
                     } else {
-                        cx.region.set_block(pos, self.stem.clone());
+                        cx.region.set_block_ref(pos, &self.stem);
                     }
                 }
             }
@@ -191,9 +191,9 @@ impl HugeFungusFeature {
         vines: f32,
     ) {
         if cx.random.next_float() < decor {
-            cx.region.set_block(pos, self.decor.clone());
+            cx.region.set_block_ref(pos, &self.decor);
         } else if cx.random.next_float() < hat {
-            cx.region.set_block(pos, self.hat.clone());
+            cx.region.set_block_ref(pos, &self.hat);
             if cx.random.next_float() < vines {
                 self.place_weeping_vines(cx, pos);
             }
@@ -204,9 +204,9 @@ impl HugeFungusFeature {
     /// starts with chance 0.15.
     fn place_hat_drop(&self, cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos) {
         if block_in(cx.region, offset(pos, 0, -1, 0)).name == self.hat.name {
-            cx.region.set_block(pos, self.hat.clone());
+            cx.region.set_block_ref(pos, &self.hat);
         } else if f64::from(cx.random.next_float()) < 0.15 {
-            cx.region.set_block(pos, self.hat.clone());
+            cx.region.set_block_ref(pos, &self.hat);
             if self.vines && cx.random.next_int_bounded(11) == 0 {
                 self.place_weeping_vines(cx, pos);
             }
@@ -234,7 +234,7 @@ impl HugeFungusFeature {
                     cx.region.set_block(pos, tip);
                     break;
                 }
-                cx.region.set_block(pos, self.weeping_vines_plant.clone());
+                cx.region.set_block_ref(pos, &self.weeping_vines_plant);
             }
             pos = offset(pos, 0, -1, 0);
         }

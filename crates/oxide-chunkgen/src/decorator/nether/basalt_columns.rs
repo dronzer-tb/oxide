@@ -110,7 +110,7 @@ impl BasaltColumnsFeature {
                 let mut blocks_y = height - step_limit / 2;
                 while blocks_y >= 0 {
                     if self.is_air_or_lava_ocean(cx, cursor) {
-                        cx.region.set_block(cursor, self.basalt.clone());
+                        cx.region.set_block_ref(cursor, &self.basalt);
                         cursor = offset(cursor, 0, 1, 0);
                         placed_any = true;
                     } else {

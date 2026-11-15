@@ -39,7 +39,7 @@ impl BasaltPillarFeature {
             if cx.outside_build_height(pos.y) {
                 return true;
             }
-            cx.region.set_block(pos, self.basalt.clone());
+            cx.region.set_block_ref(pos, &self.basalt);
             // `a && placeHangOff(..)`: a side that missed once draws no more.
             for (side, [dx, dz]) in hang_off.iter_mut().zip(SIDES) {
                 *side = *side && self.place_hang_off(cx, offset(pos, dx, 0, dz));
@@ -50,7 +50,7 @@ impl BasaltPillarFeature {
         for [dx, dz] in SIDES {
             if cx.random.next_boolean() {
                 cx.region
-                    .set_block(offset(pos, dx, 0, dz), self.basalt.clone());
+                    .set_block_ref(offset(pos, dx, 0, dz), &self.basalt);
             }
         }
         pos = offset(pos, 0, -1, 0);
@@ -68,7 +68,7 @@ impl BasaltPillarFeature {
                         }
                     }
                     if !is_empty(cx, offset(base, 0, -1, 0)) {
-                        cx.region.set_block(base, self.basalt.clone());
+                        cx.region.set_block_ref(base, &self.basalt);
                     }
                 }
             }
@@ -79,7 +79,7 @@ impl BasaltPillarFeature {
     /// `placeHangOff`: basalt at `pos` unless the one-in-ten miss comes up.
     fn place_hang_off(&self, cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos) -> bool {
         if cx.random.next_int_bounded(10) != 0 {
-            cx.region.set_block(pos, self.basalt.clone());
+            cx.region.set_block_ref(pos, &self.basalt);
             true
         } else {
             false

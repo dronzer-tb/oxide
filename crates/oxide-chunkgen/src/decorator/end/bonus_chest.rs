@@ -62,14 +62,14 @@ impl BonusChestFeature {
                 if !open {
                     continue;
                 }
-                cx.region.set_block(pos, self.chest.clone());
+                cx.region.set_block_ref(pos, &self.chest);
                 cx.unsupported.record("block_entity", "minecraft:chest");
                 cx.random.next_long();
                 for [dx, dz] in HORIZONTAL {
                     let side = offset(pos, dx, 0, dz);
                     match cx.env.behaviours.can_survive(&self.torch, cx.region, side) {
                         Some(true) => {
-                            cx.region.set_block(side, self.torch.clone());
+                            cx.region.set_block_ref(side, &self.torch);
                         }
                         Some(false) => {}
                         None => cx

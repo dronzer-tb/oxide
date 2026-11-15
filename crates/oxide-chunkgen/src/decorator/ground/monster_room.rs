@@ -102,7 +102,7 @@ impl MonsterRoomFeature {
                         || dz == max_z
                     {
                         if pos.y >= min_y && !Self::solid(cx, offset(pos, 0, -1, 0)) {
-                            cx.region.set_block(pos, self.cave_air.clone());
+                            cx.region.set_block_ref(pos, &self.cave_air);
                         } else if cx.env.facts.is(&wall, BlockFact::Solid)
                             && !is_block(&wall, "chest")
                         {

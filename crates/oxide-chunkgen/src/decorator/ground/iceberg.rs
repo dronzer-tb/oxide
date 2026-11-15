@@ -255,8 +255,8 @@ impl IcebergFeature {
                         continue;
                     }
                     if is_air(cx, offset(pos, 0, -1, 0)) {
-                        cx.region.set_block(pos, self.air.clone());
-                        cx.region.set_block(offset(pos, 0, 1, 0), self.air.clone());
+                        cx.region.set_block_ref(pos, &self.air);
+                        cx.region.set_block_ref(offset(pos, 0, 1, 0), &self.air);
                     } else if iceberg {
                         let open = [(-1, 0), (1, 0), (0, -1), (0, 1)]
                             .iter()
@@ -266,7 +266,7 @@ impl IcebergFeature {
                             })
                             .count();
                         if open >= 3 {
-                            cx.region.set_block(pos, self.air.clone());
+                            cx.region.set_block_ref(pos, &self.air);
                         }
                     }
                 }
@@ -338,12 +338,12 @@ impl IcebergFeature {
                     let state = block_in(cx.region, pos);
                     if self.is_iceberg_block(state) {
                         if under_water {
-                            cx.region.set_block(pos, self.water.clone());
+                            cx.region.set_block_ref(pos, &self.water);
                         } else {
-                            cx.region.set_block(pos, self.air.clone());
+                            cx.region.set_block_ref(pos, &self.air);
                             let above = offset(pos, 0, 1, 0);
                             if is_block(block_in(cx.region, above), "snow") {
-                                cx.region.set_block(above, self.air.clone());
+                                cx.region.set_block_ref(above, &self.air);
                             }
                         }
                     }

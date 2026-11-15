@@ -55,7 +55,7 @@ impl Column {
                         .set_block(pos, self.head.clone().with_property("age", age.to_string()));
                     break;
                 }
-                cx.region.set_block(pos, self.plant.clone());
+                cx.region.set_block_ref(pos, &self.plant);
             }
             pos = offset(pos, 0, self.step, 0);
         }
@@ -182,7 +182,7 @@ impl WeepingVinesFeature {
 
     /// `placeRoofNetherWart`.
     fn place_roof_wart(&self, cx: &mut FeatureContext<'_, '_, '_>, origin: BlockPos) {
-        cx.region.set_block(origin, self.wart.clone());
+        cx.region.set_block_ref(origin, &self.wart);
         for _ in 0..200 {
             let dx = cx.random.next_int_bounded(6) - cx.random.next_int_bounded(6);
             let dy = cx.random.next_int_bounded(2) - cx.random.next_int_bounded(5);
@@ -201,7 +201,7 @@ impl WeepingVinesFeature {
                 }
             }
             if neighbours == 1 {
-                cx.region.set_block(pos, self.wart.clone());
+                cx.region.set_block_ref(pos, &self.wart);
             }
         }
     }

@@ -55,11 +55,11 @@ impl SeagrassFeature {
         if tall {
             let above = relative(pos, Dir::Up, 1);
             if is_water(cx, above) {
-                cx.region.set_block(pos, self.tall_lower.clone());
-                cx.region.set_block(above, self.tall_upper.clone());
+                cx.region.set_block_ref(pos, &self.tall_lower);
+                cx.region.set_block_ref(above, &self.tall_upper);
             }
         } else {
-            cx.region.set_block(pos, self.short.clone());
+            cx.region.set_block_ref(pos, &self.short);
         }
         true
     }

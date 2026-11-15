@@ -106,7 +106,7 @@ impl DesertWellFeature {
         for depth in [1, 2] {
             let cell = water_cells[cx.random.next_int_bounded(water_cells.len() as i32) as usize];
             let pos = relative(cell, Dir::Down, depth);
-            if cx.region.set_block(pos, self.suspicious_sand.clone()) {
+            if cx.region.set_block_ref(pos, &self.suspicious_sand) {
                 cx.unsupported
                     .record("block_entity", "minecraft:brushable_block");
             }
@@ -115,6 +115,6 @@ impl DesertWellFeature {
     }
 
     fn set(&self, cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos, state: &BlockState) {
-        cx.region.set_block(pos, state.clone());
+        cx.region.set_block_ref(pos, &state);
     }
 }

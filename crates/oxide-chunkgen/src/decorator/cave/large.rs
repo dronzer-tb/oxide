@@ -287,7 +287,7 @@ impl LargeDripstoneFeature {
                     let state = block_in(cx.region, adjusted);
                     if self.blocks.empty_water_or_lava(cx, state) {
                         out_of_stone = true;
-                        cx.region.set_block(adjusted, base.clone());
+                        cx.region.set_block_ref(adjusted, &base);
                     } else if out_of_stone && cx.env.block_tags.contains(&base_stone, &state.name) {
                         break;
                     }

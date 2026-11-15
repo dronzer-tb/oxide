@@ -76,7 +76,7 @@ impl ReplaceBlobsFeature {
 
     fn replace(&self, cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos, placed: &mut bool) {
         if is_block_at(cx, pos, &self.target) {
-            cx.region.set_block(pos, self.state.clone());
+            cx.region.set_block_ref(pos, &self.state);
             *placed = true;
         }
     }

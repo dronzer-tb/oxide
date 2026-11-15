@@ -260,7 +260,7 @@ pub fn place_in_world(
         // the game for any template whose palette has more than `axis`/`facing`-style
         // properties (the 26.2 fossil and sulfur-spring templates do not).
         let state = rotate_block_state(&info.state, settings.rotation);
-        if !cx.region.set_block(info.pos, state.clone()) {
+        if !cx.region.set_block_ref(info.pos, &state) {
             continue;
         }
         placed.push(info.pos);

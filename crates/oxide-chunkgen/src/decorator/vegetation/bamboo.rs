@@ -82,13 +82,13 @@ impl BambooFeature {
             if !is_air(cx, pos) {
                 break;
             }
-            cx.region.set_block(pos, self.trunk.clone());
+            cx.region.set_block_ref(pos, &self.trunk);
             pos = offset(pos, 0, 1, 0);
         }
         if pos.y.wrapping_sub(origin.y) >= 3 {
             // The first crown block takes the stopping position, even when that is an obstacle.
             for state in &self.crown {
-                cx.region.set_block(pos, state.clone());
+                cx.region.set_block_ref(pos, &state);
                 pos = offset(pos, 0, -1, 0);
             }
         }
@@ -109,7 +109,7 @@ impl BambooFeature {
                 };
                 let pos = BlockPos::new(x, top.wrapping_sub(1), z);
                 if in_tag(cx, pos, &self.podzol_replaceable) {
-                    cx.region.set_block(pos, self.podzol.clone());
+                    cx.region.set_block_ref(pos, &self.podzol);
                 }
             }
         }

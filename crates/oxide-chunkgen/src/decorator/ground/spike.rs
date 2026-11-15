@@ -88,7 +88,7 @@ impl SpikeFeature {
                     if !air && !self.can_replace.test(cx, pos) && !own {
                         break;
                     }
-                    cx.region.set_block(pos, self.state.clone());
+                    cx.region.set_block_ref(pos, &self.state);
                     pos = BlockPos::new(pos.x, pos.y - 1, pos.z);
                     remaining -= 1;
                     if remaining <= 0 {
@@ -108,7 +108,7 @@ impl SpikeFeature {
     /// Writes the spike block at `pos` when it is air or replaceable.
     fn place_part(&self, cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos) {
         if is_air(cx, pos) || self.can_replace.test(cx, pos) {
-            cx.region.set_block(pos, self.state.clone());
+            cx.region.set_block_ref(pos, &self.state);
         }
     }
 }

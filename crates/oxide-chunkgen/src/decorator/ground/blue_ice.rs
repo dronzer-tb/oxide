@@ -42,7 +42,7 @@ impl BlueIceFeature {
         if !beside_packed_ice {
             return false;
         }
-        cx.region.set_block(origin, self.blue_ice.clone());
+        cx.region.set_block_ref(origin, &self.blue_ice);
         for _ in 0..200 {
             let dy = cx.random.next_int_bounded(5) - cx.random.next_int_bounded(6);
             let mut radius = 3;
@@ -70,7 +70,7 @@ impl BlueIceFeature {
                 )
             });
             if touches_blue_ice {
-                cx.region.set_block(pos, self.blue_ice.clone());
+                cx.region.set_block_ref(pos, &self.blue_ice);
             }
         }
         true

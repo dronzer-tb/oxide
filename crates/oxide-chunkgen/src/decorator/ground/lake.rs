@@ -158,7 +158,7 @@ impl LakeFeature {
                             let pos = offset(origin, x, y, z);
                             let solid = cx.region.is(pos, BlockFact::Solid);
                             if solid && self.can_replace_with_barrier.test(cx, pos) {
-                                cx.region.set_block(pos, barrier.clone());
+                                cx.region.set_block_ref(pos, &barrier);
                             }
                         }
                     }
@@ -172,7 +172,7 @@ impl LakeFeature {
                     if should_freeze(cx, pos, pos, false)
                         && self.can_replace_with_air_or_fluid.test(cx, pos)
                     {
-                        cx.region.set_block(pos, self.ice.clone());
+                        cx.region.set_block_ref(pos, &self.ice);
                     }
                 }
             }

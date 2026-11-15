@@ -36,7 +36,7 @@ impl EndPlatformFeature {
                     let pos = offset(origin, dx, dy, dz);
                     let target = if dy == -1 { &self.obsidian } else { &self.air };
                     if block_in(cx.region, pos) != target {
-                        cx.region.set_block(pos, target.clone());
+                        cx.region.set_block_ref(pos, &target);
                     }
                 }
             }
@@ -79,7 +79,7 @@ impl VoidStartPlatformFeature {
                         &self.stone
                     };
                     cx.region
-                        .set_block(oxide_core::BlockPos::new(x, y, z), state.clone());
+                        .set_block_ref(oxide_core::BlockPos::new(x, y, z), &state);
                 }
             }
         }

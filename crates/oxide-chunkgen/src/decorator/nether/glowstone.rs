@@ -41,7 +41,7 @@ impl GlowstoneFeature {
         {
             return false;
         }
-        cx.region.set_block(origin, self.glowstone.clone());
+        cx.region.set_block_ref(origin, &self.glowstone);
         for _ in 0..1500 {
             let dx = cx.random.next_int_bounded(8) - cx.random.next_int_bounded(8);
             let dy = -cx.random.next_int_bounded(12);
@@ -60,7 +60,7 @@ impl GlowstoneFeature {
                 }
             }
             if neighbours == 1 {
-                cx.region.set_block(pos, self.glowstone.clone());
+                cx.region.set_block_ref(pos, &self.glowstone);
             }
         }
         true

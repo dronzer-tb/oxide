@@ -131,9 +131,9 @@ impl EndSpikeFeature {
                     let (dx, dz) = (f64::from(x - center_x), f64::from(z - center_z));
                     let pos = BlockPos::new(x, y, z);
                     if dx * dx + dz * dz <= f64::from(r * r + 1) && y < spike.height {
-                        cx.region.set_block(pos, self.obsidian.clone());
+                        cx.region.set_block_ref(pos, &self.obsidian);
                     } else if y > 65 {
-                        cx.region.set_block(pos, self.air.clone());
+                        cx.region.set_block_ref(pos, &self.air);
                     }
                 }
             }
@@ -166,13 +166,13 @@ impl EndSpikeFeature {
         // The crystal's yaw; the entity itself is not carried.
         cx.random.next_float();
         cx.unsupported.record("entity", "minecraft:end_crystal");
-        cx.region.set_block(
+        cx.region.set_block_ref(
             BlockPos::new(center_x, spike.height, center_z),
-            self.bedrock.clone(),
+            &self.bedrock,
         );
-        cx.region.set_block(
+        cx.region.set_block_ref(
             BlockPos::new(center_x, spike.height + 1, center_z),
-            self.fire.clone(),
+            &self.fire,
         );
     }
 }

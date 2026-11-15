@@ -300,7 +300,7 @@ impl OreFeature {
             }
         }
         match chosen {
-            Some(index) => cx.region.set_block(pos, self.targets[index].state.clone()),
+            Some(index) => cx.region.set_block_ref(pos, &self.targets[index].state),
             None => false,
         }
     }
@@ -336,7 +336,7 @@ impl OreFeature {
             }
             if let Some(index) = chosen {
                 if cx.ensure_can_write(pos) {
-                    cx.region.set_block(pos, self.targets[index].state.clone());
+                    cx.region.set_block_ref(pos, &self.targets[index].state);
                 }
             }
         }

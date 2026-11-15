@@ -40,10 +40,10 @@ impl FreezeTopLayerFeature {
                 let top = BlockPos::new(x, y, z);
                 let below = BlockPos::new(x, y - 1, z);
                 if should_freeze(cx, top, below, false) {
-                    cx.region.set_block(below, self.ice.clone());
+                    cx.region.set_block_ref(below, &self.ice);
                 }
                 if should_snow(cx, top) {
-                    cx.region.set_block(top, self.snow.clone());
+                    cx.region.set_block_ref(top, &self.snow);
                     let mut under = block_in(cx.region, below).clone();
                     if under.properties.contains_key("snowy") {
                         under

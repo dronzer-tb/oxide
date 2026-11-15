@@ -160,7 +160,7 @@ impl SpeleothemClusterFeature {
                 if want_pool && self.can_place_pool(cx, BlockPos::new(pos.x, floor_y, pos.z)) =>
             {
                 cx.region
-                    .set_block(BlockPos::new(pos.x, floor_y, pos.z), self.water.clone());
+                    .set_block_ref(BlockPos::new(pos.x, floor_y, pos.z), &self.water);
                 Column {
                     floor: Some(floor_y - 1),
                     ceiling,
