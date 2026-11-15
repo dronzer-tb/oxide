@@ -47,7 +47,7 @@ pub struct Placed {
     pub modifiers: Vec<Modifier>,
     pub feature: Arc<Feature>,
     /// [`biome_gate`] of `modifiers`.
-    pub biome_gate: Option<usize>,
+    pub biome_gate: Option<(usize, Option<(i32, i32)>)>,
 }
 
 /// A configured feature, compiled.
@@ -387,18 +387,22 @@ pub fn place_placed(
 ) -> bool {
     let saved = std::mem::replace(&mut cx.top_feature, top_feature);
     let gate = match (placed.biome_gate, top_feature) {
-        (Some(start), Some(key)) => {
+        (Some((start, span)), Some(key)) => {
             let env = cx.env;
+            let levels = cx
+                .region
+                .center_biome_levels(|biome| env.biome_lists(biome, key));
             Some(Gate {
                 remaining: placed.modifiers.len() - start,
-                columns: cx
-                    .region
-                    .center_biome_columns(|biome| env.biome_lists(biome, key)),
+                columns: levels.iter().fold(0, |all, level| all | level),
+                levels,
+                span,
+                min_y: cx.region.min_y(),
             })
         }
         _ => None,
     };
-    let result = run(&placed.modifiers, cx, origin, &placed.feature, gate);
+    let result = run(&placed.modifiers, cx, origin, &placed.feature, gate.as_ref());
     cx.top_feature = saved;
     result
 }

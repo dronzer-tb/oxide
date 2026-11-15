@@ -470,19 +470,32 @@ fn constant_int(provider: &IntProvider) -> Option<i32> {
 
 impl Modifier {
     /// Whether the modifier emits at most one position per input, in the input's column, with no
-    /// random draw and no effect besides its answer.
-    fn keeps_column_quietly(&self) -> bool {
+    /// random draw and no effect besides its answer; if so, `Some(span)` where `span` bounds the
+    /// emitted y relative to the input's (`None` when it is not bounded).
+    fn quiet_span(&self) -> Option<Option<(i32, i32)>> {
         match self {
             Self::EnvironmentScan {
-                target, allowed, ..
-            } => target.is_quiet() && allowed.is_quiet(),
+                target,
+                allowed,
+                upwards,
+                max_steps,
+                ..
+            } => (target.is_quiet() && allowed.is_quiet()).then(|| {
+                let steps = (*max_steps).max(0);
+                Some(if *upwards { (0, steps) } else { (-steps, 0) })
+            }),
             Self::RandomOffset {
                 xz_spread,
                 y_spread,
-            } => constant_int(xz_spread) == Some(0) && constant_int(y_spread).is_some(),
-            Self::Predicate(predicate) => predicate.is_quiet(),
-            Self::Heightmap(_) | Self::SurfaceWaterDepth(_) | Self::SurfaceRelative { .. } => true,
-            _ => false,
+            } => match (constant_int(xz_spread), constant_int(y_spread)) {
+                (Some(0), Some(dy)) => Some(Some((dy, dy))),
+                _ => None,
+            },
+            Self::Predicate(predicate) => predicate.is_quiet().then_some(Some((0, 0))),
+            Self::Heightmap(_) | Self::SurfaceWaterDepth(_) | Self::SurfaceRelative { .. } => {
+                Some(None)
+            }
+            _ => None,
         }
     }
 }
@@ -492,22 +505,54 @@ impl Modifier {
 /// that ends in a `biome` modifier. Such a run neither draws nor leaves its column, so a
 /// position entering it whose column holds no biome that lists the feature cannot pass the
 /// filter, and skipping the run for it changes nothing but the time spent.
-pub fn biome_gate(modifiers: &[Modifier]) -> Option<usize> {
+pub fn biome_gate(modifiers: &[Modifier]) -> Option<(usize, Option<(i32, i32)>)> {
     let biome = modifiers.iter().position(|m| matches!(m, Modifier::Biome))?;
     let mut start = biome;
-    while start > 0 && modifiers[start - 1].keeps_column_quietly() {
+    let mut span = Some((0i32, 0i32));
+    while start > 0 {
+        let Some(step) = modifiers[start - 1].quiet_span() else {
+            break;
+        };
+        span = match (span, step) {
+            (Some((lo, hi)), Some((a, b))) => Some((lo.saturating_add(a), hi.saturating_add(b))),
+            _ => None,
+        };
         start -= 1;
     }
-    (start < biome).then_some(start)
+    (start < biome).then_some((start, span))
 }
 
 /// A [`biome_gate`] resolved for one run: positions entering the chain with `remaining`
 /// modifiers left are dropped when they are in the center chunk and their 4x4 column's bit in
 /// `columns` (see `DecorationRegion::center_biome_columns`) is clear.
-#[derive(Clone, Copy)]
 pub struct Gate {
     pub remaining: usize,
+    /// Every level's column bits ORed: the answer when `span` is unbounded.
     pub columns: u16,
+    /// Column bits per quart level from the bottom of the world (`center_biome_levels`).
+    pub levels: Vec<u16>,
+    /// Bounds on the y the biome filter will see, relative to the entering position.
+    pub span: Option<(i32, i32)>,
+    pub min_y: i32,
+}
+
+impl Gate {
+    /// Whether a center-chunk position entering the gated run can still pass the filter: some
+    /// quart it can reach (clamped into the world, as `DecorationRegion::biome` clamps) has a
+    /// biome that lists the feature in its 4x4 column.
+    fn may_pass(&self, pos: BlockPos) -> bool {
+        let bit = 1u16 << (((pos.z >> 2) & 3) * 4 + ((pos.x >> 2) & 3));
+        let Some((lo, hi)) = self.span else {
+            return self.columns & bit != 0;
+        };
+        if self.columns & bit == 0 {
+            return false;
+        }
+        let top = self.levels.len() as i32 - 1;
+        let quart = |y: i32| ((y >> 2) - (self.min_y >> 2)).clamp(0, top) as usize;
+        let (a, b) = (quart(pos.y.saturating_add(lo)), quart(pos.y.saturating_add(hi)));
+        self.levels[a..=b].iter().any(|level| level & bit != 0)
+    }
 }
 
 /// Runs `modifiers` from `pos`, then `feature` at every position that comes out, depth first.
@@ -517,15 +562,12 @@ pub fn run(
     cx: &mut FeatureContext<'_, '_, '_>,
     pos: BlockPos,
     feature: &Feature,
-    gate: Option<Gate>,
+    gate: Option<&Gate>,
 ) -> bool {
     if let Some(gate) = gate {
         if modifiers.len() == gate.remaining {
             let center = cx.region.center();
-            if pos.x >> 4 == center.x
-                && pos.z >> 4 == center.z
-                && gate.columns >> (((pos.z >> 2) & 3) * 4 + ((pos.x >> 2) & 3)) & 1 == 0
-            {
+            if pos.x >> 4 == center.x && pos.z >> 4 == center.z && !gate.may_pass(pos) {
                 return false;
             }
         }

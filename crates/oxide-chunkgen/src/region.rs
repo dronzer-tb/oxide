@@ -318,14 +318,15 @@ impl<'a> DecorationRegion<'a> {
         })
     }
 
-    /// The 4x4 biome columns of the center chunk where some stored quart, at any height, has a
-    /// biome `wanted` accepts: bit `qz * 4 + qx`, with `qx = (x >> 2) & 3`, `qz = (z >> 2) & 3`.
-    /// [`Self::biome`] at any position of the center chunk whose column bit is clear answers a
-    /// biome `wanted` rejects (or `None`).
-    pub fn center_biome_columns(&self, mut wanted: impl FnMut(&BiomeId) -> bool) -> u16 {
-        let mut columns = 0u16;
+    /// The center chunk's biomes that `wanted` accepts, per quart level: entry `i` holds bit
+    /// `qz * 4 + qx` (`qx = (x >> 2) & 3`, `qz = (z >> 2) & 3`) for each 4x4 column whose stored
+    /// quart at level `i`, counted from the bottom of the world, is accepted. [`Self::biome`]
+    /// clamps y into the world, so a position maps to one of these levels.
+    pub fn center_biome_levels(&self, mut wanted: impl FnMut(&BiomeId) -> bool) -> Vec<u16> {
+        let sections = &self.chunks[4].sections;
+        let mut levels = vec![0u16; sections.len() * 4];
         let mut accepted: Vec<bool> = Vec::new();
-        for section in &self.chunks[4].sections {
+        for (s, section) in sections.iter().enumerate() {
             let biomes = &section.biomes;
             accepted.clear();
             accepted.extend(biomes.palette().iter().map(&mut wanted));
@@ -335,14 +336,11 @@ impl<'a> DecorationRegion<'a> {
             for (slot, &entry) in biomes.indices().iter().enumerate() {
                 if accepted[entry as usize] {
                     // A biome slot is `((qy * 4 + qz) * 4 + qx)`.
-                    columns |= 1 << (slot & 15);
+                    levels[s * 4 + (slot >> 4)] |= 1 << (slot & 15);
                 }
             }
-            if columns == u16::MAX {
-                break;
-            }
         }
-        columns
+        levels
     }
 
     /// Writes `state` at `pos`. Returns `false`, writing nothing, outside the window -- the
