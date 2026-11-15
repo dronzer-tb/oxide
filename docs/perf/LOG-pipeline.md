@@ -189,3 +189,34 @@ No measurable gain. Release already has codegen-units = 1 and thin LTO, so fat L
 left to inline; its spread (19 cps) is bigger than any difference. It costs +1m51s per cold
 build. The profile stays in Cargo.toml as opt-in and costs nothing unused, but benches stay
 on release. PGO is next, with the pipeline-1 sub-agent.
+
+**Kept: finish pass without clones** (99a1618, by the pipeline-2 sub-agent, reviewed by me).
+The decorate stage split, from temporary timers (`perf` is blocked on the box:
+`perf_event_paranoid=4`):
+
+| | writes (wall ms) | finish (wall ms) | clone (CPU s) | apply (CPU s) | heightmaps (CPU s) |
+|---|---|---|---|---|---|
+| before, 3 runs | 5791 / 5360 / 5563 | 804 / 741 / 927 | 1.5-2.3 | 3.6-4.1 | 0.6-1.0 |
+| after, 2 runs | 5489 / 5487 | 602 / 452 | 0 | 2.9-3.9 | 0.7-0.9 |
+
+Decoration writes are **87% of the stage**: 9.23M writes, about 7.5k per source chunk. The
+change moves each inner terrain chunk into its finished chunk instead of cloning it, and
+stores a palette index without cloning or hashing the state when the state is already in the
+section's palette. A new state is cloned in exactly where `set` would insert it, so palette
+order is unchanged.
+
+    before: decorate_ms=6687 / 6278 / 6586  (cps 61.1 / 68.0 / 63.6)
+    after:  decorate_ms=6114 / 5957 / 6023  (cps 64.3 / 66.6 / 61.0)
+    digest df701ee858e2bdd3 on every run
+
+That is about -0.5 s of decorate (-8%). Whole-run cps is too noisy to show it, since generate
+alone swings ±1 s. A version that moved states into the palette was slower (apply 10 s CPU,
+probably cross-thread frees of 9.2M heap states) and was dropped.
+
+**Next, in decoration (now ours):** every query and write carries a string-keyed `BlockState`.
+`DecorationRegion::is` hashes a full state for each `BlockFacts::is` call, `height()`
+rescans written columns, and the overlay is a SipHash map of owned states. Plan:
+1. Split the writes phase by feature to find where the 5.5 s goes (pipeline-2 sub-agent, timers
+   only).
+2. Then intern states as u32 ids, with flat fact bits by id and a dense overlay, if the split
+   says lookups dominate.

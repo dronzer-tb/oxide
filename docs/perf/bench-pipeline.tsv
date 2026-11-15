@@ -11,3 +11,4 @@
 1794718113	8ea2c1c	16	chunks=1089 threads=8 secs=7.900 cps=137.8 ms_per_chunk_core=58.03 digest=a977961a58122047 profile=release build_s=2m04s
 1794718479	8ea2c1c	16	chunks=1089 threads=8 secs=7.483 cps=145.5 ms_per_chunk_core=54.97 digest=a977961a58122047 profile=fatbench build_s=0.46s
 1794719365	8ea2c1c	16	chunks=1089 threads=8 secs=8.009 cps=136.0 ms_per_chunk_core=58.83 digest=a977961a58122047 profile=release build_s=0.46s
+1794719990	99a1618	16	chunks=1089 threads=8 secs=17.846 cps=61.0 ms_per_chunk_core=131.10 digest=df701ee858e2bdd3 generate_ms=11382 decorate_ms=6023 serialise_ms=115 compress_ms=291 write_ms=35 compression=zlib6 mb_disk=9.9 pregen=1
