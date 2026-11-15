@@ -12,6 +12,8 @@
 # a smaller area than the timed run, so the profile is not fitted to the measured workload;
 # it timed as fast as training on the workload itself (LOG-pipeline.md).
 # Everything on the box holds ~/oxide-perf/.lock: shared at nice 10, exclusive for the timed run.
+# OXIDE_PGO_AB=<rounds> instead builds the plain binary too and times both in one exclusive
+# hold, alternating plain and PGO for that many rounds; rows get profile=ab-release / ab-pgo.
 # Needs `rustup component add llvm-tools` on the VPS. Build dirs live under target/ so the
 # rsync --delete in bench-vps.sh leaves them alone and the plain release cache is untouched.
 set -eu
@@ -21,6 +23,7 @@ radius="${2:-16}"
 threads="${3:-8}"
 host="${OXIDE_BENCH_HOST:-s5}"
 profile="${OXIDE_BENCH_PROFILE:-release}"
+ab="${OXIDE_PGO_AB:-0}"
 train="${OXIDE_PGO_TRAIN:---seed 999 --radius 8 --threads $threads}"
 dir="oxide-perf/$name"
 reference="$(cd "$(git rev-parse --git-common-dir)/.." && pwd)/reference"
@@ -57,18 +60,35 @@ out="$(ssh -o BatchMode=yes "$host" "
     RUSTFLAGS=\"\$base -Cprofile-use=\$root/target/pgo.profdata\" \
         CARGO_TARGET_DIR=target/pgo-use \
         flock -s ~/oxide-perf/.lock nice -n 10 ~/.cargo/bin/cargo build --profile $profile -p oxide-harness 2>&1 | tail -n 3
-    flock -x ~/oxide-perf/.lock ./target/pgo-use/$profile/oxide-harness --datapack reference --seed 12345 \
-        --radius $radius --time-only --threads $threads | grep ^BENCH
+    run='--datapack reference --seed 12345 --radius $radius --time-only --threads $threads'
+    if [ $ab -gt 0 ]; then
+        flock -s ~/oxide-perf/.lock nice -n 10 ~/.cargo/bin/cargo build --profile $profile -p oxide-harness 2>&1 | tail -n 1
+        plain=./target/$profile/oxide-harness
+        flock -x ~/oxide-perf/.lock sh -c \"for i in \\\$(seq $ab); do
+            \$plain \$run | grep ^BENCH | sed 's/^BENCH/AB release/'
+            ./target/pgo-use/$profile/oxide-harness \$run | grep ^BENCH | sed 's/^BENCH/AB pgo/'
+        done\"
+    else
+        flock -x ~/oxide-perf/.lock ./target/pgo-use/$profile/oxide-harness \$run | grep ^BENCH
+    fi
     rm -rf \"\$root/target/pgo-use\"
 " | tee /dev/stderr)"
 build="$(printf '%s\n' "$out" | sed -n 's/.*Finished .* in //p' | tr -d ' ' | paste -sd+ -)"
 tag=pgo
 [ "$profile" = release ] || tag="pgo+$profile"
-line="$(printf '%s\n' "$out" | grep '^BENCH') profile=$tag build_s=$build"
-echo "$line"
 commit="$(git rev-parse --short HEAD)"
 if [ -n "$(git status --porcelain -- crates)" ]; then
     commit="$commit+"
 fi
 mkdir -p docs/perf
+if [ "$ab" -gt 0 ]; then
+    printf '%s\n' "$out" | grep '^AB ' | while read -r _ kind rest; do
+        echo "AB $kind $rest"
+        printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$commit" "$radius" \
+            "$rest profile=ab-$kind" >>"docs/perf/bench-$name.tsv"
+    done
+    exit 0
+fi
+line="$(printf '%s\n' "$out" | grep '^BENCH') profile=$tag build_s=$build"
+echo "$line"
 printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$commit" "$radius" "${line#BENCH }" >>"docs/perf/bench-$name.tsv"
