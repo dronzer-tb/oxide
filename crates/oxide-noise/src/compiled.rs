@@ -268,9 +268,16 @@ impl Program {
         cell_z: i32,
     ) -> Option<(f64, f64)> {
         let n = self.ops.len();
-        let mut lo = vec![0.0f64; n];
-        let mut hi = vec![0.0f64; n];
-        let mut known = vec![false; n];
+        // On the stack for every real program: this runs once per cell row of a chunk fill,
+        // and three heap allocations per call were most of its cost.
+        let mut inline = ([0.0f64; INLINE_REGISTERS], [0.0f64; INLINE_REGISTERS], [false; INLINE_REGISTERS]);
+        let mut spilled;
+        let (lo, hi, known): (&mut [f64], &mut [f64], &mut [bool]) = if n <= INLINE_REGISTERS {
+            (&mut inline.0[..n], &mut inline.1[..n], &mut inline.2[..n])
+        } else {
+            spilled = (vec![0.0f64; n], vec![0.0f64; n], vec![false; n]);
+            (&mut spilled.0, &mut spilled.1, &mut spilled.2)
+        };
 
         for i in 0..n {
             let bounds: Option<(f64, f64)> = match &self.ops[i] {
@@ -285,29 +292,29 @@ impl Program {
 
                 // Monotonic non-decreasing unary ops: bounds map straight through.
                 Op::Squeeze(a) => {
-                    let (l, h) = get(&lo, &hi, &known, *a)?;
+                    let (l, h) = get(lo, hi, known, *a)?;
                     Some((squeeze(l), squeeze(h)))
                 }
                 Op::HalfNegative(a) => {
-                    let (l, h) = get(&lo, &hi, &known, *a)?;
+                    let (l, h) = get(lo, hi, known, *a)?;
                     Some((half_negative(l), half_negative(h)))
                 }
                 Op::QuarterNegative(a) => {
-                    let (l, h) = get(&lo, &hi, &known, *a)?;
+                    let (l, h) = get(lo, hi, known, *a)?;
                     Some((quarter_negative(l), quarter_negative(h)))
                 }
                 Op::Cube(a) => {
-                    let (l, h) = get(&lo, &hi, &known, *a)?;
+                    let (l, h) = get(lo, hi, known, *a)?;
                     Some((l * l * l, h * h * h))
                 }
                 Op::Clamp(c) => {
-                    let (l, h) = get(&lo, &hi, &known, c.input)?;
+                    let (l, h) = get(lo, hi, known, c.input)?;
                     Some((l.clamp(c.min, c.max), h.clamp(c.min, c.max)))
                 }
 
                 Op::Add(a, b) => {
-                    let (al, ah) = get(&lo, &hi, &known, *a)?;
-                    let (bl, bh) = get(&lo, &hi, &known, *b)?;
+                    let (al, ah) = get(lo, hi, known, *a)?;
+                    let (bl, bh) = get(lo, hi, known, *b)?;
                     Some((al + bl, ah + bh))
                 }
                 // `min` only ever lowers its result, so an upper bound on EITHER side is an
@@ -321,8 +328,8 @@ impl Program {
                 // caller (which claims "all air", never "all solid"); f64::NEG_INFINITY is the
                 // honest value when one side is unknown.
                 Op::Min(a, b) => {
-                    let ba = get(&lo, &hi, &known, *a);
-                    let bb = get(&lo, &hi, &known, *b);
+                    let ba = get(lo, hi, known, *a);
+                    let bb = get(lo, hi, known, *b);
                     match (ba, bb) {
                         (Some((al, ah)), Some((bl, bh))) => Some((al.min(bl), ah.min(bh))),
                         (Some((_, ah)), None) => Some((f64::NEG_INFINITY, ah)),
@@ -333,8 +340,8 @@ impl Program {
                 // Mirror of `min`: `max` only ever raises, so a lower bound on either side
                 // bounds the whole from below. The upper bound needs both.
                 Op::Max(a, b) => {
-                    let ba = get(&lo, &hi, &known, *a);
-                    let bb = get(&lo, &hi, &known, *b);
+                    let ba = get(lo, hi, known, *a);
+                    let bb = get(lo, hi, known, *b);
                     match (ba, bb) {
                         (Some((al, ah)), Some((bl, bh))) => Some((al.max(bl), ah.max(bh))),
                         (Some((al, _)), None) => Some((al, f64::INFINITY)),
@@ -343,8 +350,8 @@ impl Program {
                     }
                 }
                 Op::Mul(a, b) => {
-                    let (al, ah) = get(&lo, &hi, &known, *a)?;
-                    let (bl, bh) = get(&lo, &hi, &known, *b)?;
+                    let (al, ah) = get(lo, hi, known, *a)?;
+                    let (bl, bh) = get(lo, hi, known, *b)?;
                     // Sign-agnostic: the extremes of a product are among the corner products.
                     let c = [al * bl, al * bh, ah * bl, ah * bh];
                     let mut mn = c[0];
