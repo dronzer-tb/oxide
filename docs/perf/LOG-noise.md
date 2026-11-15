@@ -235,3 +235,14 @@ Possible follow-up, small: the cache has 32,768 column slots and evicts ~27k col
 radius-16 run. A pregen order that walks neighbours (the pipeline's choice), or a larger cache,
 could take the hit rate to its 0.5625 ceiling, which is worth at most a few % more of the
 corner grid.
+
+| # | What | Hold | Base (ms core/chunk) | Patched | Digest | Verdict |
+|---|---|---|---|---|---|---|
+| 12 | Gated add: `add(c, mul(gradient, body))` with c a nonzero finite constant, the gradient a `y_clamped_gradient` reaching exactly 0, and `body` proven finite is lowered to `Op::GatedAdd`, which runs `body` (now a nested program) only where the gradient is nonzero. With g = +/-0 and a finite body the product is +/-0, and c + (+/-0) = c bit for bit. Finiteness comes from a conservative magnitude analysis over the program: noise bounds from the real amplitudes (`ImprovedNoise` <= 2 without smear, <= 4 + \|y_scale\| with it), blended noise from its params, splines from coordinate and point bounds, and `None` for `invert`, `weird_scaled_sampler` or anything unbounded. On the overworld it gates both slides around `final_density`'s interpolated argument: above y=256 and at y=-64, `sloped_cheese` and every cave noise are skipped at 10 of 49 corner levels | 1 thread, 5 rounds, one exclusive hold (load 5.24 at start, 1.14 at end) | 10.28, 10.74, 10.06, 10.99, 10.08 (mean 10.43) | 9.88, 9.62, 9.68, 9.88, 9.81 (mean 9.77) | a977961a58122047 all ten | **kept**: -6.3% core time per chunk, ahead in all five rounds |
+
+Tests on the combined tree (12 + the cache counters): oxide-noise 34 passed (new
+`gated_add_is_bit_identical_and_skips_where_the_gradient_is_zero`, all four operand orders, every
+y from -64 to 320 against the plain formula, with the gate exercised; `gated_add_needs_a_finite_body`,
+where `invert` keeps the plain lowering and its NaN), oxide-chunkgen 190 + 1 + 1 + 1 passed.
+The load average of 5.24 at the start of hold 3 means something ran outside the lock at that
+moment. Both builds alternated through it, and the gate wins every round.
