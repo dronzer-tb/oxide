@@ -1,0 +1,372 @@
+diff --git a/crates/oxide-chunkgen/src/surface.rs b/crates/oxide-chunkgen/src/surface.rs
+index 957a45c..51f27d0 100644
+--- a/crates/oxide-chunkgen/src/surface.rs
++++ b/crates/oxide-chunkgen/src/surface.rs
+@@ -443,6 +443,10 @@ pub struct SurfaceSystem<'a> {
+     /// Column-only values the badlands rule and the temperature condition read.
+     band_offset: std::cell::Cell<Option<i32>>,
+     temperature_offset: std::cell::Cell<Option<f32>>,
++    /// Whether `preliminary_surface_level` is proven to give, at every block column, the value
++    /// it gives at that column's quart origin (see [`preliminary_snaps_to_quart`]). When it
++    /// does, each chunk samples it 16 times instead of 256.
++    preliminary_per_quart: bool,
+ }
+ 
+ /// Scratch state for [`SurfaceSystem::compile_rule`].
+@@ -530,6 +534,7 @@ impl<'a> SurfaceSystem<'a> {
+             memo,
+             band_offset: std::cell::Cell::new(None),
+             temperature_offset: std::cell::Cell::new(None),
++            preliminary_per_quart: preliminary_snaps_to_quart(router),
+         }
+     }
+ 
+@@ -608,11 +613,25 @@ impl<'a> SurfaceSystem<'a> {
+             debug_assert_eq!(kinds.len(), start + SECTION_SLOTS);
+         }
+ 
++        // `preliminary_surface_level` per quart of the current row of quarts, when it is proven
++        // to be one value per quart. The scan visits each quart's origin column first (z outer,
++        // x inner, chunk origins are multiples of 16), so that column is sampled exactly as
++        // before and the other fifteen reuse its value.
++        let mut quart_levels = [0i32; 4];
+         for local_z in 0..16usize {
+             let z = pos.min_block_z() + local_z as i32;
+             for local_x in 0..16usize {
+                 let x = pos.min_block_x() + local_x as i32;
+-                let column = self.column_state(x, z);
++                let min_surface_level = if !self.preliminary_per_quart {
++                    self.preliminary_surface_level(x, z)
++                } else if local_x % 4 == 0 && local_z % 4 == 0 {
++                    let level = self.preliminary_surface_level(x, z);
++                    quart_levels[local_x / 4] = level;
++                    level
++                } else {
++                    quart_levels[local_x / 4]
++                };
++                let column = self.column_state(x, z, min_surface_level);
+                 let column_slot = local_index(local_x, 0, local_z);
+                 for slot in &self.memo {
+                     slot.set(MEMO_UNKNOWN);
+@@ -750,7 +769,7 @@ impl<'a> SurfaceSystem<'a> {
+ 
+     /// PARITY-CHECK: `surface` noise scaled by 2.75, offset 3.0, plus a quarter of a
+     /// per-column random -- vanilla's `SurfaceSystem#getSurfaceDepth`, reconstructed.
+-    fn column_state(&self, x: i32, z: i32) -> Column {
++    fn column_state(&self, x: i32, z: i32, min_surface_level: i32) -> Column {
+         let surface = sample_noise(self.surface_noise, x as f64, 0.0, z as f64);
+         let mut random = self.router.positional_factory().at(x, 0, z);
+         let surface_depth = (surface * 2.75 + 3.0 + random.next_double() * 0.25) as i32;
+@@ -759,10 +778,15 @@ impl<'a> SurfaceSystem<'a> {
+             z,
+             surface_depth,
+             surface_secondary: std::cell::Cell::new(None),
+-            min_surface_level: self.sample(RouterSlot::PreliminarySurfaceLevel, x, 0, z) as i32,
++            min_surface_level,
+         }
+     }
+ 
++    /// `preliminary_surface_level` at the exact block column `(x, 0, z)`.
++    fn preliminary_surface_level(&self, x: i32, z: i32) -> i32 {
++        self.sample(RouterSlot::PreliminarySurfaceLevel, x, 0, z) as i32
++    }
++
+     fn surface_secondary(&self, column: &Column) -> f64 {
+         match column.surface_secondary.get() {
+             Some(value) => value,
+@@ -1054,6 +1078,148 @@ impl<'a> SurfaceSystem<'a> {
+     }
+ }
+ 
++/// Whether `preliminary_surface_level`, sampled through any chunk's caches, gives bit-identical
++/// values at every block column `(x, z)` and at its quart origin `(x & !3, z & !3)`, for every
++/// y. Proven on the compiled program, from two facts:
++///
++/// 1. [`NoiseRouterEvaluator::is_y_independent`]: besides the slot's own result, it checks that
++///    every `cache_2d`/`flat_cache` argument anywhere in the program (the `find_top_surface`
++///    density included) is y-independent and cache-pure, and every `cache_once` argument
++///    cache-pure. So each cache node's value is a function of the position it samples its
++///    argument at, whichever y first filled it and through whichever caches.
++/// 2. The listing below, checked here: outside `flat_cache` arguments, the program reads x and
++///    z only through cache nodes and `find_top_surface`. Accepted ops:
++///    - `Const`, the register arithmetic (`Add` .. `Invert`), `YClampedGradient`: functions
++///      of their registers and y alone.
++///    - `Cache(kind=FlatCache)`, with any argument: it samples the argument at the quart
++///      origin, so by (1) its value is a function of `(x & !3, z & !3)`.
++///    - `Cache(kind=Cache2d)` and `Cache(kind=Once)` whose argument passes this same check:
++///      by (1) the value is the argument at `(x, y', z)` for some y', which by induction
++///      equals the argument at the quart origin.
++///    - `FindTopSurface` whose density passes this check: its scan start comes from a register
++///      (checked as an op of this program), and each density sample at `(x, y_scan, z)` equals
++///      the one at the quart origin, so the scan takes the same steps and returns the same y.
++///    - `GatedAdd` whose body passes this check: `c` when its gate register is zero, else `c`
++///      plus the gate times the body run at the same position.
++///
++///    Everything else -- noises, shifts, splines, range choices, interval selects,
++///    `interpolated` caches, or any listing line not in the expected shape -- is rejected.
++///
++/// By induction over the ops, every register holds the same bits at a column and at its quart
++/// origin. Conservative: rejecting only costs the 256 samples per chunk the pass always made.
++///
++/// `SurfaceSystem::new` runs once per chunk, so the answer is kept per thread, per router id
++/// (which no two evaluators in a process share).
++fn preliminary_snaps_to_quart(router: &NoiseRouterEvaluator) -> bool {
++    thread_local! {
++        static PROVEN: std::cell::RefCell<Vec<(u64, bool)>> =
++            const { std::cell::RefCell::new(Vec::new()) };
++    }
++    PROVEN.with(|proven| {
++        let mut proven = proven.borrow_mut();
++        if let Some((_, answer)) = proven.iter().find(|(id, _)| *id == router.id()) {
++            return *answer;
++        }
++        let answer = prove_preliminary_snaps_to_quart(router);
++        proven.push((router.id(), answer));
++        answer
++    })
++}
++
++fn prove_preliminary_snaps_to_quart(router: &NoiseRouterEvaluator) -> bool {
++    let slot = RouterSlot::PreliminarySurfaceLevel;
++    if !router.is_y_independent(slot) {
++        return false;
++    }
++    let lines = router.dump_program(slot);
++    let mut pos = 0;
++    listing_snaps_to_quart(&lines, &mut pos, 0) && pos == lines.len()
++}
++
++/// Checks the program listed from `lines[*pos]` at nesting `depth`, in the format of
++/// [`NoiseRouterEvaluator::dump_program`]: `{pad}{index:3}: {op}` per op, `pad` two spaces per
++/// depth, and each nested program after a `{pad}     {label}:` line, three depths deeper.
++/// Advances `*pos` past the program.
++fn listing_snaps_to_quart(lines: &[String], pos: &mut usize, depth: usize) -> bool {
++    const PLAIN: [&str; 14] = [
++        "Const(",
++        "Add(r",
++        "Mul(r",
++        "Min(r",
++        "Max(r",
++        "Clamp(r",
++        "Abs(r",
++        "Square(r",
++        "Cube(r",
++        "HalfNegative(r",
++        "QuarterNegative(r",
++        "Squeeze(r",
++        "Invert(r",
++        "YClampedGradient(",
++    ];
++    let pad = "  ".repeat(depth);
++    let mut index = 0usize;
++    while let Some(text) = lines
++        .get(*pos)
++        .and_then(|line| line.strip_prefix(&format!("{pad}{index:3}: ")))
++    {
++        *pos += 1;
++        index += 1;
++        // The nested program this op owns, and whether it must pass the check itself.
++        let nested = if PLAIN.iter().any(|prefix| text.starts_with(prefix)) {
++            None
++        } else if text.starts_with("FindTopSurface(") {
++            Some(("density", true))
++        } else if text.starts_with("GatedAdd(") {
++            Some(("body", true))
++        } else if text.starts_with("Cache(kind=FlatCache,") {
++            Some(("argument", false))
++        } else if text.starts_with("Cache(kind=Cache2d,") || text.starts_with("Cache(kind=Once,") {
++            Some(("argument", true))
++        } else {
++            return false;
++        };
++        let label_line = |line: &String| {
++            line.strip_prefix(&format!("{pad}     "))
++                .is_some_and(|rest| !rest.starts_with(' ') && rest.ends_with(':'))
++        };
++        let Some((label, check)) = nested else {
++            if lines.get(*pos).is_some_and(label_line) {
++                return false;
++            }
++            continue;
++        };
++        if lines.get(*pos) != Some(&format!("{pad}     {label}:")) {
++            return false;
++        }
++        *pos += 1;
++        if check {
++            if !listing_snaps_to_quart(lines, pos, depth + 3) {
++                return false;
++            }
++        } else {
++            // A `flat_cache` argument: skip its listing, every line of which is indented at
++            // least as deep as its own ops. The parent's lines are all indented less.
++            let inner = 2 * (depth + 3);
++            let start = *pos;
++            while lines
++                .get(*pos)
++                .is_some_and(|line| line.len() - line.trim_start_matches(' ').len() >= inner)
++            {
++                *pos += 1;
++            }
++            if *pos == start {
++                return false;
++            }
++        }
++        // An op owns exactly one nested program here; a second label is an unknown shape.
++        if lines.get(*pos).is_some_and(label_line) {
++            return false;
++        }
++    }
++    index > 0
++}
++
+ fn sample_noise(noise: Option<&NormalNoise>, x: f64, y: f64, z: f64) -> f64 {
+     match noise {
+         Some(noise) => noise.get_value(x, y, z),
+@@ -1438,4 +1604,146 @@ mod tests {
+             "at and above the upper anchor bedrock never appears"
+         );
+     }
++
++    fn router_for(preliminary_surface_level: DensityFunction) -> bool {
++        let mut settings = settings(SurfaceRule::Block {
++            result_state: BlockState::new(ResourceLocation::minecraft("stone")),
++        });
++        settings.noise_router.preliminary_surface_level = preliminary_surface_level;
++        let router =
++            NoiseRouterEvaluator::new(42, &settings, &Registry::default(), &Registry::default());
++        prove_preliminary_snaps_to_quart(&router)
++    }
++
++    /// The proof accepts a column value read through `flat_cache` and rejects the same value
++    /// read at the exact column.
++    #[test]
++    fn quart_snapping_is_proven_only_through_flat_cache() {
++        let obj = |o: DensityFunctionObject| DensityFunction::Object(Box::new(o));
++        let noise = || {
++            obj(DensityFunctionObject::ShiftedNoise {
++                noise: ResourceLocation::minecraft("surface"),
++                xz_scale: 1.0,
++                y_scale: 0.0,
++                shift_x: DensityFunction::Constant(0.0),
++                shift_y: DensityFunction::Constant(1.0),
++                shift_z: DensityFunction::Constant(0.0),
++            })
++        };
++        let top = |upper: DensityFunction| {
++            obj(DensityFunctionObject::FindTopSurface {
++                density: obj(DensityFunctionObject::Add {
++                    argument1: upper.clone(),
++                    argument2: obj(DensityFunctionObject::YClampedGradient {
++                        from_y: -64,
++                        to_y: 320,
++                        from_value: 1.0,
++                        to_value: -1.0,
++                    }),
++                }),
++                upper_bound: upper,
++                lower_bound: -64,
++                cell_height: 8,
++            })
++        };
++        let flat = || obj(DensityFunctionObject::FlatCache { argument: noise() });
++        let cached = |argument| obj(DensityFunctionObject::Cache2d { argument });
++        assert!(router_for(top(cached(flat()))));
++        assert!(router_for(top(flat())));
++        assert!(!router_for(top(cached(noise()))));
++        assert!(!router_for(top(noise())));
++        assert!(router_for(DensityFunction::Constant(0.0)));
++    }
++
++    /// On the vanilla export, the proof holds, and the surface pass with one sample per quart
++    /// writes exactly the chunk the per-column pass writes.
++    #[test]
++    fn reference_preliminary_surface_is_one_value_per_quart() {
++        let reference =
++            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../reference"));
++        if !reference.is_dir() {
++            eprintln!(
++                "skipping: no extracted vanilla export at {}",
++                reference.display()
++            );
++            return;
++        }
++        let datapack = oxide_datapack::load_datapack(reference).expect("load reference datapack");
++        let dimension = datapack
++            .dimensions
++            .get(&ResourceLocation::minecraft("overworld"))
++            .expect("overworld dimension");
++        let settings_id = dimension
++            .generator
++            .settings
++            .as_ref()
++            .expect("noise settings");
++        let settings = datapack
++            .noise_settings
++            .get(settings_id)
++            .expect("settings")
++            .clone();
++        let router = NoiseRouterEvaluator::new(
++            12345,
++            &settings,
++            &datapack.density_functions,
++            &datapack.noise_params,
++        );
++        let biome_tree = match dimension.generator.biome_source.as_ref() {
++            Some(oxide_datapack::BiomeSource::MultiNoise(source)) => {
++                oxide_biome::BiomeSearchTree::from_source(source)
++            }
++            _ => None,
++        };
++        let temperatures = BiomeTemperatures::new();
++        assert!(
++            preliminary_snaps_to_quart(&router),
++            "y-independent: {}\n{}",
++            router.is_y_independent(RouterSlot::PreliminarySurfaceLevel),
++            router
++                .dump_program(RouterSlot::PreliminarySurfaceLevel)
++                .join("\n")
++        );
++
++        for (cx, cz) in [(0, 0), (7, -3), (-12, 5), (100, 100), (2000, -2000)] {
++            let pos = ChunkPos::new(cx, cz);
++            // The claim itself, sampled at every column through fresh caches.
++            let caches = router.chunk_caches(cx, cz);
++            for local_z in 0..16 {
++                for local_x in 0..16 {
++                    let x = pos.min_block_x() + local_x;
++                    let z = pos.min_block_z() + local_z;
++                    let slot = RouterSlot::PreliminarySurfaceLevel;
++                    let exact = router.sample_in_chunk(&caches, slot, x, 0, z);
++                    let quart = router.sample_in_chunk(&caches, slot, x & !3, 0, z & !3);
++                    assert_eq!(exact.to_bits(), quart.to_bits(), "column ({x}, {z})");
++                }
++            }
++
++            // And the whole pass, per quart against per column, on one filled chunk.
++            let caches = router.chunk_caches(cx, cz);
++            let mut aquifer = crate::aquifer::for_settings(pos, &settings, &router, &caches);
++            let mut chunk = crate::fill::fill_chunk_with(
++                pos,
++                &settings,
++                &router,
++                biome_tree.as_ref(),
++                &caches,
++                aquifer.as_mut(),
++            );
++            crate::ore_veins::apply_ore_veins(&mut chunk, pos, &settings, &router, &caches);
++            let mut per_column = chunk.clone();
++            let mut system = SurfaceSystem::new(&settings, &router, &temperatures);
++            assert!(system.preliminary_per_quart);
++            system.apply(&mut chunk, pos, &caches);
++            let mut system = SurfaceSystem::new(&settings, &router, &temperatures);
++            system.preliminary_per_quart = false;
++            system.apply(&mut per_column, pos, &caches);
++            for (a, b) in chunk.sections.iter().zip(&per_column.sections) {
++                for slot in 0..SECTION_SLOTS {
++                    assert_eq!(a.block_states.get(slot), b.block_states.get(slot));
++                }
++            }
++        }
++    }
+ }

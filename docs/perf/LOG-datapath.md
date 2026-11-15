@@ -1233,3 +1233,30 @@ the master measures with rotating 1-thread holds against two base builds.
 
 Item 2 (the combined head against two builds of 0823fd8) is running. The profile dir
 `datapath-p` is deleted.
+
+### E29: surface samples `PreliminarySurfaceLevel` per quart, not per column -- parked
+
+Sub-agent experiment in `/tmp/datapath-23`. Split profile at b1f77a6:
+- `apply` 15.6% inclusive, of which `eval_program` 7.3% and `eval_condition` 4.7%;
+- `apply`'s own body 5.3%;
+- `column_state` 2.5%: the `PreliminarySurfaceLevel` scan 1.4%, the `surface` noise 0.9%. The noise
+  depends on exact (x, z), so it is left alone.
+
+A cross-chunk memo would not help here: each block column belongs to one chunk.
+
+Change: `PreliminarySurfaceLevel` is sampled at each quart's origin column, which the z, x scan
+reaches first, and reused for the other 15 columns. Exact for this pack: the scan's inputs `offset`
+and `factor` are `cache_2d` reads of `flat_cache` nodes, which sample at the quart origin, and the
+rest is gradients, constants and arithmetic. `is_y_independent` covers the cache-purity half.
+New tests: the exact and quart-origin samples are bit-equal at all 256 columns of 5 reference
+chunks, and the whole pass gives identical blocks per quart and per column.
+
+Parked, not landed:
+- It proves the quart-snapping half by parsing `dump_program`, which E28 just removed from
+  `biome_grid.rs`.
+- Its ceiling is ~1.3% of generation, below the bar and below what a 1-thread hold resolves.
+
+**Ask for the noise track:** `NoiseRouterEvaluator::is_quart_invariant(slot)`, a predicate on the
+compiled program like `is_y_independent`: the value at `(x, z)` equals the value at
+`(x & !3, z & !3)` through any caches. With that, E29 is ~10 lines in `surface.rs`. The diff is at
+`docs/perf/parked-E29-preliminary-per-quart.diff`.
