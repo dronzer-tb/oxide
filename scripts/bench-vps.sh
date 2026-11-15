@@ -40,11 +40,12 @@ fi
 line="$(ssh -o BatchMode=yes "$host" "
     set -eu
     cd '$dir'
-    flock ~/oxide-perf/.lock sh -c '
-        ~/.cargo/bin/cargo build --release -p oxide-harness 2>&1 | tail -n 3
-        ./target/release/oxide-harness --datapack reference --seed 12345 \
-            --radius $radius --time-only --threads $threads | grep ^BENCH
-    '
+    # Builds share the lock, so several tracks compile at once; the timed run takes it alone,
+    # so it waits for builds in progress and nothing else runs while it is measured. Any other
+    # build or profile on this box must also hold it shared: flock -s ~/oxide-perf/.lock ...
+    flock -s ~/oxide-perf/.lock nice -n 10 ~/.cargo/bin/cargo build --release -p oxide-harness 2>&1 | tail -n 3
+    flock -x ~/oxide-perf/.lock ./target/release/oxide-harness --datapack reference --seed 12345 \
+        --radius $radius --time-only --threads $threads | grep ^BENCH
 " | tee /dev/stderr | grep '^BENCH')"
 # unix time, commit (with + when the tree has uncommitted changes), radius, then the BENCH fields.
 commit="$(git rev-parse --short HEAD)"
