@@ -296,3 +296,59 @@ Datapath's ~479 claim is confirmed (475 here). The fresh merge is not separable 
 two runs are 19% apart, so noise's experiment 7 gain on the merged tree is not established.
 Noise alone is below its earlier 185. Stopped here: the auditor's usage limit was reached.
 Scratch worktrees /tmp/audit-{combined,datapath,noise} are left in place.
+
+## Passes 6 and 7, 2026-11-15 07:21-07:48 UTC (first passes after the auditor's limit reset)
+
+| Track | Head read | Best number (r16, 8 threads unless said) | Digest |
+|---|---|---|---|
+| datapath | a29cef5 | **auditor: 620.3 and 695.4 cps (12.90, 11.50 ms core)**; its own A/B holds: ~614 | ok |
+| datapath, **1 thread, radius 6** | a29cef5 | **auditor: 10.82 and 12.07 ms per chunk** (92.4, 82.9 cps) | r6 digest `ffd3a490ec8fb8b0` both runs |
+| noise | fast-forwarded onto datapath's head | no number of its own since the handover at f2b239a | - |
+| pipeline | 4aca951 | pregen 83.8, 76.2 cps at c585498 (from 69.7); terrain unchanged (~137); PGO 177.4 once | terrain ok; pregen `df701ee858e2bdd3` on every row |
+
+**Against the goal:** Pumpkin's terrain is 17.4 ms per chunk on one thread. Datapath's head,
+which carries both tracks' kept work, measures about 11.4 ms on one thread on the same box
+(started at 43.8), byte exact at radius 16. That is the terrain-only target met, pending the
+user's own check; radius 6 has no reference digest on record, only the radius-16 gate on the
+same commit. The full chunk (Pumpkin 28.3 ms with features and lighting) is not comparable yet:
+pregen at ~80 cps on 8 threads is about 100 ms of core time per chunk, on old terrain code and
+without lighting. Plan gates: M1 passed, M2 (1,000 cps) not.
+
+### Changes read
+
+- datapath 3683496..a29cef5: flat R-tree biome search, aquifer neighbour columns and centre
+  memo, surface rule folding by y band, E18 per-thread cross-chunk memo of
+  `preliminary_surface_level` keyed by a new `NoiseRouterEvaluator::id()` (17 additive lines in
+  `oxide-noise/router.rs`, outside its crates, logged). E18 read in full: pages are cleared
+  on a router change, values are a pure function of column and router, the memo is taken
+  out of the thread-local for the aquifer's life. Sound. Rejected experiments are logged with
+  A/B tables. Second merge of noise (6dfa05a) measured neutral. No `unsafe`, no float
+  reordering. 18bb0f9 backfills `bench-datapath.tsv` as asked.
+- pipeline 8ea2c1c..4aca951: fat LTO A/B (126.5-145.5 against 136.0-140.0: no gain, settled);
+  `bench-pgo-vps.sh` (training run under `flock -s`); zlib-rs backend; decoration work in
+  `decorator/` and `region.rs` (ahash, sculk by reference, per-state fact cache, dense
+  heightmap table); merge of `feat/native-decoration`. Edits outside its crates: one field
+  type and the ahash dependency in `oxide-datapack`, logged.
+- noise: handed over at f2b239a with two patches under `docs/perf/wip/`, resumed about
+  07:15, then moved its branch onto datapath's head.
+- Boundary: datapath clean of `decorator/`, `decorate.rs`, `region.rs`; pipeline clean of the
+  rest of `oxide-chunkgen`.
+
+### Problems
+
+1. PGO's +29% is one run on old terrain code. Unrepeated, and not measured on the code that
+   would ship.
+2. Pregen is measured on a branch without datapath's terrain, so its stage split is stale.
+3. Noise's in-flight `noise-5` duplicated datapath's E18.
+4. The noise session had six identical supervisor nudges queued at its prompt.
+5. No PR is open from datapath (its log says `gh` is missing on the agent host).
+
+### Messages sent (pass 6; none in pass 7)
+
+- noise: drop noise-5; rebase onto `perf/datapath`; take noise-4 (shared corner columns, the
+  corner grid being 44.5% of generation) with two A/B pairs.
+- datapath: backfill the tsv (done); leave the rest of `oxide-noise` to noise.
+- pipeline: repeat PGO two runs a side, then PGO and pregen on a scratch merge with
+  `perf/datapath`; keep the `oxide-datapack` edit additive.
+
+Stopped reading at: noise 18bb0f9, datapath 18bb0f9, pipeline 2707402.

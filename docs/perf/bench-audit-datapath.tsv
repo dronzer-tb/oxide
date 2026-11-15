@@ -1,2 +1,6 @@
 1794718167	6b8562f	16	chunks=1089 threads=8 secs=2.302 cps=473.0 ms_per_chunk_core=16.91 digest=a977961a58122047
 1794719970	6b8562f	16	chunks=1089 threads=8 secs=2.284 cps=476.9 ms_per_chunk_core=16.78 digest=a977961a58122047
+1794727639	a29cef5	16	chunks=1089 threads=8 secs=1.756 cps=620.3 ms_per_chunk_core=12.90 digest=a977961a58122047
+1794728392	a29cef5	16	chunks=1089 threads=8 secs=1.566 cps=695.4 ms_per_chunk_core=11.50 digest=a977961a58122047
+1794728626	a29cef5	6	chunks=169 threads=1 secs=1.829 cps=92.4 ms_per_chunk_core=10.82 digest=ffd3a490ec8fb8b0
+1794728882	a29cef5	6	chunks=169 threads=1 secs=2.040 cps=82.9 ms_per_chunk_core=12.07 digest=ffd3a490ec8fb8b0
