@@ -676,3 +676,29 @@ Open for the user: who widens the harness digest and at which commit the new val
 who fixes the Vertex stage registration and the decoration cache in `oxide-ffi`.
 
 Stopped reading at: noise 33fc192, datapath a95c316, pipeline d7d5ea8
+
+## Pass 16, 16:35 UTC
+
+Read only; no auditor re-measurement this pass.
+
+- **Gate hole closed empirically for datapath up to 0f15cef.** Throwaway harness at the
+  session start (3fd5cf6) and the head: block and biome palettes in order plus packed longs
+  `04da69623d0ddc8f` at both; six heightmaps `16f8026ca33ac948` at both; block digest
+  `a977961a58122047` at both. Pregen NBT digest on the head merged with pipeline d7d5ea8:
+  `df701ee858e2bdd3`. The harness itself is still unchanged; widening it waits for the user.
+- **noise a297e03** (docs only): handover at 76%. Experiment 17 (`noise-11`) in its hold. Best
+  still 9.15 ms on 1 thread at 01528de. Limit 86%.
+- **datapath d137014** (docs only; code 0f15cef). One 8-thread run of the head under the shared
+  lock gave 712.0 cps, so the 392.9 row looks disturbed; the exclusive 8-thread hold from the
+  scaling sub-agent (running 1 h 48 min) has not reported. Limit 3% (reset).
+- **pipeline 36688fe** (docs only): table of which datapath commit each merged tree carried.
+  Its counting test for the decoration cache is queued on the box. Limit 28%.
+- Box: the live Java server is still running at 16:35 UTC (18-30% of one core, 7 GB), 40 min
+  past the stated end of the reservation. Holds taken now are disturbed by it, 8-thread ones
+  most. Disk 70%. No OmniRoute calls. Sub-agents in total: noise 15, datapath 22, pipeline 6.
+- Datapath's pane had a `/usage` screen open, which blocked input; closed with Escape.
+
+Messages: datapath (checks accepted; log the Java server at each hold; get the 8-thread
+result; then E29 plus E30 together). None to noise (near its limit) or pipeline.
+
+Stopped reading at: noise a297e03, datapath d137014, pipeline 36688fe
