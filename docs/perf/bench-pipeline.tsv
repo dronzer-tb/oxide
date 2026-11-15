@@ -14,3 +14,10 @@
 1794719990	99a1618	16	chunks=1089 threads=8 secs=17.846 cps=61.0 ms_per_chunk_core=131.10 digest=df701ee858e2bdd3 generate_ms=11382 decorate_ms=6023 serialise_ms=115 compress_ms=291 write_ms=35 compression=zlib6 mb_disk=9.9 pregen=1
 1794720069	a7b1cb9	16	chunks=1089 threads=8 secs=18.336 cps=59.4 ms_per_chunk_core=134.70 digest=df701ee858e2bdd3 generate_ms=10380 decorate_ms=7273 serialise_ms=436 compress_ms=216 write_ms=30 compression=zlib6 mb_disk=9.9 pregen=1
 1794720603	136e3b0	16	chunks=1089 threads=8 secs=6.140 cps=177.4 ms_per_chunk_core=45.11 digest=a977961a58122047 profile=pgo build_s=3m39s+3m13s
+1794720893	ff3f031	16	chunks=1089 threads=8 secs=16.343 cps=66.6 ms_per_chunk_core=120.06 digest=df701ee858e2bdd3 generate_ms=10002 decorate_ms=5988 serialise_ms=188 compress_ms=139 write_ms=26 compression=zlib6 mb_disk=10.1 pregen=1
+1794720915	ff3f031	16	chunks=1089 threads=8 secs=17.343 cps=62.8 ms_per_chunk_core=127.40 digest=df701ee858e2bdd3 generate_ms=10920 decorate_ms=6198 serialise_ms=100 compress_ms=99 write_ms=26 compression=zlib6 mb_disk=10.1 pregen=1
+1794721446	bc0265c	16	chunks=1089 threads=8 secs=17.270 cps=63.1 ms_per_chunk_core=126.87 digest=df701ee858e2bdd3 generate_ms=10526 decorate_ms=5966 serialise_ms=333 compress_ms=165 write_ms=280 compression=zlib6 mb_disk=10.1 pregen=1
+1794721666	bc0265c	16	chunks=1089 threads=8 secs=17.127 cps=63.6 ms_per_chunk_core=125.82 digest=df701ee858e2bdd3 generate_ms=11673 decorate_ms=5203 serialise_ms=116 compress_ms=94 write_ms=41 compression=zlib6 mb_disk=10.1 pregen=1
+1794721856	bc0265c	16	chunks=1089 threads=8 secs=8.194 cps=132.9 ms_per_chunk_core=60.19 digest=a977961a58122047 profile=release build_s=1m46s
+1794721891	bc0265c	16	chunks=1089 threads=8 secs=14.779 cps=73.7 ms_per_chunk_core=108.57 digest=df701ee858e2bdd3 generate_ms=9752 decorate_ms=4615 serialise_ms=221 compress_ms=169 write_ms=22 compression=zlib6 mb_disk=10.1 pregen=1
+1794721926	bc0265c	16	chunks=1089 threads=8 secs=15.962 cps=68.2 ms_per_chunk_core=117.26 digest=df701ee858e2bdd3 generate_ms=9590 decorate_ms=5806 serialise_ms=410 compress_ms=126 write_ms=30 compression=zlib6 mb_disk=10.1 pregen=1

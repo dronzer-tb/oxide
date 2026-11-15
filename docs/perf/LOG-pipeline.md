@@ -252,3 +252,37 @@ warnings appeared without it.
 The best terrain run on this box so far: +27% over this session's release median (139.6), but
 it is one run on a quiet box, so it needs a repeat before it counts on its own. The script works
 from a clean checkout; the build is 6m52s of cargo time.
+
+**Kept: zlib-rs backend** (ff3f031). One line in oxide-anvil's flate2 features. Pregen r16,
+digest df701ee858e2bdd3 on both sides:
+
+    before (99a1618): compress_ms=291 / 216
+    after  (ff3f031): compress_ms=139 / 99     mb_disk 9.9 -> 10.1
+
+About 2x on compression, about -0.13 s per run; the whole-run cps sits inside the noise.
+
+**Decoration profile** (pipeline-2 sub-agent, temporary timers sampled 1 in 61; patch and raw
+output in the session scratchpad, not committed). Decoration CPU is 42.5 s for r16 (1225
+`decorate()` calls), 99.3% of it inside features:
+- **sculk_patch_deep_dark: 48%** (505 runs, about 40 ms each). `state_at` clones a full
+  `BlockState` on every read, and `in_tag` / `is_inhibitor` build a `ResourceLocation` (two
+  Strings) on every call, 243 calls per `can_place_growth`.
+- Then ore_iron_upper 5.2%, ore_clay 4.5%, ore_tuff 3.7%, lush caves 3.5%. Upper ores call
+  `height` about once per block.
+- Primitives: `BlockFacts::is` 72M calls, `region.block` 92M, `region.is` 37M,
+  `set_block` 10M, `height` 21M. Every one hashes a string-keyed `BlockState` or a
+  `BlockPos` with std SipHash. The sampled ns/call figures include `Instant` overhead and
+  run high.
+
+**Kept: ahash for the region overlay, `written_top` and `BlockFacts`** (bc0265c). Nothing
+iterates any of these maps, so the hasher cannot change output. `BlockFacts` is in
+oxide-datapack, which no track owns; the change is one private field type plus the ahash dep.
+Tests: oxide-chunkgen 189 + oxide-datapack, all pass.
+
+    pregen before (99a1618/ff3f031): decorate_ms=6023 7273 5988 6198   median ~6110
+    pregen after  (bc0265c):         decorate_ms=5966 5203 4615 5806   median  5505  (-10%)
+    terrain digest after: a977961a58122047 (cps 132.9)
+
+The profile's sampled per-call costs implied 1.2-1.7 s; the measured saving is about 0.6 s.
+Hashing was real but smaller than the timers made it look. In flight: sculk by reference
+with tags resolved once (pipeline-2).
