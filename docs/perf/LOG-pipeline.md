@@ -91,3 +91,22 @@ not run any of it):
 4. Report back: any of those log lines, and a screenshot at 0,0. If Status `features` is
    refused (26.2 might want `minecraft:features`), the fix is one line in
    `oxide-anvil/src/nbt.rs`.
+
+**Measured, not applied yet: zlib backends** (OmniRoute worker gemini-3-flash wrote the
+micro-bench in a scratch worktree but hit its 40-turn cap before running it; I fixed its
+timing, which had included decompression, and ran it). 400 real pregen chunks, 12.8 MB NBT,
+one thread on the bench box:
+
+| backend | level | ms/chunk | ratio |
+|---|---|---|---|
+| miniz_oxide (flate2 default, today) | 1 / 3 / 6 | 0.26 / 0.62 / 1.25 | 3.82 / 4.76 / 4.93 |
+| zlib-rs (flate2 feature, pure Rust) | 1 / 3 / 6 | 0.15 / 0.38 / 0.53 | 3.47 / 4.56 / 4.78 |
+| zlib-ng | – | needs cmake, not on the box | – |
+
+zlib-rs at level 6 is 2.4x faster than miniz at 3% larger files. Compressed bytes differ;
+the pregen digest covers the uncompressed NBT, so the world is unchanged. Compression is
+about 2% of the path, so the whole-path gain is at most about 1.5%. Queued as a one-line
+`oxide-anvil` feature change with a pregen A/B.
+
+**Fix:** bench-vps.sh's `rsync --delete` did not exclude `/out` and wiped the pregen world
+every terrain bench. It now excludes it.

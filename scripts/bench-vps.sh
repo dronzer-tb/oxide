@@ -29,7 +29,7 @@ ssh -o BatchMode=yes "$host" "mkdir -p '$dir'"
 rsync -a --delete \
     --exclude /target --exclude /.git --exclude /graphify-out --exclude /logs \
     --exclude /website --exclude /plugin --exclude /client-mod \
-    --exclude /reference \
+    --exclude /reference --exclude /out \
     -e "ssh -o BatchMode=yes" ./ "$host:$dir/"
 if [ -d "$reference" ]; then
     rsync -a --delete \
