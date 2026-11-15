@@ -160,6 +160,7 @@ enum CompiledRule<'a> {
 /// places nothing falls through to the next sibling, exactly as the tree walk's `find_map` did.
 /// Conditions are tested in the tree walk's order, one at a time, so every memo and random
 /// draw happens the same way.
+#[derive(Clone)]
 enum Op<'a> {
     Test {
         condition: CompiledCondition<'a>,
@@ -205,6 +206,143 @@ fn flatten<'a>(rule: CompiledRule<'a>, ops: &mut Vec<Op<'a>>) {
     }
 }
 
+/// What is known about every position a specialised program (see [`fold`]) is offered. Both
+/// facts are plain functions of the position and its column.
+#[derive(Clone, Copy)]
+struct Facts {
+    /// The positions' y lies in `y_lo..=y_hi`.
+    y_lo: i32,
+    y_hi: i32,
+    /// The answer `above_preliminary_surface` gives at every one of them, when known.
+    above_preliminary_surface: Option<bool>,
+}
+
+impl Facts {
+    /// The value `condition` has at every position these facts describe, when they settle it
+    /// without reading anything else. `None` keeps the test, evaluated as usual.
+    fn known(&self, condition: &CompiledCondition<'_>) -> Option<bool> {
+        match condition {
+            // The evaluator's own order: `true_y` first, then `false_y`, and only between them
+            // a random draw. A settled answer is one the evaluator gives without drawing.
+            CompiledCondition::VerticalGradient {
+                true_y, false_y, ..
+            } => {
+                if self.y_hi <= *true_y {
+                    Some(true)
+                } else if self.y_lo > *true_y && self.y_lo >= *false_y {
+                    Some(false)
+                } else {
+                    None
+                }
+            }
+            // `y + 0 >= anchor_y + surface_depth * 0`: y alone decides it.
+            CompiledCondition::YAbove {
+                anchor_y,
+                surface_depth_multiplier: 0,
+                add_stone_depth: false,
+            } => {
+                if self.y_lo >= *anchor_y {
+                    Some(true)
+                } else if self.y_hi < *anchor_y {
+                    Some(false)
+                } else {
+                    None
+                }
+            }
+            CompiledCondition::AbovePreliminarySurface => self.above_preliminary_surface,
+            _ => None,
+        }
+    }
+
+    /// Pushes onto `edges` every y at which a condition in `ops` that [`Self::known`] settles
+    /// from y alone can change its answer: the lowest y of each new band.
+    fn y_edges(ops: &[Op<'_>], edges: &mut Vec<i32>) {
+        for op in ops {
+            let Op::Test { condition, .. } = op else {
+                continue;
+            };
+            match condition {
+                CompiledCondition::VerticalGradient {
+                    true_y, false_y, ..
+                } => {
+                    edges.push(true_y.saturating_add(1));
+                    edges.push(*false_y);
+                }
+                CompiledCondition::YAbove {
+                    anchor_y,
+                    surface_depth_multiplier: 0,
+                    add_stone_depth: false,
+                } => edges.push(*anchor_y),
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Appends to `out` the part of `ops[start..end]` (one `sequence` level: a run of sibling
+/// items) still reachable at positions `facts` describes. A test those facts settle is
+/// dropped: one that holds is replaced by its `then_run` laid inline as a sibling (which is
+/// what a passing condition's `then_run` is: when it places nothing, evaluation falls through
+/// to the next sibling), and one that fails drops its `then_run`.
+///
+/// A settled test has no side effect to keep: it reads no memo and makes no draw (see
+/// [`Facts::known`]). Every other test stays, in the same order, so every memo and draw the
+/// full program makes at such a position the folded one makes too, and the first `block`
+/// reached is the same.
+///
+/// Returns whether this level always places a block, which makes every later sibling dead.
+fn fold<'a>(
+    ops: &[Op<'a>],
+    start: usize,
+    end: usize,
+    facts: &Facts,
+    out: &mut Vec<Op<'a>>,
+) -> bool {
+    let mut i = start;
+    while i < end {
+        match &ops[i] {
+            Op::Block(result) => {
+                out.push(Op::Block(*result));
+                return true;
+            }
+            Op::Badlands => {
+                out.push(Op::Badlands);
+                return true;
+            }
+            Op::Test {
+                condition,
+                negate,
+                skip,
+            } => {
+                match facts.known(condition).map(|value| value != *negate) {
+                    Some(true) => {
+                        if fold(ops, i + 1, *skip, facts, out) {
+                            return true;
+                        }
+                    }
+                    Some(false) => {}
+                    None => {
+                        let at = out.len();
+                        out.push(Op::Test {
+                            condition: condition.clone(),
+                            negate: *negate,
+                            skip: 0,
+                        });
+                        fold(ops, i + 1, *skip, facts, out);
+                        let after = out.len();
+                        if let Op::Test { skip, .. } = &mut out[at] {
+                            *skip = after;
+                        }
+                    }
+                }
+                i = *skip;
+            }
+        }
+    }
+    false
+}
+
+#[derive(Clone)]
 enum CompiledCondition<'a> {
     /// Index into [`SurfaceSystem::biome_sets`], and so into each chunk's biome masks.
     Biome(usize),
@@ -289,7 +427,13 @@ pub struct SurfaceSystem<'a> {
     /// Built on first use: only badlands columns read it, and building it costs an MD5 and 64
     /// block states.
     clay_bands: std::cell::OnceCell<[BlockState; BAND_COUNT]>,
+    /// The rule tree's program, folded for positions at or above the preliminary surface.
     program: Vec<Op<'a>>,
+    /// The program folded for positions below the preliminary surface -- about 85% of those
+    /// offered -- once per y band: by `below_band_of_y[y - min_y]`. Band edges are every y at
+    /// which a test the fold settles from y alone changes its answer.
+    below_programs: Vec<Vec<Op<'a>>>,
+    below_band_of_y: Vec<u16>,
     /// The state each `Block` rule places, by the index the compiled rule carries.
     results: Vec<&'a BlockState>,
     /// The id list of each `biome` condition, by the index the compiled condition carries.
@@ -322,8 +466,43 @@ impl<'a> SurfaceSystem<'a> {
         let height = settings.noise.height;
         let mut compiler = Compiler::default();
         let rule = compile_rule(&settings.surface_rule, router, min_y, height, &mut compiler);
+        let mut full = Vec::new();
+        flatten(rule, &mut full);
+        let world = Facts {
+            y_lo: min_y,
+            y_hi: min_y + height - 1,
+            above_preliminary_surface: Some(true),
+        };
         let mut program = Vec::new();
-        flatten(rule, &mut program);
+        fold(&full, 0, full.len(), &world, &mut program);
+        // Below the surface, folded twice: first by the surface fact alone, which leaves a
+        // handful of ops, and then that small program by y band.
+        let below_facts = Facts {
+            above_preliminary_surface: Some(false),
+            ..world
+        };
+        let mut below = Vec::new();
+        fold(&full, 0, full.len(), &below_facts, &mut below);
+        let mut edges = Vec::new();
+        Facts::y_edges(&below, &mut edges);
+        let mut below_band_of_y = Vec::with_capacity(height.max(0) as usize);
+        let mut below_programs = Vec::new();
+        let mut band_lo = world.y_lo;
+        for y in world.y_lo..=world.y_hi {
+            let band_ends = y == world.y_hi || edges.contains(&(y + 1));
+            below_band_of_y.push(below_programs.len() as u16);
+            if band_ends {
+                let facts = Facts {
+                    y_lo: band_lo,
+                    y_hi: y,
+                    ..below_facts
+                };
+                let mut ops = Vec::new();
+                fold(&below, 0, below.len(), &facts, &mut ops);
+                below_programs.push(ops);
+                band_lo = y + 1;
+            }
+        }
         let memo = (0..compiler.memo_slots)
             .map(|_| std::cell::Cell::new(MEMO_UNKNOWN))
             .collect();
@@ -344,6 +523,8 @@ impl<'a> SurfaceSystem<'a> {
             temperature_noise: router.noise(&ResourceLocation::minecraft("temperature")),
             clay_bands: std::cell::OnceCell::new(),
             program,
+            below_programs,
+            below_band_of_y,
             results: compiler.results,
             biome_sets: compiler.biome_sets,
             memo,
@@ -500,7 +681,14 @@ impl<'a> SurfaceSystem<'a> {
                             biome: biomes.section_maps[section_index][biome_palette_index as usize]
                                 as usize,
                         };
-                        let Some(result) = self.eval_program(&cursor, &column, &biomes) else {
+                        let program = if y >= column.min_surface_level {
+                            &self.program[..]
+                        } else {
+                            let band = self.below_band_of_y[(y - self.min_y) as usize];
+                            &self.below_programs[band as usize][..]
+                        };
+                        let Some(result) = self.eval_program(program, &cursor, &column, &biomes)
+                        else {
                             continue;
                         };
                         let cached = &mut result_index[section_index * result_count + result];
@@ -620,11 +808,11 @@ impl<'a> SurfaceSystem<'a> {
     /// The result index of the first `block` rule whose enclosing conditions all hold.
     fn eval_program(
         &self,
+        program: &[Op<'a>],
         cursor: &Cursor,
         column: &Column,
         biomes: &ChunkBiomes,
     ) -> Option<usize> {
-        let program = &self.program[..];
         let mut pc = 0;
         while let Some(op) = program.get(pc) {
             match op {

@@ -1,0 +1,637 @@
+diff --git a/crates/oxide-chunkgen/src/carver.rs b/crates/oxide-chunkgen/src/carver.rs
+index 74c5c50..1fa7bec 100644
+--- a/crates/oxide-chunkgen/src/carver.rs
++++ b/crates/oxide-chunkgen/src/carver.rs
+@@ -15,6 +15,10 @@
+ //! - **Grass repair.** Vanilla re-runs the surface rule on dirt exposed under a carved-away
+ //!   grass block. Not done here, so a cave breaching the surface leaves bare dirt.
+ 
++use std::cell::RefCell;
++use std::collections::HashMap;
++use std::rc::Rc;
++
+ use oxide_core::{BlockState, ChunkData, ChunkPos, LegacyRandom, RandomSource, ResourceLocation};
+ use oxide_datapack::{
+     CanyonCarverConfig, CarverConfig, CaveCarverConfig, ConfiguredCarver, NoiseGeneratorSettings,
+@@ -287,6 +291,15 @@ fn carve_room(
+ }
+ 
+ /// `CaveWorldCarver#createTunnel`.
++///
++/// A tunnel's walk -- every position, radius and split -- depends only on its arguments and
++/// its own `LegacyRandom`, seeded from `tunnel_seed`; it never reads the outer random, the
++/// chunk being carved, or the carver config. Only *which* of its ellipsoids carve, and where
++/// it stops (`can_reach`), depend on the target chunk. Yet every chunk within range re-walks
++/// the same tunnel -- up to 289 of them. So the walk is recorded once per thread
++/// ([`record_tunnel`], the vanilla loop with carving taken out) and each chunk replays the
++/// recording ([`replay_tunnel`]), which does the same `can_reach` checks and the same
++/// `carve_ellipsoid` calls, with the same operands, in the same order.
+ #[allow(clippy::too_many_arguments)]
+ fn carve_tunnel(
+     chunk: &mut Target,
+@@ -294,33 +307,213 @@ fn carve_tunnel(
+     world: &CarverWorld,
+     config: &CarverConfig,
+     tunnel_seed: i64,
+-    mut x: f64,
+-    mut y: f64,
+-    mut z: f64,
++    x: f64,
++    y: f64,
++    z: f64,
+     horizontal_multiplier: f64,
+     vertical_multiplier: f64,
+     thickness: f32,
+-    mut horizontal_rotation: f32,
+-    mut vertical_rotation: f32,
++    horizontal_rotation: f32,
++    vertical_rotation: f32,
+     step: i32,
+     distance: i32,
+     y_scale: f64,
+     floor_level: f64,
+     mask: &mut CarvingMask,
+-    mut aquifer: Option<&mut crate::aquifer::Aquifer>,
++    aquifer: Option<&mut crate::aquifer::Aquifer>,
+ ) {
++    // Every input of the walk, bit for bit: equal keys walk identically.
++    let key = TunnelKey {
++        tunnel_seed,
++        position: [x.to_bits(), y.to_bits(), z.to_bits()],
++        y_scale: y_scale.to_bits(),
++        floats: [
++            thickness.to_bits(),
++            horizontal_rotation.to_bits(),
++            vertical_rotation.to_bits(),
++        ],
++        step,
++        distance,
++    };
++    let walk = TUNNEL_WALKS.with(|cache| {
++        let mut cache = cache.borrow_mut();
++        if let Some(walk) = cache.get(&key) {
++            return Rc::clone(walk);
++        }
++        if cache.len() >= TUNNEL_CACHE_LIMIT {
++            cache.clear();
++        }
++        let walk = Rc::new(record_tunnel(
++            tunnel_seed,
++            x,
++            y,
++            z,
++            thickness,
++            horizontal_rotation,
++            vertical_rotation,
++            step,
++            distance,
++            y_scale,
++        ));
++        cache.insert(key, Rc::clone(&walk));
++        walk
++    });
++    replay_tunnel(
++        &walk,
++        chunk,
++        pos,
++        world,
++        config,
++        horizontal_multiplier,
++        vertical_multiplier,
++        floor_level,
++        mask,
++        aquifer,
++    );
++}
++
++/// Recorded walks kept per thread before the cache is emptied and starts over. A walk is a
++/// few KiB; a thread working through a strip of chunks touches well under this many.
++const TUNNEL_CACHE_LIMIT: usize = 4096;
++
++thread_local! {
++    static TUNNEL_WALKS: RefCell<HashMap<TunnelKey, Rc<TunnelWalk>>> =
++        RefCell::new(HashMap::new());
++}
++
++#[derive(Clone, Copy, PartialEq, Eq, Hash)]
++struct TunnelKey {
++    tunnel_seed: i64,
++    position: [u64; 3],
++    y_scale: u64,
++    floats: [u32; 3],
++    step: i32,
++    distance: i32,
++}
++
++/// One step of a walk that reaches `can_reach` and `carve_ellipsoid` (the one-in-four
++/// skipped steps leave no trace beyond their random draws, which recording already made).
++struct WalkStep {
++    x: f64,
++    y: f64,
++    z: f64,
++    /// `mth::sin(..) * thickness`, the f32 term of this step's horizontal radius.
++    radius_term: f32,
++    current_step: i32,
++}
++
++/// A tunnel's whole walk, independent of the chunk being carved.
++struct TunnelWalk {
++    thickness: f32,
++    distance: i32,
++    y_scale: f64,
++    steps: Vec<WalkStep>,
++    /// The two tunnels this one splits into after its last recorded step, if it splits.
++    split: Option<Box<(TunnelWalk, TunnelWalk)>>,
++    /// Over this walk's steps and every descendant's: the range of centre x and z, and the
++    /// largest pre-multiplier horizontal radius. `None` if any of them is NaN, in which case
++    /// the walk is never skipped wholesale.
++    reach: Option<WalkReach>,
++}
++
++#[derive(Clone, Copy)]
++struct WalkReach {
++    min_x: f64,
++    max_x: f64,
++    min_z: f64,
++    max_z: f64,
++    max_radius: f64,
++}
++
++impl WalkReach {
++    /// Covers no step at all: `misses` every chunk, which is right for a walk that carves
++    /// nothing.
++    const EMPTY: Self = Self {
++        min_x: f64::INFINITY,
++        max_x: f64::NEG_INFINITY,
++        min_z: f64::INFINITY,
++        max_z: f64::NEG_INFINITY,
++        max_radius: 0.0,
++    };
++
++    fn of_step(step: &WalkStep) -> Option<Self> {
++        let radius = 1.5 + step.radius_term as f64;
++        if step.x.is_nan() || step.z.is_nan() || radius.is_nan() {
++            return None;
++        }
++        Some(Self {
++            min_x: step.x,
++            max_x: step.x,
++            min_z: step.z,
++            max_z: step.z,
++            max_radius: radius.abs(),
++        })
++    }
++
++    fn union(a: Option<Self>, b: Option<Self>) -> Option<Self> {
++        let (a, b) = (a?, b?);
++        Some(Self {
++            min_x: a.min_x.min(b.min_x),
++            max_x: a.max_x.max(b.max_x),
++            min_z: a.min_z.min(b.min_z),
++            max_z: a.max_z.max(b.max_z),
++            max_radius: a.max_radius.max(b.max_radius),
++        })
++    }
++
++    /// Whether no step this covers can carve anything in `pos`, for a horizontal multiplier
++    /// of `multiplier`. `carve_ellipsoid` visits local x from `floor(x - r) - min_x - 1` to
++    /// `floor(x + r) - min_x`, clamped to 0..=15, so it touches nothing unless
++    /// `x + r >= min_x` and `x - r < min_x + 17` -- likewise in z. With `R = max_radius *
++    /// |multiplier|` bounding every `|r|`, a whole walk whose centres keep further away than
++    /// that, with a block of slack for rounding, carves nothing. `can_reach` can only stop such
++    /// a walk early, which changes nothing either.
++    fn misses(&self, pos: ChunkPos, multiplier: f64) -> bool {
++        let reach = self.max_radius * multiplier.abs();
++        let chunk_x = pos.min_block_x() as f64;
++        let chunk_z = pos.min_block_z() as f64;
++        self.max_x + reach < chunk_x - 1.0
++            || self.min_x - reach >= chunk_x + 18.0
++            || self.max_z + reach < chunk_z - 1.0
++            || self.min_z - reach >= chunk_z + 18.0
++    }
++}
++
++/// The vanilla `createTunnel` loop with `can_reach` and carving taken out: every draw, every
++/// float operation and the split are as in vanilla, and each step that would have reached
++/// `can_reach` is recorded with what it needs.
++#[allow(clippy::too_many_arguments)]
++fn record_tunnel(
++    tunnel_seed: i64,
++    mut x: f64,
++    mut y: f64,
++    mut z: f64,
++    thickness: f32,
++    mut horizontal_rotation: f32,
++    mut vertical_rotation: f32,
++    step: i32,
++    distance: i32,
++    y_scale: f64,
++) -> TunnelWalk {
+     let mut random = LegacyRandom::new(tunnel_seed);
+     let split_point = random.next_int_bounded(distance / 2) + distance / 4;
+     let steep = random.next_int_bounded(6) == 0;
+     let mut y_rota = 0.0f32;
+     let mut x_rota = 0.0f32;
++    let mut walk = TunnelWalk {
++        thickness,
++        distance,
++        y_scale,
++        steps: Vec::new(),
++        split: None,
++        reach: None,
++    };
++    let mut reach = Some(WalkReach::EMPTY);
+ 
+     for current_step in step..distance {
+-        let horizontal_radius = 1.5
+-            + (oxide_core::mth::sin(
+-                (std::f32::consts::PI * current_step as f32 / distance as f32) as f64,
+-            ) * thickness) as f64;
+-        let vertical_radius = horizontal_radius * y_scale;
++        let radius_term = oxide_core::mth::sin(
++            (std::f32::consts::PI * current_step as f32 / distance as f32) as f64,
++        ) * thickness;
+ 
+         let cos_pitch = oxide_core::mth::cos(vertical_rotation as f64);
+         x += (oxide_core::mth::cos(horizontal_rotation as f64) * cos_pitch) as f64;
+@@ -340,64 +533,93 @@ fn carve_tunnel(
+             let thickness_a = random.next_float() * 0.5 + 0.5;
+             let seed_b = random.next_long();
+             let thickness_b = random.next_float() * 0.5 + 0.5;
+-            carve_tunnel(
+-                chunk,
+-                pos,
+-                world,
+-                config,
++            let a = record_tunnel(
+                 seed_a,
+                 x,
+                 y,
+                 z,
+-                horizontal_multiplier,
+-                vertical_multiplier,
+                 thickness_a,
+                 horizontal_rotation - std::f32::consts::FRAC_PI_2,
+                 vertical_rotation / 3.0,
+                 current_step,
+                 distance,
+                 1.0,
+-                floor_level,
+-                mask,
+-                aquifer.as_deref_mut(),
+             );
+-            carve_tunnel(
+-                chunk,
+-                pos,
+-                world,
+-                config,
++            let b = record_tunnel(
+                 seed_b,
+                 x,
+                 y,
+                 z,
+-                horizontal_multiplier,
+-                vertical_multiplier,
+                 thickness_b,
+                 horizontal_rotation + std::f32::consts::FRAC_PI_2,
+                 vertical_rotation / 3.0,
+                 current_step,
+                 distance,
+                 1.0,
+-                floor_level,
+-                mask,
+-                aquifer.as_deref_mut(),
+             );
+-            return;
++            reach = WalkReach::union(reach, WalkReach::union(a.reach, b.reach));
++            walk.split = Some(Box::new((a, b)));
++            break;
+         }
+         if random.next_int_bounded(4) == 0 {
+             continue;
+         }
+-        if !can_reach(pos, x, z, current_step, distance, thickness) {
++        let recorded = WalkStep {
++            x,
++            y,
++            z,
++            radius_term,
++            current_step,
++        };
++        reach = WalkReach::union(reach, WalkReach::of_step(&recorded));
++        walk.steps.push(recorded);
++    }
++    walk.reach = reach;
++    walk
++}
++
++/// Carves what `walk` carves in `pos`: vanilla's `can_reach` check and `carve_ellipsoid` call
++/// for each recorded step, in walk order, then the split's two tunnels.
++#[allow(clippy::too_many_arguments)]
++fn replay_tunnel(
++    walk: &TunnelWalk,
++    chunk: &mut Target,
++    pos: ChunkPos,
++    world: &CarverWorld,
++    config: &CarverConfig,
++    horizontal_multiplier: f64,
++    vertical_multiplier: f64,
++    floor_level: f64,
++    mask: &mut CarvingMask,
++    mut aquifer: Option<&mut crate::aquifer::Aquifer>,
++) {
++    if walk
++        .reach
++        .is_some_and(|reach| reach.misses(pos, horizontal_multiplier))
++    {
++        return;
++    }
++    for step in &walk.steps {
++        if !can_reach(
++            pos,
++            step.x,
++            step.z,
++            step.current_step,
++            walk.distance,
++            walk.thickness,
++        ) {
+             return;
+         }
++        let horizontal_radius = 1.5 + step.radius_term as f64;
++        let vertical_radius = horizontal_radius * walk.y_scale;
+         carve_ellipsoid(
+             chunk,
+             pos,
+             world,
+             config,
+-            x,
+-            y,
+-            z,
++            step.x,
++            step.y,
++            step.z,
+             horizontal_radius * horizontal_multiplier,
+             vertical_radius * vertical_multiplier,
+             floor_level,
+@@ -405,6 +627,32 @@ fn carve_tunnel(
+             aquifer.as_deref_mut(),
+         );
+     }
++    if let Some(split) = &walk.split {
++        replay_tunnel(
++            &split.0,
++            chunk,
++            pos,
++            world,
++            config,
++            horizontal_multiplier,
++            vertical_multiplier,
++            floor_level,
++            mask,
++            aquifer.as_deref_mut(),
++        );
++        replay_tunnel(
++            &split.1,
++            chunk,
++            pos,
++            world,
++            config,
++            horizontal_multiplier,
++            vertical_multiplier,
++            floor_level,
++            mask,
++            aquifer.as_deref_mut(),
++        );
++    }
+ }
+ 
+ /// `CanyonWorldCarver#carve` plus `doCarve`, minus the per-height width factors, which shape a
+diff --git a/crates/oxide-chunkgen/src/ore_veins.rs b/crates/oxide-chunkgen/src/ore_veins.rs
+index 2247acc..25f2370 100644
+--- a/crates/oxide-chunkgen/src/ore_veins.rs
++++ b/crates/oxide-chunkgen/src/ore_veins.rs
+@@ -92,16 +92,22 @@ pub fn apply_ore_veins(
+         .collect();
+ 
+     // Cells that provably hold no vein. `vein_state` gives up when
+-    // `|vein_toggle| + edge_roundoff < VEININESS_THRESHOLD`, and `edge_roundoff` is never
+-    // positive, so a cell whose `vein_toggle` stays strictly inside +-threshold cannot place
+-    // anything -- and veins are rare, so that is most cells. The bounds must clear the
+-    // threshold by [`CELL_BOUND_MARGIN`]; see there for why. The bounds come from the
+-    // slot's cell-corner grid, which exists once the slot has been sampled in this chunk;
+-    // where none can be proven the cell is evaluated block by block as before.
++    // `|vein_toggle| + edge_roundoff < VEININESS_THRESHOLD`, where `edge_roundoff` is never
++    // positive and depends only on y and on which band the toggle's sign picks. So a cell
++    // cannot place anything if, for each vein type with a y of the cell inside its band, the
++    // toggle's corner bounds keep `|vein_toggle|` below the threshold less that type's largest
++    // `edge_roundoff` over those ys (copper is only picked by a positive toggle, so only the
++    // upper bound matters for it; iron only by a non-positive one, so only the lower). With
++    // `edge_roundoff = 0` this is the plain `+-threshold` test, so it skips at least what that
++    // did -- and veins are rare, so that is most cells. The bounds must clear the threshold by
++    // [`CELL_BOUND_MARGIN`]; see there for why. The bounds come from the slot's cell-corner
++    // grid, which exists once the slot has been sampled in this chunk; where none can be
++    // proven the cell is evaluated block by block as before.
+     let cell_width = caches.cell_width();
+     let cell_height = caches.cell_height();
+     let cells_xz = (16 / cell_width).max(1) as usize;
+     let cells_y = (height / cell_height).max(0) as usize;
++    let cells_layer = cells_xz * cells_xz;
+     let _ = router.sample_in_chunk(
+         caches,
+         RouterSlot::VeinToggle,
+@@ -109,15 +115,18 @@ pub fn apply_ore_veins(
+         band_min.max(min_y),
+         pos.min_block_z(),
+     );
+-    let mut veinless = vec![false; cells_xz * cells_xz * cells_y];
++    let mut veinless = vec![false; cells_layer * cells_y];
+     for cell_y in 0..cells_y {
+         let cell_min_y = min_y + cell_y as i32 * cell_height;
+-        if cell_min_y > band_max || cell_min_y + cell_height <= band_min {
++        let cell_max_y = cell_min_y + cell_height - 1;
++        if cell_min_y > band_max || cell_max_y < band_min {
+             continue;
+         }
++        let copper_roundoff = max_edge_roundoff(&COPPER, cell_min_y, cell_max_y);
++        let iron_roundoff = max_edge_roundoff(&IRON, cell_min_y, cell_max_y);
+         for cell_z in 0..cells_xz {
+             for cell_x in 0..cells_xz {
+-                veinless[(cell_y * cells_xz + cell_z) * cells_xz + cell_x] = router
++                veinless[cell_y * cells_layer + cell_z * cells_xz + cell_x] = router
+                     .cell_bounds(
+                         caches,
+                         RouterSlot::VeinToggle,
+@@ -126,8 +135,13 @@ pub fn apply_ore_veins(
+                         cell_z as i32,
+                     )
+                     .is_some_and(|(lo, hi)| {
+-                        lo > -VEININESS_THRESHOLD + CELL_BOUND_MARGIN
+-                            && hi < VEININESS_THRESHOLD - CELL_BOUND_MARGIN
++                        let no_copper = copper_roundoff.map_or(true, |roundoff| {
++                            hi + roundoff < VEININESS_THRESHOLD - CELL_BOUND_MARGIN
++                        });
++                        let no_iron = iron_roundoff.map_or(true, |roundoff| {
++                            -lo + roundoff < VEININESS_THRESHOLD - CELL_BOUND_MARGIN
++                        });
++                        no_copper && no_iron
+                     });
+             }
+         }
+@@ -142,7 +156,21 @@ pub fn apply_ore_veins(
+         .collect();
+     let mut palette_index = vec![u32::MAX; chunk.sections.len() * VEIN_BLOCKS.len()];
+ 
++    // `vein_toggle` for the current layer of cells, a whole cell at a time through
++    // `sample_cell` -- bit-identical to `sample_in_chunk` at each block, without the per-block
++    // call. Filled on a cell's first default-block position in this layer; a cell that cannot
++    // be filled that way falls back to per-block sampling.
++    let lanes = router.cell_len(caches);
++    let mut toggle = vec![0.0f64; cells_layer * lanes];
++    let mut toggle_state = vec![TOGGLE_UNFILLED; cells_layer];
++    let mut toggle_layer = usize::MAX;
++
+     for y in band_min.max(min_y)..=band_max.min(min_y + height - 1) {
++        // Between the bands (and outside both) `vein_state` returns nothing whatever the
++        // toggle says.
++        if !COPPER.contains(y) && !IRON.contains(y) {
++            continue;
++        }
+         let Some(section_index) = section_of(settings, y) else {
+             continue;
+         };
+@@ -150,18 +178,28 @@ pub fn apply_ore_veins(
+         let Some(Some(default_index)) = default_index.get(section_index).copied() else {
+             continue;
+         };
++        let layer = cell_y * cells_layer;
++        if veinless
++            .get(layer..layer + cells_layer)
++            .is_some_and(|cells| cells.iter().all(|&skip| skip))
++        {
++            continue;
++        }
++        if toggle_layer != cell_y {
++            toggle_layer = cell_y;
++            toggle_state.fill(TOGGLE_UNFILLED);
++        }
+         let local_y = (y - min_y).rem_euclid(16) as usize;
++        let lane_y = ((y - min_y) - cell_y as i32 * cell_height) as usize;
+         for local_z in 0..16usize {
+             let block_z = pos.min_block_z() + local_z as i32;
+             let cell_z = (local_z as i32).div_euclid(cell_width) as usize;
++            let lane_z = local_z - cell_z * cell_width as usize;
+             for local_x in 0..16usize {
+                 let block_x = pos.min_block_x() + local_x as i32;
+                 let cell_x = (local_x as i32).div_euclid(cell_width) as usize;
+-                if veinless
+-                    .get((cell_y * cells_xz + cell_z) * cells_xz + cell_x)
+-                    .copied()
+-                    .unwrap_or(false)
+-                {
++                let cell = cell_z * cells_xz + cell_x;
++                if veinless.get(layer + cell).copied().unwrap_or(false) {
+                     continue;
+                 }
+                 if chunk.sections[section_index].block_states.indices()
+@@ -170,7 +208,34 @@ pub fn apply_ore_veins(
+                 {
+                     continue;
+                 }
+-                if let Some(name) = vein_state(router, caches, &ore_factory, block_x, y, block_z) {
++                let state = match toggle_state.get(cell).copied() {
++                    Some(TOGGLE_UNFILLED) => {
++                        let filled = router.sample_cell(
++                            caches,
++                            RouterSlot::VeinToggle,
++                            cell_x as i32,
++                            cell_y as i32,
++                            cell_z as i32,
++                            &mut toggle[cell * lanes..(cell + 1) * lanes],
++                        );
++                        let state = if filled { TOGGLE_FILLED } else { TOGGLE_PER_BLOCK };
++                        toggle_state[cell] = state;
++                        state
++                    }
++                    Some(state) => state,
++                    None => TOGGLE_PER_BLOCK,
++                };
++                let veininess = if state == TOGGLE_FILLED {
++                    let lane_x = local_x - cell_x * cell_width as usize;
++                    toggle[cell * lanes
++                        + (lane_y * cell_width as usize + lane_z) * cell_width as usize
++                        + lane_x]
++                } else {
++                    router.sample_in_chunk(caches, RouterSlot::VeinToggle, block_x, y, block_z)
++                };
++                if let Some(name) =
++                    vein_state(router, caches, &ore_factory, veininess, block_x, y, block_z)
++                {
+                     let id = vein_block_id(name);
+                     let cached = &mut palette_index[section_index * VEIN_BLOCKS.len() + id];
+                     let block_states = &mut chunk.sections[section_index].block_states;
+@@ -186,15 +251,46 @@ pub fn apply_ore_veins(
+     }
+ }
+ 
++const TOGGLE_UNFILLED: u8 = 0;
++const TOGGLE_FILLED: u8 = 1;
++const TOGGLE_PER_BLOCK: u8 = 2;
++
++impl VeinType {
++    fn contains(&self, y: i32) -> bool {
++        self.min_y <= y && y <= self.max_y
++    }
++}
++
++/// The largest `edge_roundoff` `vein_state` computes for `vein` over the ys of
++/// `min_y..=max_y` inside its band -- by the same expression, so the same values -- or `None`
++/// when none of them is inside the band (and `vein` can place nothing there).
++fn max_edge_roundoff(vein: &VeinType, min_y: i32, max_y: i32) -> Option<f64> {
++    (min_y.max(vein.min_y)..=max_y.min(vein.max_y))
++        .map(|y| edge_roundoff(vein, y))
++        .reduce(f64::max)
++}
++
++/// Fades veins out over the last 20 blocks before a band's edge. `y` must be inside the band.
++fn edge_roundoff(vein: &VeinType, y: i32) -> f64 {
++    let distance_from_edge = (vein.max_y - y).min(y - vein.min_y);
++    clamped_map(
++        distance_from_edge as f64,
++        0.0,
++        EDGE_ROUNDOFF_BEGIN,
++        MAX_EDGE_ROUNDOFF,
++        0.0,
++    )
++}
++
+ fn vein_state(
+     router: &NoiseRouterEvaluator,
+     caches: &ChunkCaches,
+     ore_factory: &oxide_noise::WorldPositionalFactory,
++    veininess: f64,
+     x: i32,
+     y: i32,
+     z: i32,
+ ) -> Option<&'static str> {
+-    let veininess = router.sample_in_chunk(caches, RouterSlot::VeinToggle, x, y, z);
+     let vein = if veininess > 0.0 { &COPPER } else { &IRON };
+ 
+     let distance_from_top = vein.max_y - y;
+@@ -204,16 +300,7 @@ fn vein_state(
+     }
+ 
+     let veininess_ridged = veininess.abs();
+-    let distance_from_edge = distance_from_top.min(distance_from_bottom);
+-    // Fades veins out over the last 20 blocks before a band's edge.
+-    let edge_roundoff = clamped_map(
+-        distance_from_edge as f64,
+-        0.0,
+-        EDGE_ROUNDOFF_BEGIN,
+-        MAX_EDGE_ROUNDOFF,
+-        0.0,
+-    );
+-    if veininess_ridged + edge_roundoff < VEININESS_THRESHOLD {
++    if veininess_ridged + edge_roundoff(vein, y) < VEININESS_THRESHOLD {
+         return None;
+     }
+ 

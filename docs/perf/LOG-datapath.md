@@ -561,3 +561,33 @@ fact key.
 `BENCH chunks=1089 threads=8 secs=2.054 cps=530.1 ms_per_chunk_core=15.09 digest=a977961a58122047`
 `BENCH chunks=1089 threads=8 secs=1.796 cps=606.3 ms_per_chunk_core=13.19 digest=a977961a58122047`
 Inconclusive. Waiting for an interleaved A/B against the head. Tests: chunkgen 189 passed.
+
+### E16 kept, E17 rejected: three-way interleaved A/B
+
+One exclusive hold, three rounds of head, E16 and E17 in turn; load average falling from 4.3 to 1.4:
+
+| | round 1 | round 2 | round 3 | mean |
+|---|---|---|---|---|
+| head 689eb30 | 558.1 | 592.1 | 592.6 | 580.9 |
+| E16 surface folding | 567.9 | 605.2 | 639.7 | 604.3 |
+| E17 carvers + ore | 544.4 | 529.8 | 579.7 | 551.3 |
+
+All nine `digest=a977961a58122047`. Caveat: the head binary on the box was the build with
+`--features profile` (pprof linked in, profiler inactive without `--profile-out`).
+
+**E16 kept**: ahead in all three rounds, +4.0%. Tests: chunkgen 189 passed.
+
+**E17 rejected**: behind in all three rounds, -5.1%.
+- Carvers: each cave tunnel's walk was recorded once per thread and replayed per chunk, with
+  a padded bounding-box skip.
+- Ore veins: `vein_toggle` read through whole-cell `sample_cell`; the gap between the bands
+  skipped; a per-type edge-roundoff bound on the veinless-cell test.
+- The exactness arguments hold (a tunnel walk reads only its own RNG and inputs; all ore skips
+  drop positions where `vein_state` returns nothing). The cost is most likely the thread-local
+  `HashMap` lookup and `Rc` clone per tunnel per chunk, against a walk that was cheap.
+- The two halves were not measured apart. If anyone retries, try the ore half alone first.
+- Diff kept at `docs/perf/rejected-E17-tunnel-replay-and-vein-cells.diff`.
+
+Also from the sub-agent: a per-cell `vein_ridged >= 0` skip cannot be bounded today.
+`vein_ridged` is `abs`/`max` over interpolated nodes, and `Program::cell_bounds` returns `None`
+for `abs`. Interval rules for `abs` would be a small change in the noise crate.
