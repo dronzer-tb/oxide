@@ -133,6 +133,15 @@ pub fn apply_ore_veins(
         }
     }
 
+    // The six states a vein can place, built once per chunk, and per section the palette
+    // index each has once written there (`u32::MAX` = not yet). A vein block used to build a
+    // fresh `BlockState` and hash it into the palette on every write.
+    let states: Vec<BlockState> = VEIN_BLOCKS
+        .iter()
+        .map(|name| BlockState::new(ResourceLocation::minecraft(*name)))
+        .collect();
+    let mut palette_index = vec![u32::MAX; chunk.sections.len() * VEIN_BLOCKS.len()];
+
     for y in band_min.max(min_y)..=band_max.min(min_y + height - 1) {
         let Some(section_index) = section_of(settings, y) else {
             continue;
@@ -161,8 +170,16 @@ pub fn apply_ore_veins(
                 {
                     continue;
                 }
-                if let Some(state) = vein_state(router, caches, &ore_factory, block_x, y, block_z) {
-                    set_block(chunk, settings, local_x, y, local_z, state);
+                if let Some(name) = vein_state(router, caches, &ore_factory, block_x, y, block_z) {
+                    let id = vein_block_id(name);
+                    let cached = &mut palette_index[section_index * VEIN_BLOCKS.len() + id];
+                    let block_states = &mut chunk.sections[section_index].block_states;
+                    // Interned on this section's first write of the state, exactly where the
+                    // old per-block `set` would have added it, so palette order is unchanged.
+                    if *cached == u32::MAX {
+                        *cached = block_states.index_of_or_insert(states[id].clone());
+                    }
+                    block_states.set_index(local_index(local_x, local_y, local_z), *cached);
                 }
             }
         }
@@ -176,7 +193,7 @@ fn vein_state(
     x: i32,
     y: i32,
     z: i32,
-) -> Option<BlockState> {
+) -> Option<&'static str> {
     let veininess = router.sample_in_chunk(caches, RouterSlot::VeinToggle, x, y, z);
     let vein = if veininess > 0.0 { &COPPER } else { &IRON };
 
@@ -224,9 +241,27 @@ fn vein_state(
         } else {
             vein.ore
         };
-        return Some(BlockState::new(ResourceLocation::minecraft(name)));
+        return Some(name);
     }
-    Some(BlockState::new(ResourceLocation::minecraft(vein.filler)))
+    Some(vein.filler)
+}
+
+/// Every block name a vein can place: the index into this is the id `apply_ore_veins` keys
+/// its per-section palette cache on.
+const VEIN_BLOCKS: [&str; 6] = [
+    COPPER.ore,
+    COPPER.raw_ore_block,
+    COPPER.filler,
+    IRON.ore,
+    IRON.raw_ore_block,
+    IRON.filler,
+];
+
+fn vein_block_id(name: &'static str) -> usize {
+    VEIN_BLOCKS
+        .iter()
+        .position(|known| *known == name)
+        .expect("vein_state only returns names from VEIN_BLOCKS")
 }
 
 /// Vanilla `Mth.clampedMap`.
@@ -247,22 +282,4 @@ fn section_of(settings: &NoiseGeneratorSettings, y: i32) -> Option<usize> {
         return None;
     }
     Some(((y - min_y) / 16) as usize)
-}
-
-fn set_block(
-    chunk: &mut ChunkData,
-    settings: &NoiseGeneratorSettings,
-    x: usize,
-    y: i32,
-    z: usize,
-    state: BlockState,
-) {
-    let Some(index) = section_of(settings, y) else {
-        return;
-    };
-    let Some(section) = chunk.sections.get_mut(index) else {
-        return;
-    };
-    let local_y = (y - settings.noise.min_y).rem_euclid(16) as usize;
-    section.block_states.set(local_index(x, local_y, z), state);
 }

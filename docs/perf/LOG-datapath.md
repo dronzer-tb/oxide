@@ -252,3 +252,19 @@ anyone wants the code smaller.
 Also from this pair: the run-to-run spread inside one exclusive hold on a quiet box is still
 ~15% (386 vs 459 for the same binary). Single-run comparisons cannot resolve gains under
 ~10%.
+
+### E9: ore veins write by palette index -- kept, gain not established
+
+Worktree `/tmp/datapath-4`, bench name `datapath-4`. Written by the master: the OmniRoute
+worker it was meant for failed to start. `vein_state` returns the static block name, and the
+six vein states are built once per chunk. Each section interns a state on its first write
+(the same place the old per-block `set` added it, so palette order is unchanged), then
+writes by index. No `BlockState` is built or hashed per vein block any more.
+
+Base (merged head): 386 to 459 in the E4 A/B.
+Run 1: `BENCH chunks=1089 threads=8 secs=2.544 cps=428.0 ms_per_chunk_core=18.69 digest=a977961a58122047`
+Run 2: `BENCH chunks=1089 threads=8 secs=5.261 cps=207.0 ms_per_chunk_core=38.65 digest=a977961a58122047` -- invalid: the box's 5- and 15-minute load averages were 21 and 25 while this exclusive run timed, so something ran outside the lock
+Run 3: `BENCH chunks=1089 threads=8 secs=2.396 cps=454.5 ms_per_chunk_core=17.60 digest=a977961a58122047`
+
+Inside the base's range. Kept as strictly less work with the digest unchanged. Run 1 came
+before the tests (launched before the tests-first rule). Tests: chunkgen 189 passed.
