@@ -342,3 +342,30 @@ All six `digest=a977961a58122047`. E8-E10 together add about 4% over E11, ahead 
 three pairs: small, but it agrees with keeping them. Reference for the next round:
 **~479 cps, ~16.7 ms core per chunk** (session start: 138.2 cps, 57.9 ms). M1 (400 cps) is
 passed; M2 is 1,000.
+
+### Profile of the combined head (6b8562f; 1 thread, radius 8, 15.9 ms per chunk)
+
+Shares of generation time:
+
+| Share | Where | Owner |
+|---|---|---|
+| 36.0% | corner-grid build (Perlin) | noise |
+| 18.8% | aquifer: `compute_kind` 10.3%, `preliminary_surface_level` 8.5% | datapath |
+| 13.7% | surface pass | datapath |
+| 8.0% | carvers (2.3% of it in the aquifer) | datapath |
+| 5.9% | ore veins | datapath |
+| 5.6% | fill loop self | datapath |
+| 6.2% | biomes: search 4.1%, climate sampling 2.1% | datapath |
+| 4.7% | `run_cell` (per-block density blend) | noise |
+
+Round 2 of sub-agents, all based on 6b8562f, with disjoint file boundaries:
+- `datapath-5`: `aquifer.rs`, covering `compute_kind` and `preliminary_surface_level`. Warned that
+  a cross-chunk cache is exact only if the value is shown not to depend on which chunk's
+  caches sampled it.
+- `datapath-6`: `surface.rs`, round 2 (skip positions no rule can match; dispatch cost).
+- `datapath-7`: `biome_grid.rs`, `fill.rs` and `oxide-biome/src/search.rs` (search layout; fill loop self
+  time). Tie rule and visit order are load-bearing; no `lastResult` seeding.
+
+Process fix: my VPS helper ran profile builds under `flock -s` at nice 0. Every locked
+command on the box now runs as `flock -s ... nice -n 10 sh -c '...'`, the profiled run
+included.
