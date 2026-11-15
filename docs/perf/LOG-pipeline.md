@@ -792,3 +792,33 @@ timers do not wrap, so ore rows show set_block=0 and their cost is in the featur
 
 Next targets in order: sculk's 14k `block` reads per run, then the four lush-cave features (they
 read about 1.3-1.6M cells each, mostly `is` + `block` on the same cave ceilings and floors).
+
+## Sculk: each state described once per run, veins written by id; kept, -7.8% decorate
+
+**Change** (cherry-picked from sub-agent commit 74178ec; mainly `decorator/cave/sculk.rs`):
+- Every read goes through `block_keyed` into a 256-slot per-`place()` cache keyed by `StateKey`. A miss
+  records everything sculk asks of the state at once: sculk/vein, blocker, water, fire, both
+  replaceable tags, inhibitor, waterlogged, six faces, all fact bits.
+- Face checks, the 243-cell inhibitor scan in `canPlaceGrowth`, movement and substrate checks,
+  `onDischarged` and `attemptPlaceSculk` read each cell once.
+- Veins are named by face mask + waterlogged and interned on first use; sculk, water, air,
+  sensor/shrieker likewise. All writes go through `set_block_id`, so no clone or hash per step.
+- Exactness guards: `compile` refuses a default vein that is not the 7 properties all `false`; a vein
+  read from the world with any other properties takes the old state path. Draws, write order and
+  written states are unchanged, including writes that leave a block as it was.
+- **Outside this track's files:** 8 lines in `crates/oxide-datapack/src/block_facts.rs` add
+  `BlockFacts::bits(state)` (every fact with one hash lookup). Three sculk-only helpers in
+  `decorator/cave/support.rs` are removed; `VOID_AIR` in `context.rs` is `pub(crate)`.
+
+**Hold** (`bench-ab-pregen-vps.sh 16 1 3 pipeline-mb2 pipeline-sk2`, rows 1794766877). Both trees are
+this branch at 4e1b187 merged with origin/perf/datapath **c38344f** (scratch merge b36dcf1).
+
+| | run 1 | run 2 | run 3 | mean |
+|---|---|---|---|---|
+| base decorate_ms | 13519 | 13447 | 13603 | 13523 |
+| sculk decorate_ms | 12330 | 13049 | 12014 | 12464 |
+| java_cpu_pct (1 java process, 1 s sample at round start) | 110 | 132 | 206 | |
+
+-7.8%, ahead 3/3, df701ee858e2bdd3 on every row. The Java server was using 1.1-2.1 cores during the
+hold; with 1-thread alternating rounds both trees saw the same load. Tests on the merged tree:
+chunkgen 194 pass (1 ignored), pregen pass.
