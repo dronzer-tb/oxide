@@ -373,3 +373,23 @@ so there is no hold.
 | # | What | Hold | Bases (s per run, median) | Patched | Digest | Verdict |
 |---|---|---|---|---|---|---|
 | 14 (noise-8) | Corner grid a column at a time (`Program::run_lanes`, experiment 5's structure, now with `GatedAdd` per lane) and lane-batched Normal/Perlin/Blended noise. Each octave reuses the last lane's 8 lattice hashes when `(i, j, k)` is unchanged (`ImprovedNoise::noise_with_scale_reusing`), with the float work unchanged. Measured reuse on the real datapack: Perlin octaves 0.845, blended 0.340, all 0.648 (`hash-stats` feature). Tests: noise 37 (3 new bit-identity tests), chunkgen 190 + 3 | 1 thread, 5 rounds, base + fresh base2 + batch, one exclusive hold (load 5.78 at start) | base 10.963, base2 11.208 (2.2% apart; 0.1% without base2's outlier round 4) | 10.667 | a977961a58122047 all fifteen | **inconclusive, not landed yet**: ahead of base in 5/5 and base2 in 4/5, but -2.7% / -4.8% by median, under the 5% bar. Patch kept at `docs/perf/wip/noise-8-column-batch-hash-reuse.patch`. A 7-round confirmation hold with two fresh bases is running |
+
+### For datapath: APIs in flight that cut surface and aquifer sampling (handover item 3)
+
+From datapath's latest profile (11ccdeb, 1 thread): surface 16.5% (2.4% of it `column_state`
+noise), aquifer 12.9% (fill 10.5%). Today the aquifer reaches this crate through
+`router.sample(...)` with no caches (`Erosion`/`Depth` in `surface_level`, `Lava` per cell,
+`Barrier` lazily per block pair), so every cache node evaluates straight through. The surface
+samples 2D `NormalNoise`s directly at `(x, 0.0, z)`. Two sub-agents work on trees merged with
+datapath b55a3b2:
+- `noise-9`: profiles the aquifer's noise share per slot, then adds ONE narrow exact API in
+  `oxide-noise` for the largest part. One candidate is a per-slot column memo of a program's
+  y-independent ops (depth's offset spline), with the y-dependent ops run per call in their
+  original order. The minimal `aquifer.rs` caller change is kept as a separate diff for datapath
+  to land.
+- `noise-10`: an exact 2D fast path inside `ImprovedNoise`, with no API change. For y = +/-0.0,
+  `y_scale == 0` and `yo != 0`, `d1 == yo` exactly, so the y lattice coordinate, fraction, fade
+  and y hashes are instance constants. It speeds up the surface noises, climate, `continents`,
+  `erosion`, `ridges` and the shift noises without any caller change.
+Both are judged on a 5-round 1-thread hold against two fresh base builds (bar: >5% against both,
+or ahead in every round). What lands, and the caller diff to take, will be stated here.
