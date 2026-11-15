@@ -1421,3 +1421,22 @@ six heightmaps, packed, in a fixed order). They must match between the two commi
 Either fold the palette and heightmap hashes into the `digest=` field, or print them as extra
 `BENCH` fields, so `bench-vps.sh` records them and every track's changes are checked for them.
 A new gate value then has to be established once, at a commit everyone agrees on.
+
+### Interim gate (auditor): pregen NBT digest for every kept terrain change
+
+The auditor is taking the harness change to the user; the harness has no owner, so it is not committed here. Interim evidence: pipeline's pregen digest (blake3 over
+the chunk NBT) was `df701ee858e2bdd3` at radius 16 on every merge with datapath up to 2127bd7.
+That covers whatever of palettes, biomes and heightmaps the NBT carries, for E1-E28.
+
+From now on, every kept terrain change also gets one `oxide-pregen --no-write` run, on a tree merged
+with `origin/perf/pipeline`, under the shared lock, with the digest logged. A scratch merge
+(head a95c316 + perf/pipeline d7d5ea8; `scripts/bench-vps.sh` conflict taken from pipeline,
+never pushed) is ready in `/tmp/datapath-pg`. It runs at radius 16, so it compares directly
+against `df701ee858e2bdd3`. The only terrain change on this branch since 2127bd7 is the
+3362440 noise merge.
+
+Order once the box is back (~15:55 UTC):
+1. the scaling sub-agent's 8-thread hold, 0f15cef against b1f77a6. The 392.9 row was timed at
+   14:56 UTC, minutes before the reservation, so it is suspect;
+2. the queued throwaway palette/heightmap check, 3fd5cf6 against 0f15cef;
+3. the pregen r16 digest on `/tmp/datapath-pg`.
