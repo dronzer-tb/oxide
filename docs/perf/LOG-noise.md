@@ -106,3 +106,10 @@ crate. Gate: on the merged tree, the patched digest equals the baseline digest.
 OmniRoute is no longer used, at the user's direction (too slow). It was also down for every
 listed model when tried: gemini flash over quota, `auto/kimi` without tool calls, kimi-web's
 upstream token expired, deepseek and gemini-pro returning empty answers.
+
+| # | What | Before (cps) | After (cps) | Digest | Verdict |
+|---|---|---|---|---|---|
+| 5 (noise-1) | Corner grid a column at a time: `Program::run_lanes` + lane-batched Perlin/Normal/Blended noise with octave-outer loops, bit-identity test added | 415.0 (merged with datapath b7e9f59, A/B baseline) | 401.1 | a977961a58122047 both | **rejected**: exact, but no gain. Overlapping lanes did not pay for the extra lane arrays and `Vec` traffic. Interleaving lanes in scalar code is not enough; real SIMD (AVX2 gathers, which are slow on Zen 1) would be needed, or less noise work per corner |
+
+Merged-tree baseline (this branch + `perf/datapath`): **415.0 cps**, digest a977961a58122047.
+New experiments are judged against that.

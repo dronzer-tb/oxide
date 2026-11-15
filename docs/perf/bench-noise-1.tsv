@@ -1,0 +1,3 @@
+1794713656	bc60b65+	16	chunks=1089 threads=8 secs=5.863 cps=185.7 ms_per_chunk_core=43.07 digest=a977961a58122047
+1794714912	b7e9f59+	16	chunks=1089 threads=8 secs=2.715 cps=401.1 ms_per_chunk_core=19.95 digest=a977961a58122047
+1794715524	b7e9f59	16	chunks=1089 threads=8 secs=2.624 cps=415.0 ms_per_chunk_core=19.27 digest=a977961a58122047
