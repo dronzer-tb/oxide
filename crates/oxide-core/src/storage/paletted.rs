@@ -4,6 +4,15 @@ use super::{ceil_log2, pack_bits};
 use ahash::AHashMap;
 use std::hash::Hash;
 
+/// Palettes at or below this many entries are searched linearly; a reverse-lookup map is only
+/// built once a palette outgrows it. Most sections hold a handful of states, and for those a
+/// few equality checks beat hashing a value -- and a map per container is an allocation per
+/// section that most sections never needed.
+const LINEAR_PALETTE_MAX: usize = 8;
+
+/// Backing for [`PalettedContainer::indices`] while a container holds only its default value.
+static ZERO_INDICES: [u32; 4096] = [0; 4096];
+
 /// A fixed-size grid of `T` values stored as indices into a deduplicated palette, matching
 /// vanilla's `PalettedContainer`. `min_bits` is the floor applied to `bits_per_entry` once the
 /// palette holds more than one value (4 for block states, 1 for biomes); a single-value
@@ -13,24 +22,30 @@ pub struct PalettedContainer<T> {
     size: usize,
     min_bits: u8,
     palette: Vec<T>,
-    /// Palette index per slot, `size` entries long.
+    /// Palette index per slot: `size` entries long, or empty while every slot still holds
+    /// palette index 0. A chunk is mostly sections that never leave their default (the air
+    /// above the terrain), and those never pay for or touch 16 KiB of indices.
     data: Vec<u32>,
-    /// Reverse lookup `value -> palette index`, kept in sync with `palette`.
-    index_of: AHashMap<T, u32>,
+    /// Reverse lookup `value -> palette index`, kept in sync with `palette` once it exists; see
+    /// [`LINEAR_PALETTE_MAX`].
+    index_of: Option<AHashMap<T, u32>>,
 }
 
 impl<T: Clone + Eq + Hash> PalettedContainer<T> {
     /// Creates a container with `size` entries, all initially `default`, and a floor of
     /// `min_bits` on the packed bit width once more than one distinct value is present.
     pub fn new(size: usize, min_bits: u8, default: T) -> Self {
-        let mut index_of = AHashMap::default();
-        index_of.insert(default.clone(), 0);
         Self {
             size,
             min_bits,
             palette: vec![default],
-            data: vec![0; size],
-            index_of,
+            // Sizes the shared zero slice cannot stand in for are materialised up front.
+            data: if size <= ZERO_INDICES.len() {
+                Vec::new()
+            } else {
+                vec![0; size]
+            },
+            index_of: None,
         }
     }
 
@@ -43,7 +58,7 @@ impl<T: Clone + Eq + Hash> PalettedContainer<T> {
     }
 
     pub fn get(&self, index: usize) -> &T {
-        &self.palette[self.data[index] as usize]
+        &self.palette[self.indices()[index] as usize]
     }
 
     pub fn set(&mut self, index: usize, value: T) {
@@ -59,20 +74,47 @@ impl<T: Clone + Eq + Hash> PalettedContainer<T> {
     /// caller must not resolve an index for a value it may end up never storing: the palette is
     /// part of the serialized chunk.
     pub fn index_of_or_insert(&mut self, value: T) -> u32 {
-        match self.index_of.get(&value) {
-            Some(&i) => i,
-            None => {
-                let i = self.palette.len() as u32;
-                self.palette.push(value.clone());
-                self.index_of.insert(value, i);
-                i
-            }
+        let known = match &self.index_of {
+            Some(map) => map.get(&value).copied(),
+            None => self
+                .palette
+                .iter()
+                .position(|entry| *entry == value)
+                .map(|i| i as u32),
+        };
+        if let Some(i) = known {
+            return i;
         }
+        let i = self.palette.len() as u32;
+        self.palette.push(value.clone());
+        match &mut self.index_of {
+            Some(map) => {
+                map.insert(value, i);
+            }
+            None if self.palette.len() > LINEAR_PALETTE_MAX => {
+                self.index_of = Some(
+                    self.palette
+                        .iter()
+                        .enumerate()
+                        .map(|(i, entry)| (entry.clone(), i as u32))
+                        .collect(),
+                );
+            }
+            None => {}
+        }
+        i
     }
 
     /// Stores an already-resolved palette index. `palette_index` must have come from
     /// [`Self::index_of_or_insert`] on this same container.
     pub fn set_index(&mut self, index: usize, palette_index: u32) {
+        if self.data.is_empty() {
+            assert!(index < self.size, "slot {index} out of range");
+            if palette_index == 0 {
+                return;
+            }
+            self.data = vec![0; self.size];
+        }
         self.data[index] = palette_index;
     }
 
@@ -85,7 +127,11 @@ impl<T: Clone + Eq + Hash> PalettedContainer<T> {
     /// [`Self::palette`] is what lets a whole-section scan classify blocks without comparing
     /// `T` values one at a time.
     pub fn indices(&self) -> &[u32] {
-        &self.data
+        if self.data.is_empty() {
+            &ZERO_INDICES[..self.size]
+        } else {
+            &self.data
+        }
     }
 
     /// Packed bit width per entry: `0` for a single-value palette, otherwise
@@ -101,7 +147,10 @@ impl<T: Clone + Eq + Hash> PalettedContainer<T> {
     /// Exports vanilla's packed-`i64` representation: entries never span a long boundary, and
     /// a single-value palette produces zero data longs.
     pub fn to_packed_longs(&self) -> Vec<i64> {
-        pack_bits(self.data.iter().map(|&v| v as u64), self.bits_per_entry())
+        pack_bits(
+            self.indices().iter().map(|&v| v as u64),
+            self.bits_per_entry(),
+        )
     }
 }
 
@@ -180,7 +229,36 @@ mod tests {
             let word = longs[i / entries_per_long] as u64;
             let offset = (i % entries_per_long) * 5;
             let idx = (word >> offset) & 0x1F;
-            assert_eq!(c.palette()[idx as usize], c.data[i] as u8);
+            assert_eq!(c.palette()[idx as usize], c.indices()[i] as u8);
+        }
+    }
+
+    #[test]
+    fn a_default_only_container_reads_as_all_zero_indices() {
+        let mut c: PalettedContainer<u8> = PalettedContainer::new(4096, 4, 7);
+        assert_eq!(c.indices().len(), 4096);
+        assert!(c.indices().iter().all(|&i| i == 0));
+        // Writing the default back keeps it that way; writing anything else must not disturb
+        // the other slots.
+        c.set(5, 7);
+        assert!(c.indices().iter().all(|&i| i == 0));
+        c.set(9, 3);
+        assert_eq!(*c.get(9), 3);
+        assert_eq!(*c.get(8), 7);
+        assert_eq!(c.indices().iter().filter(|&&i| i != 0).count(), 1);
+    }
+
+    #[test]
+    fn palette_lookup_survives_the_switch_to_a_map() {
+        let mut c: PalettedContainer<u16> = PalettedContainer::new(64, 1, 0);
+        for round in 0..2 {
+            for i in 0..40u16 {
+                c.set(i as usize, i);
+            }
+            assert_eq!(c.palette().len(), 40, "round {round}");
+        }
+        for i in 0..40u16 {
+            assert_eq!(*c.get(i as usize), i);
         }
     }
 

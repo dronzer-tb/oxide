@@ -140,3 +140,33 @@ unchanged; the size of the gain is not established. Tests: chunkgen 189 passed.
 Measurement note: with foreign load on the box a single wall-clock run can be 30% low.
 From here each experiment also records the harness's user+sys CPU seconds, which waiting
 for a core does not inflate.
+
+### E5: `PalettedContainer` without per-section index arrays or maps -- kept, gain small
+
+`oxide-core/src/storage/paletted.rs`: a container that still holds only its default value
+keeps no index array; `indices()` hands out a shared static zero slice. Sections that stay
+all air (most of the 24 in a chunk) no longer allocate and zero 16 KiB. Palettes up to 8
+entries are searched linearly, and the `AHashMap` reverse lookup is only built past that.
+Public API and behaviour unchanged; two new tests cover the empty-index path and the switch
+from linear search to the map. Tests: core 20, anvil 6, chunkgen 189 passed.
+
+Before (E4): `cps=291.3`, `204.6`, `218.5` (noisy box)
+After:  `BENCH chunks=1089 threads=8 secs=3.521 cps=309.3 ms_per_chunk_core=25.86 digest=a977961a58122047`
+Repeat: `BENCH chunks=1089 threads=8 secs=3.921 cps=277.7 ms_per_chunk_core=28.81 digest=a977961a58122047`
+Repeat: `BENCH chunks=1089 threads=8 secs=4.220 cps=258.1 ms_per_chunk_core=31.00 digest=a977961a58122047`
+
+CPU seconds for the whole harness process, radius 16, 8 threads, 2 runs each (this includes
+the ~25 s single-threaded digest pass, so it dilutes the generation difference):
+before user 63.2 / 57.5 s, sys 2.4 / 1.7 s; after user 54.8 / 58.7 s, sys 1.1 / 1.2 s.
+Sys time halved (less page zeroing). The generation difference is a few percent at most and
+not separable from the noise. Kept: strictly less memory and work, digest unchanged.
+
+### Next three (written 2026-11-15 after E5, on request)
+
+The log had no handover list yet; this is what is pending, in order:
+
+1. Auditor ask: put a margin on the strict-bound skips (fill's all-air cells, E4's veinless
+   cells), so each skip is provable under float rounding rather than relying on the digest.
+2. Merge `origin/perf/noise` (whole-cell `final_density` via `sample_cell`, cell-bounds
+   fixes) and bench the merge as the first combined number, with a repeat.
+3. Auditor ask: confirm or refute E4's gain on a quiet box, by A/B against E4 reverted.
