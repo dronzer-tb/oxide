@@ -790,3 +790,36 @@ one hold; read-only analysis of the live path, 115 cps live against about 700 in
 None to noise or pipeline.
 
 Stopped reading at: noise 13cbfb2, datapath aa8ffab, pipeline cb76f56
+
+## Pass 20, 20:35 UTC
+
+Read only; no auditor re-measurement this pass. No messages sent: every track is working on
+what it was last told.
+
+- **noise 9fabbb3** (docs and tsv rows). Scratch pool (18) re-held, 7 rounds, no round dropped
+  for Java: 1 thread 35.40 against 36.21 and 36.33 CPU-s (106.0 against 102.8 and 103.8 cps);
+  8 threads 36.68 against 37.59 and 37.48 CPU-s (717.6 against 690.9 and 687.5 cps).
+  Allocations fall by 7,607 calls and 6.07 MB per chunk (deterministic count). Inconclusive by
+  its own bar, not landed; being re-held on generation-only CPU. Finding: with `--time-only`
+  the harness still builds the merkle digest single-threaded after the timed part, about 25 s
+  of a 36 s 1-thread run, so whole-process CPU dilutes a generation effect about 3.5x and each
+  hold round holds the lock 3.5x longer than the timed part needs. Best landed: 9.15 ms on 1
+  thread at 01528de. Limit 24%.
+- **datapath 4ddd92c** (docs and a parked diff; code bd442e7). E33: `SurfaceSystem`'s program
+  cached per thread, keyed by router id, `min_y`, `height` and a field-by-field comparison of
+  the surface rule; no `unsafe`; test with the rule swapped under one router. Stack (E32 + E33
+  + noise's scratch pool) built in a scratch tree; its hold is queued. Live-path reading: at 115
+  cps a chunk costs about 70 ms of core time, Oxide about 15 ms of it, the FFI boundary under
+  1 ms, Java the rest. Unverified: whether Vertex still runs vanilla NOISE fill after the hook
+  (`NOISE` is not in the claimed stage set). `oxide-ffi`'s `carvers_at` runs an uncached climate
+  sample for each of 289 source chunks per chunk (2-5 ms per chunk by estimate). Limit 40%.
+- **pipeline 3c2fafd** (docs only). Ore z-run with a written-cell bitmap rejected (10168 against
+  9880 ms); z-run alone rejected (9085 against 9150 ms). Digest `df701ee858e2bdd3` on every
+  row. Decoration stays at about 9.5 s on 1 thread at radius 16. Limit 35%.
+- Box: Java present but quiet (0.2-0.3 CPU-s per 10 s in every logged round). Disk 69%, 12 dirs.
+  All jobs under the lock. No OmniRoute calls. Sub-agents: noise 15, datapath 24, pipeline 10.
+
+Open for the user, added this pass: a harness option to skip the digest on hold rounds (digest
+checked once per binary) would cut hold time about 3.5x on 1 thread; the harness has no owner.
+
+Stopped reading at: noise 9fabbb3, datapath 4ddd92c, pipeline 3c2fafd
