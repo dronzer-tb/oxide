@@ -11,10 +11,38 @@ use std::cell::{Cell, OnceCell};
 
 use ahash::AHashMap;
 
-use oxide_core::{BiomeId, BlockPos, BlockState, ChunkData, ChunkPos, HeightmapType};
+use oxide_core::{BiomeId, BlockPos, BlockState, ChunkData, ChunkPos, Heightmap, HeightmapType};
 use oxide_datapack::{BlockFact, BlockFacts};
 
 use crate::fill::local_index;
+
+/// Columns across the 3x3-chunk window.
+const WINDOW: usize = 48;
+/// `written_top` for a column decoration has not written.
+const NEVER_WRITTEN: i32 = i32::MIN;
+/// Writes to reserve room for up front: a region averages about 7.5k at radius 16.
+const RESERVED_WRITES: usize = 8192;
+
+/// The six heightmap kinds as indices into a per-chunk table.
+fn kind_index(kind: HeightmapType) -> usize {
+    match kind {
+        HeightmapType::WorldSurface => 0,
+        HeightmapType::WorldSurfaceWg => 1,
+        HeightmapType::OceanFloor => 2,
+        HeightmapType::OceanFloorWg => 3,
+        HeightmapType::MotionBlocking => 4,
+        HeightmapType::MotionBlockingNoLeaves => 5,
+    }
+}
+
+const KINDS: [HeightmapType; 6] = [
+    HeightmapType::WorldSurface,
+    HeightmapType::WorldSurfaceWg,
+    HeightmapType::OceanFloor,
+    HeightmapType::OceanFloorWg,
+    HeightmapType::MotionBlocking,
+    HeightmapType::MotionBlockingNoLeaves,
+];
 
 /// One block write a decoration made, in world coordinates.
 pub type BlockWrite = (BlockPos, BlockState);
@@ -36,8 +64,11 @@ pub struct DecorationRegion<'a> {
     /// Per terrain section (`chunk * sections + section`), per palette entry, the facts already
     /// answered for that entry; made on the section's first fact query.
     terrain_facts: Vec<OnceCell<Box<[FactCache]>>>,
-    /// Highest written Y per column: a column with no entry still has its terrain heights.
-    written_top: AHashMap<(i32, i32), i32>,
+    /// Per chunk (as `chunks`), per kind (as [`kind_index`]), the terrain's stored heightmap.
+    heightmaps: [[Option<&'a Heightmap>; 6]; 9],
+    /// Highest written Y per column of the window, `(z - min_z) * 48 + (x - min_x)`;
+    /// [`NEVER_WRITTEN`] for a column that still has its terrain heights.
+    written_top: Box<[i32]>,
 }
 
 impl<'a> DecorationRegion<'a> {
@@ -52,14 +83,23 @@ impl<'a> DecorationRegion<'a> {
             facts,
             min_y: middle.min_y,
             height: middle.height,
-            overlay: AHashMap::new(),
-            writes: Vec::new(),
-            write_facts: Vec::new(),
+            overlay: AHashMap::with_capacity(RESERVED_WRITES),
+            writes: Vec::with_capacity(RESERVED_WRITES),
+            write_facts: Vec::with_capacity(RESERVED_WRITES),
             terrain_facts: (0..9 * middle.sections.len())
                 .map(|_| OnceCell::new())
                 .collect(),
-            written_top: AHashMap::new(),
+            heightmaps: chunks.map(|chunk| KINDS.map(|kind| chunk.heightmaps.get(&kind))),
+            written_top: vec![NEVER_WRITTEN; WINDOW * WINDOW].into_boxed_slice(),
         }
+    }
+
+    /// `written_top`'s index for a column inside the window.
+    fn column(&self, x: i32, z: i32) -> usize {
+        let dx = x - (self.center.x - 1) * 16;
+        let dz = z - (self.center.z - 1) * 16;
+        debug_assert!((0..WINDOW as i32).contains(&dx) && (0..WINDOW as i32).contains(&dz));
+        dz as usize * WINDOW + dx as usize
     }
 
     pub fn center(&self) -> ChunkPos {
@@ -169,8 +209,9 @@ impl<'a> DecorationRegion<'a> {
                 self.write_facts.push(FactCache::default());
             }
         }
-        let top = self.written_top.entry((pos.x, pos.z)).or_insert(pos.y);
-        *top = (*top).max(pos.y);
+        let column = self.column(pos.x, pos.z);
+        let top = &mut self.written_top[column];
+        *top = if *top == NEVER_WRITTEN { pos.y } else { (*top).max(pos.y) };
         true
     }
 
@@ -181,14 +222,18 @@ impl<'a> DecorationRegion<'a> {
     /// written column is rescanned, since vanilla keeps its heightmaps current block by block
     /// and a later feature must see the tree an earlier one planted.
     pub fn height(&self, kind: HeightmapType, x: i32, z: i32) -> Option<i32> {
-        let chunk = self.chunk_at(x, z)?;
-        let stored = chunk
-            .heightmaps
-            .get(&kind)
+        let dx = (x >> 4) - self.center.x;
+        let dz = (z >> 4) - self.center.z;
+        if !(-1..=1).contains(&dx) || !(-1..=1).contains(&dz) {
+            return None;
+        }
+        let chunk_index = ((dz + 1) * 3 + (dx + 1)) as usize;
+        let stored = self.heightmaps[chunk_index][kind_index(kind)]
             .map(|map| map.get((x & 15) as usize, (z & 15) as usize) + self.min_y);
-        let Some(&written_top) = self.written_top.get(&(x, z)) else {
+        let written_top = self.written_top[self.column(x, z)];
+        if written_top == NEVER_WRITTEN {
             return Some(stored.unwrap_or(self.min_y));
-        };
+        }
         let fact = height_fact(kind);
         let start = stored
             .unwrap_or(self.max_y())
