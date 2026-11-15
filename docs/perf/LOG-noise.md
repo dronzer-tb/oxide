@@ -399,3 +399,24 @@ Queued for after noise-9 and noise-10 are decided: datapath's request (its parke
 is a few lines on top of `is_y_independent`. Every exclusive hold of this track stays under
 ~5 minutes: 5 rounds x 3 binaries at 1 thread is ~3 minutes, and the noise-8 confirmation
 (7 x 3) ~4.
+
+### 14 (noise-8) confirmed and kept (01528de): 7-round hold, two fresh bases (load 1.22 at start, 1.38 at end, ~4 min)
+
+Radius 16, `--threads 1`, ms of core time per chunk. All 21 runs `digest=a977961a58122047`.
+The bases are b1e4a5c (65ba9fc, same crates) built twice; batch is the same head plus the patch,
+three-way merged. That is the tree landed as 01528de.
+
+| Build | r1 | r2 | r3 | r4 | r5 | r6 | r7 | Mean | Median |
+|---|---|---|---|---|---|---|---|---|---|
+| base | 10.07 | 10.16 | 9.55 | 9.35 | 9.34 | 10.18 | 9.77 | 9.774 | 9.770 |
+| base2 | 10.25 | 10.06 | 10.64 | 9.58 | 9.55 | 10.01 | 9.98 | 10.010 | 10.010 |
+| batch | 9.16 | 8.82 | 8.87 | 8.77 | 10.35 | 9.29 | 8.80 | 9.151 | 8.870 |
+
+**14 kept**: -6.4% against base and -8.6% against base2 by mean (-9.2% and -11.4% by median),
+ahead of both in 6 of 7 rounds (round 5 lost). The two bases are 2.4% apart, so this clears the
+5% bar against both, and agrees with the first hold (ahead of base 5/5, of base2 4/5). Tests on
+the landed tree: oxide-noise 38, oxide-chunkgen 190 + 1 + 1 + 1. Lattice-hash reuse on the real
+datapack: 0.648 of `ImprovedNoise` samples overall (Perlin octaves 0.845, blended 0.340),
+counted with the `hash-stats` cargo feature. That feature is off by default; when on, it adds a
+`HASH ...` line next to `CORNER` while `OXIDE_CORNER_STATS` is set. Batching alone (5) was
+break-even, and the gain is the reuse.
