@@ -420,3 +420,18 @@ Decoration (about 3.05 s) now takes more time than terrain generation (2.4-2.7 s
 plus the fatbench, pgo-gen, pgo-use and debug dirs under `pipeline/target`. The box is back to 12 GB free. It
 is still 94% full. ~/oxide-perf holds 73 GB, mostly the other tracks' numbered scratch dirs at
 about 2 GB each, and I left those alone. PGO scratch dirs are now deleted after each run.
+
+## PGO: one alternating hold at 1 thread (auditor's test)
+
+Noise merge a1f3a32, r16, 1 thread, release and PGO alternating in one exclusive hold
+(`OXIDE_PGO_AB=5 scripts/bench-pgo-vps.sh pipeline-merge2 16 1`; PGO trained on seed 999 r8,
+1 thread). Digest a977961a58122047 on all ten.
+
+    ms/chunk  release 11.37 10.46  9.95 10.12 10.59   mean 10.50
+              pgo      9.57  8.90  9.41  8.97  9.28   mean  9.23   (-12.1%, PGO ahead in 5/5)
+
+So PGO does show a gain on the code that would ship: about 12% of core time per chunk on one
+thread. The earlier 8-thread rows (593/685 against 632/658) were separate holds and too noisy to
+show it. An 8-thread alternating hold (5 rounds) is queued to decide whether the gain survives
+8 threads. If it does, PGO stays as an opt-in release step (about 7 min of build), still not the
+headline.
