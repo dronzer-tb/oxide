@@ -1560,3 +1560,56 @@ as well as generation. Those parts are identical work for every variant, so comp
 differences between variants; ratios are diluted. The master's helper (`ab2.sh`, scratchpad) does
 this. The scaling sub-agent is switched to it: 8 rounds, no more waiting for java, and the
 key-injectivity argument for the shared table first.
+
+### 8-thread scaling (`datapath-26`): final report; E32 shared surface table parked
+
+**Where the ~20% went.**
+- Mostly the box, not the code. The java server (up to 598% CPU) and other jobs run outside the bench
+  lock; in one 15:56 run, 8 threads got about 1.5 cores.
+- 0f15cef is not slower than b1f77a6 (750.5 against 728.5 cps).
+- Idle time is ~0.5%. In quiet rounds, CPU per chunk at 8 threads matches 1 thread (~9.6 ms).
+- Real extra CPU at 8 threads is ~8-12% of user+sys:
+  - fill +13% (5.72 to 6.46 ms per chunk);
+  - E18's per-thread memo rescanning other threads' columns (1.37% to 4.10% of CPU);
+  - the corner-column cache hit rate falls from 54% to 50% (~1%; lock waits 0.06%, so not contention).
+- About half the 8-thread rounds of every binary burn ~25% more CPU, cause unexplained. Host-level interference is
+  likely: steal reads 0 inside the VM.
+
+**E32: a table of preliminary-surface levels shared across threads, in `aquifer.rs`.**
+- Each entry is one `AtomicU64`. Bits 63..40 hold `qx`, bits 39..16 `qz`, both 24-bit two's complement
+  from `(x & !3) >> 2`. Bits 15..0 hold the level as an `i16`.
+- The table is used only when both `qx` and `qz` lie in [-2^23, 2^23), i.e. +-33.5M blocks, beyond
+  the +-30M world border. On that range the 24-bit truncation is a bijection, so the 48-bit key is
+  injective, and the full key is compared on every read. Columns outside the range skip the table.
+- Levels outside [-32767, 32767] are not stored. `i16::MIN` (0x8000) marks an empty entry and is never
+  stored, so an empty word never matches, including column (0, 0), whose key is 0.
+- There is one table per router, found by `router.id()`. Ids are never reused, and a router is
+  immutable after construction. The registry holds 8 routers: an evicted table stays alive in the
+  aquifers holding it, and a fresh table only ever receives its own router's values.
+- A single aligned atomic load or store can't tear, and `Relaxed` ordering suffices. Racing writers store the same
+  deterministic value. A direct-mapped collision overwrites, and the other column then misses.
+- The value is a function of (router, quart column) by the E13 argument, already relied on by E18.
+- New test `shared_surface_entries_are_exact`. Tests: chunkgen 193, core 57, biome 7, all passed.
+  `digest=a977961a58122047` on every run.
+
+Holds, CPU-seconds method with java CPU-seconds per run; a round is dropped when java used more than 0.2 times its wall time:
+- **8 threads, 8 rounds:** only 3 base and 2 fix rounds survived the java filter. Kept: base 717 cps
+  (37.38 CPU-s), fix 731 cps (36.49 CPU-s). All 16 runs: 692.4 against 691.1 cps, 37.56 against
+  37.08 CPU-s. No gain resolved.
+- **1 thread, 8 rounds, all kept** (java 0.66-1.76 CPU-s per ~35 s run): median 9.63 s against 9.78 s,
+  CPU 34.84 against 35.31 s. It costs 0 to ~1.5%, inside the spread.
+
+**Parked, not landed:** no measured gain, and it adds cross-thread state. The diff is at
+`docs/perf/parked-E32-shared-surface-table.diff`. Retry it at 8 threads once the box is quiet: the
+profile says it removes ~2% of CPU there.
+
+**For other tracks:**
+- noise: fill makes ~7.2k allocations and 6 MB per chunk, mostly scratch `regs`/`vec!` buffers in every
+  `Program::run_cell` / `run_lanes` call. Reuse them per thread or per `ChunkCaches`. The
+  `CornerColumns` shards are 104 bytes apart, not padded to 64; padding is cheap but worth well
+  under 1%.
+- harness: `carvers_at` clones the carver Vec 289 times per chunk (~2.7k allocations).
+  `SurfaceSystem::new` runs per chunk (~0.18 ms, ~2%) and needs an API to build once per thread.
+
+The sub-agent deleted `datapath-26b` and `-26c`; `datapath-26` is deleted now.
+Housekeeping noted by the sub-agent: two retry loops took the exclusive lock for ~2 s each and aborted with nothing timed.
