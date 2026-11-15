@@ -177,6 +177,11 @@ pub fn store(path: &Path, map: &ProvenanceMap) -> Result<(), AnvilError> {
     atomic_write(path, &map.to_bytes())
 }
 
+/// [`store`] with the flush to disk optional, for the bulk region writer.
+pub(crate) fn store_with(path: &Path, map: &ProvenanceMap, sync: bool) -> Result<(), AnvilError> {
+    crate::region::write_then_rename(path, &map.to_bytes(), sync)
+}
+
 /// Read-modify-write the sidecar for `region_path` to set the bit for `pos`, without acquiring
 /// [`RegionGuard`] — for callers that already hold the guard for `region_path` (the region write
 /// paths in [`crate::region`]), so the sidecar update happens under the same critical section as

@@ -23,6 +23,12 @@ pub enum AnvilError {
         pid: u32,
     },
 
+    #[error("chunk {x},{z} is {bytes} bytes compressed, more than a region file can hold")]
+    ChunkTooLarge { x: i32, z: i32, bytes: usize },
+
+    #[error("chunk {x},{z} does not belong in region file {path}")]
+    WrongRegion { x: i32, z: i32, path: PathBuf },
+
     #[error("lock file {0} is malformed")]
     MalformedLock(PathBuf),
 
