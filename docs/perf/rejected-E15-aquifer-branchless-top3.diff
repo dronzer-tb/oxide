@@ -1,0 +1,123 @@
+diff --git a/crates/oxide-chunkgen/src/aquifer.rs b/crates/oxide-chunkgen/src/aquifer.rs
+index 4457a9c..75a4fca 100644
+--- a/crates/oxide-chunkgen/src/aquifer.rs
++++ b/crates/oxide-chunkgen/src/aquifer.rs
+@@ -138,12 +138,25 @@ pub struct Aquifer<'a> {
+ }
+ 
+ /// The 12 grid cells `compute_kind` weighs for one anchor, in its `(dx, dy, dz)` loop order:
+-/// each one's index into `locations`/`statuses` and its jittered centre.
++/// each one's index into `locations`/`statuses` and its jittered centre, one coordinate per
++/// array so the per-block distances are three straight-line passes.
+ #[derive(Clone, Copy)]
+ struct AnchorCandidates {
+     anchor_y: i32,
+     index: [usize; 12],
+-    centre: [(i32, i32, i32); 12],
++    centre_x: [i32; 12],
++    centre_y: [i32; 12],
++    centre_z: [i32; 12],
++}
++
++impl AnchorCandidates {
++    const EMPTY: Self = Self {
++        anchor_y: i32::MIN,
++        index: [0; 12],
++        centre_x: [0; 12],
++        centre_y: [0; 12],
++        centre_z: [0; 12],
++    };
+ }
+ 
+ impl<'a> Aquifer<'a> {
+@@ -194,14 +207,7 @@ impl<'a> Aquifer<'a> {
+             skip_sampling_above_y: i32::MAX,
+             locations: vec![None; total],
+             statuses: vec![None; total],
+-            anchors: vec![
+-                AnchorCandidates {
+-                    anchor_y: i32::MIN,
+-                    index: [0; 12],
+-                    centre: [(0, 0, 0); 12],
+-                };
+-                (grid_size_x * grid_size_z) as usize
+-            ],
++            anchors: vec![AnchorCandidates::EMPTY; (grid_size_x * grid_size_z) as usize],
+             // Thirteen offsets per aquifer centre, heavily overlapping between centres. Centres
+             // sit within one grid cell (16 blocks) of the chunk and the offsets reach three
+             // chunks back and one forward, so five chunks back covers every lookup.
+@@ -317,23 +323,36 @@ impl<'a> Aquifer<'a> {
+                 self.fill_anchor(slot, anchor_x, anchor_y, anchor_z);
+             }
+             let candidates = &self.anchors[slot];
++            let mut distance = [0i32; 12];
+             for i in 0..12 {
+-                let (cx, cy, cz) = candidates.centre[i];
+-                let ddx = cx - x;
+-                let ddy = cy - y;
+-                let ddz = cz - z;
+-                let distance = ddx * ddx + ddy * ddy + ddz * ddz;
+-                let index = candidates.index[i];
+-                if best[0].0 >= distance {
+-                    best[2] = best[1];
+-                    best[1] = best[0];
+-                    best[0] = (distance, index);
+-                } else if best[1].0 >= distance {
+-                    best[2] = best[1];
+-                    best[1] = (distance, index);
+-                } else if best[2].0 >= distance {
+-                    best[2] = (distance, index);
+-                }
++                let ddx = candidates.centre_x[i] - x;
++                let ddy = candidates.centre_y[i] - y;
++                let ddz = candidates.centre_z[i] - z;
++                distance[i] = ddx * ddx + ddy * ddy + ddz * ddz;
++            }
++            // The cascade, without its branches. Inserting candidate `i` in front of every
++            // incumbent it ties or beats keeps the list sorted by (distance, later candidate
++            // first) and drops whatever falls past third; that is exactly the three smallest
++            // of the 12 under that total order. A key of `distance << 4 | (15 - i)` sorts the
++            // same way, is distinct per candidate, and lets a compare-exchange chain of
++            // `min`/`max` keep the three smallest. Distances are non-negative and far below
++            // 2^27, so the shift loses nothing.
++            let mut k0 = u64::MAX;
++            let mut k1 = u64::MAX;
++            let mut k2 = u64::MAX;
++            for (i, &d) in distance.iter().enumerate() {
++                let key = ((d as u32 as u64) << 4) | (15 - i) as u64;
++                let pushed = k0.max(key);
++                k0 = k0.min(key);
++                let pushed2 = k1.max(pushed);
++                k1 = k1.min(pushed);
++                k2 = k2.min(pushed2);
++            }
++            for (slot_best, key) in best.iter_mut().zip([k0, k1, k2]) {
++                *slot_best = (
++                    (key >> 4) as i32,
++                    candidates.index[15 - (key & 15) as usize],
++                );
+             }
+         } else {
+             self.nearest_slow(x, y, z, anchor_x, anchor_y, anchor_z, &mut best);
+@@ -362,8 +381,7 @@ impl<'a> Aquifer<'a> {
+     fn fill_anchor(&mut self, slot: usize, anchor_x: i32, anchor_y: i32, anchor_z: i32) {
+         let mut entry = AnchorCandidates {
+             anchor_y,
+-            index: [0; 12],
+-            centre: [(0, 0, 0); 12],
++            ..AnchorCandidates::EMPTY
+         };
+         let mut i = 0;
+         for dx in 0..=1 {
+@@ -374,7 +392,10 @@ impl<'a> Aquifer<'a> {
+                     let gz = anchor_z + dz;
+                     let index = self.index(gx, gy, gz);
+                     entry.index[i] = index;
+-                    entry.centre[i] = self.location(index, gx, gy, gz);
++                    let (cx, cy, cz) = self.location(index, gx, gy, gz);
++                    entry.centre_x[i] = cx;
++                    entry.centre_y[i] = cy;
++                    entry.centre_z[i] = cz;
+                     i += 1;
+                 }
+             }

@@ -498,3 +498,35 @@ Sub-agents:
 
 All three hit the 5-hour usage limit before writing any code, and were resumed after the
 reset with the same rules.
+
+### E15: aquifer round 2, branch-free top-3 -- rejected as neutral
+
+Sub-agent experiment in `/tmp/datapath-9`. Where the aquifer's 13.4% goes, from the base profile:
+- `compute_kind` own work is 6.0%: the 12 integer distances and the top-3 search.
+- `preliminary_surface_level` is 5.7%, all inside `sample_in_chunk`, split three ways:
+  - ~1.6% is allocation: each neighbour `ChunkCaches` allocates a 289-entry
+    `vec![None; COLUMNS]` per `cache_2d` slot it touches (`cache.rs`, `column_cached`).
+  - ~1.7% is noise sampling.
+  - ~2.4% is the interpreter and cache-lookup overhead of the 8-block scan steps.
+- `compute_fluid` and `status()` are ~1.1%.
+
+`Erosion` and `Depth` in `compute_fluid` cannot move onto the caches. `router.sample` evaluates
+`flat_cache` at the exact (x, z), while `ChunkCaches` snaps it to the quart corner, so the
+values would differ. The E13 argument does not carry over.
+
+Change tried: centres stored one coordinate per array, and the `>=` cascade replaced by a
+branch-free `min`/`max` chain on keys `distance << 4 | (15 - i)`. Exact: the key's order is
+the cascade's order (distance ascending, later candidate first on ties).
+`BENCH chunks=1089 threads=8 secs=2.106 cps=517.1 ms_per_chunk_core=15.47 digest=a977961a58122047` (load ~5-6)
+`BENCH chunks=1089 threads=8 secs=1.855 cps=587.2 ms_per_chunk_core=13.62 digest=a977961a58122047`
+No gain over ~584. The branches were probably well predicted. Rejected; the diff is kept at
+`docs/perf/rejected-E15-aquifer-branchless-top3.diff`.
+
+Open, outside this track's files or rules:
+- Noise track: `cache.rs` allocates 289 entries per `cache_2d` slot per `ChunkCaches`. A
+  neighbour cache touches a handful of columns, so a sparse or lazily grown column store
+  would remove ~1.6%.
+- The rest of the surface-level cost is each neighbour column recomputed by every chunk whose
+  aquifer reaches it, up to ~20 times. Removing that needs state shared across chunks: a
+  per-thread memo keyed on router identity, with exactness argued as in E13. Not done: it
+  crosses the "nothing shared across chunks" line, and the key needs care.
