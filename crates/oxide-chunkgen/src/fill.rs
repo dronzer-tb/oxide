@@ -176,6 +176,18 @@ pub fn fill_chunk_culling(
     // A fluid that *is* air needs no write: air is every section's palette default.
     let skip: [bool; 3] = [false, settings.default_fluid == air, false];
 
+    // Densities come a whole cell at a time through `sample_cell`, into a buffer holding one
+    // horizontal layer of cells. A cell is evaluated the first time a block in it needs a
+    // density, so cells the shortcut below skips are never evaluated, and the visit/write
+    // order (and every `compute_kind` call) is exactly the per-block loop's. `cell_state` per
+    // cell of the loaded layer: 0 not yet asked, 1 in `cell_values`, 2 `sample_cell` declined
+    // (that cell's blocks go through `sample_in_chunk`).
+    let cell_len = router.cell_len(caches);
+    let cell_w = cell_width as usize;
+    let mut cell_values = vec![0.0f64; cells_xz * cells_xz * cell_len];
+    let mut cell_state = vec![0u8; cells_xz * cells_xz];
+    let mut loaded_cell_y = i32::MIN;
+
     for i in 0..section_count {
         let section_y = min_y / 16 + i as i32;
         let mut section = ChunkSection::new(section_y as i8, air.clone(), default_biome.clone());
@@ -196,9 +208,21 @@ pub fn fill_chunk_culling(
                 None => y > settings.sea_level,
                 Some(aq) => aq.air_above_skip(y),
             };
+            let row_in_cells = cell_y >= 0 && (cell_y as usize) < cells_y;
+            if row_in_cells && cell_y != loaded_cell_y {
+                cell_state.fill(0);
+                loaded_cell_y = cell_y;
+            }
+            // Only meaningful (and only read) when `row_in_cells`.
+            let cell_local_y = if row_in_cells {
+                ((y - min_y) - cell_y * cell_height) as usize
+            } else {
+                0
+            };
             for local_z in 0..16usize {
                 let block_z = pos.min_block_z() + local_z as i32;
                 let cell_z = (local_z as i32).div_euclid(cell_width) as usize;
+                let lane_row = (cell_local_y * cell_w + (local_z - cell_z * cell_w)) * cell_w;
                 for local_x in 0..16usize {
                     let block_x = pos.min_block_x() + local_x as i32;
                     let cell_x = (local_x as i32).div_euclid(cell_width) as usize;
@@ -209,13 +233,36 @@ pub fn fill_chunk_culling(
                         continue;
                     }
 
-                    let density = router.sample_in_chunk(
-                        caches,
-                        RouterSlot::FinalDensity,
-                        block_x,
-                        y,
-                        block_z,
-                    );
+                    let in_cells = row_in_cells && cell_x < cells_xz && cell_z < cells_xz;
+                    let cell_index = cell_z * cells_xz + cell_x;
+                    if in_cells && cell_state[cell_index] == 0 {
+                        let values =
+                            &mut cell_values[cell_index * cell_len..(cell_index + 1) * cell_len];
+                        cell_state[cell_index] = if router.sample_cell(
+                            caches,
+                            RouterSlot::FinalDensity,
+                            cell_x as i32,
+                            cell_y,
+                            cell_z as i32,
+                            values,
+                        ) {
+                            1
+                        } else {
+                            2
+                        };
+                    }
+                    let density = if in_cells && cell_state[cell_index] == 1 {
+                        cell_values
+                            [cell_index * cell_len + lane_row + (local_x - cell_x * cell_w)]
+                    } else {
+                        router.sample_in_chunk(
+                            caches,
+                            RouterSlot::FinalDensity,
+                            block_x,
+                            y,
+                            block_z,
+                        )
+                    };
                     // The aquifer decides what a non-solid position holds -- air, water or
                     // lava, at a level that varies per underground body. Vanilla runs exactly
                     // this as the first filler in its noise fill.

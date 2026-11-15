@@ -213,3 +213,22 @@ alone was ~280 to 300 on a busy box, noise alone 163.8; started at 138.2.
   `gemini-3-flash-preview` returned 429.
 - Parallel experiments run as Opus sub-agents in `/tmp/datapath-<n>` worktrees, benching
   under `datapath-<n>`; the master reviews diffs and commits winners here.
+
+### E8: fill reads `final_density` a whole cell at a time via `sample_cell` -- kept, gain not established
+
+Sub-agent experiment in `/tmp/datapath-1`, bench name `datapath-1` (rows in
+`bench-datapath-1.tsv`). `fill.rs` gets densities through `NoiseRouterEvaluator::sample_cell`
+into a one-layer-of-cells buffer. A cell is evaluated the first time one of its blocks needs a
+density, so skipped cells are never evaluated. Visit order, write order and every
+`compute_kind` call are as before. A cell `sample_cell` declines falls back to
+`sample_in_chunk`.
+
+Base (E7): `cps=392.9`, `346.9`; auditor's merge: 401, 421.
+Run 1: `BENCH chunks=1089 threads=8 secs=2.434 cps=447.4 ms_per_chunk_core=17.88 digest=a977961a58122047`
+Run 2: `BENCH chunks=1089 threads=8 secs=2.610 cps=417.3 ms_per_chunk_core=19.17 digest=a977961a58122047`
+
+About 5% over the auditor's base numbers, within noise. Kept: it removes the per-block
+dispatch and memo lookup with the digest unchanged. Run 1 ran before the tests (it was
+launched before the tests-first rule). Tests: chunkgen 189 passed.
+Noted by the sub-agent: `Program::run_cell` allocates its register vector once per cell
+(noise crate, not this track's).
