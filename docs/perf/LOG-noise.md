@@ -43,3 +43,31 @@ range_choice`, `min`. So the per-block cost is cache lookups and lerps, not disp
 | 2 | Cache slots keyed by structure, not node address: `sloped_cheese` (with its blended noise) was three `cache_once` slots, evaluated twice per cell corner | 152.0 | 157.4 (one run; strictly less work) | ok | **kept** |
 | 3a | Whole-cell evaluation of cell-batchable programs (`Program::run_cell`) behind `sample_in_chunk`, one shared layer memo | 157.4 | 155.1 | ok | superseded by 3b: fill's per-block share fell 15.4% -> 4.3%, but the ore-vein pass alternates `vein_toggle`/`vein_ridged` per block and evicted the single memo on every call (ore veins 3% -> 11%) |
 | 3b | Same, one layer memo per router slot | 157.4 | 163.8 | ok | **kept** |
+
+## Handover, 2026-11-15 (session stopped at its usage limit)
+
+Current: `BENCH chunks=1089 threads=8 secs=6.650 cps=163.8 ms_per_chunk_core=48.85
+digest=a977961a58122047` at 4abb9a3 (baseline 142.7, +15%). Exactness is not negotiable: the
+target is to beat PumpkinMC on speed while staying byte exact, so the digest gate stays as is.
+
+Profile after 3a (radius 12, generation only): noise crate 36% inclusive, of which corner-grid
+build 10.3%, `cell_bounds` 4.4%, aquifer `preliminary_surface_level` 3.4%, ore veins (should
+now be ~3% with 3b; not re-profiled). Outside this track: `SurfaceSystem::apply` 34%,
+`BlockState` clone/drop ~10%, allocator ~9%.
+
+Nothing is in flight; the tree is clean and pushed. No PR has been opened yet.
+
+New API for the datapath track: `NoiseRouterEvaluator::sample_cell` / `cell_len` fill one whole
+cell of `final_density` (lane order `(ly * cw + lz) * cw + lx`), bit-identical to
+`sample_in_chunk`. The per-slot memo behind `sample_in_chunk` assumes callers work one layer of
+cells at a time (y outermost); a column-wise caller (y innermost) should use `sample_cell`.
+
+Next three things to try:
+1. Memoise `cell_bounds` per cell in the layer memo (24.5k calls per chunk, 768 distinct
+   cells). Memoise only `Some` results: `None` means a corner grid is not built yet.
+2. Corner-grid build, the remaining Perlin cost: evaluate the grid a column or the whole
+   lattice at a time and vectorise `ImprovedNoise` with AVX2, each lane in scalar order (no
+   FMA). The 2D subtrees under `sloped_cheese` are already cached per column.
+3. `preliminary_surface_level` (14 ops with `FindTopSurface`, called from the aquifer with
+   y = 0): dump the program (extend `dump_program` in oxide-ffi to other slots) and see whether
+   its inner density scan can reuse corner values instead of re-running the tree per step.
