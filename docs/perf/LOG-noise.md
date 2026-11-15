@@ -113,3 +113,8 @@ upstream token expired, deepseek and gemini-pro returning empty answers.
 
 Merged-tree baseline (this branch + `perf/datapath`): **415.0 cps**, digest a977961a58122047.
 New experiments are judged against that.
+| 6 (noise-2) | `find_top_surface` keeps the density registers between steps and re-runs only the y-dependent ops (16 of 25). The offset/factor splines are recomputed at every 8-block step because the aquifer samples outside the chunk's 17x17 2D cache. Exact, with a bit-identity test | 438.3 (merged 447defb) | 410.0 | a977961a58122047 both | **not landed**: no visible gain in one pair. Patch kept at `/tmp/noise-2-final.patch` while that tree exists. Untried follow-up: the upper bound (ops 0-12) and step 1 compute the same splines once per call |
+| 7 (noise-3) | `ImprovedNoise`: doubled `[u8; 512]` permutation (mask each coordinate once, no masking on the nested lookups), `#[inline(always)]` on the hot helpers. Float work untouched. Old implementation kept as a bit-identity reference test over 64 seeds x 4000 points, with negative and saturated coordinates | 385.7 (merged 367bb13) | 443.5 | a977961a58122047 both | **kept**: exact and strictly fewer instructions. Gain not yet separated from noise (see below) |
+
+The three merged-tree baselines so far are 385.7, 415.0 and 438.3 on identical code, a 13% spread.
+A single A/B pair cannot resolve anything under ~15% at that noise, even on the quiet box.

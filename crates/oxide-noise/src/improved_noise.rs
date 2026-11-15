@@ -32,26 +32,34 @@ const GRADIENT: [[f64; 3]; 16] = [
 /// The classic "avoid float precision loss over huge world coordinates" wrap, `2^25`.
 const WRAP: f64 = 3.355_443_2e7;
 
+#[inline]
 fn wrap(value: f64) -> f64 {
     value - ((value / WRAP + 0.5).floor() * WRAP)
 }
 
+#[inline(always)]
 fn smoothstep(t: f64) -> f64 {
     t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
 }
 
+#[inline(always)]
 fn lerp(t: f64, a: f64, b: f64) -> f64 {
     a + t * (b - a)
 }
 
-fn grad_dot(gradient_index: i32, x: f64, y: f64, z: f64) -> f64 {
+#[inline(always)]
+fn grad_dot(gradient_index: u8, x: f64, y: f64, z: f64) -> f64 {
     let g = GRADIENT[(gradient_index & 15) as usize];
     g[0] * x + g[1] * y + g[2] * z
 }
 
 #[derive(Debug, Clone)]
 pub struct ImprovedNoise {
-    permutation: [u8; 256],
+    /// The 256-entry shuffled permutation, stored twice over (`permutation[i + 256] ==
+    /// permutation[i]`), so that `p[(a + b) & 255]` with `a, b` in `0..=255` can be read as
+    /// `p[a + b]` (and `p[a + b + 1]`) with no masking and no bounds check: every index the hash
+    /// forms is at most `255 + 255 + 1 = 511`.
+    permutation: [u8; 512],
     xo: f64,
     yo: f64,
     zo: f64,
@@ -76,16 +84,16 @@ impl ImprovedNoise {
             permutation.swap(i as usize, (i + j) as usize);
         }
 
+        let mut doubled = [0u8; 512];
+        doubled[..256].copy_from_slice(&permutation);
+        doubled[256..].copy_from_slice(&permutation);
+
         Self {
-            permutation,
+            permutation: doubled,
             xo,
             yo,
             zo,
         }
-    }
-
-    fn p(&self, index: i32) -> i32 {
-        self.permutation[(index & 255) as usize] as i32
     }
 
     pub fn noise(&self, x: f64, y: f64, z: f64) -> f64 {
@@ -95,6 +103,7 @@ impl ImprovedNoise {
     /// `y_scale`/`y_max` implement vanilla's Y-axis "smear" used by terrain-shaping density
     /// functions to flatten noise variation below a threshold height; pass `0.0`/`0.0` for
     /// plain 3D noise.
+    #[inline]
     pub fn noise_with_scale(&self, x: f64, y: f64, z: f64, y_scale: f64, y_max: f64) -> f64 {
         let d0 = x + self.xo;
         let d1 = y + self.yo;
@@ -120,7 +129,13 @@ impl ImprovedNoise {
         self.sample_and_lerp(i, j, k, dx, dy - dy_faded, dz, dy)
     }
 
+    /// The lattice hash is vanilla's `p(p(p(x) + y) + z)` (each `p` masking its argument with
+    /// `& 255`), read off the doubled table. Because `(a + y) & 255 == (a + (y & 255)) & 255` in
+    /// wrapping `i32` arithmetic (masking commutes with addition mod 2^8), and every `p` value is
+    /// already in `0..=255`, masking each grid coordinate once up front and indexing the doubled
+    /// table at the unmasked sum picks exactly the same entry. The float work is unchanged.
     #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
     fn sample_and_lerp(
         &self,
         grid_x: i32,
@@ -131,21 +146,25 @@ impl ImprovedNoise {
         dz: f64,
         fade_dy: f64,
     ) -> f64 {
-        let a = self.p(grid_x);
-        let b = self.p(grid_x + 1);
-        let k = self.p(a + grid_y);
-        let l = self.p(a + grid_y + 1);
-        let i1 = self.p(b + grid_y);
-        let j1 = self.p(b + grid_y + 1);
+        let p = &self.permutation;
+        let xm = (grid_x & 255) as usize;
+        let ym = (grid_y & 255) as usize;
+        let zm = (grid_z & 255) as usize;
+        let a = p[xm] as usize + ym;
+        let b = p[xm + 1] as usize + ym;
+        let k = p[a] as usize + zm;
+        let l = p[a + 1] as usize + zm;
+        let i1 = p[b] as usize + zm;
+        let j1 = p[b + 1] as usize + zm;
 
-        let d0 = grad_dot(self.p(k + grid_z), dx, dy, dz);
-        let d1 = grad_dot(self.p(i1 + grid_z), dx - 1.0, dy, dz);
-        let d2 = grad_dot(self.p(l + grid_z), dx, dy - 1.0, dz);
-        let d3 = grad_dot(self.p(j1 + grid_z), dx - 1.0, dy - 1.0, dz);
-        let d4 = grad_dot(self.p(k + grid_z + 1), dx, dy, dz - 1.0);
-        let d5 = grad_dot(self.p(i1 + grid_z + 1), dx - 1.0, dy, dz - 1.0);
-        let d6 = grad_dot(self.p(l + grid_z + 1), dx, dy - 1.0, dz - 1.0);
-        let d7 = grad_dot(self.p(j1 + grid_z + 1), dx - 1.0, dy - 1.0, dz - 1.0);
+        let d0 = grad_dot(p[k], dx, dy, dz);
+        let d1 = grad_dot(p[i1], dx - 1.0, dy, dz);
+        let d2 = grad_dot(p[l], dx, dy - 1.0, dz);
+        let d3 = grad_dot(p[j1], dx - 1.0, dy - 1.0, dz);
+        let d4 = grad_dot(p[k + 1], dx, dy, dz - 1.0);
+        let d5 = grad_dot(p[i1 + 1], dx - 1.0, dy, dz - 1.0);
+        let d6 = grad_dot(p[l + 1], dx, dy - 1.0, dz - 1.0);
+        let d7 = grad_dot(p[j1 + 1], dx - 1.0, dy - 1.0, dz - 1.0);
 
         let t = smoothstep(dx);
         let u = smoothstep(fade_dy);
@@ -179,9 +198,177 @@ mod tests {
         let mut r = LegacyRandom::new(42);
         let noise = ImprovedNoise::new(&mut r);
         let mut seen = [false; 256];
-        for &v in &noise.permutation {
+        for &v in &noise.permutation[..256] {
             assert!(!seen[v as usize], "value {v} appeared twice");
             seen[v as usize] = true;
+        }
+        assert_eq!(noise.permutation[..256], noise.permutation[256..]);
+    }
+
+    /// The pre-doubling implementation, kept verbatim as the reference the fast path must
+    /// match bit for bit.
+    mod reference {
+        use super::super::{lerp, smoothstep, GRADIENT};
+
+        fn grad_dot(gradient_index: i32, x: f64, y: f64, z: f64) -> f64 {
+            let g = GRADIENT[(gradient_index & 15) as usize];
+            g[0] * x + g[1] * y + g[2] * z
+        }
+
+        pub struct Ref<'a> {
+            pub permutation: &'a [u8],
+            pub xo: f64,
+            pub yo: f64,
+            pub zo: f64,
+        }
+
+        impl Ref<'_> {
+            fn p(&self, index: i32) -> i32 {
+                self.permutation[(index & 255) as usize] as i32
+            }
+
+            pub fn noise_with_scale(
+                &self,
+                x: f64,
+                y: f64,
+                z: f64,
+                y_scale: f64,
+                y_max: f64,
+            ) -> f64 {
+                let d0 = x + self.xo;
+                let d1 = y + self.yo;
+                let d2 = z + self.zo;
+                let i = d0.floor() as i32;
+                let j = d1.floor() as i32;
+                let k = d2.floor() as i32;
+                let dx = d0 - i as f64;
+                let dy = d1 - j as f64;
+                let dz = d2 - k as f64;
+                let dy_faded = if y_scale != 0.0 {
+                    let clamped = if y_max >= 0.0 && y_max < dy {
+                        y_max
+                    } else {
+                        dy
+                    };
+                    (clamped / y_scale + 1.0e-7).floor() * y_scale
+                } else {
+                    0.0
+                };
+                self.sample_and_lerp(i, j, k, dx, dy - dy_faded, dz, dy)
+            }
+
+            #[allow(clippy::too_many_arguments)]
+            fn sample_and_lerp(
+                &self,
+                grid_x: i32,
+                grid_y: i32,
+                grid_z: i32,
+                dx: f64,
+                dy: f64,
+                dz: f64,
+                fade_dy: f64,
+            ) -> f64 {
+                let a = self.p(grid_x);
+                let b = self.p(grid_x.wrapping_add(1));
+                let k = self.p(a.wrapping_add(grid_y));
+                let l = self.p(a.wrapping_add(grid_y).wrapping_add(1));
+                let i1 = self.p(b.wrapping_add(grid_y));
+                let j1 = self.p(b.wrapping_add(grid_y).wrapping_add(1));
+                let d0 = grad_dot(self.p(k.wrapping_add(grid_z)), dx, dy, dz);
+                let d1 = grad_dot(self.p(i1.wrapping_add(grid_z)), dx - 1.0, dy, dz);
+                let d2 = grad_dot(self.p(l.wrapping_add(grid_z)), dx, dy - 1.0, dz);
+                let d3 = grad_dot(self.p(j1.wrapping_add(grid_z)), dx - 1.0, dy - 1.0, dz);
+                let d4 = grad_dot(
+                    self.p(k.wrapping_add(grid_z).wrapping_add(1)),
+                    dx,
+                    dy,
+                    dz - 1.0,
+                );
+                let d5 = grad_dot(
+                    self.p(i1.wrapping_add(grid_z).wrapping_add(1)),
+                    dx - 1.0,
+                    dy,
+                    dz - 1.0,
+                );
+                let d6 = grad_dot(
+                    self.p(l.wrapping_add(grid_z).wrapping_add(1)),
+                    dx,
+                    dy - 1.0,
+                    dz - 1.0,
+                );
+                let d7 = grad_dot(
+                    self.p(j1.wrapping_add(grid_z).wrapping_add(1)),
+                    dx - 1.0,
+                    dy - 1.0,
+                    dz - 1.0,
+                );
+                let t = smoothstep(dx);
+                let u = smoothstep(fade_dy);
+                let v = smoothstep(dz);
+                let e0 = lerp(t, d0, d1);
+                let e1 = lerp(t, d2, d3);
+                let e2 = lerp(t, d4, d5);
+                let e3 = lerp(t, d6, d7);
+                let f0 = lerp(u, e0, e1);
+                let f1 = lerp(u, e2, e3);
+                lerp(v, f0, f1)
+            }
+        }
+    }
+
+    #[test]
+    fn doubled_table_matches_reference_bit_for_bit() {
+        use oxide_core::Xoroshiro128PlusPlus;
+        let mut rng = LegacyRandom::new(0x5eed);
+        for seed in 0..64u64 {
+            let mut r = Xoroshiro128PlusPlus::new(seed as i64);
+            let noise = ImprovedNoise::new(&mut r);
+            let reference = reference::Ref {
+                permutation: &noise.permutation[..256],
+                xo: noise.xo,
+                yo: noise.yo,
+                zo: noise.zo,
+            };
+            let scales = [1.0, 1.0e3, 1.0e6, 3.0e7, 1.0e9, 3.0e9];
+            for n in 0..4000 {
+                let s = scales[n % scales.len()];
+                let x = (rng.next_double() * 2.0 - 1.0) * s;
+                let y = (rng.next_double() * 2.0 - 1.0) * s;
+                let z = (rng.next_double() * 2.0 - 1.0) * s;
+                let (y_scale, y_max) = match n % 4 {
+                    0 => (0.0, 0.0),
+                    1 => (rng.next_double() * 2.0, rng.next_double() * 2.0),
+                    2 => (rng.next_double() * 0.5, -1.0),
+                    _ => (-(rng.next_double() * 2.0), rng.next_double()),
+                };
+                let fast = noise.noise_with_scale(x, y, z, y_scale, y_max);
+                let slow = reference.noise_with_scale(x, y, z, y_scale, y_max);
+                assert_eq!(
+                    fast.to_bits(),
+                    slow.to_bits(),
+                    "seed {seed} at ({x}, {y}, {z}) y_scale {y_scale} y_max {y_max}"
+                );
+            }
+            // Integer lattice points, negative zero, and exact cell boundaries.
+            for &x in &[
+                -0.0,
+                0.0,
+                -1.0,
+                1.0,
+                -256.0,
+                255.999_999_999,
+                -1.0e-300,
+                2.0e9,
+                -2.0e9,
+            ] {
+                for &y in &[-0.0, 0.0, -17.0, 0.5, 1.0e-20] {
+                    for &z in &[-0.0, 0.0, -255.0, 4096.0] {
+                        let a = noise.noise_with_scale(x, y, z, 0.0, 0.0).to_bits();
+                        let b = reference.noise_with_scale(x, y, z, 0.0, 0.0).to_bits();
+                        assert_eq!(a, b, "seed {seed} at ({x}, {y}, {z})");
+                    }
+                }
+            }
         }
     }
 
