@@ -393,3 +393,9 @@ datapath b55a3b2:
   `erosion`, `ridges` and the shift noises without any caller change.
 Both are judged on a 5-round 1-thread hold against two fresh base builds (bar: >5% against both,
 or ahead in every round). What lands, and the caller diff to take, will be stated here.
+
+Queued for after noise-9 and noise-10 are decided: datapath's request (its parked E29) for
+`is_quart_invariant(slot)`. Its ceiling is ~1.3% of generation, so it is only worth doing if it
+is a few lines on top of `is_y_independent`. Every exclusive hold of this track stays under
+~5 minutes: 5 rounds x 3 binaries at 1 thread is ~3 minutes, and the noise-8 confirmation
+(7 x 3) ~4.
