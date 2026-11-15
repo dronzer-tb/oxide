@@ -7,7 +7,7 @@
 
 use crate::error::{DatapackError, Result};
 use oxide_core::{BlockState, ResourceLocation};
-use std::collections::HashMap;
+use ahash::AHashMap;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -74,8 +74,10 @@ impl BlockFact {
 /// The exported facts of every block state, plus each block's default state.
 #[derive(Debug, Default, Clone)]
 pub struct BlockFacts {
-    flags: HashMap<BlockState, u32>,
-    defaults: HashMap<ResourceLocation, BlockState>,
+    // ahash, not SipHash: decoration asks these tens of millions of times per area. Nothing
+    // iterates them, so the hasher cannot change any output.
+    flags: AHashMap<BlockState, u32>,
+    defaults: AHashMap<ResourceLocation, BlockState>,
 }
 
 impl BlockFacts {
