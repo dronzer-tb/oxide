@@ -528,3 +528,46 @@ push the interning result). None to datapath.
 Open for the user: PGO as a release step (12% on 1 thread, about 7 min of build).
 
 Stopped reading at: noise 8f3738f, datapath 4b152db, pipeline 5b67e37
+
+## Pass 12, 12:34 UTC
+
+Read only; no auditor re-measurement this pass.
+
+- **noise 65ba9fc**. b1e4a5c adds `NoiseRouterEvaluator::is_y_independent(slot)` (an API for
+  datapath's E27, with a test over 8 shapes; no speed change). Experiment 14 (column-batched
+  corner grid with lattice-hash reuse) is inconclusive: 10.667 against 10.963 and 11.208 s per
+  run on 1 thread, under the 5% bar; a 7-round hold with two bases is running. Experiment 13
+  relabelled inconclusive. Handover written. Best still 9.77 ms at ff02449. Limit reset (7%).
+- **datapath b55a3b2** (code 841a929). Two-head-build hold: the two builds of one source differ
+  by 2.3% (10.49 and 10.25 ms), so the 4% build floor suspected in pass 11 is not confirmed.
+  Kept on that hold, 1 thread, 4 rounds: E27 per-column climate with hinted biome search, 9.56 ms
+  (ahead in 8 of 8 comparisons); E22 carver LCG jump-ahead and ellipsoid tables, 9.85 ms (7 of
+  8); noise merge 9.65 ms. The combined head has no hold of its own yet. 8 threads: 701.8 cps,
+  one row. Stayed in `oxide-biome` and `oxide-chunkgen` (non-decoration files).
+  Exactness read by the auditor, holds:
+  - hinted search: the bound is the hint leaf's distance plus one, so only subtrees that could
+    never win are pruned and the first minimum leaf in traversal order is unchanged;
+  - column climate: the five slots are sampled once per quart column only where the program is
+    proven y-independent (text parser, fails closed; to be replaced by the noise predicate);
+  - carver: `WalkRandom` is the same LCG with precomputed jumps (tested against `LegacyRandom`
+    bit for bit); the reach skip uses a bound that is never below `carve_ellipsoid`'s own
+    `16 + 2r`, so it skips only calls that returned at once; `zd`/`yd` tables hold the same
+    expressions, and the sum order is unchanged.
+  Idle from 11:53 to 12:36: four supervisor nudges sat typed but unsubmitted in its prompt.
+- **pipeline 0c767f6** (docs only; decoration work is still in sub-agent worktrees).
+  1-thread decoration profile: 17.5 ms per finished chunk; sculk patch 24.4%, the five stone
+  ores 28.1%. Interned region states: neutral alone (3439 against 3504 ms), needs the pregen
+  switch, under test. Sculk read memo: sculk CPU 3678 against 5173 ms in one profile each, not
+  yet held. Pregen digest `df701ee858e2bdd3` on every row. Limit 4%.
+- Box: disk 68%, 12 dirs; every job seen was under the shared lock at nice 10. No OmniRoute
+  calls. Sub-agents in total: noise 13, datapath 18, pipeline 5.
+
+Messages: datapath (woken; merge the noise predicate and drop the text parser; hold the combined
+head; re-profile with two sub-agents), pipeline (decide decoration changes on 1-thread holds
+and land them; next the ore `height` reads), noise (predicate accepted; decide experiment 14 on
+the 7-round hold; two sub-agents on APIs for datapath's surface and aquifer).
+
+Open for the user: the supervisor's "Continue the ... track" nudges are typed into the panes
+but not submitted; PGO as a release step.
+
+Stopped reading at: noise 65ba9fc, datapath b55a3b2, pipeline 0c767f6
