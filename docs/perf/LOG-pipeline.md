@@ -583,3 +583,13 @@ before and after writes. Tests: chunkgen 190, pregen pass.
 
 Hold: pipeline-mb (a1d75b1 + origin/perf/datapath 2127bd7) against pipeline-mo (the same + the skip),
 r16, 1 thread, 3 rounds.
+
+Ore floor scan skip, holds (`bench-ab-pregen-vps.sh 16 1 3`, merged terrain, about 3.3 min each),
+digest df701ee858e2bdd3 on all twelve:
+
+    hold 1 (mb first)  mb 15248 15400 15912   mo 14584 15655 14252
+    hold 2 (mo first)  mo 15407 13619 14183   mb 14808 14674 16249
+    means over six     mb 15382   mo 14617   -5.0%, mo ahead in 4 of 6 pairs
+
+That is the size the profile predicted (upper iron + coal were 4.6% of decoration CPU). **Kept**:
+cherry-picked onto the branch from the tested tree, where chunkgen 193 and pregen tests pass.
