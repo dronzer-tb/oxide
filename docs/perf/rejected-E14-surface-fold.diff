@@ -1,0 +1,393 @@
+diff --git a/crates/oxide-chunkgen/src/surface.rs b/crates/oxide-chunkgen/src/surface.rs
+index a95f977..aac1491 100644
+--- a/crates/oxide-chunkgen/src/surface.rs
++++ b/crates/oxide-chunkgen/src/surface.rs
+@@ -48,12 +48,19 @@ struct Column {
+ }
+ 
+ /// Per-position state, updated as the scan walks down the column.
+-struct Cursor {
++struct Cursor<'c> {
+     x: i32,
+     y: i32,
+     z: i32,
+     stone_depth_above: i32,
+-    stone_depth_below: i32,
++    /// Lowest y of the current run of ground, or `i32::MAX` while nothing has asked for it in
++    /// this run: only a `ceiling` `stone_depth` reads `stone_depth_below`, and most runs never
++    /// reach one, so the walk to the run's bottom is made on first ask. Every position of a
++    /// run has the same bottom, so when it is found does not change it.
++    run_bottom: &'c std::cell::Cell<i32>,
++    /// The chunk's up-front block kinds, and this column's slot at local y 0, for that walk.
++    kinds: &'c [BlockKind],
++    column_slot: usize,
+     water_height: i32,
+     /// Index into the chunk's biome table (see [`ChunkBiomes`]), not an id: the rule tree asks
+     /// "is this biome one of ..." many times per position, and answers it from a precomputed
+@@ -160,6 +167,7 @@ enum CompiledRule<'a> {
+ /// places nothing falls through to the next sibling, exactly as the tree walk's `find_map` did.
+ /// Conditions are tested in the tree walk's order, one at a time, so every memo and random
+ /// draw happens the same way.
++#[derive(Clone)]
+ enum Op<'a> {
+     Test {
+         condition: CompiledCondition<'a>,
+@@ -205,6 +213,140 @@ fn flatten<'a>(rule: CompiledRule<'a>, ops: &mut Vec<Op<'a>>) {
+     }
+ }
+ 
++/// What is known about every position a specialised program (see [`fold`]) will be offered.
++/// Each fact is a plain function of the position, so a condition it settles has the same value
++/// at every one of those positions.
++#[derive(Clone, Copy)]
++struct Facts {
++    /// The positions' y lies in `y_lo..=y_hi`.
++    y_lo: i32,
++    y_hi: i32,
++    /// `y >= min_surface_level`: the answer `above_preliminary_surface` gives.
++    above_preliminary_surface: bool,
++    /// `stone_depth_above >= 2`; otherwise it is exactly 1 (a position is offered only after
++    /// the scan has counted it).
++    below_top: bool,
++    /// No fluid above in this run (`water_height == i32::MIN`): every `water` condition holds.
++    dry: bool,
++}
++
++impl Facts {
++    /// The value `condition` has at every position these facts describe, when they settle it.
++    /// `None` keeps the test in the specialised program, where it is evaluated as usual.
++    fn known(&self, condition: &CompiledCondition<'_>) -> Option<bool> {
++        match condition {
++            // Same order of checks as the evaluator: `true_y` first.
++            CompiledCondition::VerticalGradient { true_y, false_y, .. } => {
++                if self.y_hi <= *true_y {
++                    Some(true)
++                } else if self.y_lo > *true_y && self.y_lo >= *false_y {
++                    Some(false)
++                } else {
++                    None
++                }
++            }
++            // `y + 0 >= anchor_y + surface_depth * 0`: y alone decides it.
++            CompiledCondition::YAbove {
++                anchor_y,
++                surface_depth_multiplier: 0,
++                add_stone_depth: false,
++            } => {
++                if self.y_lo >= *anchor_y {
++                    Some(true)
++                } else if self.y_hi < *anchor_y {
++                    Some(false)
++                } else {
++                    None
++                }
++            }
++            CompiledCondition::AbovePreliminarySurface => Some(self.above_preliminary_surface),
++            // The evaluator answers `true` before reading anything else when there is no fluid.
++            CompiledCondition::Water { .. } if self.dry => Some(true),
++            // `stone_depth_above <= 1 + offset` with nothing column-dependent added: decided by
++            // whether the depth is 1 or at least 2. Offsets far from 0 are left alone rather
++            // than reasoned about near overflow.
++            CompiledCondition::StoneDepth {
++                offset,
++                add_surface_depth: false,
++                secondary_depth_range: 0,
++                ceiling: false,
++            } if offset.abs() < 1 << 20 => {
++                if self.below_top {
++                    // depth >= 2: false when 1 + offset < 2; otherwise depends on the depth.
++                    if *offset < 1 { Some(false) } else { None }
++                } else {
++                    // depth == 1.
++                    Some(1 <= 1 + offset)
++                }
++            }
++            _ => None,
++        }
++    }
++}
++
++/// Appends to `out` the part of `ops[start..end]` (one `sequence` level: a run of sibling
++/// items) that can still be reached at positions described by `facts`. A test those facts
++/// settle is dropped: a test that holds becomes its `then_run` laid inline, as a `sequence`
++/// member (which is what a passing condition's `then_run` is: when it places nothing,
++/// evaluation falls through to the next sibling), and one that fails drops its `then_run`.
++/// Every condition is a pure function of the position and its column -- the memos cache
++/// column-only values, and each random draw is seeded from (x, y, z) alone -- so leaving
++/// out a test whose answer is known changes no other test's answer, and the first `block`
++/// reached is the same one.
++///
++/// Returns whether this level always places a block, which makes every later sibling dead.
++fn fold<'a>(
++    ops: &[Op<'a>],
++    start: usize,
++    end: usize,
++    facts: &Facts,
++    out: &mut Vec<Op<'a>>,
++) -> bool {
++    let mut i = start;
++    while i < end {
++        match &ops[i] {
++            Op::Block(result) => {
++                out.push(Op::Block(*result));
++                return true;
++            }
++            Op::Badlands => {
++                out.push(Op::Badlands);
++                return true;
++            }
++            Op::Test {
++                condition,
++                negate,
++                skip,
++            } => {
++                match facts.known(condition).map(|value| value != *negate) {
++                    Some(true) => {
++                        if fold(ops, i + 1, *skip, facts, out) {
++                            return true;
++                        }
++                    }
++                    Some(false) => {}
++                    None => {
++                        let at = out.len();
++                        out.push(Op::Test {
++                            condition: condition.clone(),
++                            negate: *negate,
++                            skip: 0,
++                        });
++                        fold(ops, i + 1, *skip, facts, out);
++                        let after = out.len();
++                        if let Op::Test { skip, .. } = &mut out[at] {
++                            *skip = after;
++                        }
++                    }
++                }
++                i = *skip;
++            }
++        }
++    }
++    false
++}
++
++#[derive(Clone)]
+ enum CompiledCondition<'a> {
+     /// Index into [`SurfaceSystem::biome_sets`], and so into each chunk's biome masks.
+     Biome(usize),
+@@ -290,6 +432,14 @@ pub struct SurfaceSystem<'a> {
+     /// block states.
+     clay_bands: std::cell::OnceCell<[BlockState; BAND_COUNT]>,
+     program: Vec<Op<'a>>,
++    /// Per world y (from `min_y`): the y band it lies in. Band edges are every y at which a
++    /// condition [`Facts::known`] can settle from y alone changes its answer.
++    band_of_y: Vec<u16>,
++    /// Per band: its `(y_lo, y_hi)`.
++    bands: Vec<(i32, i32)>,
++    /// `program` folded for one combination of band and the three per-position facts (see
++    /// [`SurfaceSystem::specialised_program`]), built the first time a position needs it.
++    specialised: Vec<std::cell::OnceCell<Vec<Op<'a>>>>,
+     /// The state each `Block` rule places, by the index the compiled rule carries.
+     results: Vec<&'a BlockState>,
+     /// The id list of each `biome` condition, by the index the compiled condition carries.
+@@ -324,6 +474,10 @@ impl<'a> SurfaceSystem<'a> {
+         let rule = compile_rule(&settings.surface_rule, router, min_y, height, &mut compiler);
+         let mut program = Vec::new();
+         flatten(rule, &mut program);
++        let (band_of_y, bands) = y_bands(&program, min_y, height);
++        let specialised = (0..bands.len() * 8)
++            .map(|_| std::cell::OnceCell::new())
++            .collect();
+         let memo = (0..compiler.memo_slots)
+             .map(|_| std::cell::Cell::new(MEMO_UNKNOWN))
+             .collect();
+@@ -344,6 +498,9 @@ impl<'a> SurfaceSystem<'a> {
+             temperature_noise: router.noise(&ResourceLocation::minecraft("temperature")),
+             clay_bands: std::cell::OnceCell::new(),
+             program,
++            band_of_y,
++            bands,
++            specialised,
+             results: compiler.results,
+             biome_sets: compiler.biome_sets,
+             memo,
+@@ -441,9 +598,9 @@ impl<'a> SurfaceSystem<'a> {
+ 
+                 let mut stone_depth_above = 0;
+                 let mut water_height = i32::MIN;
+-                // Start of the current run of stone, tracked so stone_depth_below can be
+-                // derived without rescanning for every y.
+-                let mut run_bottom = i32::MAX;
++                // Start of the current run of stone, found on first ask (see
++                // `Cursor::run_bottom`); `i32::MAX` = not known yet for this run.
++                let run_bottom = std::cell::Cell::new(i32::MAX);
+ 
+                 for section_index in (0..chunk.sections.len()).rev() {
+                     let section_min_y = self.min_y + section_index as i32 * 16;
+@@ -454,7 +611,7 @@ impl<'a> SurfaceSystem<'a> {
+                         // Sixteen air positions: exactly what the per-block arm below does.
+                         stone_depth_above = 0;
+                         water_height = i32::MIN;
+-                        run_bottom = i32::MAX;
++                        run_bottom.set(i32::MAX);
+                         continue;
+                     }
+                     for local_y in (0..16usize).rev() {
+@@ -465,7 +622,7 @@ impl<'a> SurfaceSystem<'a> {
+                         if kind == BlockKind::Air {
+                             stone_depth_above = 0;
+                             water_height = i32::MIN;
+-                            run_bottom = i32::MAX;
++                            run_bottom.set(i32::MAX);
+                             continue;
+                         }
+                         if kind == BlockKind::DefaultFluid {
+@@ -473,15 +630,11 @@ impl<'a> SurfaceSystem<'a> {
+                             // column.
+                             water_height = y + 1;
+                             stone_depth_above = 0;
+-                            run_bottom = i32::MAX;
++                            run_bottom.set(i32::MAX);
+                             continue;
+                         }
+ 
+-                        if run_bottom > y {
+-                            run_bottom = self.run_bottom(&kinds, column_slot, y);
+-                        }
+                         stone_depth_above += 1;
+-                        let stone_depth_below = y - run_bottom + 1;
+ 
+                         if kind != BlockKind::DefaultBlock {
+                             continue;
+@@ -495,12 +648,16 @@ impl<'a> SurfaceSystem<'a> {
+                             y,
+                             z,
+                             stone_depth_above,
+-                            stone_depth_below,
++                            run_bottom: &run_bottom,
++                            kinds: &kinds,
++                            column_slot,
+                             water_height,
+                             biome: biomes.section_maps[section_index][biome_palette_index as usize]
+                                 as usize,
+                         };
+-                        let Some(result) = self.eval_program(&cursor, &column, &biomes) else {
++                        let program = self.specialised_program(&cursor, &column);
++                        let Some(result) = self.eval_program(program, &cursor, &column, &biomes)
++                        else {
+                             continue;
+                         };
+                         let cached = &mut result_index[section_index * result_count + result];
+@@ -617,9 +774,56 @@ impl<'a> SurfaceSystem<'a> {
+         bottom
+     }
+ 
++    /// The program to run at `cursor`: [`Self::program`] folded for what is already known
++    /// there, which places the same block (see [`fold`]).
++    fn specialised_program(&self, cursor: &Cursor, column: &Column) -> &[Op<'a>] {
++        let Some(&band) = usize::try_from(cursor.y - self.min_y)
++            .ok()
++            .and_then(|offset| self.band_of_y.get(offset))
++        else {
++            return &self.program;
++        };
++        let band = band as usize;
++        let above_preliminary_surface = cursor.y >= column.min_surface_level;
++        let below_top = cursor.stone_depth_above >= 2;
++        let dry = cursor.water_height == i32::MIN;
++        let key = band * 8
++            + (above_preliminary_surface as usize) * 4
++            + (below_top as usize) * 2
++            + dry as usize;
++        self.specialised[key].get_or_init(|| {
++            let (y_lo, y_hi) = self.bands[band];
++            let facts = Facts {
++                y_lo,
++                y_hi,
++                above_preliminary_surface,
++                below_top,
++                dry,
++            };
++            let mut out = Vec::new();
++            fold(&self.program, 0, self.program.len(), &facts, &mut out);
++            out
++        })
++    }
++
++    /// `stone_depth_below` at `cursor`: how far up from the bottom of its run of ground.
++    fn stone_depth_below(&self, cursor: &Cursor) -> i32 {
++        let mut bottom = cursor.run_bottom.get();
++        if bottom > cursor.y {
++            bottom = self.run_bottom(cursor.kinds, cursor.column_slot, cursor.y);
++            cursor.run_bottom.set(bottom);
++        }
++        cursor.y - bottom + 1
++    }
++
+     /// The result index of the first `block` rule whose enclosing conditions all hold.
+-    fn eval_program(&self, cursor: &Cursor, column: &Column, biomes: &ChunkBiomes) -> Option<usize> {
+-        let program = &self.program[..];
++    fn eval_program(
++        &self,
++        program: &[Op<'a>],
++        cursor: &Cursor,
++        column: &Column,
++        biomes: &ChunkBiomes,
++    ) -> Option<usize> {
+         let mut pc = 0;
+         while let Some(op) = program.get(pc) {
+             match op {
+@@ -820,7 +1024,7 @@ impl<'a> SurfaceSystem<'a> {
+                 ceiling,
+             } => {
+                 let depth = if *ceiling {
+-                    cursor.stone_depth_below
++                    self.stone_depth_below(cursor)
+                 } else {
+                     cursor.stone_depth_above
+                 };
+@@ -872,6 +1076,46 @@ fn sample_noise(noise: Option<&NormalNoise>, x: f64, y: f64, z: f64) -> f64 {
+     }
+ }
+ 
++/// Splits the world's height into bands within which every condition [`Facts::known`] can
++/// settle from y alone has one answer. Returns the band of each y (from `min_y`) and each
++/// band's inclusive y range.
++fn y_bands(program: &[Op<'_>], min_y: i32, height: i32) -> (Vec<u16>, Vec<(i32, i32)>) {
++    let top = min_y + height; // exclusive
++    // Every y at which a new band starts.
++    let mut edges = vec![min_y];
++    for op in program {
++        if let Op::Test { condition, .. } = op {
++            match condition {
++                CompiledCondition::VerticalGradient { true_y, false_y, .. } => {
++                    edges.push(true_y.saturating_add(1));
++                    edges.push(*false_y);
++                }
++                CompiledCondition::YAbove {
++                    anchor_y,
++                    surface_depth_multiplier: 0,
++                    add_stone_depth: false,
++                } => edges.push(*anchor_y),
++                _ => {}
++            }
++        }
++    }
++    edges.retain(|&y| y >= min_y && y < top);
++    edges.sort_unstable();
++    edges.dedup();
++    let bands: Vec<(i32, i32)> = edges
++        .iter()
++        .enumerate()
++        .map(|(i, &lo)| (lo, edges.get(i + 1).map_or(top - 1, |&next| next - 1)))
++        .collect();
++    let mut band_of_y = Vec::with_capacity(height.max(0) as usize);
++    for (index, &(lo, hi)) in bands.iter().enumerate() {
++        for _ in lo..=hi {
++            band_of_y.push(index as u16);
++        }
++    }
++    (band_of_y, bands)
++}
++
+ fn resolve_anchor(anchor: &VerticalAnchor, min_y: i32, height: i32) -> i32 {
+     match anchor {
+         VerticalAnchor::Absolute { absolute } => *absolute,

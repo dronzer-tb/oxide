@@ -456,3 +456,21 @@ Sub-agent's runs (base 6b8562f): `cps=414.8` (box load 10 right after) and `cps=
 both `digest=a977961a58122047`. Inconclusive. It is 263 lines of folding logic, so it lands
 only if an interleaved A/B against the current head (85f6075, with E12 and E13) shows a gain.
 That A/B is running: three alternating pairs in one exclusive hold, after tests on both builds.
+
+### E14 A/B: rejected. Head 85f6075 is the new reference, ~584 cps
+
+Tests passed on both builds (biome 6, chunkgen 189). Then one exclusive hold, three
+alternating pairs, load average falling from ~3.7 to 2.1:
+
+| | pair 1 | pair 2 | pair 3 | mean |
+|---|---|---|---|---|
+| head 85f6075 (E8-E13) | 592.2 | 599.4 | 559.2 | 583.6 |
+| head + E14 | 565.5 | 571.8 | 588.3 | 575.2 |
+
+All six `digest=a977961a58122047`. E14 is slower in two of the three pairs and slightly slower on average. Rejected: 263
+lines of folding buy nothing, most likely because building folded programs per chunk costs
+what it saves, with `SurfaceSystem` rebuilt per chunk in `lib.rs`. The diff is kept at
+`docs/perf/rejected-E14-surface-fold.diff` so it is not retried blind. Retry it only if
+`SurfaceSystem` becomes per-thread rather than per-chunk.
+
+**Reference: ~584 cps, ~13.7 ms core per chunk** (session start: 138.2 cps, 57.9 ms; 4.2x).
