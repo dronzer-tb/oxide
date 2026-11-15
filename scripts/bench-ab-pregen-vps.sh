@@ -10,9 +10,11 @@
 # docs/perf/bench-pipeline-ab.tsv as `time  <name>  radius  fields`. Writes no region files
 # (--no-write), so it measures generation, decoration, serialise and compress only.
 #
-# At the start of every round it samples the box's java processes over one second from
-# /proc/<pid>/stat (read only) and adds `java_n=` and `java_cpu_pct=` (percent of one core)
-# to that round's rows, so a hold taken while the Java server is busy shows it.
+# Each run is wrapped in /usr/bin/time and its row gains `cpu_user_s=` and `cpu_sys_s=`. The
+# box's java processes are read from /proc/<pid>/stat (read only) before and after each run,
+# and the row gains `java_n=`, `java_cpu_s=` (java CPU seconds during that run) and
+# `java_cpu_s_per_10s=`. Rounds whose java load is above about 2 CPU-s per 10 s are dropped
+# from decisions (auditor's rule while the Java server is on the box).
 set -eu
 cd "$(dirname "$0")/.."
 radius="$1"; threads="$2"; rounds="$3"; shift 3
@@ -38,15 +40,26 @@ java_ticks() {
     i=0
     while [ "$i" -lt "$rounds" ]; do
         i=$((i + 1))
-        jn="$(pgrep -cx java || true)"
-        a="$(java_ticks)"; sleep 1; b="$(java_ticks)"
-        jp=$(( (b - a) * 100 / hz ))
         for n in "$@"; do
             cd ~/oxide-perf/"$n"
-            ./target/release/oxide-pregen --datapack reference --seed 12345 --world out/ab-world \
+            mkdir -p out
+            jn="$(pgrep -cx java || true)"
+            a="$(java_ticks)"
+            /usr/bin/time -o out/ab-time -f '%U %S' \
+                ./target/release/oxide-pregen --datapack reference --seed 12345 --world out/ab-world \
                 --center-x 0 --center-z 0 --radius "$radius" --threads "$threads" --bench --no-write \
-                | grep ^BENCH | sed "s/^/AB $n /; s/\$/ java_n=${jn:-0} java_cpu_pct=$jp/"
-            rm -rf out/ab-world
+                >out/ab-bench
+            b="$(java_ticks)"
+            read -r cu cs <out/ab-time
+            grep ^BENCH out/ab-bench | awk -v n="$n" -v cu="$cu" -v cs="$cs" -v jn="${jn:-0}" \
+                -v jt="$((b - a))" -v hz="$hz" '{
+                    secs = 0
+                    for (i = 1; i <= NF; i++) if ($i ~ /^secs=/) secs = substr($i, 6) + 0
+                    js = jt / hz
+                    printf "AB %s %s cpu_user_s=%s cpu_sys_s=%s java_n=%s java_cpu_s=%.2f java_cpu_s_per_10s=%.2f\n",
+                        n, $0, cu, cs, jn, js, (secs > 0 ? js * 10 / secs : 0)
+                }'
+            rm -rf out/ab-world out/ab-time out/ab-bench
         done
     done
 ) 9>>~/oxide-perf/.lock
