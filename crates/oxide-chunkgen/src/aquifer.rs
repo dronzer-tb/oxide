@@ -1092,8 +1092,7 @@ mod tests {
             let router = NoiseRouterEvaluator::new(7, &settings, &df, &noises);
             let caches = router.chunk_caches(0, 0);
             for chunk in [(0, 0), (1, 0), (0, 1)] {
-                let mut aquifer =
-                    Aquifer::new(chunk.0, chunk.1, &settings, &router, &caches);
+                let mut aquifer = Aquifer::new(chunk.0, chunk.1, &settings, &router, &caches);
                 for (x, z) in [(0, 0), (-40, 8), (20, -60), (300, 300)] {
                     assert_eq!(
                         aquifer.preliminary_surface_level(x, z),

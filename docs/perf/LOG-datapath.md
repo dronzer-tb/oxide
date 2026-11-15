@@ -1188,3 +1188,21 @@ with moving E27's y-independence check into `oxide-noise`.
 8-thread row for 841a929 (combined head): `BENCH chunks=1089 threads=8 secs=1.552 cps=701.8 ms_per_chunk_core=11.40 digest=a977961a58122047`.
 Level with 741d96f's 701.5. At 8 threads one run spreads 15-25%, so the 1-thread holds above are
 the measure of record. Box dirs `datapath-20`, `-21`, `-22` and `-h2` are deleted; only `datapath` remains.
+
+## Session 2
+
+### E28: merge `origin/perf/noise` at 65ba9fc; E27's text parser replaced by `is_y_independent`
+
+The auditor read 841a929 for exactness and it holds: hinted search bound, column climate, LCG
+jump, reach skip, zd/yd tables.
+
+Merged 65ba9fc as e3d85c9. It brings b1e4a5c, `NoiseRouterEvaluator::is_y_independent(slot)`: a
+predicate proven on the compiled program. A 2D `shifted_noise` qualifies only with a constant
+`shift_y` that is neither -0.0 nor NaN. Any `interpolated` node disqualifies the program. `biome_grid.rs` now
+calls it in place of parsing the `dump_program` listing. The parser (~200 lines) and its
+parser-only test are gone. `column_climate_fill_matches_per_quart_sampling` still asserts that
+the overworld's five slots qualify and depth does not. `cargo fmt` also reflowed E21's and
+E22's unformatted lines in `aquifer.rs` and `carver.rs` (formatting only).
+
+Tests on the box: chunkgen 192 (193 minus the parser test), biome 7, noise 35, core 57, all
+passed.

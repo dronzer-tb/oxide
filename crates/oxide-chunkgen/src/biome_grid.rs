@@ -27,8 +27,8 @@ const COLUMN_SLOTS: [RouterSlot; 5] = [
 ///
 /// `fill_biomes` runs once per section, and every section samples the same 16 quart columns
 /// (x and z at `quart*4 + 2`), only at different y. A slot whose program is proven not to read
-/// y (see [`program_is_y_independent`]) gives bit-identical values at every y of a column, so it
-/// is evaluated at the first y asked and reused for the rest of the chunk. Depth, and any slot
+/// y (see [`NoiseRouterEvaluator::is_y_independent`]) gives bit-identical values at every y of a
+/// column, so it is evaluated at the first y asked and reused for the rest of the chunk. Depth, and any slot
 /// not proven, is still evaluated at every quart cell.
 struct ColumnClimate {
     router: u64,
@@ -52,8 +52,8 @@ thread_local! {
             hints: [u32::MAX; 16],
         })
     };
-    /// Proofs already made on this thread, per router id: parsing a program dump is cheap,
-    /// but not something to redo per chunk.
+    /// Proofs already made on this thread, per router id, so the predicate runs once per
+    /// router rather than once per chunk.
     static FLAT_SLOTS: RefCell<Vec<(u64, [bool; 5])>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -63,195 +63,10 @@ fn flat_slots(router: &NoiseRouterEvaluator) -> [bool; 5] {
         if let Some((_, flat)) = known.iter().find(|(id, _)| *id == router.id()) {
             return *flat;
         }
-        let flat = COLUMN_SLOTS.map(|slot| program_is_y_independent(&router.dump_program(slot)));
+        let flat = COLUMN_SLOTS.map(|slot| router.is_y_independent(slot));
         known.push((router.id(), flat));
         flat
     })
-}
-
-/// Whether a router program, given as its [`NoiseRouterEvaluator::dump_program`] listing,
-/// yields the same bits at every y of a fixed (x, z). Conservative: anything not recognised
-/// below -- including any change to the listing format -- answers `false`.
-///
-/// Accepted, at every nesting level:
-/// - `Const`, and the pure arithmetic ops on registers (`Add` .. `Clamp`): functions of their
-///   inputs only.
-/// - `Shift` in its `Xz` / `Zx` forms, which read the offset noise at `(x*0.25, 0, z*0.25)` /
-///   `(z*0.25, x*0.25, 0)`: no y at all.
-/// - `ShiftedNoise` with `y_scale == 0` whose `shift_y` register is a finite constant `c` other
-///   than `-0.0`. Its noise y is `y as f64 * 0.0 + c`; for a finite y the product is `+0.0` or
-///   `-0.0`, and either plus such a `c` is exactly `c` (`c != 0`), or `+0.0` (`c == +0.0`).
-///   Noise x and z do not involve y, and its shift registers are checked like any other op.
-/// - `Cache` of kind `FlatCache`, `Cache2d` or `Once` whose argument program passes this same
-///   check. The first two store one value per column, evaluated at whatever y first asked --
-///   the same bits for any y when the argument does not read y; `Once` is keyed by the full
-///   position and returns its argument's value there.
-///
-/// Rejected: everything else -- y gradients, plain `Noise`, 3D shifts, blended noise,
-/// `interpolated` caches, and the ops whose nested programs the listing does not show in full
-/// (splines, range choices, interval selects, top-surface searches).
-fn program_is_y_independent(lines: &[String]) -> bool {
-    struct Frame {
-        depth: usize,
-        ops: Vec<String>,
-    }
-    let mut stack = vec![Frame {
-        depth: 0,
-        ops: Vec::new(),
-    }];
-    let close_to = |stack: &mut Vec<Frame>, depth: usize| -> bool {
-        while stack.last().is_some_and(|frame| frame.depth > depth) {
-            let frame = stack.pop().expect("checked non-empty");
-            if !frame_is_y_independent(&frame.ops) {
-                return false;
-            }
-        }
-        true
-    };
-    for line in lines {
-        let lead = line.len() - line.trim_start_matches(' ').len();
-        let rest = &line[lead..];
-        match rest.split_once(": ") {
-            None => {
-                // `{pad}     {label}:` -- the program owned by the op just listed follows,
-                // three levels deeper.
-                let Some(label) = rest.strip_suffix(':') else {
-                    return false;
-                };
-                if label.is_empty() || !label.bytes().all(|b| b.is_ascii_alphabetic() || b == b'_')
-                {
-                    return false;
-                }
-                let Some(pad) = lead.checked_sub(5) else {
-                    return false;
-                };
-                if pad % 2 != 0 {
-                    return false;
-                }
-                let depth = pad / 2;
-                if !close_to(&mut stack, depth) {
-                    return false;
-                }
-                match stack.last() {
-                    Some(frame) if frame.depth == depth && !frame.ops.is_empty() => {}
-                    _ => return false,
-                }
-                stack.push(Frame {
-                    depth: depth + 3,
-                    ops: Vec::new(),
-                });
-            }
-            Some((index, text)) => {
-                // `{pad}{i:3}: {text}`.
-                let Ok(i) = index.parse::<usize>() else {
-                    return false;
-                };
-                let width = index.len().max(3);
-                let Some(pad) = (lead + index.len()).checked_sub(width) else {
-                    return false;
-                };
-                if pad % 2 != 0 {
-                    return false;
-                }
-                let depth = pad / 2;
-                if !close_to(&mut stack, depth) {
-                    return false;
-                }
-                match stack.last_mut() {
-                    Some(frame) if frame.depth == depth && frame.ops.len() == i => {
-                        frame.ops.push(text.to_string());
-                    }
-                    _ => return false,
-                }
-            }
-        }
-    }
-    if !close_to(&mut stack, 0) {
-        return false;
-    }
-    match stack.pop() {
-        Some(root) => !root.ops.is_empty() && frame_is_y_independent(&root.ops),
-        None => false,
-    }
-}
-
-/// One program level of [`program_is_y_independent`]; nested programs are checked separately.
-fn frame_is_y_independent(ops: &[String]) -> bool {
-    const PURE: [&str; 12] = [
-        "Add(r",
-        "Mul(r",
-        "Min(r",
-        "Max(r",
-        "Abs(r",
-        "Square(r",
-        "Cube(r",
-        "HalfNegative(r",
-        "QuarterNegative(r",
-        "Squeeze(r",
-        "Invert(r",
-        "Clamp(r",
-    ];
-    const CACHES: [&str; 3] = [
-        "Cache(kind=FlatCache,",
-        "Cache(kind=Cache2d,",
-        "Cache(kind=Once,",
-    ];
-    if ops.is_empty() {
-        return false;
-    }
-    ops.iter().enumerate().all(|(own, text)| {
-        if PURE.iter().chain(CACHES.iter()).any(|p| text.starts_with(p)) {
-            return true;
-        }
-        if text.starts_with("Const(") {
-            return const_value(text).is_some();
-        }
-        if text.starts_with("Shift(#") {
-            return text.ends_with(" Xz)") || text.ends_with(" Zx)");
-        }
-        if let Some(args) = text.strip_prefix("ShiftedNoise(#") {
-            return shifted_noise_ignores_y(ops, own, args);
-        }
-        false
-    })
-}
-
-fn const_value(text: &str) -> Option<f64> {
-    text.strip_prefix("Const(")?.strip_suffix(')')?.parse().ok()
-}
-
-/// `args` is the rest of `ShiftedNoise(#{noise} xz={xz} y={y} shift=r{x},r{y},r{z})`.
-fn shifted_noise_ignores_y(ops: &[String], own: usize, args: &str) -> bool {
-    let fields: Vec<&str> = args.split(' ').collect();
-    let [_noise, _xz, y_scale, shift] = fields.as_slice() else {
-        return false;
-    };
-    let Some(Ok(y_scale)) = y_scale.strip_prefix("y=").map(str::parse::<f64>) else {
-        return false;
-    };
-    if y_scale != 0.0 {
-        return false;
-    }
-    let Some(registers) = shift
-        .strip_prefix("shift=")
-        .and_then(|s| s.strip_suffix(')'))
-    else {
-        return false;
-    };
-    let registers: Vec<&str> = registers.split(',').collect();
-    let [_, shift_y, _] = registers.as_slice() else {
-        return false;
-    };
-    let Some(Ok(shift_y)) = shift_y.strip_prefix('r').map(str::parse::<usize>) else {
-        return false;
-    };
-    if shift_y >= own {
-        return false;
-    }
-    match const_value(&ops[shift_y]) {
-        Some(c) => c.is_finite() && !(c == 0.0 && c.is_sign_negative()),
-        None => false,
-    }
 }
 
 /// PARITY-CHECK: sampling at the cell's center (`cell*4 + 2`) matches vanilla's quart-position convention.
@@ -284,7 +99,15 @@ pub(crate) fn fill_biomes(
                 hints: [u32::MAX; 16],
             };
         }
-        fill_section(section, pos, section_min_y, router, caches, tree, &mut columns);
+        fill_section(
+            section,
+            pos,
+            section_min_y,
+            router,
+            caches,
+            tree,
+            &mut columns,
+        );
     });
 }
 
@@ -406,44 +229,6 @@ mod tests {
     use oxide_datapack::{load_datapack, BiomeSource};
     use std::path::Path;
 
-    fn lines(text: &[&str]) -> Vec<String> {
-        text.iter().map(|s| s.to_string()).collect()
-    }
-
-    #[test]
-    fn y_independence_proof_rejects_what_it_cannot_show() {
-        let shifted = |y: &str, c: &str| {
-            lines(&[
-                "  0: Cache(kind=FlatCache, slot=1)",
-                "     argument:",
-                "        0: Shift(#32 Xz)",
-                &format!("  1: Const({c})"),
-                "  2: Shift(#32 Zx)",
-                &format!("  3: ShiftedNoise(#59 xz=0.25 y={y} shift=r0,r1,r2)"),
-            ])
-        };
-        assert!(program_is_y_independent(&shifted("0", "0")));
-        assert!(program_is_y_independent(&shifted("0", "1.5")));
-        assert!(!program_is_y_independent(&shifted("0", "-0")));
-        assert!(!program_is_y_independent(&shifted("0.5", "0")));
-        assert!(!program_is_y_independent(&lines(&["  0: YClampedGradient(-64..320 -> 1.5..-1.5)"])));
-        assert!(!program_is_y_independent(&lines(&["  0: Noise(#1 xz=1 y=0)"])));
-        assert!(!program_is_y_independent(&lines(&["  0: Shift(#32 Xyz)"])));
-        assert!(!program_is_y_independent(&lines(&[
-            "  0: Cache(kind=Interpolated, slot=0)",
-            "     argument:",
-            "        0: Const(1)",
-        ])));
-        // A y read hidden inside a cache argument is still found.
-        assert!(!program_is_y_independent(&lines(&[
-            "  0: Cache(kind=FlatCache, slot=0)",
-            "     argument:",
-            "        0: YClampedGradient(-64..320 -> 1.5..-1.5)",
-            "  1: Abs(r0)",
-        ])));
-        assert!(!program_is_y_independent(&[]));
-    }
-
     fn reference() -> &'static Path {
         Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../reference"))
     }
@@ -454,7 +239,10 @@ mod tests {
     #[test]
     fn column_climate_fill_matches_per_quart_sampling() {
         if !reference().is_dir() {
-            eprintln!("skipping: no extracted vanilla export at {}", reference().display());
+            eprintln!(
+                "skipping: no extracted vanilla export at {}",
+                reference().display()
+            );
             return;
         }
         let datapack = load_datapack(reference()).expect("load reference datapack");
@@ -463,7 +251,11 @@ mod tests {
             .get(&ResourceLocation::minecraft("overworld"))
             .expect("overworld dimension");
         let settings_id = dimension.generator.settings.as_ref().expect("settings id");
-        let settings = datapack.noise_settings.get(settings_id).expect("settings").clone();
+        let settings = datapack
+            .noise_settings
+            .get(settings_id)
+            .expect("settings")
+            .clone();
         let router = NoiseRouterEvaluator::new(
             12345,
             &settings,
@@ -476,7 +268,7 @@ mod tests {
         };
 
         assert_eq!(flat_slots(&router), [true; 5]);
-        assert!(!program_is_y_independent(&router.dump_program(RouterSlot::Depth)));
+        assert!(!router.is_y_independent(RouterSlot::Depth));
 
         let air = BlockState::new(ResourceLocation::minecraft("air"));
         let plains = ResourceLocation::minecraft("plains");

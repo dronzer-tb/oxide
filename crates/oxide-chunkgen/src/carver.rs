@@ -889,7 +889,16 @@ mod tests {
     /// The walk's generator must replay `LegacyRandom` exactly, through the stepped draws.
     #[test]
     fn walk_random_matches_legacy_random() {
-        let seeds = [0i64, 1, -1, 42, i64::MIN, i64::MAX, 0x5DEECE66D, -123_456_789_012_345];
+        let seeds = [
+            0i64,
+            1,
+            -1,
+            42,
+            i64::MIN,
+            i64::MAX,
+            0x5DEECE66D,
+            -123_456_789_012_345,
+        ];
         for (n, &seed) in seeds.iter().enumerate() {
             let mut walk = WalkRandom::new(seed);
             let mut legacy = LegacyRandom::new(seed);
