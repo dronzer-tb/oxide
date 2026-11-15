@@ -22,6 +22,9 @@
 //! `sculk_sensor` and `sculk_shrieker`. The three sculk blockers (`sculk`, `sculk_catalyst`,
 //! `moving_piston`) are likewise named blocks, as in `multiface_growth`. Confirm both against 26.2.
 
+use std::collections::HashSet;
+use std::ops::Deref;
+
 use anyhow::Result;
 use oxide_core::{BlockPos, BlockState, RandomSource, ResourceLocation};
 use oxide_datapack::cave_feature::SculkPatchConfig;
@@ -125,6 +128,53 @@ impl SculkPatchFeature {
         }))
     }
 
+    /// `SculkPatchFeature.place`.
+    pub fn place(&self, cx: &mut FeatureContext<'_, '_, '_>) -> bool {
+        let tags = &cx.env.block_tags;
+        let tag = |path: &str| tags.get(&ResourceLocation::minecraft(path));
+        let spreader = Spreader {
+            feature: self,
+            fire: tag("fire"),
+            replaceable: tag("sculk_replaceable"),
+            replaceable_world_gen: tag("sculk_replaceable_world_gen"),
+            inhibitors: tag("sculk_growth_inhibitors"),
+        };
+        spreader.place(cx)
+    }
+}
+
+/// One `place` call's view of the feature: the block tags it tests, resolved once rather than
+/// looked up by a freshly built id on every test.
+struct Spreader<'s, 'e> {
+    feature: &'s SculkPatchFeature,
+    fire: Option<&'e HashSet<ResourceLocation>>,
+    replaceable: Option<&'e HashSet<ResourceLocation>>,
+    replaceable_world_gen: Option<&'e HashSet<ResourceLocation>>,
+    /// `None` when the pack has no `sculk_growth_inhibitors` tag (see the module doc).
+    inhibitors: Option<&'e HashSet<ResourceLocation>>,
+}
+
+impl Deref for Spreader<'_, '_> {
+    type Target = SculkPatchFeature;
+
+    fn deref(&self) -> &SculkPatchFeature {
+        self.feature
+    }
+}
+
+/// The faces `state` has set, in `Dir::ALL` order.
+fn faces_of(state: &BlockState) -> [bool; 6] {
+    Dir::ALL.map(|face| Spreader::has_face(state, face))
+}
+
+fn face_index(face: Dir) -> usize {
+    Dir::ALL
+        .iter()
+        .position(|&d| d == face)
+        .expect("a direction")
+}
+
+impl Spreader<'_, '_> {
     fn behaviour(&self, state: &BlockState) -> Behaviour {
         if state.name == self.sculk.name {
             Behaviour::Sculk
@@ -154,18 +204,16 @@ impl SculkPatchFeature {
         block_in(cx.region, pos).clone()
     }
 
+    fn member(tag: Option<&HashSet<ResourceLocation>>, state: &BlockState) -> bool {
+        tag.is_some_and(|members| members.contains(&state.name))
+    }
+
     fn write(cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos, state: BlockState) -> bool {
         cx.region.set_block(pos, state)
     }
 
-    fn in_tag(cx: &FeatureContext<'_, '_, '_>, tag: &str, state: &BlockState) -> bool {
-        cx.env
-            .block_tags
-            .contains(&ResourceLocation::minecraft(tag), &state.name)
-    }
-
     /// `SculkPatchFeature.place`.
-    pub fn place(&self, cx: &mut FeatureContext<'_, '_, '_>) -> bool {
+    fn place(&self, cx: &mut FeatureContext<'_, '_, '_>) -> bool {
         let origin = cx.origin;
         if !self.can_spread_from(cx, origin) {
             return false;
@@ -220,13 +268,13 @@ impl SculkPatchFeature {
 
     /// `SculkPatchFeature.canSpreadFrom`.
     fn can_spread_from(&self, cx: &mut FeatureContext<'_, '_, '_>, origin: BlockPos) -> bool {
-        let start = Self::state_at(cx, origin);
-        if self.behaviour(&start) != Behaviour::Default {
+        let start = block_in(cx.region, origin);
+        if self.behaviour(start) != Behaviour::Default {
             return true;
         }
         let water_source_block =
-            is_block(&start, "water") && state_has(cx, &start, BlockFact::FluidSource);
-        if !state_has(cx, &start, BlockFact::Air) && !water_source_block {
+            is_block(start, "water") && state_has(cx, start, BlockFact::FluidSource);
+        if !state_has(cx, start, BlockFact::Air) && !water_source_block {
             return false;
         }
         Dir::ALL
@@ -435,8 +483,7 @@ impl SculkPatchFeature {
                 let Some((target, face_to)) = target else {
                     continue;
                 };
-                let old = Self::state_at(cx, target);
-                let Some(new) = self.state_for_placement(cx, &old, target, face_to) else {
+                let Some(new) = self.state_for_placement(cx, target, face_to) else {
                     continue;
                 };
                 if Self::write(cx, target, new) {
@@ -447,30 +494,24 @@ impl SculkPatchFeature {
         count
     }
 
-    fn valid_for_placement(
-        &self,
-        cx: &mut FeatureContext<'_, '_, '_>,
-        old: &BlockState,
-        pos: BlockPos,
-        face: Dir,
-    ) -> bool {
-        if self.is_vein(old) && Self::has_face(old, face) {
-            return false;
-        }
-        can_attach_to(cx, pos, face)
+    /// The first half of `MultifaceSpreader`'s placement check for the block `old` at `pos`:
+    /// a vein that already has `face` cannot take it again. `can_attach_to` is the other half.
+    fn has_vein_face(&self, old: &BlockState, face: Dir) -> bool {
+        self.is_vein(old) && Self::has_face(old, face)
     }
 
-    /// `SculkVeinBlock.getStateForPlacement`.
+    /// `SculkVeinBlock.getStateForPlacement` for the block now at `pos`. Nothing writes between
+    /// the reads here, so reading `pos` again after `can_attach_to` sees the same state.
     fn state_for_placement(
         &self,
         cx: &mut FeatureContext<'_, '_, '_>,
-        old: &BlockState,
         pos: BlockPos,
         face: Dir,
     ) -> Option<BlockState> {
-        if !self.valid_for_placement(cx, old, pos, face) {
+        if self.has_vein_face(block_in(cx.region, pos), face) || !can_attach_to(cx, pos, face) {
             return None;
         }
+        let old = block_in(cx.region, pos);
         let base = if self.is_vein(old) {
             old.clone()
         } else if water_source(cx, old) {
@@ -489,11 +530,11 @@ impl SculkPatchFeature {
         target: BlockPos,
         face: Dir,
     ) -> bool {
-        let existing = Self::state_at(cx, target);
-        let against = Self::state_at(cx, relative(target, face, 1));
+        // Read by reference: nothing here writes, so each read sees what one read up front would.
+        let against = block_in(cx.region, relative(target, face, 1));
         if ["sculk", "sculk_catalyst", "moving_piston"]
             .iter()
-            .any(|blocker| is_block(&against, blocker))
+            .any(|blocker| is_block(against, blocker))
         {
             return false;
         }
@@ -503,17 +544,18 @@ impl SculkPatchFeature {
                 return false;
             }
         }
-        if any_fluid(cx, &existing) && !water_source(cx, &existing) {
+        let existing = block_in(cx.region, target);
+        if any_fluid(cx, existing) && !water_source(cx, existing) {
             return false;
         }
-        if Self::in_tag(cx, "fire", &existing) {
+        if Self::member(self.fire, existing) {
             return false;
         }
-        let replaceable = state_has(cx, &existing, BlockFact::Replaceable)
-            || state_has(cx, &existing, BlockFact::Air)
-            || self.is_vein(&existing)
-            || (is_block(&existing, "water") && water_source(cx, &existing));
-        replaceable && self.valid_for_placement(cx, &existing, target, face)
+        let replaceable = state_has(cx, existing, BlockFact::Replaceable)
+            || state_has(cx, existing, BlockFact::Air)
+            || self.is_vein(existing)
+            || (is_block(existing, "water") && water_source(cx, existing));
+        replaceable && !self.has_vein_face(existing, face) && can_attach_to(cx, target, face)
     }
 
     /// `SculkBehaviour.attemptUseCharge` for the three behaviours.
@@ -588,12 +630,11 @@ impl SculkPatchFeature {
     }
 
     /// Whether `state` counts toward the cap on nearby sensors and shriekers.
-    fn is_inhibitor(&self, cx: &FeatureContext<'_, '_, '_>, state: &BlockState) -> bool {
-        let tag = ResourceLocation::minecraft("sculk_growth_inhibitors");
-        if cx.env.block_tags.get(&tag).is_some() {
-            return cx.env.block_tags.contains(&tag, &state.name);
+    fn is_inhibitor(&self, state: &BlockState) -> bool {
+        match self.inhibitors {
+            Some(members) => members.contains(&state.name),
+            None => state.name == self.sensor.name || is_block(state, "sculk_shrieker"),
         }
-        state.name == self.sensor.name || is_block(state, "sculk_shrieker")
     }
 
     /// `SculkBlock.canPlaceGrowth`.
@@ -609,7 +650,7 @@ impl SculkPatchFeature {
         for dz in -4..=4 {
             for dy in 0..=2 {
                 for dx in -4..=4 {
-                    if self.is_inhibitor(cx, block_in(cx.region, offset(pos, dx, dy, dz))) {
+                    if self.is_inhibitor(block_in(cx.region, offset(pos, dx, dy, dz))) {
                         matched += 1;
                         if matched >= 3 {
                             return false;
@@ -623,16 +664,16 @@ impl SculkPatchFeature {
 
     /// `SculkVeinBlock.attemptPlaceSculk`: turns the block a vein clings to into sculk.
     fn place_sculk(&self, cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos) -> bool {
-        let state = Self::state_at(cx, pos);
+        let faces = faces_of(block_in(cx.region, pos));
         let mut directions = Dir::ALL;
         shuffle(&mut directions, cx.random);
         for support in directions {
-            if !Self::has_face(&state, support) {
+            if !faces[face_index(support)] {
                 continue;
             }
             let support_pos = relative(pos, support, 1);
             let support_state = block_in(cx.region, support_pos);
-            if !(Self::in_tag(cx, "sculk_replaceable_world_gen", support_state)) {
+            if !Self::member(self.replaceable_world_gen, support_state) {
                 continue;
             }
             Self::write(cx, support_pos, self.sculk.clone());
@@ -643,8 +684,8 @@ impl SculkPatchFeature {
                     continue;
                 }
                 let vein_pos = relative(support_pos, direction, 1);
-                let possible = Self::state_at(cx, vein_pos);
-                if self.is_vein(&possible) {
+                if self.is_vein(block_in(cx.region, vein_pos)) {
+                    let possible = Self::state_at(cx, vein_pos);
                     self.on_discharged(cx, Behaviour::Vein, &possible, vein_pos);
                 }
             }
@@ -695,16 +736,19 @@ impl SculkPatchFeature {
         origin: BlockPos,
     ) -> Option<BlockPos> {
         // `NON_CORNER_NEIGHBOURS` in `BlockPos.betweenClosed` order: x fastest, then y, then z.
-        let mut offsets = Vec::with_capacity(18);
+        let mut offsets = [(0, 0, 0); 18];
+        let mut n = 0;
         for z in -1..=1 {
             for y in -1..=1 {
                 for x in -1..=1 {
                     if (x == 0 || y == 0 || z == 0) && (x, y, z) != (0, 0, 0) {
-                        offsets.push((x, y, z));
+                        offsets[n] = (x, y, z);
+                        n += 1;
                     }
                 }
             }
         }
+        debug_assert_eq!(n, 18);
         shuffle(&mut offsets, cx.random);
         let mut best = pos;
         for (x, y, z) in offsets {
@@ -714,19 +758,21 @@ impl SculkPatchFeature {
             if dx.wrapping_mul(dx).wrapping_add(dz.wrapping_mul(dz)) > 144 {
                 continue;
             }
-            let transferee = Self::state_at(cx, neighbour);
-            if self.behaviour(&transferee) == Behaviour::Default
-                || !self.unobstructed_move(cx, pos, neighbour)
-            {
+            let transferee = block_in(cx.region, neighbour);
+            if self.behaviour(transferee) == Behaviour::Default {
+                continue;
+            }
+            let is_vein = self.is_vein(transferee);
+            let faces = faces_of(transferee);
+            if !self.unobstructed_move(cx, pos, neighbour) {
                 continue;
             }
             best = neighbour;
-            if self.is_vein(&transferee) {
-                let substrate = Dir::ALL.into_iter().any(|direction| {
-                    Self::has_face(&transferee, direction)
-                        && Self::in_tag(
-                            cx,
-                            "sculk_replaceable",
+            if is_vein {
+                let substrate = Dir::ALL.into_iter().enumerate().any(|(i, direction)| {
+                    faces[i]
+                        && Self::member(
+                            self.replaceable,
                             block_in(cx.region, relative(neighbour, direction, 1)),
                         )
                 });
