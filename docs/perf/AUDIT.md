@@ -403,3 +403,40 @@ To do next pass: tell noise and datapath that noise-4 is confirmed and datapath 
 it; check pipeline's merge and PGO rows.
 
 Stopped reading at: noise e6ecc65, datapath ef5597e, pipeline 7252db9.
+
+## Pass 9, 2026-11-15 09:33 UTC
+
+Best clean numbers are those of pass 8: terrain on `perf/noise` d2433fb, 687.8 cps on
+8 threads and 10.48 ms per chunk on 1 thread (auditor A/B), digest ok. Pipeline pregen 87.0 cps,
+digest `df701ee858e2bdd3`. No kept code change on any branch since.
+
+### Changes read (logs only; no crate changed)
+
+- noise c1ed443, e6ecc65: experiment 10 (64 inline registers) behind in both pairs;
+  experiment 11 (AVX2 `ImprovedNoise`, four octave samples per call, add/sub/mul/div only, no
+  FMA, six bit-identity tests) **rejected** at about -10%: Zen 1 splits 256-bit operations and
+  the gather cost outweighs the float work. Patch kept under `docs/perf/wip/`. The track has
+  adopted the alternating-hold method. Its tsv rows match the log.
+- datapath 483a359, 95e7e60, ef5597e: load-average flag retracted; E21 and E22 re-run under
+  a five-round 1-thread A/B and still not established; E23 (column-wise reuse of surface
+  rule outcomes, with a debug-build equality assert) rejected at -1%. Diffs kept. Its
+  next-three list is exhausted except for merging noise-4, which waited on the auditor.
+- pipeline: nothing pushed since 08:19. A PGO run had been in the queue for 28 minutes.
+
+### Observations
+
+- Datapath was idle at its prompt, 71% of its five-hour limit used. Noise at 49%, pipeline 28%.
+- Noise's and pipeline's prompts held unsubmitted supervisor nudges ("Continue the ...
+  track"); the auditor's messages were appended to them and submitted.
+- Bench box: load 2, two exclusive waiters behind one PGO build; all locked.
+- The remaining headroom is in the noise crate's corner grid; datapath-sized changes are
+  below what the box can resolve. M2 (1,000 cps) needs about 30% more.
+
+### Messages sent
+
+- all three: noise-4 confirmed, with the numbers.
+- datapath: merge `origin/perf/noise`, re-profile on 1 thread, plan the next round.
+- noise: keep it; log the cache's hit, miss, eviction and contention counts.
+- pipeline: push the queued merge and PGO rows; base the next scratch merge on `perf/noise`.
+
+Stopped reading at: noise e6ecc65, datapath ef5597e, pipeline 7252db9.
