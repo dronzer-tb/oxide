@@ -1467,3 +1467,36 @@ Without `--bench`, pregen prints no BENCH line.
 `BENCH chunks=1089 threads=8 secs=5.712 cps=190.6 ms_per_chunk_core=41.96 digest=df701ee858e2bdd3 generate_ms=2983 decorate_ms=2528 serialise_ms=106 compress_ms=95 write_ms=0 compression=zlib6 mb_disk=0.0`
 This matches pipeline's reference from merges up to 2127bd7, so the 3362440 noise merge also leaves
 the full NBT unchanged. The box dir `datapath-pg` is deleted.
+
+### 8-thread scaling (`datapath-26`): interim report
+
+**The 392.9 row was the box, not the code.** A java server (another user's) was at 362% CPU on
+the box at 16:04, outside the bench lock. In an exclusive 6-round rotating hold at 8 threads
+(17:04-17:10 CET), 0f15cef averaged 750.5 cps (627-834) against b1f77a6's 728.5 (707-747). No
+regression from the 3362440 noise merge.
+
+- **CPU, 1 thread against 8:** generation user+sys is 10.3-10.5 s against 11.1-11.7 s (+8-12%). Tail
+  and start-up idle are 0.4-0.6%. In clean rounds the loss is only ~2-5%. Some rounds of both binaries run ~25% more
+  CPU (13.2 against 10.2 CPU-s), cause unknown. The suspect is a neighbour VM on the KVM host:
+  steal reads 0, so it cannot be seen from inside.
+- **Per phase, CPU per chunk at 1 and 8 threads:** fill 5.72 and 6.46-6.50 ms (+13%, most of the increase);
+  ore 0.67 and 0.69; surface `new` 0.18 and 0.19; surface `apply` 1.69 and 1.72-1.79; carvers 1.25 and 1.24-1.30.
+- **E18 duplicates work across threads:** `preliminary_surface_level` is 1.37% of CPU on 1 thread
+  and 4.10% on 8, because each thread rescans columns its neighbours already scanned. Proposed fix:
+  a lock-free table shared by all threads, with one atomic u64 per column holding key and level.
+  First hold: +8% (base 684.8, fix 739.9 cps). Not trusted yet: java was not logged, and both
+  binaries show the fast/slow split. A third hold, with java logged per round, is asked for.
+- **Allocation:** ~11.4k allocations and 7 MB per chunk, flat from 1 to 8 threads. Most are in
+  oxide-noise: fill makes 7.2k allocations and 6 MB, mostly scratch vectors per `run_cell`/`run_lanes`
+  call (noise track). Carvers make 2.7k, including the harness's `carvers_at` Vec clone 289 times
+  per chunk (harness). sys time is +0.1-0.2 s and minor faults are flat, so the allocator is not the main cost.
+- **Shared corner-column cache:** hit rate 54.1% on 1 thread and 50.0% on 8 (about 4.8k more columns
+  recomputed, ~1% of CPU). A lock was waited for in 0.06% of acquisitions. Contention is ruled out.
+
+**For other tracks:**
+- noise: the ~6 MB per chunk of scratch allocation in `run_cell` / `run_lanes` (reuse it per thread);
+  this may also explain fill's +13% at 8 threads.
+- harness: `carvers_at` clones the carver Vec for each of the 289 source chunks per chunk.
+
+**New rule (auditor):** log `pgrep -c java` and the java CPU at the start of every hold, and do
+not trust an 8-thread hold taken while it is busy. `ab1.sh` now does this every round.
