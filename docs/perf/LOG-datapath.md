@@ -480,3 +480,21 @@ PLAN.md updated from `feat/native-decoration`: decoration (`decorator/`, `decora
 files. The PR into `feat/native-decoration` that rule 4 asks for is not open: this agent host
 has no `gh`. Branch `perf/datapath` is ready for one; someone with GitHub access can open it,
 or `gh` can be installed here.
+
+### Round 3 (in flight), based on 689eb30 (~584 cps)
+
+Profile of the head, generation only: corner-grid build 39.9% (noise), surface 15.3%, aquifer
+13.6% (`compute_kind` 8.3%, surface level 5.3%), carvers 8.6%, ore veins 6.3%, `run_cell` 5.6%
+(noise), biomes 4.9%, fill loop self 4.6%.
+
+Sub-agents:
+- `datapath-8`: surface round 3. Make the pass profileable with `#[inline(never)]` first,
+  then cut the dominant part. Sharing the compiled program across chunks is allowed if the
+  lifetimes permit. E14's per-chunk folding is not to be repeated as is.
+- `datapath-9`: aquifer round 2 (`find_top_surface` scan cost, `compute_fluid`'s uncached
+  `router.sample` calls, the per-block remainder).
+- `datapath-10`: carvers (sequential `LegacyRandom`, so only skips that touch no draw) and
+  ore veins (per-cell `vein_ridged` bound, cost of the random draw).
+
+All three hit the 5-hour usage limit before writing any code, and were resumed after the
+reset with the same rules.
