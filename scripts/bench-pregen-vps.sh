@@ -1,7 +1,7 @@
 #!/bin/sh
 # Benchmarks this working tree's whole offline pregeneration path on the bench VPS: terrain,
 # decoration, heightmaps, NBT, compression and region writes, through oxide-pregen. Builds on
-# the VPS like bench-vps.sh and takes the same lock. Prints one BENCH line (the harness's fields
+# the VPS like bench-vps.sh: the build holds the bench lock shared, the timed run exclusive. Prints one BENCH line (the harness's fields
 # plus per-stage milliseconds) and appends it to docs/perf/bench-<name>.tsv.
 #
 #   scripts/bench-pregen-vps.sh [name] [radius] [threads] [extra oxide-pregen arguments...]
@@ -37,13 +37,12 @@ fi
 line="$(ssh -o BatchMode=yes "$host" "
     set -eu
     cd '$dir'
-    flock ~/oxide-perf/.lock sh -c '
-        ~/.cargo/bin/cargo build --release -p oxide-pregen 2>&1 | tail -n 3
-        rm -rf out/pregen-world
-        ./target/release/oxide-pregen --datapack reference --seed 12345 \
-            --world out/pregen-world --center-x 0 --center-z 0 --radius $radius \
-            --threads $threads --bench $extra | grep -E \"^(BENCH|[0-9]+ chunks)\"
-    '
+    # Build shared, beside other tracks' builds; the timed run takes the lock alone.
+    flock -s ~/oxide-perf/.lock nice -n 10 ~/.cargo/bin/cargo build --release -p oxide-pregen 2>&1 | tail -n 3
+    rm -rf out/pregen-world
+    flock -x ~/oxide-perf/.lock ./target/release/oxide-pregen --datapack reference --seed 12345 \
+        --world out/pregen-world --center-x 0 --center-z 0 --radius $radius \
+        --threads $threads --bench $extra | grep -E '^(BENCH|[0-9]+ chunks)'
 " | tee /dev/stderr | grep '^BENCH')"
 commit="$(git rev-parse --short HEAD)"
 if [ -n "$(git status --porcelain -- crates)" ]; then
