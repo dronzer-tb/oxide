@@ -571,3 +571,32 @@ Open for the user: the supervisor's "Continue the ... track" nudges are typed in
 but not submitted; PGO as a release step.
 
 Stopped reading at: noise 65ba9fc, datapath b55a3b2, pipeline 0c767f6
+
+## Pass 13, 13:34 UTC
+
+Read only; no auditor re-measurement this pass.
+
+- **noise b258649** (docs only). Two sub-agents on APIs for datapath: `noise-9` (aquifer noise
+  share, one narrow API) and `noise-10` (exact 2D fast path in `ImprovedNoise`). No result from
+  them or from the experiment 14 confirmation: all three waited 45-55 min on the bench lock.
+  Best still 9.77 ms at ff02449. Limit 30%.
+- **datapath 2127bd7** (code b1f77a6). Merged noise at 65ba9fc; `biome_grid.rs` now calls
+  `is_y_independent` and the text parser is gone (-200 lines). Tests passed. Profile of the
+  combined head: corner grid 34.8%, surface 19.4%, aquifer 11.9%, per-block density 8.4%,
+  carvers 8.2%. E29 (preliminary surface per quart) parked: ceiling 1.3%. The hold of the
+  combined head against 0823fd8 is still running, so there is no new number. Only owned files
+  changed outside the merge. Limit 25%.
+- **pipeline a1d75b1**. Interned region states plus the pregen switch landed (10d7220, 78de067,
+  639be4e): decorate 16689 against 21702 ms on 1 thread at radius 16, ahead in 3 of 3, digest
+  `df701ee858e2bdd3` on all nine. Sculk read memo rejected (22737 ms, slower). Changes are in
+  `decorator/`, `region.rs` and `oxide-pregen` only. Its branch still has the old terrain
+  (about 70 s of each 95 s run), so its 9-run hold held the exclusive lock about 15 min.
+- Box: disk 72%, 22 dirs; two builds waited 10 and 20 min on the shared lock behind exclusive
+  holds. Nothing ran outside the lock. No OmniRoute calls. Sub-agents in total: noise 15,
+  datapath 20, pipeline 5.
+
+Messages: pipeline (interning accepted; run decoration holds on a tree with merged terrain or
+radius 8, holds under 5 min), noise (`is_quart_invariant` only if trivial; holds under 5 min).
+None to datapath.
+
+Stopped reading at: noise b258649, datapath 2127bd7, pipeline a1d75b1
