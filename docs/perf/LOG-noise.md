@@ -179,3 +179,29 @@ is re-running it against 18bb0f9 for AUDIT.md. This log adds hit/miss/eviction a
 contention counters for the shared column cache, plus an 8-thread vs 1-thread comparison, so
 contention is ruled out rather than assumed.
 | 11 (noise-6) | AVX2 `ImprovedNoise`, 4 independent octave samples per call through a sample queue (Perlin, Normal and Blended), accumulated in the original order. Add/sub/mul/div only, no FMA; range guard to scalar at 2^30; `dx = d - cvtepi32(i)` so -0.0 matches; 6 new bit-identity tests (800k lanes plus verbatim copies of the old callers) | 657.0, 723.0 (A/B baselines at d2433fb) | 608.5, 625.9 | a977961a58122047 all four | **rejected**: behind in both pairs, about -10%. Zen 1 splits 256-bit ops in two; building the gradient vectors from ~96 scalar loads per 4 samples, plus the queue's array traffic, outweighs the float work. Patch kept at `docs/perf/wip/noise-6-avx2-octaves.patch`. A retry should build the gradients with table permutes and keep the hashes in SIMD registers, and profile before benching |
+
+### Hold 1: 1 thread, 4 alternating rounds, one exclusive hold (load 1.25 at start, 1.77 at end)
+
+Radius 16, `--threads 1`, ms of core time per chunk. All 16 runs `digest=a977961a58122047`.
+
+| Build | r1 | r2 | r3 | r4 | Mean |
+|---|---|---|---|---|---|
+| head d2433fb (noise-4 on) | 10.29 | 10.35 | 10.71 | 10.90 | 10.56 |
+| head + `INLINE_REGISTERS` 64 (10) | 10.45 | 10.27 | 11.12 | 10.48 | 10.58 |
+| head + cache counters | 10.03 | 9.97 | 10.24 | 10.65 | 10.22 |
+| 18bb0f9 (noise-4 off) | 11.19 | 11.16 | 12.41 | 11.46 | 11.56 |
+
+- **10 rejected**: level with the head (10.58 vs 10.56). It was behind in both 8-thread pairs too.
+- **9 (noise-4) on 1 thread: -8.6% core time per chunk**, ahead in every round. The auditor's
+  own hold confirms it independently (`bench-audit-noise.tsv` on `perf/audit`): ahead in all
+  four 8-thread rounds, +17% on the means (673.0, 669.4, 721.8, 686.9 against 491.3, 649.3,
+  613.2, 591.5 cps), and 10.37/10.58 against 11.41/12.07 ms per chunk on 1 thread. Kept.
+- The counters (hits, misses and evictions under the lock, contention via `try_lock` failing)
+  cost nothing measurable.
+
+Shared column cache counters, 1 thread, radius 16 (identical in every round, since generation
+order is deterministic on one thread): **hits 63,296, misses 53,728, hit rate 0.541, evictions
+22,220, contended acquisitions 0 of 170,752.** The hit rate is near its ceiling. A chunk looks
+up its 16 edge columns per grid, but only 7 of them are new on average (12 non-corner columns
+shared by 2 chunks, 4 corners shared by 4), so the most it can reach is 9/16 = 0.5625, less a
+little at the region's edge. The evictions do not cost hits.
