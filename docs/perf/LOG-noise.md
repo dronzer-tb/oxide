@@ -617,3 +617,35 @@ harness's stdout goes through a fifo, and when it prints `generated N chunks` (t
 timed part, before the digest), the loop reads the harness's own utime+stime from
 `/proc/<pid>/stat` with a blocking `read`, with no polling. That is setup (~0.4 s) plus
 generation only. `ab-analyze.py` reports it first. 18 is being re-held on it.
+
+### 18 decided on generation CPU: no measurable effect, not landed
+
+Rotating holds of 4 rounds at radius 16. Labels su0/su0b are two fresh builds of 319e212
+(crates = fd4bfe2), and su1 is the same plus `noise-12-scratch-pool.patch`. `gen_cpu_s` (setup +
+generation, no digest) was logged on all 24 runs. Java used 0.5-1.1 CPU-s per run; no round was
+dropped. Digest `a977961a58122047` on all 24.
+
+| hold | su0 gen_cpu_s | su0b gen_cpu_s | su1 gen_cpu_s | su1 vs su0 | su1 vs su0b |
+|---|---|---|---|---|---|
+| 1 thread | 11.10 | 10.91 | 10.93 | -1.6%, fewer in 3/4 | **+0.2%**, fewer in 3/4 |
+| 8 threads | 13.24 | 12.00 | 12.38 | -6.5%, fewer in 3/4 | **+3.2%**, fewer in 1/4 |
+
+Per round, 1 thread: su0 11.33/11.12/11.05/10.91, su0b 10.83/11.19/10.79/10.83, su1
+12.03/10.58/10.60/10.51. 8 threads: su0 12.70/13.69/14.37/12.19, su0b 12.68/11.54/11.83/11.95,
+su1 13.78/11.43/12.37/11.95.
+
+**Verdict: no measurable effect; not landed.** On the measure that excludes the digest, the pool
+sits between the two bases at both thread counts. The earlier whole-process -2.2%/-2.5% and my
+"~8% of generation" inference are therefore not supported: that gap was in the digest's CPU,
+i.e. noise. The cut of 7.6k allocations (6.07 MB) per chunk is real but buys nothing measurable,
+so glibc's malloc already serves these short-lived same-size buffers cheaply from its thread
+caches, even at 8 threads. The patch stays in `docs/perf/wip/noise-12-scratch-pool.patch`.
+
+**Method notes:**
+- At 8 threads the two bases differ by 10% in generation CPU (13.24 vs 12.00, both builds of
+  the same commit). Generation CPU at 8 threads is no steadier than cps, so 8-thread holds
+  still need two bases and more rounds than 1-thread ones.
+- These holds ran ~7 min (1 thread) and ~5.5 min (8 threads) per lock hold, over the ~5 min
+  guidance. 25 s of each run is the untimed digest. A `--time-only` flag that skips the
+  digest would halve hold length, but it would also drop the per-run byte-exactness check, so
+  it is not proposed. The digest stays.
