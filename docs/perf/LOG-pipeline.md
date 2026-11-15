@@ -176,3 +176,16 @@ The release runs from the same session give 135.4 and 140.0; the 125.0 run ran o
 box. Against those, fatbench is +5%, inside the noise. A second fatbench run is owed: the
 loop was stopped by the urgent lock change. Build time is not recorded yet; these rows
 predate the fix.
+
+**Rejected: fat LTO (`fatbench` profile), clean A/B.** Same commit 8ea2c1c, plain locking,
+every digest a977961a58122047. Build times are cargo's own, from a cold build of each profile.
+
+| profile | cps | mean | build |
+|---|---|---|---|
+| release (thin LTO, cgu 1) | 137.8, 136.0 | 136.9 | 2m04s |
+| fatbench (fat LTO, cgu 1) | 126.5, 145.5 | 136.0 | 3m55s |
+
+No measurable gain. Release already has codegen-units = 1 and thin LTO, so fat LTO has little
+left to inline; its spread (19 cps) is bigger than any difference. It costs +1m51s per cold
+build. The profile stays in Cargo.toml as opt-in and costs nothing unused, but benches stay
+on release. PGO is next, with the pipeline-1 sub-agent.
