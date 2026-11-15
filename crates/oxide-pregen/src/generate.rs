@@ -27,9 +27,10 @@ use oxide_anvil::region::{self, CompressedChunk};
 use oxide_biome::BiomeSearchTree;
 use oxide_chunkgen::decorate::heightmaps;
 use oxide_chunkgen::{
-    generate_chunk, BiomeDecorator, BiomeTemperatures, BlockWrite, CarverSetup, DecorationRegion,
+    generate_chunk, BiomeDecorator, BiomeTemperatures, CarverSetup, DecorationRegion,
     Decorator,
 };
+use oxide_chunkgen::region::InternedWrites;
 use oxide_core::{ChunkData, ChunkPos, ChunkStatus, ResourceLocation};
 use oxide_datapack::{
     load_datapack, BiomeSource, BlockFacts, ConfiguredCarver, MultiNoiseSource,
@@ -159,11 +160,11 @@ impl Generator {
         )
     }
 
-    /// The block writes chunk `refs[4]`'s features make, over the nine chunks around it.
-    pub fn decoration_writes(&self, refs: [&ChunkData; 9]) -> Vec<BlockWrite> {
+    /// The block writes (interned: no state is cloned per write) chunk `refs[4]`'s features make, over the nine chunks around it.
+    pub fn decoration_writes(&self, refs: [&ChunkData; 9]) -> InternedWrites {
         let mut region = DecorationRegion::new(refs[4].pos, refs, self.decorator.facts());
         self.decorator.decorate(&mut region);
-        region.into_writes()
+        region.into_interned()
     }
 }
 
@@ -182,9 +183,9 @@ fn square(center: ChunkPos, radius: i32) -> Vec<ChunkPos> {
 /// A section's palette is small, so a write's palette index is found by comparing against it
 /// by reference; the state is cloned (and hashed) only when it is new to the section, which is
 /// exactly when `PalettedContainer::set` would insert it, so palette order is unchanged.
-fn apply_writes(chunk: &mut ChunkData, writes: &[BlockWrite]) {
+fn apply_writes(chunk: &mut ChunkData, writes: &InternedWrites) {
     let (min_y, height) = (chunk.min_y, chunk.height);
-    for (at, state) in writes {
+    for (at, state) in writes.iter() {
         if at.chunk_pos() != chunk.pos || at.y < min_y || at.y >= min_y + height {
             continue;
         }
@@ -265,7 +266,7 @@ pub fn run(generator: &Generator, opts: &Options<'_>) -> Result<Outcome> {
     // in `oxide_chunkgen::decorate::decorated_chunk`'s order.
     let started = Instant::now();
     let (min_y, height) = (terrain[0].min_y, terrain[0].height);
-    let writes: Vec<Vec<BlockWrite>> = square(opts.center, writes_radius)
+    let writes: Vec<InternedWrites> = square(opts.center, writes_radius)
         .par_iter()
         .map(|&c| {
             let refs: [&ChunkData; 9] = std::array::from_fn(|i| {
