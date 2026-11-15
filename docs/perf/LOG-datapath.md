@@ -1118,3 +1118,41 @@ experiment 12 was 9.77 against 10.43 ms, ahead in 5 of 5.
   - Sub-agent's run: 9.71 ms, 1 thread. Tests: biome 7, chunkgen 192 passed.
 - One rotating 1-thread hold, 4 rounds, decides three things at once: the head (20d218d), the
   noise merge (0823fd8, `datapath-22`), E27 (`datapath-21`) and E22 (`datapath-20`).
+
+### Four-way hold: suspect, decided nothing
+
+Tests for the E22 rebuild: chunkgen 191 passed. Rotating 1-thread hold, 4 rounds, ms core per chunk:
+
+| | r1 | r2 | r3 | r4 | mean |
+|---|---|---|---|---|---|
+| head 20d218d (`datapath`, built 10:55 by `bench-vps.sh`) | 10.35 | 10.50 | 10.25 | 10.54 | 10.41 |
+| noise merge 0823fd8 (`datapath-22`) | 9.32 | 9.42 | 9.90 | 11.25 | 9.97 |
+| E27 biomes (`datapath-21`) | 10.15 | 9.32 | 9.53 | 10.03 | 9.76 |
+| E22 carvers (`datapath-20`) | 9.93 | 9.61 | 9.80 | 10.52 | 9.97 |
+
+All sixteen `digest=a977961a58122047`. **Not trusted.** E27 beats the head by 6.3%, which is more than all of
+`fill_biomes` (4.1% of generation), and all three variants beat the head by similar margins.
+The head binary itself looks ~4% slow, from build or layout variance between separately built
+binaries, not from code. Nothing is kept or rejected on this hold.
+
+**Next hold (do this first):** include two separately built binaries of the same head source,
+`datapath` and a fresh `datapath-h2`, to measure binary-to-binary variance. Then compare each variant
+against both. If the two head builds differ by ~4%, every A/B of separately built binaries
+this session has had that floor. The E21 keep (6 of 6, -4.2%) should then be confirmed again too.
+
+## Handover update (at the usage limit)
+
+- Head: **0823fd8** = 20d218d + noise merge 0c83b38 (noise experiment 12). Tests pass (noise 34,
+  chunkgen 190, core 57, biome 6). Its own A/B is in the suspect hold above, so it is
+  merged on the noise track's measurement (9.77 against 10.43 ms, 5 of 5).
+- 8 threads: 701.5 cps at 741d96f (= 20d218d code), the last tsv row.
+- Built and waiting for a trustworthy hold: E22 in `~/oxide-perf/datapath-20` (on 20d218d), E27 in
+  `datapath-21` (on 741d96f). Both diffs are in those worktrees: `/tmp/datapath-20`, `/tmp/datapath-21`.
+  Delete those dirs, and `datapath-22`, after the next hold.
+- Next three:
+  1. Two-head-binary hold as above, to set the variance floor. Then decide E22 and E27 against
+     it, and re-check E21.
+  2. If E27 lands, move its y-independence check into `oxide-noise` as a predicate on the
+     compiled program (ask the noise track) instead of parsing `dump_program` text.
+  3. Re-profile 0823fd8 on 1 thread with `#[inline(never)]` splits of surface and aquifer,
+     and pick the next target from it.
