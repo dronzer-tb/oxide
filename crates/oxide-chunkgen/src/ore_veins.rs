@@ -91,18 +91,66 @@ pub fn apply_ore_veins(
         })
         .collect();
 
+    // Cells that provably hold no vein. `vein_state` gives up when
+    // `|vein_toggle| + edge_roundoff < VEININESS_THRESHOLD`, and `edge_roundoff` is never
+    // positive, so a cell whose `vein_toggle` stays strictly inside +-threshold cannot place
+    // anything -- and veins are rare, so that is most cells. The bounds come from the
+    // slot's cell-corner grid, which exists once the slot has been sampled in this chunk;
+    // where none can be proven the cell is evaluated block by block as before.
+    let cell_width = caches.cell_width();
+    let cell_height = caches.cell_height();
+    let cells_xz = (16 / cell_width).max(1) as usize;
+    let cells_y = (height / cell_height).max(0) as usize;
+    let _ = router.sample_in_chunk(
+        caches,
+        RouterSlot::VeinToggle,
+        pos.min_block_x(),
+        band_min.max(min_y),
+        pos.min_block_z(),
+    );
+    let mut veinless = vec![false; cells_xz * cells_xz * cells_y];
+    for cell_y in 0..cells_y {
+        let cell_min_y = min_y + cell_y as i32 * cell_height;
+        if cell_min_y > band_max || cell_min_y + cell_height <= band_min {
+            continue;
+        }
+        for cell_z in 0..cells_xz {
+            for cell_x in 0..cells_xz {
+                veinless[(cell_y * cells_xz + cell_z) * cells_xz + cell_x] = router
+                    .cell_bounds(
+                        caches,
+                        RouterSlot::VeinToggle,
+                        cell_x as i32,
+                        cell_y as i32,
+                        cell_z as i32,
+                    )
+                    .is_some_and(|(lo, hi)| lo > -VEININESS_THRESHOLD && hi < VEININESS_THRESHOLD);
+            }
+        }
+    }
+
     for y in band_min.max(min_y)..=band_max.min(min_y + height - 1) {
         let Some(section_index) = section_of(settings, y) else {
             continue;
         };
+        let cell_y = ((y - min_y).div_euclid(cell_height)) as usize;
         let Some(Some(default_index)) = default_index.get(section_index).copied() else {
             continue;
         };
         let local_y = (y - min_y).rem_euclid(16) as usize;
         for local_z in 0..16usize {
             let block_z = pos.min_block_z() + local_z as i32;
+            let cell_z = (local_z as i32).div_euclid(cell_width) as usize;
             for local_x in 0..16usize {
                 let block_x = pos.min_block_x() + local_x as i32;
+                let cell_x = (local_x as i32).div_euclid(cell_width) as usize;
+                if veinless
+                    .get((cell_y * cells_xz + cell_z) * cells_xz + cell_x)
+                    .copied()
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
                 if chunk.sections[section_index].block_states.indices()
                     [local_index(local_x, local_y, local_z)]
                     != default_index

@@ -119,3 +119,24 @@ Repeat: `BENCH chunks=1089 threads=8 secs=3.857 cps=282.4 ms_per_chunk_core=28.3
 
 About 2%, inside run-to-run noise but the same on both runs. Kept: it is less code and the
 digest is unchanged. Tests: chunkgen 189 passed.
+
+### E4: skip ore-vein sampling in cells that cannot hold a vein -- kept, gain unconfirmed
+
+`ore_veins.rs`: `vein_state` returns nothing when `|vein_toggle| + edge_roundoff < 0.4` and
+`edge_roundoff <= 0`, so a cell whose `vein_toggle` corner bounds sit strictly inside
++-0.4 is skipped whole (same `cell_bounds` the fill uses). Cells with no provable bound are
+evaluated block by block as before.
+
+Before: `BENCH chunks=1089 threads=8 secs=3.857 cps=282.4 ms_per_chunk_core=28.33 digest=a977961a58122047`
+After:  `BENCH chunks=1089 threads=8 secs=3.738 cps=291.3 ms_per_chunk_core=27.46 digest=a977961a58122047`
+Repeat: `BENCH chunks=1089 threads=8 secs=5.324 cps=204.6 ms_per_chunk_core=39.11 digest=a977961a58122047`
+Repeat: `BENCH chunks=1089 threads=8 secs=4.983 cps=218.5 ms_per_chunk_core=36.61 digest=a977961a58122047`
+
+The two slow repeats ran while other `rustc` jobs were on the box (seen in `ps` just before
+each; there is a `noise-prof` directory building outside the bench lock). They say nothing
+about this change either way. Kept because it strictly removes samples and the digest is
+unchanged; the size of the gain is not established. Tests: chunkgen 189 passed.
+
+Measurement note: with foreign load on the box a single wall-clock run can be 30% low.
+From here each experiment also records the harness's user+sys CPU seconds, which waiting
+for a core does not inflate.
