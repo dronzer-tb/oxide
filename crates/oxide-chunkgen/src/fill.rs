@@ -154,15 +154,26 @@ pub fn fill_chunk_culling(
             }
         }
     }
-    let cell_is_air = |cell_x: usize, cell_y: i32, cell_z: usize| -> bool {
-        cell_y >= 0
-            && cell_x < cells_xz
-            && cell_z < cells_xz
-            && air_cells
-                .get((cell_y as usize * cells_xz + cell_z) * cells_xz + cell_x)
-                .copied()
-                .unwrap_or(false)
+    // The row of `air_cells` a block row `(cell_y, cell_z)` reads, or `None` when no cell of
+    // that row is in the grid. Rows are `cells_xz` long and start at a multiple of it, so a
+    // row is either wholly inside `air_cells` or wholly outside it, and `row[cell_x]` for
+    // `cell_x < cells_xz` is exactly the per-block lookup this replaces.
+    let air_row = |cell_y: i32, cell_z: usize| -> Option<&[bool]> {
+        if cell_y < 0 || cell_z >= cells_xz {
+            return None;
+        }
+        let start = (cell_y as usize * cells_xz + cell_z) * cells_xz;
+        air_cells.get(start..start + cells_xz)
     };
+
+    // Per-column cell coordinates, resolved once instead of a `div_euclid` per block: the cell
+    // a local x/z falls in, and its offset inside that cell.
+    let cell_of: [usize; 16] =
+        std::array::from_fn(|local| (local as i32).div_euclid(cell_width) as usize);
+    let in_cell: [usize; 16] = std::array::from_fn(|local| {
+        let cell = cell_of[local];
+        local.wrapping_sub(cell.wrapping_mul(cell_width as usize))
+    });
 
     // The three states the fill can place besides air. Each is interned into a section's
     // palette on first use (so palettes hold exactly what the section contains, in the order
@@ -221,39 +232,58 @@ pub fn fill_chunk_culling(
             };
             for local_z in 0..16usize {
                 let block_z = pos.min_block_z() + local_z as i32;
-                let cell_z = (local_z as i32).div_euclid(cell_width) as usize;
-                let lane_row = (cell_local_y * cell_w + (local_z - cell_z * cell_w)) * cell_w;
+                let cell_z = cell_of[local_z];
+                let lane_row = (cell_local_y * cell_w + in_cell[local_z]) * cell_w;
+                // Only consulted for the uniform-cell shortcut, so only when it can apply.
+                let air_row = if air_if_not_solid {
+                    air_row(cell_y, cell_z)
+                } else {
+                    None
+                };
+                let row_cells = row_in_cells && cell_z < cells_xz;
+                let row_index = local_index(0, local_y as usize, local_z);
                 for local_x in 0..16usize {
                     let block_x = pos.min_block_x() + local_x as i32;
-                    let cell_x = (local_x as i32).div_euclid(cell_width) as usize;
+                    let cell_x = cell_of[local_x];
 
                     // Uniform-cell shortcut, taken before any density evaluation: air is
                     // already the section's palette default, so there is nothing to write.
-                    if air_if_not_solid && cell_is_air(cell_x, cell_y, cell_z) {
-                        continue;
+                    if let Some(row) = air_row {
+                        if cell_x < cells_xz && row[cell_x] {
+                            continue;
+                        }
                     }
 
-                    let in_cells = row_in_cells && cell_x < cells_xz && cell_z < cells_xz;
+                    let in_cells = row_cells && cell_x < cells_xz;
                     let cell_index = cell_z * cells_xz + cell_x;
-                    if in_cells && cell_state[cell_index] == 0 {
-                        let values =
-                            &mut cell_values[cell_index * cell_len..(cell_index + 1) * cell_len];
-                        cell_state[cell_index] = if router.sample_cell(
-                            caches,
-                            RouterSlot::FinalDensity,
-                            cell_x as i32,
-                            cell_y,
-                            cell_z as i32,
-                            values,
-                        ) {
-                            1
+                    let density = if in_cells {
+                        if cell_state[cell_index] == 0 {
+                            let values = &mut cell_values
+                                [cell_index * cell_len..(cell_index + 1) * cell_len];
+                            cell_state[cell_index] = if router.sample_cell(
+                                caches,
+                                RouterSlot::FinalDensity,
+                                cell_x as i32,
+                                cell_y,
+                                cell_z as i32,
+                                values,
+                            ) {
+                                1
+                            } else {
+                                2
+                            };
+                        }
+                        if cell_state[cell_index] == 1 {
+                            cell_values[cell_index * cell_len + lane_row + in_cell[local_x]]
                         } else {
-                            2
-                        };
-                    }
-                    let density = if in_cells && cell_state[cell_index] == 1 {
-                        cell_values
-                            [cell_index * cell_len + lane_row + (local_x - cell_x * cell_w)]
+                            router.sample_in_chunk(
+                                caches,
+                                RouterSlot::FinalDensity,
+                                block_x,
+                                y,
+                                block_z,
+                            )
+                        }
                     } else {
                         router.sample_in_chunk(
                             caches,
@@ -298,9 +328,7 @@ pub fn fill_chunk_culling(
                             index
                         }
                     };
-                    section
-                        .block_states
-                        .set_index(local_index(local_x, local_y as usize, local_z), index);
+                    section.block_states.set_index(row_index + local_x, index);
                 }
             }
         }

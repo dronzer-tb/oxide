@@ -47,7 +47,12 @@ pub(crate) fn fill_biomes(
         nearest(3, 3, 3),
     ];
     if let Some(biome) = corners[0] {
-        if corners.iter().all(|corner| *corner == Some(biome)) {
+        // Pointer first: corners that hit the same tree leaf are the same id, so the string
+        // comparison only runs for distinct leaves.
+        if corners
+            .iter()
+            .all(|corner| corner.is_some_and(|c| std::ptr::eq(c, biome) || *c == *biome))
+        {
             // Entire 64-quart section is homogenous: one palette entry, written by index.
             let index = section.biomes.index_of_or_insert(biome.clone());
             for i in 0..64 {
@@ -60,11 +65,21 @@ pub(crate) fn fill_biomes(
     // Boundary section: sample all 64 quart cells. Neighbouring cells usually repeat a biome,
     // so the palette index of the last one written is reused while the tree keeps returning
     // the same entry.
+    //
+    // The eight corner cells were already looked up above, at the very same positions.
+    // Climate sampling is a pure function of position (the chunk caches only memoize it), and
+    // the tree search a pure function of the sample, so asking again would return the same
+    // leaf; they are reused rather than sampled twice.
     let mut last: Option<(&oxide_core::ResourceLocation, u32)> = None;
     for qy in 0..4usize {
         for qz in 0..4usize {
             for qx in 0..4usize {
-                if let Some(biome) = nearest(qx, qy, qz) {
+                let biome = if qx % 3 == 0 && qy % 3 == 0 && qz % 3 == 0 {
+                    corners[(qx / 3) + 2 * (qz / 3) + 4 * (qy / 3)]
+                } else {
+                    nearest(qx, qy, qz)
+                };
+                if let Some(biome) = biome {
                     let index = match last {
                         Some((known, index)) if std::ptr::eq(known, biome) => index,
                         _ => {

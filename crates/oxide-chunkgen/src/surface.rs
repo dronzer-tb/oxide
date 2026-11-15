@@ -618,7 +618,12 @@ impl<'a> SurfaceSystem<'a> {
     }
 
     /// The result index of the first `block` rule whose enclosing conditions all hold.
-    fn eval_program(&self, cursor: &Cursor, column: &Column, biomes: &ChunkBiomes) -> Option<usize> {
+    fn eval_program(
+        &self,
+        cursor: &Cursor,
+        column: &Column,
+        biomes: &ChunkBiomes,
+    ) -> Option<usize> {
         let program = &self.program[..];
         let mut pc = 0;
         while let Some(op) = program.get(pc) {
@@ -647,10 +652,8 @@ impl<'a> SurfaceSystem<'a> {
             Some(offset) => offset,
             None => {
                 let offset = match self.clay_bands_offset_noise {
-                    Some(noise) => {
-                        (noise.get_value(cursor.x as f64, 0.0, cursor.z as f64) * 4.0).round()
-                            as i32
-                    }
+                    Some(noise) => (noise.get_value(cursor.x as f64, 0.0, cursor.z as f64) * 4.0)
+                        .round() as i32,
                     None => 0,
                 };
                 self.band_offset.set(Some(offset));

@@ -369,3 +369,30 @@ Round 2 of sub-agents, all based on 6b8562f, with disjoint file boundaries:
 Process fix: my VPS helper ran profile builds under `flock -s` at nice 0. Every locked
 command on the box now runs as `flock -s ... nice -n 10 sh -c '...'`, the profiled run
 included.
+
+### E12: flat biome search, corner reuse, fill-loop index tables -- kept, gain not established
+
+Sub-agent experiment in `/tmp/datapath-7`, bench name `datapath-7`, based on 6b8562f.
+- `oxide-biome/src/search.rs`: the R-tree built by the same `build` is laid out as one
+  flat array of plain min/max arrays and child ranges. The search walks children in stored
+  order with the same `<=`-keeps-the-incumbent rule and starts from nothing. It keeps one
+  running (leaf, distance) pair instead of returning through the recursion; a subtree can
+  only replace the incumbent with a strictly closer leaf, which is what the parent accepted
+  before. It returns once the best distance is 0, when every remaining child would be pruned.
+  New test `flat_search_returns_the_recursive_searchs_leaf`: about 10k climate points on the
+  overworld preset, the identical leaf as a kept copy of the old recursive search.
+- `biome_grid.rs`: a boundary section reuses its 8 corner lookups instead of taking them again
+  at the same positions (pure functions of position).
+- `fill.rs`: per-block `div_euclid` for cell x and z replaced by 16-entry tables built once
+  with the same formula; the air-cell lookup resolved per (y, z) row. Visit order, write
+  order and every density and `compute_kind` call unchanged.
+
+Reviewed by the master: the in-place best and the early return are equivalent to the old
+recursion, ties included.
+
+Base: ~479 (interleaved A/B, 6b8562f).
+Run 1: `BENCH chunks=1089 threads=8 secs=2.146 cps=507.4 ms_per_chunk_core=15.77 digest=a977961a58122047`
+Run 2: `BENCH chunks=1089 threads=8 secs=2.168 cps=502.2 ms_per_chunk_core=15.93 digest=a977961a58122047`
+
+About 5%, inside noise. Kept: less work, digest unchanged. Tests: biome 6 passed (one new),
+chunkgen 189 passed.

@@ -104,52 +104,107 @@ impl Node {
             Node::Leaf { space, .. } | Node::SubTree { space, .. } => space,
         }
     }
+}
 
-    /// Sum of squared per-axis distances -- vanilla's `Node.distance`, which is also the
-    /// default `DistanceMetric`.
+/// One node of the searched tree, flattened: the build above produces a [`Node`] tree, and
+/// [`flatten`] lays it out breadth-first so every subtree's children are contiguous in one
+/// array, in exactly the order the [`Node`] tree holds them. `count == 0` marks a leaf, whose
+/// `first` is then its index into [`BiomeSearchTree::biomes`].
+#[derive(Debug, Clone, Copy)]
+struct FlatNode {
+    min: [i64; DIMENSIONS],
+    max: [i64; DIMENSIONS],
+    first: u32,
+    count: u32,
+}
+
+impl FlatNode {
+    fn new(space: &[Param; DIMENSIONS], first: u32, count: u32) -> Self {
+        Self {
+            min: std::array::from_fn(|i| space[i].min),
+            max: std::array::from_fn(|i| space[i].max),
+            first,
+            count,
+        }
+    }
+
+    /// Vanilla's `Node.distance`: the per-axis [`Param::distance`] (`above` if positive, else
+    /// `max(below, 0)`), squared and summed. Integer arithmetic, so the result is identical
+    /// whatever order it is added in.
+    #[inline(always)]
     fn distance(&self, target: &[i64; DIMENSIONS]) -> i64 {
-        let space = self.space();
         let mut total = 0i64;
         for i in 0..DIMENSIONS {
-            let d = space[i].distance(target[i]);
+            let above = target[i] - self.max[i];
+            let below = (self.min[i] - target[i]).max(0);
+            let d = if above > 0 { above } else { below };
             total += d * d;
         }
         total
     }
+}
 
-    /// Returns the closest leaf, seeded with `candidate` so a branch that cannot beat it is
-    /// skipped whole. `None` for `candidate` means "nothing found yet".
-    fn search<'a>(
-        &'a self,
-        target: &[i64; DIMENSIONS],
-        candidate: Option<&'a Node>,
-    ) -> Option<&'a Node> {
-        match self {
-            Node::Leaf { .. } => Some(self),
-            Node::SubTree { children, .. } => {
-                let mut closest = candidate;
-                let mut min_distance = closest.map_or(i64::MAX, |c| c.distance(target));
-                for child in children {
-                    let child_distance = child.distance(target);
-                    // `<=` keeps the incumbent on a tie, exactly as vanilla does.
-                    if min_distance <= child_distance {
-                        continue;
-                    }
-                    let leaf = child.search(target, closest);
-                    let Some(leaf) = leaf else { continue };
-                    let leaf_distance = if std::ptr::eq(child, leaf) {
-                        child_distance
-                    } else {
-                        leaf.distance(target)
-                    };
-                    if min_distance <= leaf_distance {
-                        continue;
-                    }
-                    min_distance = leaf_distance;
-                    closest = Some(leaf);
-                }
-                closest
+/// Lays `root` out as [`FlatNode`]s, root at index 0, children of each subtree contiguous and
+/// in their original order. Leaves' biomes go to `biomes` in visit order.
+fn flatten(root: Node, biomes: &mut Vec<BiomeId>) -> Vec<FlatNode> {
+    let mut nodes = Vec::new();
+    let mut queue = std::collections::VecDeque::new();
+    let placeholder = FlatNode {
+        min: [0; DIMENSIONS],
+        max: [0; DIMENSIONS],
+        first: 0,
+        count: 0,
+    };
+    nodes.push(placeholder);
+    queue.push_back((root, 0usize));
+    while let Some((node, slot)) = queue.pop_front() {
+        match node {
+            Node::Leaf { space, biome } => {
+                nodes[slot] = FlatNode::new(&space, biomes.len() as u32, 0);
+                biomes.push(biome);
             }
+            Node::SubTree { space, children } => {
+                let first = nodes.len();
+                nodes[slot] = FlatNode::new(&space, first as u32, children.len() as u32);
+                for (offset, child) in children.into_iter().enumerate() {
+                    nodes.push(placeholder);
+                    queue.push_back((child, first + offset));
+                }
+            }
+        }
+    }
+    nodes
+}
+
+/// Vanilla's `Node.search` with no seed, on the flattened tree. `best` is
+/// `(leaf biome index, its distance)`, `(u32::MAX, i64::MAX)` for "nothing found yet".
+///
+/// The recursive form returns the closest leaf below a subtree, seeded with the incumbent,
+/// and the caller adopts it only when strictly closer. A subtree only ever replaces the
+/// incumbent with a strictly closer leaf, so that is the same as one running `best` that
+/// every level updates in place -- which is what this keeps, with the distance alongside so
+/// the incumbent's is never recomputed. Children are visited in stored order, pruned and
+/// replaced under the same `<=`-keeps-the-incumbent rule.
+///
+/// Once `best` is at distance 0 nothing can replace it (every distance is `>= 0`, and only a
+/// strictly smaller one replaces), so the remaining children would all be pruned; returning
+/// then only skips computing their distances.
+fn search(nodes: &[FlatNode], node: &FlatNode, target: &[i64; DIMENSIONS], best: &mut (u32, i64)) {
+    let first = node.first as usize;
+    let children = &nodes[first..first + node.count as usize];
+    for child in children {
+        let child_distance = child.distance(target);
+        // `<=` keeps the incumbent on a tie, exactly as vanilla does.
+        if best.1 <= child_distance {
+            continue;
+        }
+        if child.count == 0 {
+            *best = (child.first, child_distance);
+        } else {
+            search(nodes, child, target, best);
+        }
+        if best.1 == 0 {
+            return;
         }
     }
 }
@@ -273,7 +328,10 @@ fn build(mut children: Vec<Node>) -> Node {
 
 pub struct BiomeSearchTree {
     entries: Vec<MultiNoiseBiomeEntry>,
-    root: Option<Node>,
+    /// The tree in [`FlatNode`] layout, root first; empty when `entries` is.
+    nodes: Vec<FlatNode>,
+    /// Leaf biomes, indexed by a leaf's [`FlatNode::first`].
+    biomes: Vec<BiomeId>,
 }
 
 impl BiomeSearchTree {
@@ -289,10 +347,11 @@ impl BiomeSearchTree {
     }
 
     pub fn from_entries(entries: Vec<MultiNoiseBiomeEntry>) -> Self {
-        let root = if entries.is_empty() {
-            None
+        let mut biomes = Vec::new();
+        let nodes = if entries.is_empty() {
+            Vec::new()
         } else {
-            Some(build(
+            let root = build(
                 entries
                     .iter()
                     .map(|e| Node::Leaf {
@@ -300,9 +359,14 @@ impl BiomeSearchTree {
                         biome: e.biome.clone(),
                     })
                     .collect(),
-            ))
+            );
+            flatten(root, &mut biomes)
         };
-        Self { entries, root }
+        Self {
+            entries,
+            nodes,
+            biomes,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -319,10 +383,14 @@ impl BiomeSearchTree {
             quantize(sample.weirdness as f32),
             0,
         ];
-        match self.root.as_ref()?.search(&target, None)? {
-            Node::Leaf { biome, .. } => Some(biome),
-            Node::SubTree { .. } => None,
+        let root = self.nodes.first()?;
+        if root.count == 0 {
+            // A one-entry tree is its own leaf, which vanilla returns without measuring.
+            return self.biomes.get(root.first as usize);
         }
+        let mut best = (u32::MAX, i64::MAX);
+        search(&self.nodes, root, &target, &mut best);
+        self.biomes.get(best.0 as usize)
     }
 }
 
@@ -471,6 +539,100 @@ mod tests {
             }
         }
         assert_eq!(checked, axis.len().pow(3));
+    }
+
+    /// The recursive `Node.search` this module ran before the tree was flattened -- what
+    /// defines the shipped digest, ties included.
+    fn reference_search<'a>(
+        node: &'a Node,
+        target: &[i64; DIMENSIONS],
+        candidate: Option<&'a Node>,
+    ) -> Option<&'a Node> {
+        match node {
+            Node::Leaf { .. } => Some(node),
+            Node::SubTree { children, .. } => {
+                let mut closest = candidate;
+                let mut min_distance = closest.map_or(i64::MAX, |c| distance_to(c.space(), target));
+                for child in children {
+                    let child_distance = distance_to(child.space(), target);
+                    if min_distance <= child_distance {
+                        continue;
+                    }
+                    let Some(leaf) = reference_search(child, target, closest) else {
+                        continue;
+                    };
+                    let leaf_distance = distance_to(leaf.space(), target);
+                    if min_distance <= leaf_distance {
+                        continue;
+                    }
+                    min_distance = leaf_distance;
+                    closest = Some(leaf);
+                }
+                closest
+            }
+        }
+    }
+
+    /// The flattened search must return the very leaf the recursive one does -- not just one
+    /// at the same distance -- because ties between overlapping entries are resolved by visit
+    /// order. Leaves are told apart by their position in a breadth-first walk, which is the
+    /// order `flatten` assigns biome indices in.
+    #[test]
+    fn flat_search_returns_the_recursive_searchs_leaf() {
+        let entries = oxide_datapack::preset_entries(&ResourceLocation::minecraft("overworld"))
+            .expect("overworld preset is known");
+        let tree = BiomeSearchTree::from_entries(entries.clone());
+        let reference = build(
+            entries
+                .iter()
+                .map(|e| Node::Leaf {
+                    space: parameter_space(&e.parameters),
+                    biome: e.biome.clone(),
+                })
+                .collect(),
+        );
+        let mut leaves: Vec<*const Node> = Vec::new();
+        let mut queue = std::collections::VecDeque::from([&reference]);
+        while let Some(node) = queue.pop_front() {
+            match node {
+                Node::Leaf { .. } => leaves.push(node),
+                Node::SubTree { children, .. } => queue.extend(children.iter()),
+            }
+        }
+
+        let axis = [
+            -1.2, -0.8, -0.45, -0.2, -0.11, 0.0, 0.03, 0.2, 0.3, 0.55, 0.8, 1.1,
+        ];
+        let depth = [-0.3, 0.0, 0.1, 0.2, 0.9, 1.1];
+        let mut index = 0usize;
+        for &t in &axis {
+            for &h in &axis {
+                for &c in &axis {
+                    for &d in &depth {
+                        let sample = ClimateSample {
+                            temperature: t,
+                            humidity: h,
+                            continentalness: c,
+                            erosion: axis[index % axis.len()],
+                            depth: d,
+                            weirdness: axis[(index / 7) % axis.len()],
+                        };
+                        index += 1;
+                        let target = target_of(sample);
+                        let expected = reference_search(&reference, &target, None).unwrap();
+                        let expected_index = leaves
+                            .iter()
+                            .position(|&leaf| std::ptr::eq(leaf, expected))
+                            .unwrap();
+                        let picked = tree.nearest(sample).unwrap();
+                        assert!(
+                            std::ptr::eq(picked, &tree.biomes[expected_index]),
+                            "climate {sample:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
