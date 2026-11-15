@@ -881,3 +881,22 @@ Pumpkin's 17.4 ms terrain.
 Next-three item 1 is running: 1-thread A/B, 5 alternating rounds of head, E21 and E22, with
 `ps` sampled each round. Item 2, the column-wise surface program, goes to a sub-agent on
 `datapath-16`.
+
+### Item 1 done: E21 and E22 under a 1-thread, 5-round A/B -- both stay rejected
+
+One exclusive hold, rounds in the order head, E21, E22. `ps` sampled at each round's start showed nothing
+heavy besides the timed run. Radius 16, 1 thread, ms of core per chunk:
+
+| | r1 | r2 | r3 | r4 | r5 | mean |
+|---|---|---|---|---|---|---|
+| head 0e3cf61 | 12.27 | 11.79 | 11.59 | 11.71 | 11.05 | 11.68 |
+| E21 | 11.78 | 11.68 | 11.72 | 10.67 | 11.14 | 11.40 |
+| E22 | 12.04 | 12.01 | 11.86 | 10.51 | 11.24 | 11.53 |
+
+All fifteen `digest=a977961a58122047`. E21 is ahead in 3 of 5 rounds and 2.4% faster on the mean, but
+most of that comes from round 4; the median per-round difference is ~1%. E22 is ahead in 2 of 5.
+Neither gain is established, so both stay rejected. E21 is the weakly positive one: if the
+aquifer share rises after noise-4, it is the first retry.
+
+Method note: the head always ran first in each round, and round 4 ran faster for both variants,
+so drift within a round is visible. Rotate the order across rounds from now on.
