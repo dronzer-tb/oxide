@@ -31,6 +31,9 @@ const SAMPLE_OFFSET_X: i32 = -5;
 const SAMPLE_OFFSET_Y: i32 = 1;
 const SAMPLE_OFFSET_Z: i32 = -5;
 const WAY_BELOW_MIN_Y: i32 = -2032;
+/// Side of the preliminary-surface memo, in quarts: 160 blocks, from five chunks before the
+/// chunk's origin to five after.
+const SURFACE_MEMO_SPAN: i32 = 40;
 
 /// Chunk-relative offsets, in chunks, at which `computeFluid` samples the preliminary surface.
 const SURFACE_SAMPLING_OFFSETS_IN_CHUNKS: [[i32; 2]; 13] = [
@@ -111,8 +114,11 @@ pub struct Aquifer<'a> {
     /// Per grid cell: the jittered centre position, and the fluid there once computed.
     locations: Vec<Option<(i32, i32, i32)>>,
     statuses: Vec<Option<FluidStatus>>,
-    /// Memoised `preliminary_surface_level`, keyed by packed `(x, z)`.
-    surface_levels: std::collections::HashMap<i64, i32>,
+    /// Memoised `preliminary_surface_level` on a dense quart grid of [`SURFACE_MEMO_SPAN`]
+    /// squared entries starting at the origin below; `i32::MIN` = not sampled yet.
+    surface_levels: Vec<i32>,
+    surface_origin_x: i32,
+    surface_origin_z: i32,
 }
 
 impl<'a> Aquifer<'a> {
@@ -162,8 +168,12 @@ impl<'a> Aquifer<'a> {
             skip_sampling_above_y: i32::MAX,
             locations: vec![None; total],
             statuses: vec![None; total],
-            // Thirteen offsets per aquifer centre, heavily overlapping between centres.
-            surface_levels: std::collections::HashMap::with_capacity(256),
+            // Thirteen offsets per aquifer centre, heavily overlapping between centres. Centres
+            // sit within one grid cell (16 blocks) of the chunk and the offsets reach three
+            // chunks back and one forward, so five chunks back covers every lookup.
+            surface_levels: vec![i32::MIN; (SURFACE_MEMO_SPAN * SURFACE_MEMO_SPAN) as usize],
+            surface_origin_x: min_block_x - 80,
+            surface_origin_z: min_block_z - 80,
         };
 
         // Above the highest surface in reach there is nothing to flood, so vanilla stops
@@ -258,8 +268,9 @@ impl<'a> Aquifer<'a> {
         let anchor_y = grid_y(y + SAMPLE_OFFSET_Y);
         let anchor_z = grid_z(z + SAMPLE_OFFSET_Z);
 
-        // The four nearest aquifer centres, by squared distance.
-        let mut best = [(i32::MAX, 0usize); 4];
+        // The three nearest aquifer centres, by squared distance. A candidate that ties an
+        // incumbent goes in front of it, as vanilla's cascade of `>=` comparisons does.
+        let mut best = [(i32::MAX, 0usize); 3];
         for dx in 0..=1 {
             for dy in -1..=1 {
                 for dz in 0..=1 {
@@ -272,12 +283,15 @@ impl<'a> Aquifer<'a> {
                     let ddy = cy - y;
                     let ddz = cz - z;
                     let distance = ddx * ddx + ddy * ddy + ddz * ddz;
-                    for slot in 0..4 {
-                        if best[slot].0 >= distance {
-                            best[slot..].rotate_right(1);
-                            best[slot] = (distance, index);
-                            break;
-                        }
+                    if best[0].0 >= distance {
+                        best[2] = best[1];
+                        best[1] = best[0];
+                        best[0] = (distance, index);
+                    } else if best[1].0 >= distance {
+                        best[2] = best[1];
+                        best[1] = (distance, index);
+                    } else if best[2].0 >= distance {
+                        best[2] = (distance, index);
                     }
                 }
             }
@@ -556,12 +570,20 @@ impl<'a> Aquifer<'a> {
     fn preliminary_surface_level(&mut self, x: i32, z: i32) -> i32 {
         let quart_x = x & !3;
         let quart_z = z & !3;
-        let key = ((quart_x as i64) << 32) | (quart_z as i64 & 0xFFFF_FFFF);
-        if let Some(&level) = self.surface_levels.get(&key) {
-            return level;
+        // Every position this chunk's aquifer centres ask about falls in a fixed window around
+        // the chunk, so the memo is a dense quart grid. Anything outside it (not reachable from
+        // `compute_fluid`) is simply computed.
+        let slot_x = (quart_x - self.surface_origin_x) >> 2;
+        let slot_z = (quart_z - self.surface_origin_z) >> 2;
+        let slot = ((0..SURFACE_MEMO_SPAN).contains(&slot_x)
+            && (0..SURFACE_MEMO_SPAN).contains(&slot_z))
+        .then(|| (slot_z * SURFACE_MEMO_SPAN + slot_x) as usize);
+        if let Some(slot) = slot {
+            let level = self.surface_levels[slot];
+            if level != i32::MIN {
+                return level;
+            }
         }
-        // `Mth.floor`, not a cast: a cast truncates toward zero, so a negative surface level --
-        // which happens deep underground -- would come out one block too high.
         let level = self
             .router
             .sample_in_chunk(
@@ -572,7 +594,9 @@ impl<'a> Aquifer<'a> {
                 quart_z,
             )
             .floor() as i32;
-        self.surface_levels.insert(key, level);
+        if let Some(slot) = slot {
+            self.surface_levels[slot] = level;
+        }
         level
     }
 }

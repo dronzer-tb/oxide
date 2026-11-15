@@ -87,3 +87,35 @@ After:  `BENCH chunks=1089 threads=8 secs=3.934 cps=276.8 ms_per_chunk_core=28.9
 Repeat: `BENCH chunks=1089 threads=8 secs=3.954 cps=275.4 ms_per_chunk_core=29.05 digest=a977961a58122047`
 
 Digest unchanged. Tests: chunkgen 189 passed.
+
+### Profile after E2 (1 thread, radius 8, 26.9 ms per chunk, was 50.4)
+
+Shares of generation time:
+
+| Share | Where |
+|---|---|
+| 58% | `sample_in_chunk` from the fill loop: corner grids 27%, per-block `cache_once` subtree (the cave terms under the `min`) 25%, interpreter and `lerp3` the rest |
+| 13% | aquifer: `compute_kind` 7%, `preliminary_surface_level` 6% |
+| 9% | surface rules |
+| 8% | ore veins |
+| 5% | carvers |
+| 4% | biomes |
+
+The fill loop's density sampling is now most of the chunk. The noise track owns the cost
+per sample; this track owns how many are asked for. Idea for the noise track, not acted on
+here: a lower bound on the non-interpolated cave terms per cell would let the fill skip
+per-block evaluation in solid cells as it already does in air cells.
+
+### E3: aquifer nearest-centre selection and surface-level memo -- kept
+
+`aquifer.rs`: the nearest-centre pick keeps three candidates with plain compares (it kept
+four through `rotate_right`, 3% of samples, and never read the fourth). The
+`preliminary_surface_level` memo is a dense quart grid around the chunk instead of a
+SipHash map.
+
+Before: `BENCH chunks=1089 threads=8 secs=3.954 cps=275.4 ms_per_chunk_core=29.05 digest=a977961a58122047`
+After:  `BENCH chunks=1089 threads=8 secs=3.883 cps=280.5 ms_per_chunk_core=28.52 digest=a977961a58122047`
+Repeat: `BENCH chunks=1089 threads=8 secs=3.857 cps=282.4 ms_per_chunk_core=28.33 digest=a977961a58122047`
+
+About 2%, inside run-to-run noise but the same on both runs. Kept: it is less code and the
+digest is unchanged. Tests: chunkgen 189 passed.
