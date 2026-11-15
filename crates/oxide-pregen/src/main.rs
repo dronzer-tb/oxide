@@ -1,12 +1,12 @@
-//! oxide-pregen — v0 smoke test for the Oxide write path.
+//! oxide-pregen: offline world pregeneration, with no server in the path.
 //!
-//! This does **not** generate real terrain: `oxide-noise`, `oxide-biome`, and `oxide-chunkgen`
-//! are still empty stubs (see `docs/ARCHITECTURE.md`). What's under test here is everything
-//! downstream of generation — chunk NBT correctness, `.mca` region writing without corruption,
-//! provenance sidecar marking, and whether a real client/server loads what Oxide wrote. Terrain
-//! comes from `oxide_pregen::stub`, a deliberately fake, deliberately non-vanilla generator
-//! chosen specifically to make the Oxide/Java boundary visible from the air. Do not mistake this
-//! output for parity work, and do not add real generation logic here — that belongs upstream.
+//! With `--datapack`, generates real chunks (terrain, decoration, heightmaps) through
+//! `oxide_pregen::generate` and writes them as Anvil regions, timing each stage; `--bench`
+//! prints one `BENCH` line for `scripts/bench-pregen-vps.sh`. Chunks carry no light and are
+//! marked for relight (`docs/ARCHITECTURE.md`, "Chunk output contract").
+//!
+//! Without `--datapack` it writes `oxide_pregen::stub`'s deliberately non-vanilla checkerboard,
+//! the smoke test for the NBT/region write path it started as.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -19,13 +19,12 @@ use rayon::prelude::*;
 use oxide_anvil::{nbt, provenance, region};
 use oxide_core::ChunkPos;
 
+use oxide_anvil::compress::Compression;
+use oxide_pregen::generate::{self, Generator};
 use oxide_pregen::stub::{self, Pattern};
 
-/// Write stub (deliberately non-vanilla) terrain chunks into an Anvil region directory.
-///
-/// This is the v0 smoke test for chunk NBT + `.mca` writing + provenance — NOT a terrain
-/// generator. Real generation is unimplemented upstream (`oxide-noise`/`-biome`/`-chunkgen` are
-/// still empty stubs); see `docs/ARCHITECTURE.md`.
+/// Pregenerate chunks into an Anvil region directory: real generation with `--datapack`,
+/// otherwise stub checkerboard terrain.
 #[derive(Parser, Debug)]
 #[command(name = "oxide-pregen", version, about, long_about = None)]
 struct Cli {
@@ -47,21 +46,63 @@ struct Cli {
 
     /// Chunk-format DataVersion to stamp on every chunk written.
     ///
-    /// REQUIRED, no default. Per docs/ARCHITECTURE.md, a Minecraft 26.2 DataVersion is never
+    /// Required without `--datapack`; with it, defaults to the pack's own `version.json`. Per docs/ARCHITECTURE.md, a Minecraft 26.2 DataVersion is never
     /// hardcoded from memory. Read the real value from your own server's exported data: run its
     /// data generator with `--reports` and take the integer out of
     /// `generated/reports/version.json` — see docs/REFERENCE_DATA.md for the exact command. Do
     /// not guess this number.
     #[arg(long)]
-    data_version: i32,
+    data_version: Option<i32>,
 
     /// Report what would be written without touching any files.
     #[arg(long)]
     dry_run: bool,
 
-    /// Stub terrain pattern.
+    /// Stub terrain pattern (ignored with `--datapack`).
     #[arg(long, value_enum, default_value = "checkerboard")]
     pattern: Pattern,
+
+    /// Datapack root (the server's exported data). Turns on real generation.
+    #[arg(long)]
+    datapack: Option<PathBuf>,
+
+    /// World seed, with `--datapack`.
+    #[arg(long, default_value_t = 12345, allow_hyphen_values = true)]
+    seed: i64,
+
+    /// Dimension to generate, with `--datapack`.
+    #[arg(long, default_value = "minecraft:overworld")]
+    dimension: String,
+
+    /// Worker threads (default: every core).
+    #[arg(long)]
+    threads: Option<usize>,
+
+    /// Chunk compression in region files.
+    #[arg(long, value_enum, default_value = "zlib")]
+    compression: CompressionArg,
+
+    /// zlib level 0..=9 for `--compression zlib`; vanilla writes 6.
+    #[arg(long, default_value_t = 6)]
+    zlib_level: u32,
+
+    /// fsync each region before renaming it into place.
+    #[arg(long)]
+    sync: bool,
+
+    /// Generate, serialise and compress, but write no region files.
+    #[arg(long)]
+    no_write: bool,
+
+    /// Print one `BENCH` line with per-stage timings.
+    #[arg(long)]
+    bench: bool,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum CompressionArg {
+    Zlib,
+    None,
 }
 
 /// Every chunk position in the inclusive square of `radius` chunks around `(center_x, center_z)`.
@@ -102,6 +143,18 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let cli = Cli::parse();
+    if let Some(threads) = cli.threads {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build_global()
+            .context("building the thread pool")?;
+    }
+    if cli.datapack.is_some() {
+        return real(&cli);
+    }
+    let Some(data_version) = cli.data_version else {
+        anyhow::bail!("--data-version is required without --datapack (see its --help)");
+    };
     let radius = i32::try_from(cli.radius).context("--radius does not fit in i32")?;
     let positions = chunk_positions(cli.center_x, cli.center_z, radius)?;
 
@@ -122,7 +175,7 @@ fn main() -> Result<()> {
             positions.len(),
             regions_planned.len(),
             cli.pattern,
-            cli.data_version
+            data_version
         );
         return Ok(());
     }
@@ -132,7 +185,7 @@ fn main() -> Result<()> {
         .with_context(|| format!("creating region directory {}", region_dir.display()))?;
 
     let write_opts = nbt::ChunkNbtWriteOptions {
-        data_version: cli.data_version,
+        data_version,
         last_update: 0,
         inhabited_time: 0,
     };
@@ -203,11 +256,87 @@ fn main() -> Result<()> {
         );
     }
     println!(
-        "\nThis is stub terrain (see src/stub.rs) — not generated output. oxide-noise, \
-         oxide-biome, and oxide-chunkgen are still empty stubs. DataVersion {} was supplied by \
-         you on the command line and has NOT been validated against a real server.",
-        cli.data_version
+        "\nThis is stub terrain (see src/stub.rs), not generated output; pass --datapack for \
+         real chunks. DataVersion {} was supplied by you on the command line and has NOT been \
+         validated against a real server.",
+        data_version
     );
 
+    Ok(())
+}
+
+/// `--datapack`: real generation.
+fn real(cli: &Cli) -> Result<()> {
+    let datapack = cli.datapack.as_deref().expect("checked by the caller");
+    let radius = i32::try_from(cli.radius).context("--radius does not fit in i32")?;
+    let region_dir = cli.world.join("region");
+    if cli.dry_run {
+        println!(
+            "[dry-run] {} chunk(s) into {}; nothing written.",
+            (2 * radius as u64 + 1).pow(2),
+            region_dir.display()
+        );
+        return Ok(());
+    }
+    let started = std::time::Instant::now();
+    let mut generator = Generator::open(datapack, &cli.dimension, cli.seed)?;
+    if let Some(v) = cli.data_version {
+        generator.data_version = v;
+    }
+    let setup = started.elapsed().as_secs_f64();
+    let compression = match cli.compression {
+        CompressionArg::Zlib => Compression::Zlib {
+            level: cli.zlib_level.min(9),
+        },
+        CompressionArg::None => Compression::None,
+    };
+    let outcome = generate::run(
+        &generator,
+        &generate::Options {
+            region_dir: &region_dir,
+            center: ChunkPos::new(cli.center_x, cli.center_z),
+            radius,
+            compression,
+            sync: cli.sync,
+            write: !cli.no_write,
+        },
+    )?;
+    let t = outcome.times;
+    let secs = t.total();
+    let threads = rayon::current_num_threads();
+    println!(
+        "{} chunks in {} region(s), {:.1} MB NBT, {:.1} MB on disk, setup {:.2}s",
+        outcome.chunks,
+        outcome.regions,
+        outcome.bytes_nbt as f64 / 1e6,
+        outcome.bytes_written as f64 / 1e6,
+        setup
+    );
+    if cli.bench {
+        // Same leading fields as the harness's BENCH line, so the progress page reads it; the
+        // stage times are wall milliseconds per stage, all threads together.
+        let ms = |s: f64| s * 1000.0;
+        println!(
+            "BENCH chunks={} threads={} secs={:.3} cps={:.1} ms_per_chunk_core={:.2} digest={} \
+             generate_ms={:.0} decorate_ms={:.0} serialise_ms={:.0} compress_ms={:.0} write_ms={:.0} \
+             compression={} mb_disk={:.1}",
+            outcome.chunks,
+            threads,
+            secs,
+            outcome.chunks as f64 / secs,
+            secs * 1000.0 * threads as f64 / outcome.chunks as f64,
+            outcome.digest,
+            ms(t.generate),
+            ms(t.decorate),
+            ms(t.serialise),
+            ms(t.compress),
+            ms(t.write),
+            match compression {
+                Compression::Zlib { level } => format!("zlib{level}"),
+                Compression::None => "none".to_string(),
+            },
+            outcome.bytes_written as f64 / 1e6
+        );
+    }
     Ok(())
 }

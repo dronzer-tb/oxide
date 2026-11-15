@@ -1,7 +1,5 @@
-//! oxide-pregen library surface.
-//!
-//! Exists only so `src/stub.rs` is reusable both by the `oxide-pregen` binary (`src/main.rs`)
-//! and by this crate's integration tests, without duplicating the generator. All CLI parsing
-//! and write orchestration lives in the binary — this crate has no other public surface.
+//! oxide-pregen library surface: real generation ([`generate`]) and the stub checkerboard
+//! ([`stub`]), shared by the binary and this crate's integration tests.
 
+pub mod generate;
 pub mod stub;

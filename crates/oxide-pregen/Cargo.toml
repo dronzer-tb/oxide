@@ -7,6 +7,11 @@ license.workspace = true
 [dependencies]
 oxide-core.workspace = true
 oxide-anvil.workspace = true
+oxide-datapack.workspace = true
+oxide-noise.workspace = true
+oxide-biome.workspace = true
+oxide-chunkgen.workspace = true
+blake3.workspace = true
 clap.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
