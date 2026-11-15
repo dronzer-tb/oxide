@@ -37,8 +37,13 @@ pub type BiomeTemperatures = HashMap<ResourceLocation, f32>;
 
 /// Column-invariant state, computed once per (x, z).
 struct Column {
+    x: i32,
+    z: i32,
     surface_depth: i32,
-    surface_secondary: f64,
+    /// Sampled on first read: only a `stone_depth` with a secondary depth range reads it, and
+    /// most columns never reach one. A pure function of (x, z), so when it is sampled does not
+    /// change its value.
+    surface_secondary: std::cell::Cell<Option<f64>>,
     min_surface_level: i32,
 }
 
@@ -57,6 +62,9 @@ struct Cursor {
 }
 
 const BAND_COUNT: usize = 64;
+
+/// Block positions per section, in [`local_index`] order.
+const SECTION_SLOTS: usize = 16 * 16 * 16;
 
 fn generate_clay_bands(random: &mut impl RandomSource) -> [BlockState; BAND_COUNT] {
     let terracotta = BlockState::new(ResourceLocation::minecraft("terracotta"));
@@ -146,6 +154,57 @@ enum CompiledRule<'a> {
     Badlands,
 }
 
+/// The rule tree flattened into a straight-line program, evaluated by
+/// [`SurfaceSystem::eval_program`]. A `sequence` is its children laid end to end, and a
+/// `condition` is a test that jumps past its `then_run` when it fails: a `then_run` that
+/// places nothing falls through to the next sibling, exactly as the tree walk's `find_map` did.
+/// Conditions are tested in the tree walk's order, one at a time, so every memo and random
+/// draw happens the same way.
+enum Op<'a> {
+    Test {
+        condition: CompiledCondition<'a>,
+        /// The condition sat under this many `not`s, an odd number: test its inverse. The
+        /// inner condition is still evaluated exactly as the `Not` arm would.
+        negate: bool,
+        /// Where to continue when the test fails: the first op past this condition's
+        /// `then_run`.
+        skip: usize,
+    },
+    Block(usize),
+    Badlands,
+}
+
+/// Appends `rule`'s program to `ops`.
+fn flatten<'a>(rule: CompiledRule<'a>, ops: &mut Vec<Op<'a>>) {
+    match rule {
+        CompiledRule::Sequence(sequence) => {
+            for inner in sequence {
+                flatten(inner, ops);
+            }
+        }
+        CompiledRule::Condition(mut condition, then_run) => {
+            let mut negate = false;
+            while let CompiledCondition::Not(inner) = condition {
+                condition = *inner;
+                negate = !negate;
+            }
+            let at = ops.len();
+            ops.push(Op::Test {
+                condition,
+                negate,
+                skip: 0,
+            });
+            flatten(*then_run, ops);
+            let end = ops.len();
+            if let Op::Test { skip, .. } = &mut ops[at] {
+                *skip = end;
+            }
+        }
+        CompiledRule::Block(result) => ops.push(Op::Block(result)),
+        CompiledRule::Badlands => ops.push(Op::Badlands),
+    }
+}
+
 enum CompiledCondition<'a> {
     /// Index into [`SurfaceSystem::biome_sets`], and so into each chunk's biome masks.
     Biome(usize),
@@ -230,7 +289,7 @@ pub struct SurfaceSystem<'a> {
     /// Built on first use: only badlands columns read it, and building it costs an MD5 and 64
     /// block states.
     clay_bands: std::cell::OnceCell<[BlockState; BAND_COUNT]>,
-    rule: CompiledRule<'a>,
+    program: Vec<Op<'a>>,
     /// The state each `Block` rule places, by the index the compiled rule carries.
     results: Vec<&'a BlockState>,
     /// The id list of each `biome` condition, by the index the compiled condition carries.
@@ -263,6 +322,8 @@ impl<'a> SurfaceSystem<'a> {
         let height = settings.noise.height;
         let mut compiler = Compiler::default();
         let rule = compile_rule(&settings.surface_rule, router, min_y, height, &mut compiler);
+        let mut program = Vec::new();
+        flatten(rule, &mut program);
         let memo = (0..compiler.memo_slots)
             .map(|_| std::cell::Cell::new(MEMO_UNKNOWN))
             .collect();
@@ -282,7 +343,7 @@ impl<'a> SurfaceSystem<'a> {
                 .noise(&ResourceLocation::minecraft("clay_bands_offset")),
             temperature_noise: router.noise(&ResourceLocation::minecraft("temperature")),
             clay_bands: std::cell::OnceCell::new(),
-            rule,
+            program,
             results: compiler.results,
             biome_sets: compiler.biome_sets,
             memo,
@@ -329,7 +390,7 @@ impl<'a> SurfaceSystem<'a> {
 
         // One pass over each section's palette (a handful of entries), rather than one
         // classification per block position.
-        let mut classes: Vec<SectionClass> = chunk
+        let classes: Vec<SectionClass> = chunk
             .sections
             .iter()
             .map(|section| {
@@ -345,12 +406,33 @@ impl<'a> SurfaceSystem<'a> {
         // once it has been written there. `u32::MAX` = not interned yet.
         let result_count = self.results.len() + BAND_COUNT;
         let mut result_index = vec![u32::MAX; chunk.sections.len() * result_count];
+        // Every position's kind, read off the chunk once, in slot order per section. The scan
+        // of a column only ever reads positions it has not written yet (the current one, and
+        // the run below it), and each column reads only itself, so reading the kinds before
+        // any write is the same as reading them as the scan goes.
+        let mut kinds: Vec<BlockKind> = Vec::with_capacity(chunk.sections.len() * SECTION_SLOTS);
+        for (section, class) in chunk.sections.iter().zip(&classes) {
+            let start = kinds.len();
+            if class.all_air {
+                kinds.resize(start + SECTION_SLOTS, BlockKind::Air);
+            } else {
+                kinds.extend(
+                    section
+                        .block_states
+                        .indices()
+                        .iter()
+                        .map(|&index| class.kind(index)),
+                );
+            }
+            debug_assert_eq!(kinds.len(), start + SECTION_SLOTS);
+        }
 
         for local_z in 0..16usize {
             let z = pos.min_block_z() + local_z as i32;
             for local_x in 0..16usize {
                 let x = pos.min_block_x() + local_x as i32;
                 let column = self.column_state(x, z);
+                let column_slot = local_index(local_x, 0, local_z);
                 for slot in &self.memo {
                     slot.set(MEMO_UNKNOWN);
                 }
@@ -378,9 +460,7 @@ impl<'a> SurfaceSystem<'a> {
                     for local_y in (0..16usize).rev() {
                         let y = section_min_y + local_y as i32;
                         let slot = local_index(local_x, local_y, local_z);
-                        let palette_index =
-                            chunk.sections[section_index].block_states.indices()[slot];
-                        let kind = classes[section_index].kind(palette_index);
+                        let kind = kinds[section_index * SECTION_SLOTS + slot];
 
                         if kind == BlockKind::Air {
                             stone_depth_above = 0;
@@ -398,7 +478,7 @@ impl<'a> SurfaceSystem<'a> {
                         }
 
                         if run_bottom > y {
-                            run_bottom = self.run_bottom(chunk, &classes, local_x, y, local_z);
+                            run_bottom = self.run_bottom(&kinds, column_slot, y);
                         }
                         stone_depth_above += 1;
                         let stone_depth_below = y - run_bottom + 1;
@@ -420,22 +500,17 @@ impl<'a> SurfaceSystem<'a> {
                             biome: biomes.section_maps[section_index][biome_palette_index as usize]
                                 as usize,
                         };
-                        let Some(result) = self.eval_rule(&self.rule, &cursor, &column, &biomes)
-                        else {
+                        let Some(result) = self.eval_program(&cursor, &column, &biomes) else {
                             continue;
                         };
                         let cached = &mut result_index[section_index * result_count + result];
                         let block_states = &mut chunk.sections[section_index].block_states;
                         if *cached == u32::MAX {
+                            // Interning can add a palette entry this section did not have. No
+                            // classification needs it: kinds were read up front, and a written
+                            // position is never read again.
                             *cached =
                                 block_states.index_of_or_insert(self.result_state(result).clone());
-                            // Interning can add a palette entry this section did not have,
-                            // which would leave its classification short an index.
-                            classes[section_index].extend(
-                                block_states.palette(),
-                                &self.settings.default_block,
-                                &self.settings.default_fluid,
-                            );
                         }
                         block_states.set_index(slot, *cached);
                     }
@@ -492,9 +567,27 @@ impl<'a> SurfaceSystem<'a> {
         let mut random = self.router.positional_factory().at(x, 0, z);
         let surface_depth = (surface * 2.75 + 3.0 + random.next_double() * 0.25) as i32;
         Column {
+            x,
+            z,
             surface_depth,
-            surface_secondary: sample_noise(self.surface_secondary_noise, x as f64, 0.0, z as f64),
+            surface_secondary: std::cell::Cell::new(None),
             min_surface_level: self.sample(RouterSlot::PreliminarySurfaceLevel, x, 0, z) as i32,
+        }
+    }
+
+    fn surface_secondary(&self, column: &Column) -> f64 {
+        match column.surface_secondary.get() {
+            Some(value) => value,
+            None => {
+                let value = sample_noise(
+                    self.surface_secondary_noise,
+                    column.x as f64,
+                    0.0,
+                    column.z as f64,
+                );
+                column.surface_secondary.set(Some(value));
+                value
+            }
         }
     }
 
@@ -506,19 +599,16 @@ impl<'a> SurfaceSystem<'a> {
         }
     }
 
-    /// Lowest y of the contiguous non-air, non-fluid run containing `y`.
-    fn run_bottom(
-        &self,
-        chunk: &ChunkData,
-        classes: &[SectionClass],
-        local_x: usize,
-        y: i32,
-        local_z: usize,
-    ) -> i32 {
+    /// Lowest y of the contiguous non-air, non-fluid run containing `y`, read off the chunk's
+    /// up-front `kinds` for the column whose slot at local y 0 is `column_slot`.
+    fn run_bottom(&self, kinds: &[BlockKind], column_slot: usize, y: i32) -> i32 {
         let mut bottom = y;
         while bottom > self.min_y {
-            match self.classify(chunk, classes, local_x, bottom - 1, local_z) {
-                Some(kind) if kind != BlockKind::Air && kind != BlockKind::DefaultFluid => {
+            let below = (bottom - 1 - self.min_y) as usize;
+            let section_index = below / 16;
+            let local_y = below % 16;
+            match kinds.get(section_index * SECTION_SLOTS + local_y * 256 + column_slot) {
+                Some(&kind) if kind != BlockKind::Air && kind != BlockKind::DefaultFluid => {
                     bottom -= 1;
                 }
                 _ => break,
@@ -528,43 +618,47 @@ impl<'a> SurfaceSystem<'a> {
     }
 
     /// The result index of the first `block` rule whose enclosing conditions all hold.
-    fn eval_rule(
-        &self,
-        rule: &CompiledRule<'a>,
-        cursor: &Cursor,
-        column: &Column,
-        biomes: &ChunkBiomes,
-    ) -> Option<usize> {
-        match rule {
-            CompiledRule::Sequence(sequence) => sequence
-                .iter()
-                .find_map(|inner| self.eval_rule(inner, cursor, column, biomes)),
-            CompiledRule::Condition(if_true, then_run) => {
-                if self.eval_condition(if_true, cursor, column, biomes) {
-                    self.eval_rule(then_run, cursor, column, biomes)
-                } else {
-                    None
-                }
-            }
-            CompiledRule::Block(result) => Some(*result),
-            CompiledRule::Badlands => {
-                let offset = match self.band_offset.get() {
-                    Some(offset) => offset,
-                    None => {
-                        let offset = match self.clay_bands_offset_noise {
-                            Some(noise) => (noise.get_value(cursor.x as f64, 0.0, cursor.z as f64)
-                                * 4.0)
-                                .round() as i32,
-                            None => 0,
-                        };
-                        self.band_offset.set(Some(offset));
-                        offset
+    fn eval_program(&self, cursor: &Cursor, column: &Column, biomes: &ChunkBiomes) -> Option<usize> {
+        let program = &self.program[..];
+        let mut pc = 0;
+        while let Some(op) = program.get(pc) {
+            match op {
+                Op::Test {
+                    condition,
+                    negate,
+                    skip,
+                } => {
+                    if self.eval_condition(condition, cursor, column, biomes) != *negate {
+                        pc += 1;
+                    } else {
+                        pc = *skip;
                     }
-                };
-                let band = (cursor.y + offset).rem_euclid(BAND_COUNT as i32) as usize;
-                Some(self.results.len() + band)
+                }
+                Op::Block(result) => return Some(*result),
+                Op::Badlands => return Some(self.badlands(cursor)),
             }
         }
+        None
+    }
+
+    /// The `bandlands` rule's result: a clay band picked by y and a per-column offset.
+    fn badlands(&self, cursor: &Cursor) -> usize {
+        let offset = match self.band_offset.get() {
+            Some(offset) => offset,
+            None => {
+                let offset = match self.clay_bands_offset_noise {
+                    Some(noise) => {
+                        (noise.get_value(cursor.x as f64, 0.0, cursor.z as f64) * 4.0).round()
+                            as i32
+                    }
+                    None => 0,
+                };
+                self.band_offset.set(Some(offset));
+                offset
+            }
+        };
+        let band = (cursor.y + offset).rem_euclid(BAND_COUNT as i32) as usize;
+        self.results.len() + band
     }
 
     fn eval_condition(
@@ -741,7 +835,7 @@ impl<'a> SurfaceSystem<'a> {
                     // PARITY-CHECK: maps the secondary noise from [-1, 1] onto
                     // [0, secondary_depth_range].
                     map_range(
-                        column.surface_secondary,
+                        self.surface_secondary(column),
                         -1.0,
                         1.0,
                         0.0,
@@ -766,31 +860,6 @@ impl<'a> SurfaceSystem<'a> {
                 value
             }
         }
-    }
-
-    fn section_of(&self, y: i32) -> Option<usize> {
-        if y < self.min_y || y >= self.min_y + self.height {
-            return None;
-        }
-        Some(((y - self.min_y) / 16) as usize)
-    }
-
-    /// What the block at `(local_x, y, local_z)` is, as a tag read off the section's
-    /// precomputed palette classification: one `u32` array read plus a table lookup.
-    fn classify(
-        &self,
-        chunk: &ChunkData,
-        classes: &[SectionClass],
-        local_x: usize,
-        y: i32,
-        local_z: usize,
-    ) -> Option<BlockKind> {
-        let index = self.section_of(y)?;
-        let section = chunk.sections.get(index)?;
-        let class = classes.get(index)?;
-        let local_y = (y - self.min_y).rem_euclid(16) as usize;
-        let palette_index = section.block_states.indices()[local_index(local_x, local_y, local_z)];
-        Some(class.kind(palette_index))
     }
 }
 

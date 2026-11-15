@@ -286,3 +286,30 @@ Run 2: `BENCH chunks=1089 threads=8 secs=2.553 cps=426.6 ms_per_chunk_core=18.75
 
 Inside the base's range (carvers were ~5% of the profile). Kept: strictly less work, digest
 unchanged. Tests: chunkgen 189 passed.
+
+### E11: surface rules as a flat program; block kinds read once per chunk -- kept
+
+Sub-agent experiment in `/tmp/datapath-2`, bench name `datapath-2`. Profile first (1 thread,
+radius 8, merged head): `SurfaceSystem::apply` was 13.5% of generation. Inside it: the
+recursive rule walk (`eval_rule`, its `find_map` closure, `eval_condition`) ~62%, the
+per-block palette read and classify ~27%, per-column noise ~10%.
+
+- The compiled rule tree is flattened into a list of steps. A condition is a test that jumps
+  past its subtree on failure, which is the old walk's "return None to the enclosing
+  sequence". Leading `not`s fold into a negate flag. Conditions, memos and random draws run
+  in the same order.
+- Block kinds for the whole chunk are read into one flat array before the scan. A column
+  reads only its current position (before writing it) and positions below it (not written
+  yet), so the snapshot gives the same answers. The per-write reclassification is gone.
+- `surface_secondary` is sampled only when a `stone_depth` condition with a nonzero
+  secondary range asks for it. It depends only on (x, z).
+
+Reviewed by the master: the jump semantics match the old recursion, including a condition
+nested directly in a condition.
+
+Head without it (a baseline run the sub-agent had queued before the no-baseline rule): `BENCH chunks=1089 threads=8 secs=2.626 cps=414.7 ms_per_chunk_core=19.29 digest=a977961a58122047`
+Run 1: `BENCH chunks=1089 threads=8 secs=2.299 cps=473.7 ms_per_chunk_core=16.89 digest=a977961a58122047`
+Run 2: `BENCH chunks=1089 threads=8 secs=2.343 cps=464.8 ms_per_chunk_core=17.21 digest=a977961a58122047`
+
+Both runs above the head's best (459) in the E4 A/B: ~12% less core time per chunk. Tests:
+chunkgen 189 passed.
