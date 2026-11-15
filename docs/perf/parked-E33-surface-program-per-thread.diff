@@ -1,0 +1,658 @@
+diff --git a/crates/oxide-chunkgen/src/surface.rs b/crates/oxide-chunkgen/src/surface.rs
+index 957a45c..86a973c 100644
+--- a/crates/oxide-chunkgen/src/surface.rs
++++ b/crates/oxide-chunkgen/src/surface.rs
+@@ -19,7 +19,9 @@
+ //! carries a `PARITY-CHECK` marker: RNG and noise underneath are verified against the real
+ //! 26.2 jar, but this layer's arithmetic is not yet diffed against a vanilla chunk dump.
+ 
++use std::cell::RefCell;
+ use std::collections::HashMap;
++use std::sync::Arc;
+ 
+ use oxide_core::{
+     BlockState, ChunkData, ChunkPos, Heightmap, HeightmapType, RandomSource, ResourceLocation,
+@@ -143,13 +145,15 @@ fn make_band(
+     }
+ }
+ 
+-/// The rule tree, compiled once per [`SurfaceSystem`]: every name the datapack spells as a
+-/// string -- noises, randomizers, anchors, result blocks -- is resolved here, so evaluating a
+-/// position does no hashing, no string comparison and no allocation.
+-enum CompiledRule<'a> {
+-    Sequence(Vec<CompiledRule<'a>>),
+-    Condition(CompiledCondition<'a>, Box<CompiledRule<'a>>),
+-    /// Index into [`SurfaceSystem::results`].
++/// The rule tree, compiled once per (router, surface rule) per thread (see [`SurfaceProgram`]):
++/// every name the datapack spells as a string -- noises, randomizers, anchors, result blocks --
++/// is resolved here, so evaluating a position does no hashing, no string comparison and no
++/// allocation. A noise is resolved to a slot in [`SurfaceProgram::noise_ids`], bound to the
++/// router's `NormalNoise` once per chunk.
++enum CompiledRule {
++    Sequence(Vec<CompiledRule>),
++    Condition(CompiledCondition, Box<CompiledRule>),
++    /// Index into [`SurfaceProgram::results`].
+     Block(usize),
+     Badlands,
+ }
+@@ -161,9 +165,9 @@ enum CompiledRule<'a> {
+ /// Conditions are tested in the tree walk's order, one at a time, so every memo and random
+ /// draw happens the same way.
+ #[derive(Clone)]
+-enum Op<'a> {
++enum Op {
+     Test {
+-        condition: CompiledCondition<'a>,
++        condition: CompiledCondition,
+         /// The condition sat under this many `not`s, an odd number: test its inverse. The
+         /// inner condition is still evaluated exactly as the `Not` arm would.
+         negate: bool,
+@@ -176,7 +180,7 @@ enum Op<'a> {
+ }
+ 
+ /// Appends `rule`'s program to `ops`.
+-fn flatten<'a>(rule: CompiledRule<'a>, ops: &mut Vec<Op<'a>>) {
++fn flatten(rule: CompiledRule, ops: &mut Vec<Op>) {
+     match rule {
+         CompiledRule::Sequence(sequence) => {
+             for inner in sequence {
+@@ -220,7 +224,7 @@ struct Facts {
+ impl Facts {
+     /// The value `condition` has at every position these facts describe, when they settle it
+     /// without reading anything else. `None` keeps the test, evaluated as usual.
+-    fn known(&self, condition: &CompiledCondition<'_>) -> Option<bool> {
++    fn known(&self, condition: &CompiledCondition) -> Option<bool> {
+         match condition {
+             // The evaluator's own order: `true_y` first, then `false_y`, and only between them
+             // a random draw. A settled answer is one the evaluator gives without drawing.
+@@ -256,7 +260,7 @@ impl Facts {
+ 
+     /// Pushes onto `edges` every y at which a condition in `ops` that [`Self::known`] settles
+     /// from y alone can change its answer: the lowest y of each new band.
+-    fn y_edges(ops: &[Op<'_>], edges: &mut Vec<i32>) {
++    fn y_edges(ops: &[Op], edges: &mut Vec<i32>) {
+         for op in ops {
+             let Op::Test { condition, .. } = op else {
+                 continue;
+@@ -291,13 +295,7 @@ impl Facts {
+ /// reached is the same.
+ ///
+ /// Returns whether this level always places a block, which makes every later sibling dead.
+-fn fold<'a>(
+-    ops: &[Op<'a>],
+-    start: usize,
+-    end: usize,
+-    facts: &Facts,
+-    out: &mut Vec<Op<'a>>,
+-) -> bool {
++fn fold(ops: &[Op], start: usize, end: usize, facts: &Facts, out: &mut Vec<Op>) -> bool {
+     let mut i = start;
+     while i < end {
+         match &ops[i] {
+@@ -343,19 +341,20 @@ fn fold<'a>(
+ }
+ 
+ #[derive(Clone)]
+-enum CompiledCondition<'a> {
+-    /// Index into [`SurfaceSystem::biome_sets`], and so into each chunk's biome masks.
++enum CompiledCondition {
++    /// Index into [`SurfaceProgram::biome_sets`], and so into each chunk's biome masks.
+     Biome(usize),
+     /// A 2D noise threshold depends on the column only, so its answer is remembered per column
+-    /// in memo slot `memo`.
++    /// in memo slot `memo`. `noise` is a slot in [`SurfaceProgram::noise_ids`] and so in
++    /// [`SurfaceSystem::noises`].
+     Noise2d {
+-        noise: Option<&'a NormalNoise>,
++        noise: usize,
+         min: f64,
+         max: f64,
+         memo: usize,
+     },
+     Noise3d {
+-        noise: Option<&'a NormalNoise>,
++        noise: usize,
+         min: f64,
+         max: f64,
+     },
+@@ -387,7 +386,7 @@ enum CompiledCondition<'a> {
+         secondary_depth_range: i32,
+         ceiling: bool,
+     },
+-    Not(Box<CompiledCondition<'a>>),
++    Not(Box<CompiledCondition>),
+ }
+ 
+ const MEMO_UNKNOWN: u8 = 0;
+@@ -427,17 +426,11 @@ pub struct SurfaceSystem<'a> {
+     /// Built on first use: only badlands columns read it, and building it costs an MD5 and 64
+     /// block states.
+     clay_bands: std::cell::OnceCell<[BlockState; BAND_COUNT]>,
+-    /// The rule tree's program, folded for positions at or above the preliminary surface.
+-    program: Vec<Op<'a>>,
+-    /// The program folded for positions below the preliminary surface -- about 85% of those
+-    /// offered -- once per y band: by `below_band_of_y[y - min_y]`. Band edges are every y at
+-    /// which a test the fold settles from y alone changes its answer.
+-    below_programs: Vec<Vec<Op<'a>>>,
+-    below_band_of_y: Vec<u16>,
+-    /// The state each `Block` rule places, by the index the compiled rule carries.
+-    results: Vec<&'a BlockState>,
+-    /// The id list of each `biome` condition, by the index the compiled condition carries.
+-    biome_sets: Vec<&'a [ResourceLocation]>,
++    /// The compiled, flattened and folded rule tree: shared by every chunk this thread
++    /// generates with the same router and surface rule (see [`SurfaceProgram::for_chunk`]).
++    compiled: Arc<SurfaceProgram>,
++    /// The router's noise for each slot of [`SurfaceProgram::noise_ids`], bound per chunk.
++    noises: Vec<Option<&'a NormalNoise>>,
+     /// One slot per column-only condition, cleared at the start of every column.
+     memo: Vec<std::cell::Cell<u8>>,
+     /// Column-only values the badlands rule and the temperature condition read.
+@@ -445,23 +438,95 @@ pub struct SurfaceSystem<'a> {
+     temperature_offset: std::cell::Cell<Option<f32>>,
+ }
+ 
+-/// Scratch state for [`SurfaceSystem::compile_rule`].
++/// Scratch state for [`compile_rule`].
+ #[derive(Default)]
+ struct Compiler<'a> {
+-    results: Vec<&'a BlockState>,
+-    biome_sets: Vec<&'a [ResourceLocation]>,
++    results: Vec<BlockState>,
++    biome_sets: Vec<Vec<ResourceLocation>>,
++    /// Each distinct noise a `noise_threshold` names, in first-use order.
++    noise_ids: Vec<ResourceLocation>,
+     memo_slots: usize,
+     /// `noise_threshold`-style conditions name their randomizer by string, and deriving a
+     /// factory from that name costs an MD5 of it. Each distinct name is derived once.
+     named_randoms: Vec<(&'a str, WorldPositionalFactory)>,
+ }
+ 
+-impl<'a> SurfaceSystem<'a> {
+-    pub fn new(
+-        settings: &'a NoiseGeneratorSettings,
+-        router: &'a NoiseRouterEvaluator,
+-        biome_temperatures: &'a BiomeTemperatures,
+-    ) -> Self {
++/// Everything [`SurfaceSystem::new`] derives from the router and the settings alone, owned, so
++/// one build serves every chunk a thread generates with them.
++///
++/// It is built from exactly three inputs: the router (its noises, by name, and its positional
++/// factory, for the `vertical_gradient` randomizers), and `settings.surface_rule` with
++/// `settings.noise.min_y` / `height`. The router is matched by [`NoiseRouterEvaluator::id`],
++/// which no other router in the process ever has; the settings by the owned copy kept here,
++/// compared structurally against the caller's on every fetch. Nothing in the router ties it
++/// to one `surface_rule` (the router is built from `noise_router` and `noise` alone), and a
++/// caller may change its settings in place between chunks, so neither the router id nor the
++/// settings' address is enough for the rule.
++///
++/// Noises are kept by id, not by reference: [`SurfaceSystem::new`] binds them to the router's
++/// `NormalNoise`s per chunk, one lookup per distinct noise.
++struct SurfaceProgram {
++    router_id: u64,
++    surface_rule: SurfaceRule,
++    min_y: i32,
++    height: i32,
++    /// The rule tree's program, folded for positions at or above the preliminary surface.
++    program: Vec<Op>,
++    /// The program folded for positions below the preliminary surface -- about 85% of those
++    /// offered -- once per y band: by `below_band_of_y[y - min_y]`. Band edges are every y at
++    /// which a test the fold settles from y alone changes its answer.
++    below_programs: Vec<Vec<Op>>,
++    below_band_of_y: Vec<u16>,
++    /// The state each `Block` rule places, by the index the compiled rule carries.
++    results: Vec<BlockState>,
++    /// The id list of each `biome` condition, by the index the compiled condition carries.
++    biome_sets: Vec<Vec<ResourceLocation>>,
++    /// The noise each noise slot names, by the slot the compiled condition carries.
++    noise_ids: Vec<ResourceLocation>,
++    memo_slots: usize,
++}
++
++/// Programs kept per thread. A handful covers every router a thread alternates between (one
++/// per dimension); past that the oldest is dropped. Entries hold no borrow, so one outliving
++/// its router is only memory, and it can never be matched again: router ids are not reused.
++const PROGRAM_CACHE_SIZE: usize = 4;
++
++thread_local! {
++    static PROGRAMS: RefCell<Vec<Arc<SurfaceProgram>>> = const { RefCell::new(Vec::new()) };
++}
++
++impl SurfaceProgram {
++    /// This thread's program for `(settings, router)`, built on first use.
++    fn for_chunk(settings: &NoiseGeneratorSettings, router: &NoiseRouterEvaluator) -> Arc<Self> {
++        let found = PROGRAMS.with(|programs| {
++            programs
++                .borrow()
++                .iter()
++                .find(|program| program.matches(settings, router))
++                .cloned()
++        });
++        if let Some(program) = found {
++            return program;
++        }
++        let program = Arc::new(Self::build(settings, router));
++        PROGRAMS.with(|programs| {
++            let mut programs = programs.borrow_mut();
++            if programs.len() >= PROGRAM_CACHE_SIZE {
++                programs.remove(0);
++            }
++            programs.push(Arc::clone(&program));
++        });
++        program
++    }
++
++    fn matches(&self, settings: &NoiseGeneratorSettings, router: &NoiseRouterEvaluator) -> bool {
++        self.router_id == router.id()
++            && self.min_y == settings.noise.min_y
++            && self.height == settings.noise.height
++            && rule_eq(&self.surface_rule, &settings.surface_rule)
++    }
++
++    fn build(settings: &NoiseGeneratorSettings, router: &NoiseRouterEvaluator) -> Self {
+         let min_y = settings.noise.min_y;
+         let height = settings.noise.height;
+         let mut compiler = Compiler::default();
+@@ -503,7 +568,36 @@ impl<'a> SurfaceSystem<'a> {
+                 band_lo = y + 1;
+             }
+         }
+-        let memo = (0..compiler.memo_slots)
++
++        Self {
++            router_id: router.id(),
++            surface_rule: settings.surface_rule.clone(),
++            min_y,
++            height,
++            program,
++            below_programs,
++            below_band_of_y,
++            results: compiler.results,
++            biome_sets: compiler.biome_sets,
++            noise_ids: compiler.noise_ids,
++            memo_slots: compiler.memo_slots,
++        }
++    }
++}
++
++impl<'a> SurfaceSystem<'a> {
++    pub fn new(
++        settings: &'a NoiseGeneratorSettings,
++        router: &'a NoiseRouterEvaluator,
++        biome_temperatures: &'a BiomeTemperatures,
++    ) -> Self {
++        let compiled = SurfaceProgram::for_chunk(settings, router);
++        let noises = compiled
++            .noise_ids
++            .iter()
++            .map(|id| router.noise(id))
++            .collect();
++        let memo = (0..compiled.memo_slots)
+             .map(|_| std::cell::Cell::new(MEMO_UNKNOWN))
+             .collect();
+ 
+@@ -511,8 +605,8 @@ impl<'a> SurfaceSystem<'a> {
+             settings,
+             router,
+             biome_temperatures,
+-            min_y,
+-            height,
++            min_y: settings.noise.min_y,
++            height: settings.noise.height,
+             ocean_floor: None,
+             caches: None,
+             surface_noise: router.noise(&ResourceLocation::minecraft("surface")),
+@@ -522,11 +616,8 @@ impl<'a> SurfaceSystem<'a> {
+                 .noise(&ResourceLocation::minecraft("clay_bands_offset")),
+             temperature_noise: router.noise(&ResourceLocation::minecraft("temperature")),
+             clay_bands: std::cell::OnceCell::new(),
+-            program,
+-            below_programs,
+-            below_band_of_y,
+-            results: compiler.results,
+-            biome_sets: compiler.biome_sets,
++            compiled,
++            noises,
+             memo,
+             band_offset: std::cell::Cell::new(None),
+             temperature_offset: std::cell::Cell::new(None),
+@@ -546,9 +637,9 @@ impl<'a> SurfaceSystem<'a> {
+     /// The state a rule result stands for. Results past the rule tree's own are the clay
+     /// bands, in band order.
+     fn result_state(&self, result: usize) -> &BlockState {
+-        match self.results.get(result) {
++        match self.compiled.results.get(result) {
+             Some(state) => state,
+-            None => &self.clay_bands()[result - self.results.len()],
++            None => &self.clay_bands()[result - self.compiled.results.len()],
+         }
+     }
+ 
+@@ -585,7 +676,7 @@ impl<'a> SurfaceSystem<'a> {
+         let biomes = self.chunk_biomes(chunk);
+         // Per section, per rule result: the palette index that result has in that section,
+         // once it has been written there. `u32::MAX` = not interned yet.
+-        let result_count = self.results.len() + BAND_COUNT;
++        let result_count = self.compiled.results.len() + BAND_COUNT;
+         let mut result_index = vec![u32::MAX; chunk.sections.len() * result_count];
+         // Every position's kind, read off the chunk once, in slot order per section. The scan
+         // of a column only ever reads positions it has not written yet (the current one, and
+@@ -682,10 +773,10 @@ impl<'a> SurfaceSystem<'a> {
+                                 as usize,
+                         };
+                         let program = if y >= column.min_surface_level {
+-                            &self.program[..]
++                            &self.compiled.program[..]
+                         } else {
+-                            let band = self.below_band_of_y[(y - self.min_y) as usize];
+-                            &self.below_programs[band as usize][..]
++                            let band = self.compiled.below_band_of_y[(y - self.min_y) as usize];
++                            &self.compiled.below_programs[band as usize][..]
+                         };
+                         let Some(result) = self.eval_program(program, &cursor, &column, &biomes)
+                         else {
+@@ -730,8 +821,8 @@ impl<'a> SurfaceSystem<'a> {
+             })
+             .collect();
+         let count = ids.len();
+-        let mut masks = Vec::with_capacity(self.biome_sets.len() * count);
+-        for set in &self.biome_sets {
++        let mut masks = Vec::with_capacity(self.compiled.biome_sets.len() * count);
++        for set in &self.compiled.biome_sets {
+             for id in &ids {
+                 masks.push(set.contains(id));
+             }
+@@ -808,7 +899,7 @@ impl<'a> SurfaceSystem<'a> {
+     /// The result index of the first `block` rule whose enclosing conditions all hold.
+     fn eval_program(
+         &self,
+-        program: &[Op<'a>],
++        program: &[Op],
+         cursor: &Cursor,
+         column: &Column,
+         biomes: &ChunkBiomes,
+@@ -849,12 +940,12 @@ impl<'a> SurfaceSystem<'a> {
+             }
+         };
+         let band = (cursor.y + offset).rem_euclid(BAND_COUNT as i32) as usize;
+-        self.results.len() + band
++        self.compiled.results.len() + band
+     }
+ 
+     fn eval_condition(
+         &self,
+-        condition: &CompiledCondition<'a>,
++        condition: &CompiledCondition,
+         cursor: &Cursor,
+         column: &Column,
+         biomes: &ChunkBiomes,
+@@ -867,7 +958,7 @@ impl<'a> SurfaceSystem<'a> {
+                 min,
+                 max,
+                 memo,
+-            } => self.memoized(*memo, || match noise {
++            } => self.memoized(*memo, || match self.noises[*noise] {
+                 Some(n) => {
+                     let value = n.get_value(cursor.x as f64, 0.0, cursor.z as f64);
+                     value >= *min && value <= *max
+@@ -875,7 +966,7 @@ impl<'a> SurfaceSystem<'a> {
+                 None => false,
+             }),
+ 
+-            CompiledCondition::Noise3d { noise, min, max } => match noise {
++            CompiledCondition::Noise3d { noise, min, max } => match self.noises[*noise] {
+                 Some(n) => {
+                     let value = n.get_value(cursor.x as f64, cursor.y as f64, cursor.z as f64);
+                     value >= *min && value <= *max
+@@ -1073,11 +1164,11 @@ fn resolve_anchor(anchor: &VerticalAnchor, min_y: i32, height: i32) -> i32 {
+ 
+ fn compile_rule<'a>(
+     rule: &'a SurfaceRule,
+-    router: &'a NoiseRouterEvaluator,
++    router: &NoiseRouterEvaluator,
+     min_y: i32,
+     height: i32,
+     compiler: &mut Compiler<'a>,
+-) -> CompiledRule<'a> {
++) -> CompiledRule {
+     match rule {
+         SurfaceRule::Sequence { sequence } => CompiledRule::Sequence(
+             sequence
+@@ -1090,7 +1181,7 @@ fn compile_rule<'a>(
+             Box::new(compile_rule(then_run, router, min_y, height, compiler)),
+         ),
+         SurfaceRule::Block { result_state } => {
+-            compiler.results.push(result_state);
++            compiler.results.push(result_state.clone());
+             CompiledRule::Block(compiler.results.len() - 1)
+         }
+         SurfaceRule::Badlands {} => CompiledRule::Badlands,
+@@ -1099,18 +1190,18 @@ fn compile_rule<'a>(
+ 
+ fn compile_condition<'a>(
+     condition: &'a SurfaceCondition,
+-    router: &'a NoiseRouterEvaluator,
++    router: &NoiseRouterEvaluator,
+     min_y: i32,
+     height: i32,
+     compiler: &mut Compiler<'a>,
+-) -> CompiledCondition<'a> {
++) -> CompiledCondition {
+     let memo_slot = |compiler: &mut Compiler<'a>| {
+         compiler.memo_slots += 1;
+         compiler.memo_slots - 1
+     };
+     match condition {
+         SurfaceCondition::Biome { biome_is } => {
+-            compiler.biome_sets.push(biome_is.as_slice());
++            compiler.biome_sets.push(biome_is.clone());
+             CompiledCondition::Biome(compiler.biome_sets.len() - 1)
+         }
+         SurfaceCondition::NoiseThreshold {
+@@ -1119,7 +1210,14 @@ fn compile_condition<'a>(
+             max_threshold,
+             is_3d,
+         } => {
+-            let noise = router.noise(noise);
++            // Bound to `router.noise(noise)` per chunk: the same lookup, made later.
++            let noise = match compiler.noise_ids.iter().position(|id| id == noise) {
++                Some(slot) => slot,
++                None => {
++                    compiler.noise_ids.push(noise.clone());
++                    compiler.noise_ids.len() - 1
++                }
++            };
+             if *is_3d {
+                 CompiledCondition::Noise3d {
+                     noise,
+@@ -1205,6 +1303,154 @@ fn compile_condition<'a>(
+     }
+ }
+ 
++/// Whether two rule trees are the same tree, field for field: the key that matches a cached
++/// [`SurfaceProgram`] to the settings it was built from. Strict where the datapack types allow
++/// it -- thresholds compare by bits -- so a false "different" only costs a rebuild. The match
++/// is exhaustive with no wildcard arm on either side's variants, so a field added to a rule or
++/// condition fails to compile here until it is compared.
++fn rule_eq(a: &SurfaceRule, b: &SurfaceRule) -> bool {
++    match (a, b) {
++        (SurfaceRule::Sequence { sequence: a }, SurfaceRule::Sequence { sequence: b }) => {
++            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| rule_eq(a, b))
++        }
++        (
++            SurfaceRule::Condition {
++                if_true: a_if,
++                then_run: a_then,
++            },
++            SurfaceRule::Condition {
++                if_true: b_if,
++                then_run: b_then,
++            },
++        ) => condition_eq(a_if, b_if) && rule_eq(a_then, b_then),
++        (SurfaceRule::Block { result_state: a }, SurfaceRule::Block { result_state: b }) => a == b,
++        (SurfaceRule::Badlands {}, SurfaceRule::Badlands {}) => true,
++        (
++            SurfaceRule::Sequence { .. }
++            | SurfaceRule::Condition { .. }
++            | SurfaceRule::Block { .. }
++            | SurfaceRule::Badlands {},
++            _,
++        ) => false,
++    }
++}
++
++fn condition_eq(a: &SurfaceCondition, b: &SurfaceCondition) -> bool {
++    use SurfaceCondition as C;
++    match (a, b) {
++        (C::Biome { biome_is: a }, C::Biome { biome_is: b }) => a == b,
++        (
++            C::NoiseThreshold {
++                noise: a_noise,
++                min_threshold: a_min,
++                max_threshold: a_max,
++                is_3d: a_3d,
++            },
++            C::NoiseThreshold {
++                noise: b_noise,
++                min_threshold: b_min,
++                max_threshold: b_max,
++                is_3d: b_3d,
++            },
++        ) => {
++            a_noise == b_noise
++                && a_min.to_bits() == b_min.to_bits()
++                && a_max.to_bits() == b_max.to_bits()
++                && a_3d == b_3d
++        }
++        (
++            C::VerticalGradient {
++                random_name: a_name,
++                true_at_and_below: a_true,
++                false_at_and_above: a_false,
++            },
++            C::VerticalGradient {
++                random_name: b_name,
++                true_at_and_below: b_true,
++                false_at_and_above: b_false,
++            },
++        ) => a_name == b_name && anchor_eq(a_true, b_true) && anchor_eq(a_false, b_false),
++        (
++            C::YAbove {
++                anchor: a_anchor,
++                surface_depth_multiplier: a_mul,
++                add_stone_depth: a_add,
++            },
++            C::YAbove {
++                anchor: b_anchor,
++                surface_depth_multiplier: b_mul,
++                add_stone_depth: b_add,
++            },
++        ) => anchor_eq(a_anchor, b_anchor) && a_mul == b_mul && a_add == b_add,
++        (
++            C::Water {
++                offset: a_offset,
++                surface_depth_multiplier: a_mul,
++                add_stone_depth: a_add,
++            },
++            C::Water {
++                offset: b_offset,
++                surface_depth_multiplier: b_mul,
++                add_stone_depth: b_add,
++            },
++        ) => a_offset == b_offset && a_mul == b_mul && a_add == b_add,
++        (C::Temperature {}, C::Temperature {})
++        | (C::Steep {}, C::Steep {})
++        | (C::Hole {}, C::Hole {})
++        | (C::AbovePreliminarySurface {}, C::AbovePreliminarySurface {}) => true,
++        (
++            C::StoneDepth {
++                offset: a_offset,
++                add_surface_depth: a_add,
++                secondary_depth_range: a_range,
++                surface_type: a_type,
++            },
++            C::StoneDepth {
++                offset: b_offset,
++                add_surface_depth: b_add,
++                secondary_depth_range: b_range,
++                surface_type: b_type,
++            },
++        ) => a_offset == b_offset && a_add == b_add && a_range == b_range && a_type == b_type,
++        (C::Not { invert: a }, C::Not { invert: b }) => condition_eq(a, b),
++        (
++            C::Biome { .. }
++            | C::NoiseThreshold { .. }
++            | C::VerticalGradient { .. }
++            | C::YAbove { .. }
++            | C::Water { .. }
++            | C::Temperature {}
++            | C::Steep {}
++            | C::Hole {}
++            | C::AbovePreliminarySurface {}
++            | C::StoneDepth { .. }
++            | C::Not { .. },
++            _,
++        ) => false,
++    }
++}
++
++fn anchor_eq(a: &VerticalAnchor, b: &VerticalAnchor) -> bool {
++    match (a, b) {
++        (VerticalAnchor::Absolute { absolute: a }, VerticalAnchor::Absolute { absolute: b }) => {
++            a == b
++        }
++        (
++            VerticalAnchor::AboveBottom { above_bottom: a },
++            VerticalAnchor::AboveBottom { above_bottom: b },
++        ) => a == b,
++        (VerticalAnchor::BelowTop { below_top: a }, VerticalAnchor::BelowTop { below_top: b }) => {
++            a == b
++        }
++        (
++            VerticalAnchor::Absolute { .. }
++            | VerticalAnchor::AboveBottom { .. }
++            | VerticalAnchor::BelowTop { .. },
++            _,
++        ) => false,
++    }
++}
++
+ /// Compares by name without building a `ResourceLocation`: this runs once per *palette entry*
+ /// (a handful per section), not once per block position.
+ fn is_air(state: &BlockState) -> bool {
+@@ -1412,6 +1658,36 @@ mod tests {
+         );
+     }
+ 
++    /// The per-thread program cache keys on the surface rule as well as the router: one router
++    /// with two rule sets, alternated on one thread, gets each its own program, and a rule set
++    /// changed in place between chunks is picked up.
++    #[test]
++    fn program_cache_never_serves_another_surface_rule() {
++        let block = |name: &str| SurfaceRule::Block {
++            result_state: BlockState::new(ResourceLocation::minecraft(name)),
++        };
++        let mut settings = settings(block("grass_block"));
++        let router =
++            NoiseRouterEvaluator::new(42, &settings, &Registry::default(), &Registry::default());
++        let temperatures = BiomeTemperatures::new();
++        let top = |settings: &NoiseGeneratorSettings| {
++            let chunk = crate::generate_chunk(
++                ChunkPos::new(0, 0),
++                settings,
++                &router,
++                None,
++                &temperatures,
++                None,
++            );
++            block_at(&chunk, 0, 0, 0).name
++        };
++        assert_eq!(top(&settings), ResourceLocation::minecraft("grass_block"));
++        settings.surface_rule = block("sand");
++        assert_eq!(top(&settings), ResourceLocation::minecraft("sand"));
++        settings.surface_rule = block("grass_block");
++        assert_eq!(top(&settings), ResourceLocation::minecraft("grass_block"));
++    }
++
+     /// Bedrock is a vertical_gradient rule in vanilla, not a special case: below the lower
+     /// anchor it always matches, above the upper one it never does.
+     #[test]

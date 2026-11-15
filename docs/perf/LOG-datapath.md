@@ -1677,3 +1677,28 @@ method, 8 rounds, at 8 threads and at 1.
 **(2) Read-only sub-agent:** why the live server reaches ~115 cps where the harness reaches ~700 on the
 same terrain code: the FFI chunk path, per-chunk JNI conversion and copying, locks, thread count,
 the Vertex stages. Findings go in this log, for the user to assign.
+
+### E33: `SurfaceSystem`'s compiled program built once per router and thread (part of the stack)
+
+Sub-agent experiment in `/tmp/datapath-29`, `surface.rs` only; `lib.rs` and the public API are unchanged.
+- **What is cached:** an owned `SurfaceProgram` holding the folded `program`, `below_programs`,
+  `below_band_of_y`, owned result `BlockState`s, owned biome sets, noise ids, `memo_slots` and the
+  `vertical_gradient` factories. `CompiledCondition` / `Op` lose their lifetime: `Noise2d` and
+  `Noise3d` hold a slot into `noise_ids`, which `SurfaceSystem::new` binds once per chunk to the
+  router's `NormalNoise` (one `router.noise(id)` per distinct noise).
+- **Where:** a `thread_local!` `Vec<Arc<SurfaceProgram>>` of up to 4 entries, oldest dropped first. `Arc`
+  keeps `SurfaceSystem` `Send`. No `unsafe`.
+- **Key:** `router.id()`, `noise.min_y`, `noise.height`, and a field-by-field comparison of the whole
+  `surface_rule` against an owned copy (`rule_eq` / `condition_eq` / `anchor_eq`, thresholds by bits).
+  The router id alone is not enough: the router does not store `surface_rule`, and a caller can change
+  settings in place under the same router. Every match arm lists every field, and the fallback arms list every
+  variant, so a new datapack field fails to compile until it is compared. `biome_temperatures` is not
+  read in `new`.
+- **Exactness:** conditions, operands, evaluation order and memo numbering are unchanged. Only where the data
+  lives changes.
+- New test `program_cache_never_serves_another_surface_rule`: one router, the rule swapped in place
+  between chunks. Tests: chunkgen 193. The workspace builds (harness, ffi, pregen). Digest `a977961a58122047`.
+- The diff is at `docs/perf/parked-E33-surface-program-per-thread.diff` until the stack is decided.
+
+**The stack (`datapath-28`):** E32 + E33 + noise-12, on aa8ffab. It is being tested, then held with the
+CPU-seconds method against two base builds, 8 rounds at 8 threads, then 8 at 1.
