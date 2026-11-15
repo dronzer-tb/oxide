@@ -48,11 +48,14 @@ function parse(file, dir) {
         const i = c.input || {};
         if (c.name === "Agent" || c.name === "Task") {
           calls.set(c.id, { kind: "subagent", label: i.description || i.subagent_type || "sub-agent", type: i.subagent_type || "general-purpose", model: i.model || null, started: at, ended: null, status: "running" });
-        } else if (c.name === "Bash" && /omni-(agent|ask)\.sh/.test(i.command || "")) {
+        } else if (c.name === "Bash" && /omni-(agent|ask)\.sh\s/.test(i.command || "")) {
+          // A real call, not a command that only mentions the script: omni-agent.sh takes a
+          // provider/model first; omni-ask.sh a prompt file (or -) and maybe a model.
           const cmd = i.command;
-          const agent = /omni-agent\.sh/.test(cmd);
-          const mm = agent ? cmd.match(/omni-agent\.sh\s+['"]?([\w./-]+)/) : cmd.match(/omni-ask\.sh\s+\S+\s+['"]?([\w./-]+)/);
-          calls.set(c.id, { kind: agent ? "omni-worker" : "omni-ask", label: i.description || (agent ? "OmniRoute worker" : "OmniRoute consult"), type: agent ? "worker" : "consult", model: mm ? mm[1] : "gemini/gemini-3-flash-preview", started: at, ended: null, status: "running" });
+          const agent = /omni-agent\.sh\s/.test(cmd);
+          const mm = agent ? cmd.match(/omni-agent\.sh\s+['"]?([\w.-]+\/[\w./-]+)/) : cmd.match(/omni-ask\.sh\s+\S+(?:\s+['"]?([\w.-]+\/[\w./-]+))?/);
+          if (!mm) continue;
+          calls.set(c.id, { kind: agent ? "omni-worker" : "omni-ask", label: i.description || (agent ? "OmniRoute worker" : "OmniRoute consult"), type: agent ? "worker" : "consult", model: mm[1] || "gemini/gemini-3-flash-preview", started: at, ended: null, status: "running" });
         }
       }
     }
