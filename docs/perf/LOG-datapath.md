@@ -1812,3 +1812,32 @@ and -1.3% at 8 threads (4 of 6). Not established; they stay parked
 bases differ by 0.5% at 1 thread and 4% at 8 threads.
 
 Box dirs `datapath-28`, `datapath-31` and `datapath-h2` are deleted; `datapath` (the head build) is kept.
+
+## Toward M2 (1,000 cps at 8 threads): working base = head + noise-12
+
+The auditor: treat base + noise-12 as the working base (noise is re-holding it; it applies clean on
+this head). M2 at ~780-810 cps now needs generation near 7.3 ms per chunk, from ~9.3.
+The scratch tree is `/tmp/datapath-nb` (head 26f512f + `noise-12-scratch-pool.patch`, not committed here).
+Bases for every hold: `datapath-nb1` and `datapath-nb2`, two builds of it, judged on `gen_cpu_s`.
+
+**Profile of base + noise-12** (1 thread, radius 8, shared lock, generation only, 2,235 samples):
+
+| Share | Where | Owner |
+|---|---|---|
+| 29.0% | corner grid; `ImprovedNoise::noise_with_scale_reusing` alone 15.7% | noise |
+| 8.4% | per-block density, `run_cell` | noise |
+| 4.7% | ore density sampling | noise |
+| 20.2% | surface: `apply` 17.6% (16.5% inlined into one frame), `column_state` 2.6% | datapath |
+| 12.6% | carvers: `carve_tunnel` 3.8% + `mth::sin` 1.5%, `carve_ellipsoid` 3.2%, aquifer `compute_kind` 3.4% | datapath |
+| 9.3% | aquifer from the fill: `compute_kind` 8.3%, surface level 1.0% | datapath |
+| 6.3% | fill loop self | datapath |
+| 4.6% | biomes: `FlatNode::distance` + search 2.7% | datapath |
+| 3.7% | ore veins' own loop | datapath |
+
+Datapath is ~58% of generation. Reaching 7.3 ms needs ~21% of the total, so it takes several items at
+once. Round 8:
+- `datapath-32` sub-agent, surface (20.2%). It needs a fresh angle: E14, E19, E23 and E25 lost.
+- `datapath-33` sub-agent, carvers excluding the aquifer (9.2%).
+- `datapath-34` sub-agent, the fill loop self plus the ore veins' own loop (10.0%).
+- The master retries E30 (aquifer anchor slab and -y column run) on the new base, against the 9.3% + 3.4%
+  aquifer slices. It was below the floor on the old base.
