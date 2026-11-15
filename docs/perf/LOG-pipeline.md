@@ -593,3 +593,24 @@ digest df701ee858e2bdd3 on all twelve:
 
 That is the size the profile predicted (upper iron + coal were 4.6% of decoration CPU). **Kept**:
 cherry-picked onto the branch from the tested tree, where chunkgen 193 and pregen tests pass.
+
+## Sculk: read a spread's 3x3x3 neighbourhood once (pipeline-6 sub-agent)
+
+311e70c (only `decorator/cave/sculk.rs`, +245/-71), landed here as the next commit.
+- **Main change:** each `spread_all` step touches only the 27 positions around its source. A 27-slot
+  stack array is filled on first ask (blocks-spread, vein and its faces, water, fire, the facts
+  asked so far) and a slot is cleared when the spread writes its position. The source check is
+  hoisted out of the face loop.
+- **Smaller changes:** the cursor's facings are a bitmask, not a Vec; the cursor's block is
+  borrowed, not cloned; and its fact checks go through the region's fact cache.
+- **Unchanged:** RNG order, writes and floats.
+
+Unlike the rejected whole-feature memo, nothing outlives a step and there is no thread-local box.
+Hold (`bench-ab-pregen-vps.sh 16 1 3 pipeline-mb pipeline-6`, merged terrain, digest
+df701ee858e2bdd3 on all six):
+
+    decorate_ms  mb  17845 16777 19292   mean 17971
+                 6   16700 15617 16794   mean 16370   -8.9%, ahead 3/3
+
+**Kept.** Tests passed on the tested tree (chunkgen 192 there, pregen). The branch-head test run
+waits until the box is free again: it is reserved for a live server test until about 17:00 CET.
