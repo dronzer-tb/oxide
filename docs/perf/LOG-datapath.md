@@ -659,3 +659,37 @@ Interleaved A/B, one exclusive hold, head rebuilt plain (without the profile fea
 All six `digest=a977961a58122047`. +3.8%, ahead in two of three pairs. Kept: it matches the ~4%
 of generation E15 attributed to recomputing neighbour columns, and it is exact and tested.
 The datapack caveat from E13 still applies, now across chunks.
+
+### E19: surface round 4 (per-chunk fold, banded below-surface fast path) -- rejected
+
+Sub-agent experiment in `/tmp/datapath-12`, on e5aa047. Profile at e5aa047 (inline(never)
+split): surface 11.9% of generation. The per-column scan was 3.8% self, `eval_program` 2.0%,
+`eval_condition` 3.3%, `column_state` 1.2%.
+
+Change:
+- Fold the above-surface program per chunk, twice: for `stone_depth_above` 1 and >= 2, by
+  biome sets on which all the chunk's biomes agree, and by the chunk's lowest preliminary
+  surface.
+- Fold each below-surface band once per chunk.
+- Below the surface, drop the depth and water walk; this was checked at `new` to be unread
+  there.
+- Handle each band by its shape: an empty band is skipped, a single block is a direct write,
+  anything else is evaluated.
+
+Exactness reviewed: the same positions are written in the same per-column order, and only
+pure tests are dropped.
+
+Sub-agent's runs (on e5aa047, not interleaved): `cps=662.1`, `647.3`.
+Rebased onto a6c1fcd (conflict-free: E18 is in `aquifer.rs`). Tests: chunkgen 190 passed on
+both builds. Interleaved A/B, one exclusive hold:
+
+| | pair 1 | pair 2 | pair 3 | mean |
+|---|---|---|---|---|
+| head a6c1fcd | 575.2 | 626.1 | 578.6 | 593.3 |
+| + E19 | 564.1 | 487.9 | 624.7 | 558.9 |
+
+All six `digest=a977961a58122047`. E19 is behind in two of three pairs. Rejected; the diff is kept at
+`docs/perf/rejected-E19-surface-chunk-fold.diff`. The 487.9 run may be an outlier, so a second
+A/B could revive it, but the surface pass is now ~12% and its cheap wins are taken.
+
+Head a6c1fcd reference from this hold: ~593 cps.

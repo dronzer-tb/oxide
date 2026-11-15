@@ -1,0 +1,462 @@
+diff --git a/crates/oxide-chunkgen/src/surface.rs b/crates/oxide-chunkgen/src/surface.rs
+index 957a45c..0afe9b7 100644
+--- a/crates/oxide-chunkgen/src/surface.rs
++++ b/crates/oxide-chunkgen/src/surface.rs
+@@ -209,15 +209,22 @@ fn flatten<'a>(rule: CompiledRule<'a>, ops: &mut Vec<Op<'a>>) {
+ /// What is known about every position a specialised program (see [`fold`]) is offered. Both
+ /// facts are plain functions of the position and its column.
+ #[derive(Clone, Copy)]
+-struct Facts {
++struct Facts<'f> {
+     /// The positions' y lies in `y_lo..=y_hi`.
+     y_lo: i32,
+     y_hi: i32,
+     /// The answer `above_preliminary_surface` gives at every one of them, when known.
+     above_preliminary_surface: Option<bool>,
++    /// The positions' `stone_depth_above` lies in `depth_lo..=depth_hi`. Every position the
++    /// scan offers has counted itself, so it is always at least 1.
++    depth_lo: i32,
++    depth_hi: i32,
++    /// Per biome set (by [`CompiledCondition::Biome`] index): the answer every biome of the
++    /// chunk gives, when they all agree. Empty, or shorter than the set list, means unknown.
++    biomes: &'f [Option<bool>],
+ }
+ 
+-impl Facts {
++impl Facts<'_> {
+     /// The value `condition` has at every position these facts describe, when they settle it
+     /// without reading anything else. `None` keeps the test, evaluated as usual.
+     fn known(&self, condition: &CompiledCondition<'_>) -> Option<bool> {
+@@ -250,10 +257,48 @@ impl Facts {
+                 }
+             }
+             CompiledCondition::AbovePreliminarySurface => self.above_preliminary_surface,
++            // `stone_depth_above <= 1 + offset`, with no column-dependent term.
++            CompiledCondition::StoneDepth {
++                offset,
++                add_surface_depth: false,
++                secondary_depth_range: 0,
++                ceiling: false,
++            } => {
++                let limit = 1i32.wrapping_add(*offset);
++                if self.depth_hi <= limit {
++                    Some(true)
++                } else if self.depth_lo > limit {
++                    Some(false)
++                } else {
++                    None
++                }
++            }
++            // A table read: the same answer for every biome the chunk has means the same
++            // answer at every position in it.
++            CompiledCondition::Biome(set) => self.biomes.get(*set).copied().flatten(),
+             _ => None,
+         }
+     }
+ 
++    /// Whether any test in `ops` reads the state the column walk carries down a run of
++    /// ground: stone depth (above or below) or the water height.
++    fn reads_run_state(ops: &[Op<'_>]) -> bool {
++        fn reads(condition: &CompiledCondition<'_>) -> bool {
++            match condition {
++                CompiledCondition::StoneDepth { .. } | CompiledCondition::Water { .. } => true,
++                CompiledCondition::YAbove {
++                    add_stone_depth, ..
++                } => *add_stone_depth,
++                CompiledCondition::Not(inner) => reads(inner),
++                _ => false,
++            }
++        }
++        ops.iter().any(|op| match op {
++            Op::Test { condition, .. } => reads(condition),
++            _ => false,
++        })
++    }
++
+     /// Pushes onto `edges` every y at which a condition in `ops` that [`Self::known`] settles
+     /// from y alone can change its answer: the lowest y of each new band.
+     fn y_edges(ops: &[Op<'_>], edges: &mut Vec<i32>) {
+@@ -394,6 +439,17 @@ const MEMO_UNKNOWN: u8 = 0;
+ const MEMO_FALSE: u8 = 1;
+ const MEMO_TRUE: u8 = 2;
+ 
++/// What a below-surface band's program, folded for one chunk, amounts to.
++#[derive(Clone, Copy)]
++enum BandShape {
++    /// Places nothing anywhere in the band.
++    Empty,
++    /// Places this result at every position offered.
++    Block(usize),
++    /// Anything else: evaluated per position.
++    General,
++}
++
+ /// What the rule tree needs to know about the biomes of one chunk, as small tables indexed by
+ /// a per-chunk biome number.
+ struct ChunkBiomes {
+@@ -406,6 +462,22 @@ struct ChunkBiomes {
+     count: usize,
+ }
+ 
++impl ChunkBiomes {
++    /// The chunk biome number at a position, from its section's biome quart.
++    fn biome_at(
++        &self,
++        chunk: &ChunkData,
++        section_index: usize,
++        local_x: usize,
++        local_y: usize,
++        local_z: usize,
++    ) -> usize {
++        let quart = ((local_y / 4) * 4 + local_z / 4) * 4 + local_x / 4;
++        let biome_palette_index = chunk.sections[section_index].biomes.indices()[quart];
++        self.section_maps[section_index][biome_palette_index as usize] as usize
++    }
++}
++
+ pub struct SurfaceSystem<'a> {
+     settings: &'a NoiseGeneratorSettings,
+     router: &'a NoiseRouterEvaluator,
+@@ -434,6 +506,16 @@ pub struct SurfaceSystem<'a> {
+     /// which a test the fold settles from y alone changes its answer.
+     below_programs: Vec<Vec<Op<'a>>>,
+     below_band_of_y: Vec<u16>,
++    /// Lowest y of each band in `below_programs`.
++    below_band_lo: Vec<i32>,
++    /// Whether any program below the preliminary surface reads stone depth or water height.
++    /// When none does, the scan stops carrying that state at the preliminary surface.
++    below_reads_run_state: bool,
++    /// Rebuilt per chunk by [`Self::fold_for_chunk`]: `program` folded for that chunk's biomes
++    /// and its lowest preliminary surface, once for `stone_depth_above == 1` and once for
++    /// `>= 2`; and every `below_programs` band folded for its biomes, each with its shape.
++    chunk_above: [Vec<Op<'a>>; 2],
++    chunk_below: Vec<(BandShape, Vec<Op<'a>>)>,
+     /// The state each `Block` rule places, by the index the compiled rule carries.
+     results: Vec<&'a BlockState>,
+     /// The id list of each `biome` condition, by the index the compiled condition carries.
+@@ -472,6 +554,9 @@ impl<'a> SurfaceSystem<'a> {
+             y_lo: min_y,
+             y_hi: min_y + height - 1,
+             above_preliminary_surface: Some(true),
++            depth_lo: 1,
++            depth_hi: i32::MAX,
++            biomes: &[],
+         };
+         let mut program = Vec::new();
+         fold(&full, 0, full.len(), &world, &mut program);
+@@ -487,6 +572,7 @@ impl<'a> SurfaceSystem<'a> {
+         Facts::y_edges(&below, &mut edges);
+         let mut below_band_of_y = Vec::with_capacity(height.max(0) as usize);
+         let mut below_programs = Vec::new();
++        let mut below_band_lo = Vec::new();
+         let mut band_lo = world.y_lo;
+         for y in world.y_lo..=world.y_hi {
+             let band_ends = y == world.y_hi || edges.contains(&(y + 1));
+@@ -500,6 +586,7 @@ impl<'a> SurfaceSystem<'a> {
+                 let mut ops = Vec::new();
+                 fold(&below, 0, below.len(), &facts, &mut ops);
+                 below_programs.push(ops);
++                below_band_lo.push(band_lo);
+                 band_lo = y + 1;
+             }
+         }
+@@ -522,9 +609,13 @@ impl<'a> SurfaceSystem<'a> {
+                 .noise(&ResourceLocation::minecraft("clay_bands_offset")),
+             temperature_noise: router.noise(&ResourceLocation::minecraft("temperature")),
+             clay_bands: std::cell::OnceCell::new(),
++            below_reads_run_state: Facts::reads_run_state(&below),
+             program,
+             below_programs,
+             below_band_of_y,
++            below_band_lo,
++            chunk_above: [Vec::new(), Vec::new()],
++            chunk_below: Vec::new(),
+             results: compiler.results,
+             biome_sets: compiler.biome_sets,
+             memo,
+@@ -608,11 +699,27 @@ impl<'a> SurfaceSystem<'a> {
+             debug_assert_eq!(kinds.len(), start + SECTION_SLOTS);
+         }
+ 
++        // Column state up front, so the chunk's lowest preliminary surface is known before the
++        // programs are folded for this chunk. Each is a pure function of (x, z), so computing
++        // them before the scan rather than during it changes no value.
++        let mut columns = Vec::with_capacity(256);
++        for local_z in 0..16usize {
++            let z = pos.min_block_z() + local_z as i32;
++            for local_x in 0..16usize {
++                let x = pos.min_block_x() + local_x as i32;
++                columns.push(self.column_state(x, z));
++            }
++        }
++        self.fold_for_chunk(&biomes, &columns);
++        let one_biome = biomes.count == 1;
++        // Highest y with a section under it.
++        let scan_top = top_y.min(self.min_y + chunk.sections.len() as i32 * 16 - 1);
++
+         for local_z in 0..16usize {
+             let z = pos.min_block_z() + local_z as i32;
+             for local_x in 0..16usize {
+                 let x = pos.min_block_x() + local_x as i32;
+-                let column = self.column_state(x, z);
++                let column = &columns[local_z * 16 + local_x];
+                 let column_slot = local_index(local_x, 0, local_z);
+                 for slot in &self.memo {
+                     slot.set(MEMO_UNKNOWN);
+@@ -620,6 +727,15 @@ impl<'a> SurfaceSystem<'a> {
+                 self.band_offset.set(None);
+                 self.temperature_offset.set(None);
+ 
++                // When no program below the preliminary surface reads stone depth or water
++                // height, the walk that carries them stops at the preliminary surface: every
++                // lower position is below it too, and is visited by the loop after this one.
++                let walk_lo = if self.below_reads_run_state {
++                    self.min_y
++                } else {
++                    column.min_surface_level.max(self.min_y)
++                };
++
+                 let mut stone_depth_above = 0;
+                 let mut water_height = i32::MIN;
+                 // Start of the current run of stone, tracked so stone_depth_below can be
+@@ -631,6 +747,9 @@ impl<'a> SurfaceSystem<'a> {
+                     if section_min_y > top_y {
+                         continue;
+                     }
++                    if section_min_y + 15 < walk_lo {
++                        break;
++                    }
+                     if classes[section_index].all_air {
+                         // Sixteen air positions: exactly what the per-block arm below does.
+                         stone_depth_above = 0;
+@@ -638,7 +757,8 @@ impl<'a> SurfaceSystem<'a> {
+                         run_bottom = i32::MAX;
+                         continue;
+                     }
+-                    for local_y in (0..16usize).rev() {
++                    let local_lo = (walk_lo - section_min_y).max(0) as usize;
++                    for local_y in (local_lo..16usize).rev() {
+                         let y = section_min_y + local_y as i32;
+                         let slot = local_index(local_x, local_y, local_z);
+                         let kind = kinds[section_index * SECTION_SLOTS + slot];
+@@ -668,9 +788,6 @@ impl<'a> SurfaceSystem<'a> {
+                             continue;
+                         }
+ 
+-                        let quart = ((local_y / 4) * 4 + local_z / 4) * 4 + local_x / 4;
+-                        let biome_palette_index =
+-                            chunk.sections[section_index].biomes.indices()[quart];
+                         let cursor = Cursor {
+                             x,
+                             y,
+@@ -678,35 +795,196 @@ impl<'a> SurfaceSystem<'a> {
+                             stone_depth_above,
+                             stone_depth_below,
+                             water_height,
+-                            biome: biomes.section_maps[section_index][biome_palette_index as usize]
+-                                as usize,
++                            biome: if one_biome {
++                                0
++                            } else {
++                                biomes.biome_at(chunk, section_index, local_x, local_y, local_z)
++                            },
+                         };
+                         let program = if y >= column.min_surface_level {
+-                            &self.program[..]
++                            &self.chunk_above[usize::from(stone_depth_above != 1)][..]
+                         } else {
+                             let band = self.below_band_of_y[(y - self.min_y) as usize];
+-                            &self.below_programs[band as usize][..]
++                            &self.chunk_below[band as usize].1[..]
+                         };
+-                        let Some(result) = self.eval_program(program, &cursor, &column, &biomes)
++                        let Some(result) = self.eval_program(program, &cursor, column, &biomes)
+                         else {
+                             continue;
+                         };
+-                        let cached = &mut result_index[section_index * result_count + result];
+-                        let block_states = &mut chunk.sections[section_index].block_states;
+-                        if *cached == u32::MAX {
+-                            // Interning can add a palette entry this section did not have. No
+-                            // classification needs it: kinds were read up front, and a written
+-                            // position is never read again.
+-                            *cached =
+-                                block_states.index_of_or_insert(self.result_state(result).clone());
++                        self.write(chunk, &mut result_index, section_index, slot, result);
++                    }
++                }
++
++                if self.below_reads_run_state {
++                    continue;
++                }
++                // Below the preliminary surface, band by band from the top. No program here
++                // reads the run state, so a position needs only its kind, and a band whose
++                // program is empty or a lone `block` needs no evaluation at all.
++                let mut hi = scan_top.min(column.min_surface_level.saturating_sub(1));
++                while hi >= self.min_y {
++                    let band = self.below_band_of_y[(hi - self.min_y) as usize] as usize;
++                    let lo = self.below_band_lo[band].max(self.min_y);
++                    let (shape, program) = &self.chunk_below[band];
++                    match *shape {
++                        BandShape::Empty => {}
++                        BandShape::Block(result) => {
++                            for y in (lo..=hi).rev() {
++                                let offset = (y - self.min_y) as usize;
++                                let section_index = offset / 16;
++                                let slot = local_index(local_x, offset % 16, local_z);
++                                if kinds[section_index * SECTION_SLOTS + slot]
++                                    == BlockKind::DefaultBlock
++                                {
++                                    self.write(
++                                        chunk,
++                                        &mut result_index,
++                                        section_index,
++                                        slot,
++                                        result,
++                                    );
++                                }
++                            }
++                        }
++                        BandShape::General => {
++                            for y in (lo..=hi).rev() {
++                                let offset = (y - self.min_y) as usize;
++                                let section_index = offset / 16;
++                                let local_y = offset % 16;
++                                let slot = local_index(local_x, local_y, local_z);
++                                if kinds[section_index * SECTION_SLOTS + slot]
++                                    != BlockKind::DefaultBlock
++                                {
++                                    continue;
++                                }
++                                // The run-state fields are never read here (see
++                                // `below_reads_run_state`); they hold placeholders.
++                                let cursor = Cursor {
++                                    x,
++                                    y,
++                                    z,
++                                    stone_depth_above: 1,
++                                    stone_depth_below: 1,
++                                    water_height: i32::MIN,
++                                    biome: if one_biome {
++                                        0
++                                    } else {
++                                        biomes.biome_at(
++                                            chunk,
++                                            section_index,
++                                            local_x,
++                                            local_y,
++                                            local_z,
++                                        )
++                                    },
++                                };
++                                let Some(result) =
++                                    self.eval_program(program, &cursor, column, &biomes)
++                                else {
++                                    continue;
++                                };
++                                self.write(chunk, &mut result_index, section_index, slot, result);
++                            }
+                         }
+-                        block_states.set_index(slot, *cached);
+                     }
++                    hi = lo - 1;
+                 }
+             }
+         }
+     }
+ 
++    /// Writes rule result `result` at `slot` of section `section_index`, interning it into that
++    /// section's palette on the section's first write of it.
++    fn write(
++        &self,
++        chunk: &mut ChunkData,
++        result_index: &mut [u32],
++        section_index: usize,
++        slot: usize,
++        result: usize,
++    ) {
++        let result_count = self.results.len() + BAND_COUNT;
++        let cached = &mut result_index[section_index * result_count + result];
++        let block_states = &mut chunk.sections[section_index].block_states;
++        if *cached == u32::MAX {
++            // Interning can add a palette entry this section did not have. No classification
++            // needs it: kinds were read up front, and a written position is never read again.
++            *cached = block_states.index_of_or_insert(self.result_state(result).clone());
++        }
++        block_states.set_index(slot, *cached);
++    }
++
++    /// Folds the programs for this chunk: by every biome set on which all the chunk's biomes
++    /// agree, and above the preliminary surface also by the chunk's lowest preliminary surface
++    /// and by `stone_depth_above` being 1 or at least 2. Two folds of the above program's
++    /// size and one per below band, per chunk; every test they drop is a pure table read or
++    /// comparison (see [`Facts::known`]).
++    fn fold_for_chunk(&mut self, biomes: &ChunkBiomes, columns: &[Column]) {
++        let mut known = Vec::with_capacity(self.biome_sets.len());
++        if biomes.count > 0 {
++            for set in 0..self.biome_sets.len() {
++                let row = &biomes.masks[set * biomes.count..(set + 1) * biomes.count];
++                known.push(if row.iter().all(|&b| b) {
++                    Some(true)
++                } else if row.iter().all(|&b| !b) {
++                    Some(false)
++                } else {
++                    None
++                });
++            }
++        }
++        let top_y = self.min_y + self.height - 1;
++        // Every position the above programs are offered has y >= its column's preliminary
++        // surface and y >= min_y.
++        let lowest = columns
++            .iter()
++            .map(|column| column.min_surface_level)
++            .min()
++            .unwrap_or(self.min_y)
++            .max(self.min_y)
++            .min(top_y);
++        for (index, (depth_lo, depth_hi)) in [(1, 1), (2, i32::MAX)].into_iter().enumerate() {
++            let facts = Facts {
++                y_lo: lowest,
++                y_hi: top_y,
++                above_preliminary_surface: Some(true),
++                depth_lo,
++                depth_hi,
++                biomes: &known,
++            };
++            let mut out = std::mem::take(&mut self.chunk_above[index]);
++            out.clear();
++            fold(&self.program, 0, self.program.len(), &facts, &mut out);
++            self.chunk_above[index] = out;
++        }
++        let mut chunk_below = std::mem::take(&mut self.chunk_below);
++        chunk_below.resize_with(self.below_programs.len(), || (BandShape::Empty, Vec::new()));
++        for (band, (shape, out)) in chunk_below.iter_mut().enumerate() {
++            let y_lo = self.below_band_lo[band];
++            let y_hi = self
++                .below_band_lo
++                .get(band + 1)
++                .map_or(top_y, |next| next - 1);
++            let facts = Facts {
++                y_lo,
++                y_hi,
++                above_preliminary_surface: Some(false),
++                depth_lo: 1,
++                depth_hi: i32::MAX,
++                biomes: &known,
++            };
++            out.clear();
++            let program = &self.below_programs[band];
++            fold(program, 0, program.len(), &facts, out);
++            *shape = match out.as_slice() {
++                [] => BandShape::Empty,
++                [Op::Block(result)] => BandShape::Block(*result),
++                _ => BandShape::General,
++            };
++        }
++        self.chunk_below = chunk_below;
++    }
++
+     /// Numbers the distinct biomes of `chunk` and answers every biome question the rule tree
+     /// can ask about them, once.
+     fn chunk_biomes(&self, chunk: &ChunkData) -> ChunkBiomes {
