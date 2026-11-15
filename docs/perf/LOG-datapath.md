@@ -326,3 +326,19 @@ exclusively, so a pregen run competes with whatever is being timed. The earlier 
 was most likely the same. Flagged for the auditor: pregen runs on the box need
 `flock -x ~/oxide-perf/.lock` if they are timed, or `flock -s` with `nice` if not. Remeasuring with an
 interleaved A/B (combined vs E11-only) in one exclusive hold.
+
+### Combined head (1da3c44): interleaved A/B -- new reference ~479 cps
+
+One exclusive hold, three alternating pairs: the combined head against the E11-only build
+(the `datapath-2` binary: the merged head plus E11, without E8-E10). Load average falling
+from 5.3 to 2.4 during the hold.
+
+| | pair 1 | pair 2 | pair 3 | mean |
+|---|---|---|---|---|
+| combined (E8-E11) | 492.3 | 475.3 | 470.3 | 479.3 |
+| E11 only | 450.0 | 482.0 | 446.5 | 459.5 |
+
+All six `digest=a977961a58122047`. E8-E10 together add about 4% over E11, ahead in two of
+three pairs: small, but it agrees with keeping them. Reference for the next round:
+**~479 cps, ~16.7 ms core per chunk** (session start: 138.2 cps, 57.9 ms). M1 (400 cps) is
+passed; M2 is 1,000.
