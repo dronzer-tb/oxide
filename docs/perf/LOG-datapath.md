@@ -1458,3 +1458,12 @@ The same job's head run gave `cps=712.0 ms_per_chunk_core=11.24` at 8 threads. T
 lock, not an exclusive timing, but it is far from the suspect 392.9 row: that row looks disturbed
 rather than a regression. The scaling sub-agent's exclusive 8-thread hold will settle it. The box dirs
 `datapath-pa` and `datapath-pb` are deleted.
+
+### Pregen NBT gate on the head: `df701ee858e2bdd3`, unchanged
+
+The scratch merge of a95c316 (0f15cef code) with `origin/perf/pipeline` d7d5ea8 was built and run under the shared lock:
+`oxide-pregen --datapack reference --seed 12345 --world out/gate --center-x 0 --center-z 0 --radius 16 --threads 8 --no-write --bench`.
+Without `--bench`, pregen prints no BENCH line.
+`BENCH chunks=1089 threads=8 secs=5.712 cps=190.6 ms_per_chunk_core=41.96 digest=df701ee858e2bdd3 generate_ms=2983 decorate_ms=2528 serialise_ms=106 compress_ms=95 write_ms=0 compression=zlib6 mb_disk=0.0`
+This matches pipeline's reference from merges up to 2127bd7, so the 3362440 noise merge also leaves
+the full NBT unchanged. The box dir `datapath-pg` is deleted.
