@@ -31,9 +31,21 @@ impl Frustum {
     pub fn test_aabb(&self, aabb: &SectionAABB) -> bool {
         for plane in &self.planes {
             // Find positive vertex along plane normal
-            let px = if plane.a > 0.0 { aabb.max_x } else { aabb.min_x };
-            let py = if plane.b > 0.0 { aabb.max_y } else { aabb.min_y };
-            let pz = if plane.c > 0.0 { aabb.max_z } else { aabb.min_z };
+            let px = if plane.a > 0.0 {
+                aabb.max_x
+            } else {
+                aabb.min_x
+            };
+            let py = if plane.b > 0.0 {
+                aabb.max_y
+            } else {
+                aabb.min_y
+            };
+            let pz = if plane.c > 0.0 {
+                aabb.max_z
+            } else {
+                aabb.min_z
+            };
 
             if plane.a * px + plane.b * py + plane.c * pz + plane.d < 0.0 {
                 return false; // Outside frustum
@@ -67,24 +79,62 @@ mod tests {
         // Orthographic bounding box [0, 0, 0] to [100, 100, 100]
         let frustum = Frustum {
             planes: [
-                Plane { a: 1.0, b: 0.0, c: 0.0, d: 0.0 },     // X >= 0
-                Plane { a: -1.0, b: 0.0, c: 0.0, d: 100.0 },  // X <= 100
-                Plane { a: 0.0, b: 1.0, c: 0.0, d: 0.0 },     // Y >= 0
-                Plane { a: 0.0, b: -1.0, c: 0.0, d: 100.0 },  // Y <= 100
-                Plane { a: 0.0, b: 0.0, c: 1.0, d: 0.0 },     // Z >= 0
-                Plane { a: 0.0, b: 0.0, c: -1.0, d: 100.0 },  // Z <= 100
+                Plane {
+                    a: 1.0,
+                    b: 0.0,
+                    c: 0.0,
+                    d: 0.0,
+                }, // X >= 0
+                Plane {
+                    a: -1.0,
+                    b: 0.0,
+                    c: 0.0,
+                    d: 100.0,
+                }, // X <= 100
+                Plane {
+                    a: 0.0,
+                    b: 1.0,
+                    c: 0.0,
+                    d: 0.0,
+                }, // Y >= 0
+                Plane {
+                    a: 0.0,
+                    b: -1.0,
+                    c: 0.0,
+                    d: 100.0,
+                }, // Y <= 100
+                Plane {
+                    a: 0.0,
+                    b: 0.0,
+                    c: 1.0,
+                    d: 0.0,
+                }, // Z >= 0
+                Plane {
+                    a: 0.0,
+                    b: 0.0,
+                    c: -1.0,
+                    d: 100.0,
+                }, // Z <= 100
             ],
         };
 
         let inside = SectionAABB {
-            min_x: 10.0, min_y: 10.0, min_z: 10.0,
-            max_x: 26.0, max_y: 26.0, max_z: 26.0,
+            min_x: 10.0,
+            min_y: 10.0,
+            min_z: 10.0,
+            max_x: 26.0,
+            max_y: 26.0,
+            max_z: 26.0,
         };
         assert!(frustum.test_aabb(&inside));
 
         let outside = SectionAABB {
-            min_x: 150.0, min_y: 10.0, min_z: 10.0,
-            max_x: 166.0, max_y: 26.0, max_z: 26.0,
+            min_x: 150.0,
+            min_y: 10.0,
+            min_z: 10.0,
+            max_x: 166.0,
+            max_y: 26.0,
+            max_z: 26.0,
         };
         assert!(!frustum.test_aabb(&outside));
     }

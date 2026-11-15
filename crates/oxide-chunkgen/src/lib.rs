@@ -16,17 +16,21 @@ pub static CULL_BOUNDED: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomi
 pub static CULL_HI_NEG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 mod biome_grid;
 mod carver;
+pub mod decorate;
 pub mod decoration_seed;
+pub mod decorator;
 pub mod feature_order;
-pub mod feature_placer;
 mod fill;
 mod ore_veins;
+pub mod region;
 mod surface;
 
 pub use aquifer::for_settings as aquifer_for_settings;
 pub use carver::{apply_carvers, CarverWorld};
-pub use feature_placer::{place_feature, PlacementContext};
+pub use decorate::{decorated_chunk, DecorationCache, Decorator};
+pub use decorator::{BiomeDecorator, BlockBehaviours, FeatureContext, UnsupportedTally};
 pub use fill::{base_height, base_height_in, fill_chunk, fill_chunk_culling};
+pub use region::{BlockWrite, DecorationRegion};
 pub use surface::{BiomeTemperatures, SurfaceSystem};
 
 use oxide_biome::BiomeSearchTree;

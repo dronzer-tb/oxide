@@ -3,9 +3,9 @@
 //! Avoids re-encoding, re-palettizing, and re-compressing chunks on every player dispatch.
 //! Uses sharded concurrency to eliminate lock contention under multi-threaded Folia region workloads.
 
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use ahash::RandomState;
 use parking_lot::RwLock;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 const SHARDS: usize = 32;
 
@@ -95,7 +95,8 @@ impl PacsideCache {
             // Evict arbitrary entry
             if let Some(evicted_key) = shard.map.keys().next().copied() {
                 if let Some(old) = shard.map.remove(&evicted_key) {
-                    self.bytes_cached.fetch_sub(old.data.len() as u64, Ordering::Relaxed);
+                    self.bytes_cached
+                        .fetch_sub(old.data.len() as u64, Ordering::Relaxed);
                     self.evictions.fetch_add(1, Ordering::Relaxed);
                 }
             }
@@ -108,7 +109,8 @@ impl PacsideCache {
                 timestamp: current_timestamp(),
             },
         ) {
-            self.bytes_cached.fetch_sub(old.data.len() as u64, Ordering::Relaxed);
+            self.bytes_cached
+                .fetch_sub(old.data.len() as u64, Ordering::Relaxed);
         }
 
         self.bytes_cached.fetch_add(len, Ordering::Relaxed);
@@ -131,7 +133,8 @@ impl PacsideCache {
         let shard_idx = self.shard_index(key);
         let mut shard = self.shards[shard_idx].write();
         if let Some(old) = shard.map.remove(key) {
-            self.bytes_cached.fetch_sub(old.data.len() as u64, Ordering::Relaxed);
+            self.bytes_cached
+                .fetch_sub(old.data.len() as u64, Ordering::Relaxed);
         }
     }
 

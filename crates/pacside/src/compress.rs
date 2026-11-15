@@ -1,8 +1,8 @@
 //! High-speed compression utilities for Minecraft chunk packet network payloads.
 
-use std::io::Write;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
+use std::io::Write;
 
 /// Compresses raw chunk data into Minecraft's Zlib network format.
 pub fn compress_zlib(raw: &[u8]) -> std::io::Result<Vec<u8>> {

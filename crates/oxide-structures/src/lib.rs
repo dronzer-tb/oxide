@@ -35,7 +35,7 @@ mod frequency;
 pub mod jigsaw;
 mod placement;
 pub mod pool;
-pub mod rotation;
+pub use oxide_core::rotation;
 mod select;
 mod set;
 pub mod starts;
@@ -49,11 +49,11 @@ pub use jigsaw::{
 };
 pub use placement::{is_random_spread_chunk, potential_structure_chunk};
 pub use pool::{PoolElement, PoolElementEntry, Projection, TemplatePool};
+pub use rotation::{Direction, Mirror, Rotation};
 pub use select::pick_weighted;
+pub use set::{is_structure_chunk, is_structure_chunk_supported, StructureSetLookup};
 pub use starts::{
     candidate_starts_in_area, ChunkArea, StartAssembler, StartContext, StructureStart,
     StructureStartCache,
 };
-pub use set::{is_structure_chunk, is_structure_chunk_supported, StructureSetLookup};
-pub use rotation::{Direction, Mirror, Rotation};
 pub use template::{JigsawConnector, JigsawJoint, PlacedTemplateBlock, StructureTemplate};

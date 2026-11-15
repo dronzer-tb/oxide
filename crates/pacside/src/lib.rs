@@ -6,8 +6,8 @@
 pub mod cache;
 pub mod compress;
 
-use std::sync::OnceLock;
 use cache::{ChunkKey, PacsideCache};
+use std::sync::OnceLock;
 
 static GLOBAL_CACHE: OnceLock<PacsideCache> = OnceLock::new();
 

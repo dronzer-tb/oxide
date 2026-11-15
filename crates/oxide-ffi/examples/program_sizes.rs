@@ -3,9 +3,9 @@
 use std::path::Path;
 
 fn main() {
-    let datapack = std::env::args().nth(1).unwrap_or_else(|| {
-        "/root/oxide-datapack-copy".to_string()
-    });
+    let datapack = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "/root/oxide-datapack-copy".to_string());
     let seed: i64 = std::env::args()
         .nth(2)
         .and_then(|s| s.parse().ok())

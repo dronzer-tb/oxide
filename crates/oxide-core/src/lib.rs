@@ -11,12 +11,13 @@ mod rng;
 mod storage;
 
 pub mod mth;
+pub mod rotation;
 
 pub use ident::{BiomeId, BlockState, ResourceLocation, ResourceLocationParseError};
 pub use pos::{BlockPos, ChunkPos, SectionPos};
 pub use rng::{
     LegacyPositionalRandomFactory, LegacyRandom, PositionalRandomFactory, RandomSource,
-    Xoroshiro128PlusPlus, XoroshiroPositionalRandomFactory,
+    WorldgenRandom, Xoroshiro128PlusPlus, XoroshiroPositionalRandomFactory,
 };
 pub use storage::{
     ChunkData, ChunkSection, ChunkStatus, Heightmap, HeightmapType, PalettedContainer,

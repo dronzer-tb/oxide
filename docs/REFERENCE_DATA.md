@@ -23,6 +23,32 @@ java -DbundlerMainClass=net.minecraft.data.Main -jar server.jar --all
 
 Either command writes output under a `generated/` directory next to wherever you ran it.
 
+### Extra data for native decoration
+
+Decoration (`native-decoration: true`) needs two things the steps above do not produce. Without
+them the generator still opens and terrain still generates; turning decoration on is refused.
+
+**Tags**, straight out of the game jar (client or server; the server jar's inner jar is under
+`META-INF/versions/`):
+
+```sh
+unzip -q minecraft-26.2.jar 'data/minecraft/tags/block/*' 'data/minecraft/tags/fluid/*' \
+  'data/minecraft/tags/worldgen/*' -d reference/
+```
+
+**Block facts** (what each block state is: solid, replaceable, a fluid, counted by which
+heightmaps). The game hardcodes these, so `scripts/BlockFactsExporter.java` reads them out of
+it. It needs a JDK 25 and the game's libraries on the classpath:
+
+```sh
+MC=~/.gradle/caches/fabric-loom/26.2/minecraft-merged.jar
+LIBS=$(find <a launcher's libraries dir> -name '*.jar' -not -name '*natives*' | tr '\n' ':')
+java -cp "$MC:$LIBS" scripts/BlockFactsExporter.java > reference/block_facts.tsv
+```
+
+Both are Mojang-derived and stay under the git-ignored `reference/` tree like everything else
+here.
+
 ## Where Oxide expects it
 
 Copy (or symlink) the generated worldgen tree into `reference/` at the repo root:

@@ -865,6 +865,8 @@ name = "oxide-datapack"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "fastnbt",
+ "flate2",
  "oxide-core",
  "serde",
  "serde_json",
@@ -892,6 +894,7 @@ dependencies = [
  "blake3",
  "clap",
  "fastnbt",
+ "flate2",
  "oxide-anvil",
  "oxide-biome",
  "oxide-chunkgen",
@@ -946,7 +949,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "fastnbt",
- "flate2",
  "oxide-biome",
  "oxide-chunkgen",
  "oxide-core",

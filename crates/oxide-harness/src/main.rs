@@ -12,6 +12,7 @@
 mod compare;
 mod invariants;
 mod merkle;
+mod oracle;
 mod reference;
 
 use std::path::PathBuf;
@@ -81,11 +82,56 @@ struct Args {
     #[cfg(feature = "profile")]
     #[arg(long)]
     profile_out: Option<PathBuf>,
+    /// Root of `scripts/ChunkOracle.java` dumps (e.g. `reference/oracle`). Compares every dump
+    /// under `<root>/<seed>/<dimension path>/` against Oxide and exits; see docs/PARITY.md.
+    #[arg(long)]
+    oracle: Option<PathBuf>,
+    /// With `--oracle`: also write the per-chunk report as JSON to this path.
+    #[arg(long)]
+    oracle_json: Option<PathBuf>,
+    /// With `--oracle`: also write the website's data for this seed and dimension into this
+    /// directory (`website/lab/data`) -- the report, what both worlds look like, and Oxide's
+    /// own map out to `--radius`.
+    #[arg(long)]
+    site: Option<PathBuf>,
+    /// With `--site`: the commit the data was generated from, shown on the website.
+    #[arg(long, default_value = "")]
+    site_commit: String,
+    /// With `--site`: leave out the views of the game's own world, keeping Oxide's world, the
+    /// difference masks and the figures. The only form of the data that may be hosted publicly.
+    #[arg(long)]
+    site_public: bool,
+    /// With `--site`: also write Oxide's map area as Anvil regions under `<dir>/region`, for
+    /// an isometric renderer. For pictures only -- not a world to load in a server.
+    #[arg(long)]
+    site_world: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
+
+    if let Some(root) = args.oracle.as_deref() {
+        let report = match args.site.as_deref() {
+            Some(out) => oracle::site(
+                &args.datapack,
+                root,
+                &args.dimension,
+                args.seed,
+                args.radius,
+                out,
+                &args.site_commit,
+                args.site_public,
+                args.site_world.as_deref(),
+            )?,
+            None => oracle::run(&args.datapack, root, &args.dimension, args.seed)?,
+        };
+        print!("{}", report.render());
+        if let Some(path) = args.oracle_json.as_deref() {
+            std::fs::write(path, serde_json::to_string_pretty(&report)?)?;
+        }
+        return Ok(());
+    }
 
     #[cfg(feature = "profile")]
     let guard = args.profile_out.as_ref().map(|_| {
@@ -202,12 +248,29 @@ fn main() -> Result<()> {
     if args.time_only {
         // No parity pass here on purpose: --time-only exists to measure generation and nothing
         // else, and reading region files off disk mid-run would be measured along with it.
+        let started = std::time::Instant::now();
         let chunks = generate_all(&positions);
+        let secs = started.elapsed().as_secs_f64();
         std::hint::black_box(&chunks);
         println!(
             "generated {} chunks on {} thread(s)",
             chunks.len(),
             args.threads
+        );
+        // One line for scripts/bench-vps.sh. The digest, taken outside the timed part, covers
+        // every block of every chunk: a speed-up that changes it changed the world.
+        let mut digest = blake3::Hasher::new();
+        for chunk in &chunks {
+            digest.update(build_merkle(chunk, args.leaf_size).chunk_hash.as_bytes());
+        }
+        println!(
+            "BENCH chunks={} threads={} secs={:.3} cps={:.1} ms_per_chunk_core={:.2} digest={}",
+            chunks.len(),
+            args.threads,
+            secs,
+            chunks.len() as f64 / secs,
+            secs * 1000.0 * args.threads as f64 / chunks.len() as f64,
+            &digest.finalize().to_hex()[..16]
         );
         #[cfg(feature = "profile")]
         write_profile(guard, args.profile_out.as_deref())?;

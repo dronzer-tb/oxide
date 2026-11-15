@@ -40,6 +40,9 @@ impl<T> Holder<T> {
 /// One entry of `worldgen/configured_feature`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "config")]
+// Loaded once per datapack and held in a registry, never moved in a hot path: boxing the big
+// configs would touch every feature for no gain.
+#[allow(clippy::large_enum_variant)]
 pub enum ConfiguredFeature {
     // ---- typed: features the generator can place ----
     /// Ore blobs. `scattered_ore` shares the configuration and differs only in how the blob is
@@ -70,6 +73,10 @@ pub enum ConfiguredFeature {
     #[serde(rename = "minecraft:sequence")]
     Sequence(SequenceConfig),
 
+    /// Does nothing and reports success. Vanilla defines it; no 26.2 file uses it.
+    #[serde(rename = "minecraft:no_op")]
+    NoOp(serde_json::Value),
+
     // ---- not yet placed by the generator: config held verbatim ----
     // The five coral/speleothem/template entries below never appear as a file in
     // worldgen/configured_feature -- they exist only inline, inside a sequence or a
@@ -82,21 +89,21 @@ pub enum ConfiguredFeature {
     #[serde(rename = "minecraft:coral_tree")]
     CoralTree(serde_json::Value),
     #[serde(rename = "minecraft:speleothem")]
-    Speleothem(serde_json::Value),
+    Speleothem(crate::cave_feature::SpeleothemConfig),
     #[serde(rename = "minecraft:template")]
-    Template(serde_json::Value),
+    Template(crate::template_feature::TemplateConfig),
     #[serde(rename = "minecraft:bamboo")]
-    Bamboo(serde_json::Value),
+    Bamboo(crate::vegetation_feature::BambooConfig),
     #[serde(rename = "minecraft:basalt_columns")]
-    BasaltColumns(serde_json::Value),
+    BasaltColumns(crate::nether_feature::ColumnConfig),
     #[serde(rename = "minecraft:basalt_pillar")]
-    BasaltPillar(serde_json::Value),
+    BasaltPillar(crate::nether_feature::NoneConfig),
     #[serde(rename = "minecraft:block_blob")]
-    BlockBlob(serde_json::Value),
+    BlockBlob(crate::ground_feature::BlockBlobConfig),
     #[serde(rename = "minecraft:block_column")]
-    BlockColumn(serde_json::Value),
+    BlockColumn(crate::ground_feature::BlockColumnConfig),
     #[serde(rename = "minecraft:block_pile")]
-    BlockPile(serde_json::Value),
+    BlockPile(crate::ground_feature::BlockPileConfig),
     #[serde(rename = "minecraft:blue_ice")]
     BlueIce(serde_json::Value),
     #[serde(rename = "minecraft:bonus_chest")]
@@ -104,79 +111,79 @@ pub enum ConfiguredFeature {
     #[serde(rename = "minecraft:chorus_plant")]
     ChorusPlant(serde_json::Value),
     #[serde(rename = "minecraft:delta_feature")]
-    DeltaFeature(serde_json::Value),
+    DeltaFeature(crate::nether_feature::DeltaConfig),
     #[serde(rename = "minecraft:desert_well")]
     DesertWell(serde_json::Value),
     #[serde(rename = "minecraft:end_gateway")]
-    EndGateway(serde_json::Value),
+    EndGateway(crate::end_feature::EndGatewayConfig),
     #[serde(rename = "minecraft:end_island")]
     EndIsland(serde_json::Value),
     #[serde(rename = "minecraft:end_platform")]
     EndPlatform(serde_json::Value),
     #[serde(rename = "minecraft:end_spike")]
-    EndSpike(serde_json::Value),
+    EndSpike(crate::end_feature::EndSpikeConfig),
     #[serde(rename = "minecraft:fallen_tree")]
-    FallenTree(serde_json::Value),
+    FallenTree(crate::tree::FallenTreeConfig),
     #[serde(rename = "minecraft:fossil")]
-    Fossil(serde_json::Value),
+    Fossil(crate::template_feature::FossilConfig),
     #[serde(rename = "minecraft:freeze_top_layer")]
     FreezeTopLayer(serde_json::Value),
     #[serde(rename = "minecraft:geode")]
-    Geode(serde_json::Value),
+    Geode(crate::cave_feature::GeodeConfig),
     #[serde(rename = "minecraft:glowstone_blob")]
-    GlowstoneBlob(serde_json::Value),
+    GlowstoneBlob(crate::nether_feature::NoneConfig),
     #[serde(rename = "minecraft:huge_brown_mushroom")]
-    HugeBrownMushroom(serde_json::Value),
+    HugeBrownMushroom(crate::vegetation_feature::HugeMushroomConfig),
     #[serde(rename = "minecraft:huge_fungus")]
-    HugeFungus(serde_json::Value),
+    HugeFungus(crate::nether_feature::HugeFungusConfig),
     #[serde(rename = "minecraft:huge_red_mushroom")]
-    HugeRedMushroom(serde_json::Value),
+    HugeRedMushroom(crate::vegetation_feature::HugeMushroomConfig),
     #[serde(rename = "minecraft:iceberg")]
-    Iceberg(serde_json::Value),
+    Iceberg(crate::ground_feature::IcebergConfig),
     #[serde(rename = "minecraft:kelp")]
     Kelp(serde_json::Value),
     #[serde(rename = "minecraft:lake")]
-    Lake(serde_json::Value),
+    Lake(crate::ground_feature::LakeConfig),
     #[serde(rename = "minecraft:large_dripstone")]
-    LargeDripstone(serde_json::Value),
+    LargeDripstone(crate::cave_feature::LargeDripstoneConfig),
     #[serde(rename = "minecraft:monster_room")]
     MonsterRoom(serde_json::Value),
     #[serde(rename = "minecraft:multiface_growth")]
-    MultifaceGrowth(serde_json::Value),
+    MultifaceGrowth(crate::vegetation_feature::MultifaceGrowthConfig),
     #[serde(rename = "minecraft:nether_forest_vegetation")]
-    NetherForestVegetation(serde_json::Value),
+    NetherForestVegetation(crate::nether_feature::NetherForestVegetationConfig),
     #[serde(rename = "minecraft:netherrack_replace_blobs")]
-    NetherrackReplaceBlobs(serde_json::Value),
+    NetherrackReplaceBlobs(crate::nether_feature::ReplaceBlobsConfig),
     #[serde(rename = "minecraft:root_system")]
-    RootSystem(serde_json::Value),
+    RootSystem(crate::vegetation_feature::RootSystemConfig),
     #[serde(rename = "minecraft:sculk_patch")]
-    SculkPatch(serde_json::Value),
+    SculkPatch(crate::cave_feature::SculkPatchConfig),
     #[serde(rename = "minecraft:sea_pickle")]
-    SeaPickle(serde_json::Value),
+    SeaPickle(crate::water_feature::SeaPickleConfig),
     #[serde(rename = "minecraft:seagrass")]
-    Seagrass(serde_json::Value),
+    Seagrass(crate::water_feature::SeagrassConfig),
     #[serde(rename = "minecraft:speleothem_cluster")]
-    SpeleothemCluster(serde_json::Value),
+    SpeleothemCluster(crate::cave_feature::SpeleothemClusterConfig),
     #[serde(rename = "minecraft:spike")]
-    Spike(serde_json::Value),
+    Spike(crate::ground_feature::SpikeConfig),
     #[serde(rename = "minecraft:tree")]
-    Tree(serde_json::Value),
+    Tree(crate::tree::TreeConfig),
     #[serde(rename = "minecraft:twisting_vines")]
-    TwistingVines(serde_json::Value),
+    TwistingVines(crate::nether_feature::TwistingVinesConfig),
     #[serde(rename = "minecraft:underwater_magma")]
-    UnderwaterMagma(serde_json::Value),
+    UnderwaterMagma(crate::ground_feature::UnderwaterMagmaConfig),
     #[serde(rename = "minecraft:vegetation_patch")]
-    VegetationPatch(serde_json::Value),
+    VegetationPatch(crate::vegetation_feature::VegetationPatchConfig),
     #[serde(rename = "minecraft:vines")]
     Vines(serde_json::Value),
     #[serde(rename = "minecraft:void_start_platform")]
     VoidStartPlatform(serde_json::Value),
     #[serde(rename = "minecraft:waterlogged_vegetation_patch")]
-    WaterloggedVegetationPatch(serde_json::Value),
+    WaterloggedVegetationPatch(crate::vegetation_feature::VegetationPatchConfig),
     #[serde(rename = "minecraft:weeping_vines")]
-    WeepingVines(serde_json::Value),
+    WeepingVines(crate::nether_feature::NoneConfig),
     #[serde(rename = "minecraft:weighted_random_selector")]
-    WeightedRandomSelector(serde_json::Value),
+    WeightedRandomSelector(crate::ground_feature::WeightedRandomSelectorConfig),
 }
 
 // ---------------------------------------------------------------------------
@@ -314,10 +321,12 @@ pub enum BlockStateProvider {
         values: IntProvider,
     },
 
-    /// First rule whose `if_true` predicate holds wins, else `fallback`.
+    /// First rule whose `if_true` predicate holds wins, else `fallback`; with no fallback a miss
+    /// yields no state (vanilla's `optionalFieldOf("fallback")`).
     #[serde(rename = "minecraft:rule_based_state_provider")]
     RuleBased {
-        fallback: Box<BlockStateProvider>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fallback: Option<Box<BlockStateProvider>>,
         rules: Vec<StateProviderRule>,
     },
 

@@ -140,10 +140,17 @@ pub fn fill_chunk_culling(
                         crate::CULL_CONSIDERED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         if cull {
                             if let Some((_, hi)) = router.cell_bounds(
-                                caches, RouterSlot::FinalDensity, cell_x, cell_y, cell_z) {
-                                crate::CULL_BOUNDED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                caches,
+                                RouterSlot::FinalDensity,
+                                cell_x,
+                                cell_y,
+                                cell_z,
+                            ) {
+                                crate::CULL_BOUNDED
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                 if hi <= 0.0 {
-                                    crate::CULL_HI_NEG.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    crate::CULL_HI_NEG
+                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                 }
                             }
                         }
@@ -349,7 +356,8 @@ pub(crate) fn compute_heightmaps(
                     let slot = local_index(local_x, local_y, local_z);
                     let state = section.block_states.get(slot);
 
-                    let is_air = state.name.namespace() == "minecraft" && state.name.path() == "air";
+                    let is_air =
+                        state.name.namespace() == "minecraft" && state.name.path() == "air";
                     let is_fluid = state == default_fluid;
 
                     if !is_air && !found_world_surface {

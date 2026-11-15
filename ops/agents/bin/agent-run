@@ -1,0 +1,34 @@
+#!/bin/sh
+# Runs one Claude session forever, inside its tmux session: a perf track, or `audit`, the
+# master that reviews the three tracks. A new session starts whenever the last one exits.
+#
+#   agent-run <noise|datapath|pipeline|audit>
+set -u
+name="$1"
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/opt/studio/venv/bin:$PATH"
+export OXIDE_BENCH_HOST=bench-s5 CARGO_BUILD_JOBS=1
+cd "$HOME/oxide-wt/$name"
+first=""
+while :; do
+    # Read every time, so a model change in agents.env applies from the next session on.
+    . "$HOME/agents.env"
+    export CLAUDE_CODE_SUBAGENT_MODEL="$AGENT_SUBAGENT_MODEL"
+    if [ "$name" = audit ]; then
+        export CLAUDE_CONFIG_DIR="$HOME/.claude-$AUDIT_ACCOUNT"
+        model="$AUDIT_MODEL"
+        prompt="Read docs/perf/AUDIT-ROLE.md and run your first audit pass now. Then wait; you will be asked for the next pass."
+    else
+        export CLAUDE_CONFIG_DIR="$HOME/.claude-$name"
+        model="$AGENT_MODEL"
+        if [ -z "$first" ]; then
+            prompt="Read docs/perf/PLAN.md and docs/perf/track-$name.md, then work the track until you hit your usage limit. Push after every experiment."
+        else
+            prompt="Resume the $name track: read docs/perf/PLAN.md, docs/perf/track-$name.md and docs/perf/LOG-$name.md, then carry on from where the log stops. Push after every experiment."
+        fi
+    fi
+    first=no
+    git pull -q --ff-only 2>/dev/null || true
+    claude --dangerously-skip-permissions --model "$model" "$prompt"
+    echo "--- session for $name ended $(date -u +%H:%M) UTC; a new one starts in 60 s (Ctrl-C to stop) ---"
+    sleep 60
+done

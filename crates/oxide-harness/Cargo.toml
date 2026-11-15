@@ -17,6 +17,7 @@ oxide-chunkgen.workspace = true
 oxide-structures.workspace = true
 oxide-anvil.workspace = true
 fastnbt.workspace = true
+flate2.workspace = true
 blake3.workspace = true
 clap.workspace = true
 rayon.workspace = true

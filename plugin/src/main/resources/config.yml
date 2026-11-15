@@ -36,3 +36,9 @@ dimension-override: ""
 # Only chunks that do not exist yet are affected -- a world's existing chunks are on disk and
 # are never regenerated, so expect a seam where new terrain meets old. Read
 # OxideChunkGenerator's class doc before pointing a world you care about at this.
+
+# Let Oxide place features (ores, trees, plants) itself instead of the server. Off by default:
+# only part of the vanilla feature list is ported, so turning this on today gives a world with
+# ores and little else. Needs tags/ and block_facts.tsv in the datapack tree -- see
+# docs/REFERENCE_DATA.md. The server refuses to open the generator if they are missing.
+native-decoration: false

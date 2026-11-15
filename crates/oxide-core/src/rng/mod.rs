@@ -6,12 +6,14 @@
 
 mod legacy;
 mod positional;
+mod worldgen;
 mod xoroshiro;
 
 pub use legacy::LegacyRandom;
 pub use positional::{
     LegacyPositionalRandomFactory, PositionalRandomFactory, XoroshiroPositionalRandomFactory,
 };
+pub use worldgen::WorldgenRandom;
 pub use xoroshiro::Xoroshiro128PlusPlus;
 
 /// Common interface implemented by every RNG source, matching Minecraft's `RandomSource`.

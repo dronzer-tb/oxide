@@ -1,9 +1,9 @@
 //! C-ABI Foreign Function Interface (FFI) bindings for Java 22+ Panama FFI.
 
-use std::ptr;
 use crate::cull::{cull_sections, Frustum, SectionAABB};
 use crate::greedy::{mesh_section, SectionMesh};
 use crate::vertex::PackedVertex;
+use std::ptr;
 
 /// Heap-allocated mesh container pinned for Panama FFI access.
 pub struct RawMeshHandle {

@@ -246,10 +246,13 @@ public final class OxideChunkGenerator extends ChunkGenerator {
         return false;
     }
 
-    /** Vanilla decorates and places structures on top of this terrain -- see the class doc. */
+    /**
+     * Vanilla decorates on top of this terrain unless {@code native-decoration} hands that to
+     * Oxide, in which case running both would place every feature twice.
+     */
     @Override
     public boolean shouldGenerateDecorations() {
-        return true;
+        return !service.nativeDecoration();
     }
 
     @Override

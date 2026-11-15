@@ -8,16 +8,19 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::path::Path;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::RwLock;
 
 use anyhow::{anyhow, Context, Result};
 
 use oxide_biome::BiomeSearchTree;
-use oxide_chunkgen::{generate_chunk, BiomeTemperatures, CarverSetup};
+use oxide_chunkgen::{
+    decorated_chunk, generate_chunk, BiomeDecorator, BiomeTemperatures, CarverSetup,
+    DecorationCache,
+};
 use oxide_core::HeightmapType;
-use oxide_core::{ChunkPos, ResourceLocation};
-use oxide_datapack::{load_datapack, BiomeSource, NoiseGeneratorSettings};
+use oxide_core::{ChunkData, ChunkPos, ResourceLocation};
+use oxide_datapack::{load_datapack, BiomeSource, MultiNoiseSource, NoiseGeneratorSettings};
 use oxide_noise::NoiseRouterEvaluator;
 
 /// Distinguishes generators so a cached `ChunkCaches` cannot be reused across worlds.
@@ -56,7 +59,25 @@ pub struct OxideGenerator {
     biome_palette: RwLock<Palette>,
     biome_indices: HashMap<ResourceLocation, u16>,
     default_biome_index: u16,
+    /// Native decoration, or why this datapack cannot support it. Built at open because the
+    /// datapack is not kept; whether it runs is `decorate`.
+    decoration: std::result::Result<Decoration, String>,
+    /// Off until `set_decoration` turns it on: with it off the handle generates exactly the
+    /// terrain it always did, for a server that still decorates on top itself.
+    decorate: AtomicBool,
 }
+
+/// What decorating needs beyond terrain: the feature driver and its memoised intermediates.
+struct Decoration {
+    decorator: BiomeDecorator,
+    cache: DecorationCache,
+}
+
+/// Undecorated chunks kept for decoration, a few hundred kilobytes each: finishing a chunk
+/// reads the 5x5 around it, and neighbouring requests share most of that.
+const TERRAIN_CACHE_CHUNKS: usize = 256;
+/// Per-chunk decoration write lists kept. Small next to terrain.
+const WRITE_CACHE_CHUNKS: usize = 1024;
 
 /// Append-only string interner behind the u16 indices crossing the FFI boundary.
 #[derive(Default)]
@@ -172,6 +193,35 @@ impl OxideGenerator {
         let default_fluid_name = CString::new(settings.default_fluid.name.to_string())
             .map_err(|e| anyhow!("default_fluid name contains a NUL byte: {e}"))?;
 
+        // The biome source's possible biomes, in the order its parameter list first names them:
+        // that order is what vanilla's FeatureSorter walks, so it decides every feature's seed.
+        // PARITY-CHECK: confirm against 26.2 that `possibleBiomes()` iterates in this order.
+        let mut possible_biomes: Vec<ResourceLocation> = Vec::new();
+        let entries = match dimension.generator.biome_source.as_ref() {
+            Some(BiomeSource::MultiNoise(MultiNoiseSource::Explicit { biomes })) => biomes.clone(),
+            Some(BiomeSource::MultiNoise(MultiNoiseSource::Preset { preset })) => {
+                oxide_datapack::preset_entries(preset).unwrap_or_default()
+            }
+            _ => Vec::new(),
+        };
+        for entry in entries {
+            if !possible_biomes.contains(&entry.biome) {
+                possible_biomes.push(entry.biome);
+            }
+        }
+        let decoration = if possible_biomes.is_empty() {
+            Err(format!(
+                "dimension {dim_id} has no multi-noise biome source to decorate from"
+            ))
+        } else {
+            BiomeDecorator::new(&datapack, &possible_biomes, seed, settings.sea_level)
+                .map(|decorator| Decoration {
+                    decorator,
+                    cache: DecorationCache::new(TERRAIN_CACHE_CHUNKS, WRITE_CACHE_CHUNKS),
+                })
+                .map_err(|e| format!("{e:#}"))
+        };
+
         Ok(Self {
             id: NEXT_GENERATOR_ID.fetch_add(1, Ordering::Relaxed),
             settings,
@@ -186,6 +236,8 @@ impl OxideGenerator {
             biome_palette: RwLock::new(biome_palette),
             biome_indices,
             default_biome_index,
+            decoration,
+            decorate: AtomicBool::new(false),
         })
     }
 
@@ -259,6 +311,33 @@ impl OxideGenerator {
     ///
     /// Concurrent calls on one handle stay safe: the generator itself is read-only, and the
     /// palettes are behind an `RwLock` taken only to intern a state not seen before.
+    /// Turns native decoration on or off, returning whether it is now on. Turning it on fails
+    /// when the datapack could not support it (no block facts, no tags, an unknown biome): a
+    /// caller that has switched the server's own decoration off must not get bare terrain.
+    pub fn set_decoration(&self, enabled: bool) -> Result<bool> {
+        if enabled {
+            if let Err(reason) = &self.decoration {
+                return Err(anyhow!("native decoration is unavailable: {reason}"));
+            }
+        }
+        self.decorate.store(enabled, Ordering::Release);
+        Ok(enabled)
+    }
+
+    /// How many times each unported feature type or block rule was skipped so far, as
+    /// `category:detail` -> count. Empty when decoration is unavailable.
+    pub fn decoration_gaps(&self) -> Vec<(String, u64)> {
+        match &self.decoration {
+            Ok(decoration) => decoration
+                .decorator
+                .unsupported()
+                .entries()
+                .map(|(key, count)| (key.to_string(), count))
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
     pub fn generate_chunk(
         &self,
         chunk_x: i32,
@@ -266,6 +345,23 @@ impl OxideGenerator {
         out_blocks: &mut [u16],
         out_biomes: &mut [u16],
     ) -> Result<()> {
+        let pos = ChunkPos::new(chunk_x, chunk_z);
+        let chunk = match &self.decoration {
+            Ok(decoration) if self.decorate.load(Ordering::Acquire) => decorated_chunk(
+                pos,
+                &|at| self.terrain(at),
+                &decoration.decorator,
+                decoration.decorator.facts(),
+                &decoration.cache,
+            ),
+            _ => self.terrain(pos),
+        };
+        self.write_out(&chunk, out_blocks, out_biomes)
+    }
+
+    /// The undecorated chunk at `pos`: noise fill, surface rules and carvers. A pure function
+    /// of position, which decoration relies on.
+    fn terrain(&self, pos: ChunkPos) -> ChunkData {
         // Which carvers reach into this chunk depends on the biome at each source chunk, the
         // same way vanilla's applyCarvers picks them.
         let carvers_at = |source: ChunkPos| -> Vec<oxide_datapack::ConfiguredCarver> {
@@ -288,15 +384,23 @@ impl OxideGenerator {
             carvers_at: &carvers_at,
         };
 
-        let chunk = generate_chunk(
-            ChunkPos::new(chunk_x, chunk_z),
+        generate_chunk(
+            pos,
             &self.settings,
             &self.router,
             self.biome_tree.as_ref(),
             &self.biome_temperatures,
             Some(&carver_setup),
-        );
+        )
+    }
 
+    /// Writes `chunk` as palette indices in the layout `generate_chunk` documents.
+    fn write_out(
+        &self,
+        chunk: &ChunkData,
+        out_blocks: &mut [u16],
+        out_biomes: &mut [u16],
+    ) -> Result<()> {
         out_blocks.fill(0);
         out_biomes.fill(0);
         let height = self.height();
@@ -439,6 +543,48 @@ mod tests {
         Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../reference"))
     }
 
+    /// Decoration is opt-in, changes what a chunk holds once on, and stays a pure function of
+    /// position: a second handle asked for the same chunk first, with nothing cached, agrees.
+    #[test]
+    fn decoration_adds_ores_and_does_not_depend_on_request_order() {
+        if !reference().join("block_facts.tsv").is_file() {
+            eprintln!("skipping: no block facts in {}", reference().display());
+            return;
+        }
+        let generate = |handle: &OxideGenerator, x: i32, z: i32| {
+            let mut blocks = vec![0u16; handle.block_buffer_len()];
+            let mut biomes = vec![0u16; handle.biome_buffer_len()];
+            handle
+                .generate_chunk(x, z, &mut blocks, &mut biomes)
+                .unwrap();
+            let palette = handle.block_palette().read().unwrap();
+            blocks
+                .iter()
+                .map(|&index| {
+                    unsafe { std::ffi::CStr::from_ptr(palette.name_ptr(index as usize)) }
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect::<Vec<String>>()
+        };
+
+        let first = OxideGenerator::open(reference(), "minecraft:overworld", 1234).unwrap();
+        let bare = generate(&first, 3, -2);
+        assert!(
+            bare.iter().all(|name| !name.contains("_ore")),
+            "terrain alone has no ore blobs"
+        );
+        assert!(first.set_decoration(true).unwrap());
+        let neighbour = generate(&first, 4, -2);
+        let decorated = generate(&first, 3, -2);
+        assert!(decorated.iter().any(|name| name.contains("_ore")));
+
+        let second = OxideGenerator::open(reference(), "minecraft:overworld", 1234).unwrap();
+        second.set_decoration(true).unwrap();
+        assert_eq!(generate(&second, 3, -2), decorated);
+        assert_eq!(generate(&second, 4, -2), neighbour);
+    }
+
     /// Answering `getBaseHeight` for a chunk's 256 columns must not cost more than generating
     /// that chunk. It once cost thirty-two times more: `base_height` built the chunk's density
     /// caches per call, and building them means evaluating five `interpolated` nodes at 1225
@@ -450,7 +596,10 @@ mod tests {
     #[test]
     fn asking_about_a_chunks_columns_costs_less_than_generating_it() {
         if !reference().is_dir() {
-            eprintln!("skipping: no extracted vanilla export at {}", reference().display());
+            eprintln!(
+                "skipping: no extracted vanilla export at {}",
+                reference().display()
+            );
             return;
         }
         let handle = OxideGenerator::open(reference(), "minecraft:overworld", 1234).unwrap();

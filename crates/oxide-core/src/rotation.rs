@@ -1,11 +1,13 @@
 //! Rotations, mirrors, and the position transform every jigsaw piece is placed through.
 //!
-//! Ported from 26.2's `net.minecraft.world.level.block.Rotation`, `Mirror`, and
+//! Lives in `oxide-core` so decoration (`oxide-chunkgen`, which places `fossil` and `template`
+//! features) and jigsaw assembly (`oxide-structures`, which re-exports this module) share one
+//! transform. Ported from 26.2's `net.minecraft.world.level.block.Rotation`, `Mirror`, and
 //! `StructureTemplate.transform`. The transform is the load-bearing one: it decides where a
 //! rotated piece's blocks and jigsaw connectors land, so an axis swapped here is a village whose
 //! houses face into each other.
 
-use oxide_core::{BlockPos, BlockState, RandomSource};
+use crate::{BlockPos, BlockState, RandomSource};
 
 /// The six block faces, in vanilla's `Direction` declaration order — `Direction.values()` order
 /// is observable through `getShuffled`-style helpers, so it is part of the contract.
@@ -319,7 +321,7 @@ pub fn format_front_and_top(front: Direction, top: Direction) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxide_core::{LegacyRandom, ResourceLocation};
+    use crate::{LegacyRandom, ResourceLocation};
 
     #[test]
     fn quarter_turns_compose_into_a_full_circle() {

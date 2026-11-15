@@ -13,6 +13,9 @@ on:
 
 permissions:
   contents: write
+  # dev.vertex:vertex-engine-api comes from the vertex-engine repo's GitHub Packages, which
+  # answers 401 without a token even for a public package.
+  packages: read
 
 jobs:
   build:
@@ -24,7 +27,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # linux-x86_64 only -- see OxideNative's javadoc for why cross-platform
       # packaging is a deliberate scope cut.
+      # .cargo/config.toml builds for the host CPU, which is right for a local build and wrong
+      # here: this library ships to servers, and one built on a runner with AVX-512 dies with
+      # SIGILL on a CPU without it (seen on a Zen 1 EPYC). x86-64-v3 is AVX2 + FMA + BMI2.
       - run: cargo build --release -p oxide-ffi
+        env:
+          RUSTFLAGS: -C target-cpu=x86-64-v3
 
       - uses: actions/setup-java@v4
         with:
@@ -35,6 +43,9 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - run: gradle build
         working-directory: plugin
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Fixed asset names: the download URLs below are meant to stay valid across
       # builds, so a server admin can curl the same link every time.

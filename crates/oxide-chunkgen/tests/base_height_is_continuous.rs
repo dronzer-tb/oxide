@@ -24,7 +24,10 @@ fn reference() -> &'static Path {
 #[test]
 fn base_height_varies_within_a_chunk_and_does_not_jump_at_its_borders() {
     if !reference().is_dir() {
-        eprintln!("skipping: no extracted vanilla export at {}", reference().display());
+        eprintln!(
+            "skipping: no extracted vanilla export at {}",
+            reference().display()
+        );
         return;
     }
 
@@ -38,12 +41,8 @@ fn base_height_varies_within_a_chunk_and_does_not_jump_at_its_borders() {
         .get(dimension.generator.settings.as_ref().unwrap())
         .unwrap()
         .clone();
-    let router = NoiseRouterEvaluator::new(
-        1234,
-        &settings,
-        &pack.density_functions,
-        &pack.noise_params,
-    );
+    let router =
+        NoiseRouterEvaluator::new(1234, &settings, &pack.density_functions, &pack.noise_params);
 
     let z = 8;
     let heights: Vec<i32> = (-64..64)

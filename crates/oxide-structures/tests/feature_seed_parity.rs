@@ -47,5 +47,8 @@ fn matches_java_for_every_vector() {
         checked += 1;
     }
 
-    assert_eq!(checked, 72, "vector file is not the one this test was written for");
+    assert_eq!(
+        checked, 72,
+        "vector file is not the one this test was written for"
+    );
 }

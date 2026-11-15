@@ -241,7 +241,6 @@ impl Program {
                     Op::Cache { kind, slot, .. } => {
                         return format!("{i:3}: Cache(kind={kind:?}, slot={slot})")
                     }
-                    _ => "Other",
                 };
                 format!("{i:3}: {name}")
             })

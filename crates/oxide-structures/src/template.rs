@@ -6,45 +6,17 @@
 //! `getJigsaws` / `getBoundingBox` / the placement pass: vanilla stores one unrotated copy and
 //! transforms on read, so every rotation of a piece comes from the same parsed template.
 
-use std::collections::BTreeMap;
-use std::io::Read;
 use std::str::FromStr;
 
-use flate2::read::GzDecoder;
 use oxide_core::{BlockPos, BlockState, ResourceLocation};
-use serde::{Deserialize, Serialize};
 
 use crate::jigsaw::BoundingBox;
 use crate::rotation::{
     parse_front_and_top, rotate_block_state, transform, Direction, Mirror, Rotation,
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RawBlockState {
-    #[serde(rename = "Name")]
-    pub name: String,
-    #[serde(rename = "Properties", default)]
-    pub properties: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RawBlockEntry {
-    pub pos: [i32; 3],
-    pub state: usize,
-    #[serde(default)]
-    pub nbt: Option<fastnbt::Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RawStructureNbt {
-    #[serde(rename = "DataVersion", default)]
-    pub data_version: i32,
-    pub size: [i32; 3],
-    #[serde(default)]
-    pub palette: Vec<RawBlockState>,
-    #[serde(default)]
-    pub blocks: Vec<RawBlockEntry>,
-}
+/// The raw file layer, shared with decoration's `fossil` / `template` features.
+pub use oxide_datapack::structure_template::{RawBlockEntry, RawBlockState, RawStructureNbt};
 
 /// A parsed 3D structure piece template, stored unrotated.
 #[derive(Debug, Clone)]
@@ -91,14 +63,7 @@ pub enum JigsawJoint {
 impl StructureTemplate {
     /// Loads a structure template from raw NBT bytes (automatically handling gzip decompression).
     pub fn from_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
-        let raw: RawStructureNbt = if bytes.starts_with(&[0x1f, 0x8b]) {
-            let mut decoder = GzDecoder::new(bytes);
-            let mut decompressed = Vec::new();
-            decoder.read_to_end(&mut decompressed)?;
-            fastnbt::from_bytes(&decompressed)?
-        } else {
-            fastnbt::from_bytes(bytes)?
-        };
+        let raw = RawStructureNbt::from_bytes(bytes)?;
 
         let palette: Vec<BlockState> = raw
             .palette
@@ -258,7 +223,10 @@ fn parse_state_spec(spec: &str) -> BlockState {
     state
 }
 
-fn extract_string(map: &std::collections::HashMap<String, fastnbt::Value>, key: &str) -> Option<String> {
+fn extract_string(
+    map: &std::collections::HashMap<String, fastnbt::Value>,
+    key: &str,
+) -> Option<String> {
     match map.get(key) {
         Some(fastnbt::Value::String(s)) => Some(s.clone()),
         _ => None,
@@ -334,10 +302,9 @@ mod tests {
         template.jigsaws[0].final_state =
             BlockState::new(ResourceLocation::minecraft("oak_planks"));
         let placed = template.blocks_at(BlockPos::new(0, 0, 0), Rotation::None);
-        assert!(placed
-            .iter()
-            .any(|(pos, state)| *pos == BlockPos::new(4, 1, 0)
-                && state.name.path() == "oak_planks"));
+        assert!(placed.iter().any(
+            |(pos, state)| *pos == BlockPos::new(4, 1, 0) && state.name.path() == "oak_planks"
+        ));
     }
 
     #[test]

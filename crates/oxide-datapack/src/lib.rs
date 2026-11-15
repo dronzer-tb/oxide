@@ -7,15 +7,20 @@
 //! anything else — that belongs to the downstream crates.
 
 pub mod biome;
+pub mod block_facts;
 pub mod carver;
+pub mod cave_feature;
 pub mod climate;
 pub mod density_function;
 pub mod dimension;
+pub mod end_feature;
 pub mod error;
 pub mod feature;
+pub mod ground_feature;
 pub mod ident_serde;
 pub mod loader;
 pub mod multi_noise;
+pub mod nether_feature;
 pub mod noise_param;
 pub mod noise_settings;
 pub mod placement;
@@ -23,10 +28,17 @@ pub mod presets;
 pub mod registry;
 pub mod resolve;
 pub mod structure;
+pub mod structure_template;
 pub mod surface_rule;
+pub mod tags;
+pub mod template_feature;
+pub mod tree;
+pub mod vegetation_feature;
 pub mod version;
+pub mod water_feature;
 
 pub use biome::{Biome, BiomeEffects, SpawnerData};
+pub use block_facts::{BlockFact, BlockFacts};
 pub use carver::{
     CanyonCarverConfig, CanyonShape, CarverConfig, CaveCarverConfig, ConfiguredCarver,
     FloatProvider, HeightProvider,
@@ -52,6 +64,7 @@ pub use structure::{
     StructurePlacement, StructureSet, StructureSetEntry, TemplatePool,
 };
 pub use surface_rule::{SurfaceCondition, SurfaceRule, SurfaceType, VerticalAnchor};
+pub use tags::{load_tags, TagSet};
 pub use version::{DataVersion, PackMeta, PackMetaInner, VersionJson};
 
 pub use oxide_core::{BiomeId, BlockState, ResourceLocation};

@@ -56,7 +56,14 @@ fn culled_and_exact_fills_agree_block_for_block() {
 
     // Culling only bites where a cell is uniform, so this spans several coordinates -- ocean,
     // inland and far-out terrain -- rather than trusting one chunk to exercise both branches.
-    for (cx, cz) in [(0, 0), (7, -3), (-12, 5), (100, 100), (-64, -64), (2000, -2000)] {
+    for (cx, cz) in [
+        (0, 0),
+        (7, -3),
+        (-12, 5),
+        (100, 100),
+        (-64, -64),
+        (2000, -2000),
+    ] {
         let pos = ChunkPos::new(cx, cz);
 
         // Each side gets its own caches and aquifer: the aquifer is `&mut` and order-sensitive,
@@ -92,7 +99,12 @@ fn culled_and_exact_fills_agree_block_for_block() {
         );
 
         let mut compared = 0usize;
-        for (si, (sa, sb)) in culled.sections.iter().zip(exact.sections.iter()).enumerate() {
+        for (si, (sa, sb)) in culled
+            .sections
+            .iter()
+            .zip(exact.sections.iter())
+            .enumerate()
+        {
             assert_eq!(
                 sa.block_states.len(),
                 sb.block_states.len(),

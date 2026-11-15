@@ -102,10 +102,7 @@ pub fn large_feature_seed(world_seed: i64, chunk_x: i32, chunk_z: i32) -> Legacy
     let mut rng = LegacyRandom::new(world_seed);
     let a = rng.next_long();
     let b = rng.next_long();
-    let seed = (chunk_x as i64)
-        .wrapping_mul(a)
-        ^ (chunk_z as i64).wrapping_mul(b)
-        ^ world_seed;
+    let seed = (chunk_x as i64).wrapping_mul(a) ^ (chunk_z as i64).wrapping_mul(b) ^ world_seed;
     LegacyRandom::new(seed)
 }
 
@@ -289,7 +286,13 @@ impl<A: StartAssembler> StructureStartCache<A> {
         let mut out = Vec::new();
         for (set_id, start_chunk) in candidates {
             let key = (set_id.clone(), start_chunk);
-            if let Some(hit) = self.cache.read().expect("start cache poisoned").entries.get(&key) {
+            if let Some(hit) = self
+                .cache
+                .read()
+                .expect("start cache poisoned")
+                .entries
+                .get(&key)
+            {
                 if let Some(start) = hit {
                     out.push(Arc::clone(start));
                 }
@@ -301,14 +304,8 @@ impl<A: StartAssembler> StructureStartCache<A> {
             let Some(set) = sets.get(&set_id) else {
                 continue;
             };
-            let built = build_start(
-                &self.assembler,
-                &set_id,
-                set,
-                self.world_seed,
-                start_chunk,
-            )
-            .map(Arc::new);
+            let built = build_start(&self.assembler, &set_id, set, self.world_seed, start_chunk)
+                .map(Arc::new);
 
             if let Some(start) = &built {
                 out.push(Arc::clone(start));
@@ -353,7 +350,11 @@ impl<A: StartAssembler> StructureStartCache<A> {
     }
 
     pub fn len(&self) -> usize {
-        self.cache.read().expect("start cache poisoned").entries.len()
+        self.cache
+            .read()
+            .expect("start cache poisoned")
+            .entries
+            .len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -378,11 +379,8 @@ mod tests {
 
     impl StartAssembler for MarkerAssembler {
         fn assemble(&self, ctx: &StartContext<'_>) -> Option<AssembledStructure> {
-            let origin = BlockPos::new(
-                ctx.chunk.min_block_x() + 8,
-                64,
-                ctx.chunk.min_block_z() + 8,
-            );
+            let origin =
+                BlockPos::new(ctx.chunk.min_block_x() + 8, 64, ctx.chunk.min_block_z() + 8);
             let mut structure = AssembledStructure::new(origin);
             let state = BlockState::new(ResourceLocation::minecraft("gold_block"));
             let mut blocks = Vec::new();
@@ -452,9 +450,11 @@ mod tests {
         let biome = ResourceLocation::minecraft("plains");
         let count = chunk.section_count();
         for i in 0..count {
-            chunk
-                .sections
-                .push(ChunkSection::new((-4 + i as i32) as i8, air.clone(), biome.clone()));
+            chunk.sections.push(ChunkSection::new(
+                (-4 + i as i32) as i8,
+                air.clone(),
+                biome.clone(),
+            ));
         }
         chunk
     }
@@ -564,8 +564,7 @@ mod tests {
     fn concurrent_generation_agrees_with_serial_generation() {
         let sets = StdArc::new(registry());
         let seed_area = ChunkArea::around(ChunkPos::new(0, 0), 8);
-        let target =
-            candidate_starts_in_area(&sets, &NoOtherSets, 1234, seed_area)[0].1;
+        let target = candidate_starts_in_area(&sets, &NoOtherSets, 1234, seed_area)[0].1;
 
         let serial: Vec<_> = cache()
             .starts_near(target, &sets, &NoOtherSets)
@@ -591,7 +590,11 @@ mod tests {
             }));
         }
         for handle in handles {
-            assert_eq!(handle.join().unwrap(), serial, "threads disagreed on starts");
+            assert_eq!(
+                handle.join().unwrap(),
+                serial,
+                "threads disagreed on starts"
+            );
         }
     }
 

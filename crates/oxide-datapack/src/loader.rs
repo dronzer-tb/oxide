@@ -15,7 +15,7 @@ use crate::resolve::{
 };
 use crate::structure::{ProcessorList, Structure, StructureSet, TemplatePool};
 use crate::version::{load_data_version, load_pack_meta, DataVersion, PackMeta};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
 pub struct Datapack {
@@ -36,6 +36,15 @@ pub struct Datapack {
     pub processor_lists: Registry<ProcessorList>,
     pub placed_features: Registry<crate::placement::PlacedFeature>,
     pub configured_features: Registry<crate::feature::ConfiguredFeature>,
+    /// Block, fluid and biome tags, flattened. Empty when the pack tree carries no `tags/`.
+    pub block_tags: crate::tags::TagSet,
+    pub fluid_tags: crate::tags::TagSet,
+    pub biome_tags: crate::tags::TagSet,
+    /// Per-state block facts exported from the game. Empty when the tree has no export.
+    pub block_facts: crate::block_facts::BlockFacts,
+    /// The pack roots, base first, for files read on demand rather than at load: structure
+    /// templates (see [`Datapack::structure_template`]).
+    pub pack_roots: Vec<PathBuf>,
 }
 
 /// Load and fully validate a datapack-shaped directory tree rooted at
@@ -60,8 +69,7 @@ pub fn load_datapack_stack(pack_roots: &[&Path]) -> Result<Datapack> {
     let mut density_functions =
         load_registry(base_root, "density_function", "worldgen/density_function")?;
     let mut noise_params = load_registry(base_root, "noise", "worldgen/noise")?;
-    let mut noise_settings =
-        load_registry(base_root, "noise_settings", "worldgen/noise_settings")?;
+    let mut noise_settings = load_registry(base_root, "noise_settings", "worldgen/noise_settings")?;
     let mut biomes = load_registry(base_root, "biome", "worldgen/biome")?;
     let mut dimension_types =
         load_registry_at(base_root, Path::new("dimension_type"), "dimension_type")?;
@@ -73,10 +81,8 @@ pub fn load_datapack_stack(pack_roots: &[&Path]) -> Result<Datapack> {
     let mut configured_carvers =
         load_registry(base_root, "configured_carver", "worldgen/configured_carver")?;
     let mut structures = load_registry(base_root, "structure", "worldgen/structure")?;
-    let mut structure_sets =
-        load_registry(base_root, "structure_set", "worldgen/structure_set")?;
-    let mut template_pools =
-        load_registry(base_root, "template_pool", "worldgen/template_pool")?;
+    let mut structure_sets = load_registry(base_root, "structure_set", "worldgen/structure_set")?;
+    let mut template_pools = load_registry(base_root, "template_pool", "worldgen/template_pool")?;
     let mut processor_lists =
         load_registry(base_root, "processor_list", "worldgen/processor_list")?;
     let mut placed_features =
@@ -91,16 +97,17 @@ pub fn load_datapack_stack(pack_roots: &[&Path]) -> Result<Datapack> {
 
     for &overlay_root in &pack_roots[1..] {
         if overlay_root.join("data").is_dir() {
-            if let Ok(df) =
-                load_registry(overlay_root, "density_function", "worldgen/density_function")
-            {
+            if let Ok(df) = load_registry(
+                overlay_root,
+                "density_function",
+                "worldgen/density_function",
+            ) {
                 density_functions.merge(df);
             }
             if let Ok(np) = load_registry(overlay_root, "noise", "worldgen/noise") {
                 noise_params.merge(np);
             }
-            if let Ok(ns) =
-                load_registry(overlay_root, "noise_settings", "worldgen/noise_settings")
+            if let Ok(ns) = load_registry(overlay_root, "noise_settings", "worldgen/noise_settings")
             {
                 noise_settings.merge(ns);
             }
@@ -119,31 +126,27 @@ pub fn load_datapack_stack(pack_roots: &[&Path]) -> Result<Datapack> {
             ) {
                 multi_noise_parameter_lists.merge(mn);
             }
-            if let Ok(cc) =
-                load_registry(overlay_root, "configured_carver", "worldgen/configured_carver")
-            {
+            if let Ok(cc) = load_registry(
+                overlay_root,
+                "configured_carver",
+                "worldgen/configured_carver",
+            ) {
                 configured_carvers.merge(cc);
             }
             if let Ok(s) = load_registry(overlay_root, "structure", "worldgen/structure") {
                 structures.merge(s);
             }
-            if let Ok(ss) =
-                load_registry(overlay_root, "structure_set", "worldgen/structure_set")
-            {
+            if let Ok(ss) = load_registry(overlay_root, "structure_set", "worldgen/structure_set") {
                 structure_sets.merge(ss);
             }
-            if let Ok(tp) =
-                load_registry(overlay_root, "template_pool", "worldgen/template_pool")
-            {
+            if let Ok(tp) = load_registry(overlay_root, "template_pool", "worldgen/template_pool") {
                 template_pools.merge(tp);
             }
-            if let Ok(pl) =
-                load_registry(overlay_root, "processor_list", "worldgen/processor_list")
+            if let Ok(pl) = load_registry(overlay_root, "processor_list", "worldgen/processor_list")
             {
                 processor_lists.merge(pl);
             }
-            if let Ok(pf) =
-                load_registry(overlay_root, "placed_feature", "worldgen/placed_feature")
+            if let Ok(pf) = load_registry(overlay_root, "placed_feature", "worldgen/placed_feature")
             {
                 placed_features.merge(pf);
             }
@@ -154,9 +157,7 @@ pub fn load_datapack_stack(pack_roots: &[&Path]) -> Result<Datapack> {
             ) {
                 configured_features.merge(cf);
             }
-            if let Ok(dim) =
-                load_registry_at(overlay_root, Path::new("dimension"), "dimension")
-            {
+            if let Ok(dim) = load_registry_at(overlay_root, Path::new("dimension"), "dimension") {
                 dimensions.merge(dim);
             }
         }
@@ -195,6 +196,11 @@ pub fn load_datapack_stack(pack_roots: &[&Path]) -> Result<Datapack> {
 
     report.into_result()?;
 
+    let block_tags = crate::tags::load_tags(pack_roots, "block")?;
+    let fluid_tags = crate::tags::load_tags(pack_roots, "fluid")?;
+    let biome_tags = crate::tags::load_tags(pack_roots, "worldgen/biome")?;
+    let block_facts = crate::block_facts::BlockFacts::load(base_root)?;
+
     Ok(Datapack {
         data_version,
         pack_meta,
@@ -212,5 +218,10 @@ pub fn load_datapack_stack(pack_roots: &[&Path]) -> Result<Datapack> {
         processor_lists,
         placed_features,
         configured_features,
+        block_tags,
+        fluid_tags,
+        biome_tags,
+        block_facts,
+        pack_roots: pack_roots.iter().map(|root| root.to_path_buf()).collect(),
     })
 }

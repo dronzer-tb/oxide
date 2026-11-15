@@ -137,7 +137,10 @@ impl FreeRegion {
 
     pub fn accepts(&self, candidate: &BoundingBox) -> bool {
         self.limit.contains_box(candidate)
-            && !self.occupied.iter().any(|taken| taken.intersects(candidate))
+            && !self
+                .occupied
+                .iter()
+                .any(|taken| taken.intersects(candidate))
     }
 
     pub fn take(&mut self, taken: BoundingBox) {
@@ -438,7 +441,13 @@ pub fn assemble_jigsaw(
     let root_free = Rc::new(RefCell::new(free));
     placer.try_placing_children(&mut structure, 0, &root_free, 0, random);
     while let Some(state) = placer.queue.next() {
-        placer.try_placing_children(&mut structure, state.piece, &state.free, state.depth, random);
+        placer.try_placing_children(
+            &mut structure,
+            state.piece,
+            &state.free,
+            state.depth,
+            random,
+        );
     }
 
     Some(structure)
@@ -486,7 +495,8 @@ impl<S: TemplateSource, H: SurfaceHeights> Placer<'_, S, H> {
         // limited to the source's own box.
         let mut source_free: Option<Rc<RefCell<FreeRegion>>> = None;
 
-        for source_jigsaw in shuffled_jigsaws(source_template, source_position, source_rotation, random)
+        for source_jigsaw in
+            shuffled_jigsaws(source_template, source_position, source_rotation, random)
         {
             let source_direction = source_jigsaw.front;
             let source_jigsaw_pos = source_jigsaw.pos;
@@ -551,7 +561,8 @@ impl<S: TemplateSource, H: SurfaceHeights> Placer<'_, S, H> {
                         target_rotation,
                         random,
                     );
-                    let hack_box = target_template.bounding_box(BlockPos::new(0, 0, 0), target_rotation);
+                    let hack_box =
+                        target_template.bounding_box(BlockPos::new(0, 0, 0), target_rotation);
                     let expand_to = if self.settings.do_expansion_hack && hack_box.y_span() <= 16 {
                         self.expansion_headroom(&target_jigsaws, &hack_box)
                     } else {
@@ -681,8 +692,8 @@ impl<S: TemplateSource, H: SurfaceHeights> Placer<'_, S, H> {
 mod tests {
     use super::*;
     use crate::pool::{PoolElementEntry, TemplatePool};
-    use crate::template::PlacedTemplateBlock;
     use crate::rotation::Direction;
+    use crate::template::PlacedTemplateBlock;
     use oxide_core::LegacyRandom;
 
     struct Pack {
