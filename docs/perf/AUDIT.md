@@ -213,3 +213,14 @@ Datapath's merge is pushed and agrees with ~411; queue wait times; fatbench and 
 no OmniRoute calls; noise and datapath commit again.
 
 Stopped reading at: noise bc60b65, datapath bea73ad, pipeline c36f728.
+
+### Standing rules added by the user after pass 4 (03:40 UTC)
+
+- **Ownership change:** `crates/oxide-chunkgen/src/decorator/`, `decorate.rs` and `region.rs`
+  now belong to **pipeline**. Datapath keeps the rest of `oxide-chunkgen`. Check both diffs
+  against this boundary every pass. At the time of the change neither branch had touched
+  those three paths, and pipeline had touched nothing else in `oxide-chunkgen`.
+- **Pipeline's gate** is the pregen digest `df701ee858e2bdd3` (radius 16, seed 12345, blake3
+  over every chunk's uncompressed NBT), in addition to the terrain digest for anything that
+  reaches the harness. Any pregen row with another digest is a changed world.
+- OmniRoute is off for everyone; Opus sub-agents only.
