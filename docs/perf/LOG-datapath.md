@@ -591,3 +591,26 @@ All nine `digest=a977961a58122047`. Caveat: the head binary on the box was the b
 Also from the sub-agent: a per-cell `vein_ridged >= 0` skip cannot be bounded today.
 `vein_ridged` is `abs`/`max` over interpolated nodes, and `Program::cell_bounds` returns `None`
 for `abs`. Interval rules for `abs` would be a small change in the noise crate.
+
+### Current state and next three (updated after round 3)
+
+Head: ae011ba, **~604 cps** (interleaved A/B against 689eb30: 580.9 -> 604.3). Session start: 138.2.
+Gate M1 (400) passed; M2 is 1,000. All kept changes leave `digest=a977961a58122047`.
+
+Biggest costs left at 689eb30 (generation only): corner-grid build 39.9% (noise track),
+surface ~13% after E16, aquifer 13.6%, carvers 8.6%, ore veins 6.3%, biomes 4.9%, fill loop
+4.6%.
+
+Next three:
+1. Aquifer: memoise neighbour `preliminary_surface_level` columns across chunks. Each column
+   is recomputed by up to ~20 chunks, ~5% of generation. Exact by the E13 argument (the value
+   is a pure function of quart (x, z) for this pack), but the memo needs a key that cannot
+   alias two different routers. E17 showed thread-local hash lookups can cost more than they
+   save, so only for work as expensive as a `find_top_surface` scan.
+2. Surface: the above-surface program and the per-column body (3% self: slot walk, cursor,
+   biome lookup), now that below-surface positions are cheap.
+3. Ask the noise track (their files): an interval rule for `abs` in `Program::cell_bounds`,
+   which would allow a per-cell `vein_ridged` skip, and sparse column storage in `cache.rs`
+   (~1.6% in neighbour caches).
+
+PR into `feat/native-decoration` is not open: no `gh` on this host.
