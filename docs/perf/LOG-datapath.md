@@ -232,3 +232,23 @@ dispatch and memo lookup with the digest unchanged. Run 1 ran before the tests (
 launched before the tests-first rule). Tests: chunkgen 189 passed.
 Noted by the sub-agent: `Program::run_cell` allocates its register vector once per cell
 (noise crate, not this track's).
+
+### E4 A/B (next-three #3): refuted -- no measurable gain
+
+At the merged head (0e5afee), one exclusive lock hold, alternating the head's binary with a
+build whose only change is E4's skip loop never running (`0..(cells_y * 0)`):
+
+| | run 1 | run 2 | mean |
+|---|---|---|---|
+| E4 on  | 386.1 | 459.2 | 422.7 |
+| E4 off | 404.0 | 442.9 | 423.5 |
+
+All four runs `digest=a977961a58122047`. No difference. After the noise merge, `vein_toggle`
+sampling is cheap enough that skipping it in veinless cells buys nothing measurable. E4's
+earlier "291" was noise. The skip is left in, since it is correct (with the margin) and the
+ore-vein palette work in flight builds on it. Removing it is a fair simplification if
+anyone wants the code smaller.
+
+Also from this pair: the run-to-run spread inside one exclusive hold on a quiet box is still
+~15% (386 vs 459 for the same binary). Single-run comparisons cannot resolve gains under
+~10%.
