@@ -1,0 +1,279 @@
+From 9250a21822548e68967a9fac27c0935d58370ebb Mon Sep 17 00:00:00 2001
+From: Kasniya <36neelansh@gmail.com>
+Date: Sun, 15 Nov 2026 19:47:22 +0000
+Subject: [PATCH] perf(ore): find each sphere row's z run from its ends;
+ bitmap-gate overlay lookups
+
+Along a z row the cell test (vanilla's exact expression) holds on one contiguous
+run, since every rounded step is monotone, so the run is found with a few
+evaluations at its ends instead of one division per cell. dx*dx+dy*dy and the
+build-height test are hoisted per row (same left-to-right add). The tested
+bitset is sized up front. DecorationRegion keeps a per-section written-cell
+bitmap so reads of unwritten cells skip hashing the position into the overlay.
+Draws, visit order and write order unchanged; digest df701ee858e2bdd3.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ crates/oxide-chunkgen/src/decorator/ore.rs | 109 +++++++++++++++++++--
+ crates/oxide-chunkgen/src/region.rs        |  48 ++++++++-
+ 2 files changed, 147 insertions(+), 10 deletions(-)
+
+diff --git a/crates/oxide-chunkgen/src/decorator/ore.rs b/crates/oxide-chunkgen/src/decorator/ore.rs
+index c20d336..2ee9712 100644
+--- a/crates/oxide-chunkgen/src/decorator/ore.rs
++++ b/crates/oxide-chunkgen/src/decorator/ore.rs
+@@ -282,7 +282,13 @@ impl OreFeature {
+             }
+         }
+ 
+-        let mut tested = BitSet::default();
++        // Room for every index the box can produce, so `insert` does not keep growing it.
++        let mut tested = BitSet::with_bits(
++            i64::from(size_xz)
++                + i64::from(size_y) * i64::from(size_xz)
++                + i64::from(size_xz) * i64::from(size_xz) * i64::from(size_y)
++                + 1,
++        );
+         let mut placed = 0;
+         // Masks hold one bit per target; more than 64 targets falls back to the plain path.
+         let ids: Vec<u32> = self
+@@ -308,14 +314,27 @@ impl OreFeature {
+                 }
+                 for y in y_lo..=y_hi {
+                     let dy = (f64::from(y) + 0.5 - sy) / radius;
+-                    if dx * dx + dy * dy >= 1.0 {
++                    // Vanilla's `d12 * d12 + d13 * d13 + d14 * d14` adds left to right, so the
++                    // first two terms are the same double for the whole row.
++                    let dxy = dx * dx + dy * dy;
++                    if dxy >= 1.0 || cx.outside_build_height(y) {
+                         continue;
+                     }
+-                    for z in z_lo..=z_hi {
++                    // The cell test, exactly as vanilla evaluates it. It has no side effects, and
++                    // along a row it holds on one contiguous run of z: every step from `z` to the
++                    // sum is a correctly rounded monotone operation, so `dz * dz` falls and then
++                    // rises with z and never rises before it falls. The run is found from a few
++                    // evaluations at its ends rather than one per cell; the cells outside it are
++                    // the ones vanilla `continue`s past.
++                    let inside = |z: i32| {
+                         let dz = (f64::from(z) + 0.5 - sz) / radius;
+-                        if dx * dx + dy * dy + dz * dz >= 1.0 || cx.outside_build_height(y) {
+-                            continue;
+-                        }
++                        !(dxy + dz * dz >= 1.0)
++                    };
++                    let Some((z_first, z_last)) = run_in(z_lo, z_hi, sz, radius, dxy, inside)
++                    else {
++                        continue;
++                    };
++                    for z in z_first..=z_last {
+                         // Vanilla's index, collisions included: it strides by the box size,
+                         // not by the box size plus one, so distinct cells can share a bit.
+                         let index = i64::from(x.wrapping_sub(x_start))
+@@ -444,6 +463,43 @@ impl OreFeature {
+     }
+ }
+ 
++/// The run of `z` in `lo..=hi` for which `inside` holds, given that it holds on one contiguous
++/// run of all integers, centred on the sphere centre `centre`: `floor(centre)` is where the
++/// cell centre `z + 0.5` lies nearest `centre`, so it minimises the distance term. `radius` and
++/// `dxy` only steer a first guess at the ends; every answer comes from `inside`.
++fn run_in(
++    lo: i32,
++    hi: i32,
++    centre: f64,
++    radius: f64,
++    dxy: f64,
++    inside: impl Fn(i32) -> bool,
++) -> Option<(i32, i32)> {
++    if lo > hi {
++        return None;
++    }
++    let middle = (centre.floor() as i32).clamp(lo, hi);
++    if !inside(middle) {
++        return None;
++    }
++    let half = radius * (1.0 - dxy).max(0.0).sqrt();
++    let mut first = ((centre - half - 0.5).ceil() as i32).clamp(lo, middle);
++    while first > lo && inside(first - 1) {
++        first -= 1;
++    }
++    while !inside(first) {
++        first += 1;
++    }
++    let mut last = ((centre + half - 0.5).floor() as i32).clamp(middle, hi);
++    while last < hi && inside(last + 1) {
++        last += 1;
++    }
++    while !inside(last) {
++        last -= 1;
++    }
++    Some((first, last))
++}
++
+ /// `OreFeature.shouldSkipAirCheck`: whether to place without looking for air. At 0 the check is
+ /// always skipped, at 1 never, and in between it is skipped with probability `1 - chance`.
+ fn skip_air_check(random: &mut impl RandomSource, chance: f32) -> bool {
+@@ -481,6 +537,11 @@ fn is_adjacent_to_air(region: &DecorationRegion<'_>, pos: BlockPos) -> bool {
+ struct BitSet(Vec<u64>);
+ 
+ impl BitSet {
++    /// An empty set with room for indices below `bits` without growing.
++    fn with_bits(bits: i64) -> Self {
++        Self(vec![0; usize::try_from(bits).unwrap_or(0).div_ceil(64)])
++    }
++
+     /// Sets the bit and returns whether it was clear. A negative index is never set.
+     fn insert(&mut self, index: i64) -> bool {
+         let Ok(index) = usize::try_from(index) else {
+@@ -495,3 +556,39 @@ impl BitSet {
+         fresh
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::run_in;
++
++    /// `run_in` finds exactly the cells a per-cell scan accepts, over many awkward spheres:
++    /// fractional and large centres, tiny and large radii, rows near the rim, clipped boxes.
++    #[test]
++    fn run_matches_a_per_cell_scan() {
++        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
++        let mut next = || {
++            seed ^= seed << 13;
++            seed ^= seed >> 7;
++            seed ^= seed << 17;
++            (seed >> 11) as f64 / (1u64 << 53) as f64
++        };
++        for case in 0..200_000 {
++            let base = [0.0, 1e3, -3e4, 2.9e7][case % 4];
++            let sz = base + (next() - 0.5) * 20.0;
++            let radius = 0.5 + next() * 4.5;
++            let dxy = [next(), 1.0 - next() * 1e-9, 0.0][case % 3];
++            let z_lo = (sz - radius).floor() as i32 + (next() * 3.0) as i32 - 1;
++            let z_hi = ((sz + radius).floor() as i32 + (next() * 3.0) as i32 - 1).max(z_lo);
++            let inside = |z: i32| {
++                let dz = (f64::from(z) + 0.5 - sz) / radius;
++                !(dxy + dz * dz >= 1.0)
++            };
++            let scan: Vec<i32> = (z_lo..=z_hi).filter(|&z| inside(z)).collect();
++            let run: Vec<i32> = match run_in(z_lo, z_hi, sz, radius, dxy, inside) {
++                Some((first, last)) => (first..=last).collect(),
++                None => Vec::new(),
++            };
++            assert_eq!(run, scan, "sz {sz} radius {radius} dxy {dxy} box {z_lo}..={z_hi}");
++        }
++    }
++}
+diff --git a/crates/oxide-chunkgen/src/region.rs b/crates/oxide-chunkgen/src/region.rs
+index 40b8c8c..d88e733 100644
+--- a/crates/oxide-chunkgen/src/region.rs
++++ b/crates/oxide-chunkgen/src/region.rs
+@@ -92,6 +92,10 @@ pub struct DecorationRegion<'a> {
+     height: i32,
+     /// Index into `writes` of each written position.
+     overlay: AHashMap<BlockPos, usize>,
++    /// Per window section (`chunk * (height / 16) + section`), one bit per cell
++    /// ([`local_index`]) set when `overlay` holds that position; `None` until the section's
++    /// first write. Lets a read of an unwritten cell skip hashing its position.
++    written_cells: Vec<Option<Box<[u64; 64]>>>,
+     /// Every write in the order its position was first written, each with the id (into
+     /// `states`) of its latest state: `into_writes` hands this list back with the ids resolved.
+     writes: Vec<(BlockPos, u32)>,
+@@ -131,6 +135,7 @@ impl<'a> DecorationRegion<'a> {
+             min_y: middle.min_y,
+             height: middle.height,
+             overlay: AHashMap::with_capacity(RESERVED_WRITES),
++            written_cells: vec![None; 9 * (middle.height.max(0) as usize).div_ceil(16)],
+             writes: Vec::with_capacity(RESERVED_WRITES),
+             states: Vec::new(),
+             state_ids: AHashMap::default(),
+@@ -179,6 +184,36 @@ impl<'a> DecorationRegion<'a> {
+         Some(self.chunks[((dz + 1) * 3 + (dx + 1)) as usize])
+     }
+ 
++    /// `overlay.get(&pos)`, but a cell no write has reached answers from the written-cell bitmap
++    /// without hashing. Writes only land inside the window, so outside it nothing is written.
++    #[inline]
++    fn overlay_get(&self, pos: BlockPos) -> Option<&usize> {
++        let (section, bit) = self.cell_bit(pos)?;
++        let words = self.written_cells[section].as_deref()?;
++        if words[bit >> 6] >> (bit & 63) & 1 == 0 {
++            return None;
++        }
++        self.overlay.get(&pos)
++    }
++
++    /// `written_cells`' section index and bit for `pos`, or `None` outside the window.
++    #[inline]
++    fn cell_bit(&self, pos: BlockPos) -> Option<(usize, usize)> {
++        if pos.y < self.min_y || pos.y >= self.max_y() {
++            return None;
++        }
++        let dx = (pos.x >> 4) - self.center.x;
++        let dz = (pos.z >> 4) - self.center.z;
++        if !(-1..=1).contains(&dx) || !(-1..=1).contains(&dz) {
++            return None;
++        }
++        let chunk_index = ((dz + 1) * 3 + (dx + 1)) as usize;
++        let y = pos.y - self.min_y;
++        let section = chunk_index * (self.written_cells.len() / 9) + (y >> 4) as usize;
++        let bit = local_index((pos.x & 15) as usize, (y & 15) as usize, (pos.z & 15) as usize);
++        Some((section, bit))
++    }
++
+     /// Whether `pos` is inside the window and the world's height.
+     pub fn contains(&self, pos: BlockPos) -> bool {
+         pos.y >= self.min_y && pos.y < self.max_y() && self.chunk_at(pos.x, pos.z).is_some()
+@@ -200,7 +235,7 @@ impl<'a> DecorationRegion<'a> {
+ 
+     /// The block at `pos` as decoration so far left it, or `None` outside the window.
+     pub fn block(&self, pos: BlockPos) -> Option<&BlockState> {
+-        match self.overlay.get(&pos) {
++        match self.overlay_get(pos) {
+             Some(&i) => Some(&self.states[self.writes[i].1 as usize]),
+             None => self.terrain_block(pos),
+         }
+@@ -208,7 +243,7 @@ impl<'a> DecorationRegion<'a> {
+ 
+     /// [`Self::block`] together with a [`StateKey`] for the state, or `None` outside the window.
+     pub fn block_keyed(&self, pos: BlockPos) -> Option<(StateKey, &BlockState)> {
+-        if let Some(&i) = self.overlay.get(&pos) {
++        if let Some(&i) = self.overlay_get(pos) {
+             let id = self.writes[i].1;
+             return Some((StateKey(1 << 63 | u64::from(id)), &self.states[id as usize]));
+         }
+@@ -247,7 +282,7 @@ impl<'a> DecorationRegion<'a> {
+     /// answer as `facts().is(block(pos)?, fact)`, but each palette entry and each written state
+     /// asks the table at most once per fact.
+     pub fn fact_at(&self, pos: BlockPos, fact: BlockFact) -> Option<bool> {
+-        if let Some(&i) = self.overlay.get(&pos) {
++        if let Some(&i) = self.overlay_get(pos) {
+             let id = self.writes[i].1 as usize;
+             return Some(self.state_facts[id].is(self.facts, &self.states[id], fact));
+         }
+@@ -279,7 +314,7 @@ impl<'a> DecorationRegion<'a> {
+     /// `None` outside the window: what [`Self::block_keyed`] and [`Self::fact_at`] each answer,
+     /// for the price of one lookup.
+     pub fn probe(&self, pos: BlockPos) -> Option<Probe<'_>> {
+-        if let Some(&i) = self.overlay.get(&pos) {
++        if let Some(&i) = self.overlay_get(pos) {
+             let id = self.writes[i].1;
+             return Some(Probe {
+                 key: StateKey(1 << 63 | u64::from(id)),
+@@ -411,6 +446,11 @@ impl<'a> DecorationRegion<'a> {
+                 self.writes.push((pos, id));
+             }
+         }
++        let (section, bit) = self
++            .cell_bit(pos)
++            .expect("writes land inside the window");
++        let words = self.written_cells[section].get_or_insert_with(|| Box::new([0; 64]));
++        words[bit >> 6] |= 1 << (bit & 63);
+         let column = self.column(pos.x, pos.z);
+         let top = &mut self.written_top[column];
+         *top = if *top == NEVER_WRITTEN { pos.y } else { (*top).max(pos.y) };
+-- 
+2.43.0
+

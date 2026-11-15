@@ -929,3 +929,26 @@ server was quiet (all rounds far under 2 CPU-s per 10 s), so every round counts.
 every row. Tests on the tree: chunkgen 194 pass (1 ignored), pregen pass. Landed on the branch as
 the two cherry-picked commits; the column-only version alone was -0.7% (entry above), so the gain is
 the y-window.
+
+## Ore z-run + region written-cell bitmap: rejected (+2.9% decorate)
+
+**Change** (sub-agent commit b6141b6; patch at `docs/perf/rejected-ore-zrun-bitmap.patch`):
+- ore.rs: along a sphere row the cell test holds on one contiguous z run (every rounded step is
+  monotone), so the run's ends are found with a few exact evaluations instead of one division per
+  cell; `dx*dx + dy*dy` and the build-height test hoisted per row; tested bitset sized up front.
+- region.rs: a per-section written-cell bitmap so reads of unwritten cells skip the overlay hash.
+  This reroutes four existing reads (`block`, `block_keyed`, `fact_at`, `probe`) and adds a statement
+  to `write_id`, in this track's own file.
+
+**Hold** (pipeline-lg = b36dcf1 [datapath **c38344f**] + sculk + lush gate; pipeline-or2 adds the change):
+
+| | run 1 | run 2 | run 3 | mean |
+|---|---|---|---|---|
+| base decorate_ms | 9531 | 9482 | 10628 | 9880 |
+| ore decorate_ms | 10524 | 9640 | 10339 | 10168 |
+| base / ore cpu_user_s | 26.07 / 27.12 | 26.01 / 26.79 | 26.64 / 28.08 | 26.24 / 27.33 |
+| java_cpu_s_per_10s | 0.22 / 0.25 | 0.23 / 0.21 | 0.24 / 0.27 | |
+
++2.9% decorate, +4.2% user CPU, behind 2/3 (user CPU behind 3/3). Java quiet, all rounds count.
+Digest df701ee858e2bdd3 on every row; tests 195 pass. **Rejected.** The ore.rs part alone is being
+held next to separate the two halves.
