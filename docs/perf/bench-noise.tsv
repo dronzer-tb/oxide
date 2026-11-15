@@ -31,3 +31,10 @@
 1794736046	ff02449	16	chunks=1089 threads=1 secs=10.540 cps=103.3 ms_per_chunk_core=9.68 digest=a977961a58122047
 1794736069	ff02449	16	chunks=1089 threads=1 secs=10.761 cps=101.2 ms_per_chunk_core=9.88 digest=a977961a58122047
 1794736092	ff02449	16	chunks=1089 threads=1 secs=10.679 cps=102.0 ms_per_chunk_core=9.81 digest=a977961a58122047
+1794749376	01528de	16	chunks=1089 threads=1 secs=9.971 cps=109.2 ms_per_chunk_core=9.16 digest=a977961a58122047
+1794749481	01528de	16	chunks=1089 threads=1 secs=9.609 cps=113.3 ms_per_chunk_core=8.82 digest=a977961a58122047
+1794749586	01528de	16	chunks=1089 threads=1 secs=9.663 cps=112.7 ms_per_chunk_core=8.87 digest=a977961a58122047
+1794749687	01528de	16	chunks=1089 threads=1 secs=9.549 cps=114.0 ms_per_chunk_core=8.77 digest=a977961a58122047
+1794749797	01528de	16	chunks=1089 threads=1 secs=11.267 cps=96.7 ms_per_chunk_core=10.35 digest=a977961a58122047
+1794749905	01528de	16	chunks=1089 threads=1 secs=10.120 cps=107.6 ms_per_chunk_core=9.29 digest=a977961a58122047
+1794750009	01528de	16	chunks=1089 threads=1 secs=9.586 cps=113.6 ms_per_chunk_core=8.80 digest=a977961a58122047

@@ -16,7 +16,7 @@
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
-use crate::compiled::{CacheKind, CacheSlotCounts, Program, RunCtx};
+use crate::compiled::{Batch, CacheKind, CacheSlotCounts, Program, RunCtx};
 use crate::density::FunctionContext;
 
 /// A remembered sample: the position it was taken at, and the value there.
@@ -507,6 +507,8 @@ impl ChunkCaches {
         let y_stride = nx * nz;
         let mut grid = vec![0.0; y_stride * ny];
         let mut column = vec![0.0; ny];
+        let lanes: Vec<u32> = (0..ny as u32).collect();
+        let mut ctxs = Vec::with_capacity(ny);
         for cz in 0..nz {
             let z = self.origin_z + cz as i32 * self.cell_width;
             for cx_index in 0..nx {
@@ -519,9 +521,16 @@ impl ChunkCaches {
                     }
                     continue;
                 }
-                for (cy, value) in column.iter_mut().enumerate() {
-                    let y = self.min_y + cy as i32 * self.cell_height;
-                    *value = argument.run(FunctionContext { x, y, z }, cx);
+                // The whole column in one lane batch (see `Program::run_lanes`): the same value
+                // per corner as one `run` each, since every cache it reads is pure.
+                ctxs.clear();
+                ctxs.extend((0..ny).map(|cy| FunctionContext {
+                    x,
+                    y: self.min_y + cy as i32 * self.cell_height,
+                    z,
+                }));
+                argument.run_lanes(&lanes, &Batch::new(&ctxs), cx, &mut column);
+                for (cy, value) in column.iter().enumerate() {
                     grid[cy * y_stride + base] = *value;
                 }
                 if edge {
@@ -853,6 +862,17 @@ impl Drop for CornerColumns {
                 s.acquisitions,
                 s.contended as f64 / acquisitions as f64,
             );
+            #[cfg(feature = "hash-stats")]
+            {
+                let [pr, pc, br, bc] = crate::improved_noise::hash_stats::global();
+                let rate = |r: u64, c: u64| r as f64 / (r + c).max(1) as f64;
+                eprintln!(
+                    "HASH perlin_reused={pr} perlin_computed={pc} perlin_rate={:.3} blended_reused={br} blended_computed={bc} blended_rate={:.3} all_rate={:.3}",
+                    rate(pr, pc),
+                    rate(br, bc),
+                    rate(pr + br, pc + bc),
+                );
+            }
         }
     }
 }

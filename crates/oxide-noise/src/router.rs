@@ -821,4 +821,143 @@ mod tests {
             }
         }
     }
+
+    /// `Program::run_lanes` must give every lane exactly the bits `Program::run` gives that
+    /// position, with and without chunk caches, over a program that reaches blended noise, a
+    /// normal noise with a zero-amplitude octave (plain, shifted and shift_a/shift_b), both
+    /// `range_choice` branches, a gated add both open and shut, a `cache_once` hit (the same
+    /// subtree behind two markers shares one slot) and a 2D cache.
+    #[test]
+    fn run_lanes_is_bit_identical_to_run() {
+        use crate::compiled::Batch;
+        use oxide_datapack::DensityFunctionObject as O;
+        fn obj(o: O) -> DensityFunction {
+            DensityFunction::Object(Box::new(o))
+        }
+        let noise_id = Rl::new("minecraft", "lanes_test");
+        let noise = |xz_scale: f64, y_scale: f64| {
+            obj(O::Noise {
+                noise: noise_id.clone(),
+                xz_scale,
+                y_scale,
+            })
+        };
+        let blended = || {
+            obj(O::OldBlendedNoise {
+                xz_scale: 0.25,
+                y_scale: 0.125,
+                xz_factor: 80.0,
+                y_factor: 160.0,
+                smear_scale_multiplier: 8.0,
+            })
+        };
+        let once_blended = || obj(O::CacheOnce { argument: blended() });
+        // `c + gradient * body`: shut (gradient exactly 0) above y = 200.
+        let gated = obj(O::Add {
+            argument1: DensityFunction::Constant(-0.078125),
+            argument2: obj(O::Mul {
+                argument1: obj(O::YClampedGradient {
+                    from_y: 0,
+                    to_y: 200,
+                    from_value: 1.0,
+                    to_value: 0.0,
+                }),
+                argument2: obj(O::Add {
+                    argument1: DensityFunction::Constant(0.078125),
+                    argument2: blended(),
+                }),
+            }),
+        });
+        let mut settings = minimal_settings();
+        settings.noise_router.final_density = obj(O::Add {
+            argument1: once_blended(),
+            argument2: obj(O::RangeChoice {
+                input: noise(1.0, 1.0),
+                min_inclusive: 0.0,
+                max_exclusive: 1000.0,
+                when_in_range: obj(O::Add {
+                    argument1: DensityFunction::Constant(64.0),
+                    argument2: obj(O::ShiftedNoise {
+                        noise: noise_id.clone(),
+                        xz_scale: 0.5,
+                        y_scale: 0.25,
+                        shift_x: obj(O::ShiftA {
+                            argument: noise_id.clone(),
+                        }),
+                        shift_y: DensityFunction::Constant(0.0),
+                        shift_z: obj(O::ShiftB {
+                            argument: noise_id.clone(),
+                        }),
+                    }),
+                }),
+                when_out_of_range: obj(O::Add {
+                    argument1: once_blended(),
+                    argument2: obj(O::Add {
+                        argument1: obj(O::Cache2d {
+                            argument: noise(0.75, 0.0),
+                        }),
+                        argument2: gated,
+                    }),
+                }),
+            }),
+        });
+        let df_registry = Registry::default();
+        let noise_registry: Registry<NormalNoiseParameters> = [(
+            noise_id.clone(),
+            NormalNoiseParameters {
+                first_octave: -5,
+                amplitudes: vec![1.0, 1.0, 0.5, 0.0, 0.25],
+            },
+        )]
+        .into_iter()
+        .collect();
+        let router = NoiseRouterEvaluator::new(11, &settings, &df_registry, &noise_registry);
+        let dump = router.dump_program(RouterSlot::FinalDensity);
+        assert!(dump.iter().any(|l| l.contains("GatedAdd")), "not gated: {dump:?}");
+        let program = &router.programs[RouterSlot::FinalDensity.index()];
+
+        let (mut in_range, mut out_of_range) = (0, 0);
+        for with_caches in [false, true] {
+            for (chunk_x, chunk_z) in [(0, 0), (-3, 5)] {
+                let lane_caches = router.chunk_caches(chunk_x, chunk_z);
+                let plain_caches = router.chunk_caches(chunk_x, chunk_z);
+                let lane_cx = RunCtx {
+                    noises: &router.noises,
+                    blended: &router.blended,
+                    caches: with_caches.then_some(&lane_caches),
+                };
+                let plain_cx = RunCtx {
+                    noises: &router.noises,
+                    blended: &router.blended,
+                    caches: with_caches.then_some(&plain_caches),
+                };
+                for (local_x, local_z) in [(0, 0), (4, 12), (16, 16), (7, 3)] {
+                    let (x, z) = (chunk_x * 16 + local_x, chunk_z * 16 + local_z);
+                    let ctxs: Vec<FunctionContext> =
+                        (0..49).map(|cy| FunctionContext { x, y: -64 + cy * 8, z }).collect();
+                    let lanes: Vec<u32> = (0..49).collect();
+                    let mut out = vec![0.0; 49];
+                    program.run_lanes(&lanes, &Batch::new(&ctxs), &lane_cx, &mut out);
+                    for (ctx, value) in ctxs.iter().zip(&out) {
+                        let expected = program.run(*ctx, &plain_cx);
+                        assert_eq!(expected.to_bits(), value.to_bits(), "at {ctx:?}");
+                        if expected > 32.0 {
+                            in_range += 1;
+                        } else {
+                            out_of_range += 1;
+                        }
+                    }
+                    // A strided subset of the column, so the lanes are not 0..k.
+                    let sub: Vec<u32> = (0..49).step_by(3).collect();
+                    let mut out = vec![0.0; sub.len()];
+                    program.run_lanes(&sub, &Batch::new(&ctxs), &lane_cx, &mut out);
+                    for (&l, value) in sub.iter().zip(&out) {
+                        let expected = program.run(ctxs[l as usize], &plain_cx);
+                        assert_eq!(expected.to_bits(), value.to_bits(), "subset lane {l}");
+                    }
+                }
+            }
+        }
+        assert!(in_range > 20 && out_of_range > 20, "{in_range} / {out_of_range}");
+    }
 }

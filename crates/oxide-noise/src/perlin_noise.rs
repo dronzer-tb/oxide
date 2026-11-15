@@ -1,7 +1,7 @@
 //! `PerlinNoise`: multi-octave combinator over [`ImprovedNoise`], matching vanilla's
 //! `net.minecraft.world.level.levelgen.synth.PerlinNoise`.
 
-use crate::improved_noise::{wrap_coordinate, ImprovedNoise};
+use crate::improved_noise::{wrap_coordinate, HashKind, ImprovedNoise};
 use crate::random::WorldRandom;
 
 #[derive(Debug, Clone)]
@@ -125,6 +125,35 @@ impl PerlinNoise {
 
     pub fn get_value(&self, x: f64, y: f64, z: f64) -> f64 {
         self.get_value_with_scale(x, y, z, 0.0, 0.0)
+    }
+
+    /// [`Self::get_value`] at every `(xs[i], ys[i], zs[i])`, bit-identical per lane: each lane
+    /// accumulates its octaves in the same order with the same expression. Octave-outer, so the
+    /// lanes of one octave are independent work, and consecutive lanes that land in the same
+    /// lattice cell of an octave (a column's low-frequency octaves) reuse its corner hashes.
+    pub fn get_values(&self, xs: &[f64], ys: &[f64], zs: &[f64], out: &mut [f64]) {
+        out.fill(0.0);
+        let mut freq = self.lowest_freq_input_factor;
+        let mut amp = self.lowest_freq_value_factor;
+        for (i, level) in self.noise_levels.iter().enumerate() {
+            if let Some(noise) = level {
+                let amplitude = self.amplitudes[i];
+                let mut memo = noise.cell_hashes(HashKind::Perlin);
+                for (((o, x), y), z) in out.iter_mut().zip(xs).zip(ys).zip(zs) {
+                    let sample = noise.noise_with_scale_reusing(
+                        wrap_coordinate(x * freq),
+                        wrap_coordinate(y * freq),
+                        wrap_coordinate(z * freq),
+                        0.0 * freq,
+                        0.0 * freq,
+                        &mut memo,
+                    );
+                    *o += amplitude * sample * amp;
+                }
+            }
+            freq *= 2.0;
+            amp /= 2.0;
+        }
     }
 
     /// Verified 2026-08-22 against decompiled `PerlinNoise.getValue(x, y, z, yScale, yFudge)`:

@@ -129,6 +129,99 @@ impl ImprovedNoise {
         self.sample_and_lerp(i, j, k, dx, dy - dy_faded, dz, dy)
     }
 
+    /// [`Self::noise_with_scale`], reusing the lattice hashes `memo` holds when this sample
+    /// falls in the same cell as the one before it.
+    ///
+    /// Bit-identical to `noise_with_scale`: the eight corner hash bytes are a pure function of
+    /// the grid cell `(i, j, k)` and this instance's permutation, so a remembered set for the
+    /// same cell is exactly what recomputing would give. Every float operation is the one
+    /// `sample_and_lerp` performs, on the same operands, in the same order.
+    ///
+    /// `memo` must only ever be passed with this same instance; start it with
+    /// [`Self::cell_hashes`].
+    #[inline]
+    pub(crate) fn noise_with_scale_reusing(
+        &self,
+        x: f64,
+        y: f64,
+        z: f64,
+        y_scale: f64,
+        y_max: f64,
+        memo: &mut CellHashes,
+    ) -> f64 {
+        let d0 = x + self.xo;
+        let d1 = y + self.yo;
+        let d2 = z + self.zo;
+        let i = d0.floor() as i32;
+        let j = d1.floor() as i32;
+        let k = d2.floor() as i32;
+        let dx = d0 - i as f64;
+        let dy = d1 - j as f64;
+        let dz = d2 - k as f64;
+
+        let dy_faded = if y_scale != 0.0 {
+            let clamped = if y_max >= 0.0 && y_max < dy {
+                y_max
+            } else {
+                dy
+            };
+            (clamped / y_scale + 1.0e-7).floor() * y_scale
+        } else {
+            0.0
+        };
+
+        let cell = [i, j, k];
+        let reused = memo.cell == cell;
+        if !reused {
+            memo.cell = cell;
+            memo.hashes = self.corner_hashes(i, j, k);
+        }
+        #[cfg(any(test, feature = "hash-stats"))]
+        hash_stats::record(memo.kind, reused);
+        lerp_corners(&memo.hashes, dx, dy - dy_faded, dz, dy)
+    }
+
+    /// A [`CellHashes`] memo for this instance, primed with a real cell's hashes so that it is
+    /// always consistent (no "empty" state for a sample to be wrongly matched against).
+    #[inline]
+    pub(crate) fn cell_hashes(&self, kind: HashKind) -> CellHashes {
+        let cell = [i32::MIN; 3];
+        let _ = kind;
+        CellHashes {
+            cell,
+            hashes: self.corner_hashes(cell[0], cell[1], cell[2]),
+            #[cfg(any(test, feature = "hash-stats"))]
+            kind,
+        }
+    }
+
+    /// The eight corner hash bytes of cell `(grid_x, grid_y, grid_z)`, in the order
+    /// [`lerp_corners`] reads them: `p[k], p[i1], p[l], p[j1], p[k+1], p[i1+1], p[l+1],
+    /// p[j1+1]` as `sample_and_lerp` names them.
+    #[inline(always)]
+    fn corner_hashes(&self, grid_x: i32, grid_y: i32, grid_z: i32) -> [u8; 8] {
+        let p = &self.permutation;
+        let xm = (grid_x & 255) as usize;
+        let ym = (grid_y & 255) as usize;
+        let zm = (grid_z & 255) as usize;
+        let a = p[xm] as usize + ym;
+        let b = p[xm + 1] as usize + ym;
+        let k = p[a] as usize + zm;
+        let l = p[a + 1] as usize + zm;
+        let i1 = p[b] as usize + zm;
+        let j1 = p[b + 1] as usize + zm;
+        [
+            p[k],
+            p[i1],
+            p[l],
+            p[j1],
+            p[k + 1],
+            p[i1 + 1],
+            p[l + 1],
+            p[j1 + 1],
+        ]
+    }
+
     /// The lattice hash is vanilla's `p(p(p(x) + y) + z)` (each `p` masking its argument with
     /// `& 255`), read off the doubled table. Because `(a + y) & 255 == (a + (y & 255)) & 255` in
     /// wrapping `i32` arithmetic (masking commutes with addition mod 2^8), and every `p` value is
@@ -181,6 +274,102 @@ impl ImprovedNoise {
 
     pub fn yo(&self) -> f64 {
         self.yo
+    }
+}
+
+/// `sample_and_lerp`'s float work over already-hashed corners: the same expressions, operands
+/// and order, so the result is bit-identical to it for the same cell.
+#[inline(always)]
+fn lerp_corners(h: &[u8; 8], dx: f64, dy: f64, dz: f64, fade_dy: f64) -> f64 {
+    let d0 = grad_dot(h[0], dx, dy, dz);
+    let d1 = grad_dot(h[1], dx - 1.0, dy, dz);
+    let d2 = grad_dot(h[2], dx, dy - 1.0, dz);
+    let d3 = grad_dot(h[3], dx - 1.0, dy - 1.0, dz);
+    let d4 = grad_dot(h[4], dx, dy, dz - 1.0);
+    let d5 = grad_dot(h[5], dx - 1.0, dy, dz - 1.0);
+    let d6 = grad_dot(h[6], dx, dy - 1.0, dz - 1.0);
+    let d7 = grad_dot(h[7], dx - 1.0, dy - 1.0, dz - 1.0);
+
+    let t = smoothstep(dx);
+    let u = smoothstep(fade_dy);
+    let v = smoothstep(dz);
+
+    let e0 = lerp(t, d0, d1);
+    let e1 = lerp(t, d2, d3);
+    let e2 = lerp(t, d4, d5);
+    let e3 = lerp(t, d6, d7);
+    let f0 = lerp(u, e0, e1);
+    let f1 = lerp(u, e2, e3);
+    lerp(v, f0, f1)
+}
+
+/// The last lattice cell one [`ImprovedNoise`] instance sampled, and its eight corner hashes.
+/// See [`ImprovedNoise::noise_with_scale_reusing`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CellHashes {
+    cell: [i32; 3],
+    hashes: [u8; 8],
+    #[cfg(any(test, feature = "hash-stats"))]
+    kind: HashKind,
+}
+
+/// Which caller a hash-reuse count belongs to, for [`hash_stats`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HashKind {
+    /// An octave of a `PerlinNoise` (inside a `NormalNoise`).
+    Perlin,
+    /// An octave of one of `BlendedNoise`'s three stacks.
+    Blended,
+}
+
+/// Counts of samples that reused their cell's hashes versus recomputed them, so the reuse rate
+/// is measured on the code path that runs rather than assumed. Compiled only into tests and
+/// the `hash-stats` feature; the plain build carries no counter.
+#[cfg(any(test, feature = "hash-stats"))]
+pub mod hash_stats {
+    use super::HashKind;
+    use std::cell::Cell;
+    #[cfg(feature = "hash-stats")]
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// `[perlin reused, perlin computed, blended reused, blended computed]`.
+    pub type Counts = [u64; 4];
+
+    thread_local! {
+        static LOCAL: Cell<Counts> = const { Cell::new([0; 4]) };
+    }
+    #[cfg(feature = "hash-stats")]
+    static GLOBAL: [AtomicU64; 4] = [
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+    ];
+
+    #[inline]
+    pub(crate) fn record(kind: HashKind, reused: bool) {
+        let index = match kind {
+            HashKind::Perlin => 0,
+            HashKind::Blended => 2,
+        } + usize::from(!reused);
+        LOCAL.with(|c| {
+            let mut v = c.get();
+            v[index] += 1;
+            c.set(v);
+        });
+        #[cfg(feature = "hash-stats")]
+        GLOBAL[index].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// This thread's counts so far.
+    pub fn local() -> Counts {
+        LOCAL.with(|c| c.get())
+    }
+
+    /// Every thread's counts so far.
+    #[cfg(feature = "hash-stats")]
+    pub fn global() -> Counts {
+        std::array::from_fn(|i| GLOBAL[i].load(Ordering::Relaxed))
     }
 }
 
@@ -370,6 +559,63 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The hash-reusing sample must give `noise_with_scale`'s exact bits along columns: steps
+    /// that stay in one cell (reuse), steps that cross cells (recompute), negative coordinates,
+    /// exact lattice points and signed zeros, with and without y-smear.
+    #[test]
+    fn reusing_hashes_is_bit_identical_along_columns() {
+        use oxide_core::Xoroshiro128PlusPlus;
+        let mut rng = LegacyRandom::new(0xc01);
+        let before = hash_stats::local();
+        for seed in 0..32u64 {
+            let mut r = Xoroshiro128PlusPlus::new(seed as i64);
+            let noise = ImprovedNoise::new(&mut r);
+            // Per-step y deltas from far below one cell to several cells.
+            for &step in &[0.0, 1.0e-3, 0.06, 0.25, 0.53, 1.0, 1.7, 5.3, 684.412] {
+                let x = (rng.next_double() * 2.0 - 1.0) * 1.0e4;
+                let z = (rng.next_double() * 2.0 - 1.0) * 1.0e4;
+                let y0 = (rng.next_double() * 2.0 - 1.0) * 300.0 - 64.0;
+                let smear = match seed % 4 {
+                    0 => 0.0,
+                    1 => rng.next_double() * 2.0,
+                    2 => -(rng.next_double() * 2.0),
+                    _ => rng.next_double() * 0.01,
+                };
+                let mut memo = noise.cell_hashes(HashKind::Perlin);
+                for lane in 0..49 {
+                    let y = y0 + lane as f64 * step;
+                    // y_max is the sample's own y, as `BlendedNoise` passes it, or a fixed one.
+                    let y_max = if lane % 2 == 0 { y } else { -1.0 };
+                    let fast = noise.noise_with_scale_reusing(x, y, z, smear, y_max, &mut memo);
+                    let slow = noise.noise_with_scale(x, y, z, smear, y_max);
+                    assert_eq!(
+                        fast.to_bits(),
+                        slow.to_bits(),
+                        "seed {seed} step {step} lane {lane} at ({x}, {y}, {z}) smear {smear}"
+                    );
+                }
+            }
+            // Columns that walk across zero and through exact lattice points and signed zeros,
+            // and a memo carried over unrelated positions (every cell change must recompute).
+            let mut memo = noise.cell_hashes(HashKind::Perlin);
+            for &x in &[-0.0, 0.0, -1.0, -256.0, 255.999_999_999, -1.0e-300] {
+                for &z in &[-0.0, 0.0, -255.0, 4096.0] {
+                    for lane in -20..20 {
+                        let y = lane as f64 * 0.25 - noise.yo;
+                        for &y in &[y, -y, y + 1.0e-20] {
+                            let fast = noise.noise_with_scale_reusing(x, y, z, 0.0, 0.0, &mut memo);
+                            let slow = noise.noise_with_scale(x, y, z, 0.0, 0.0);
+                            assert_eq!(fast.to_bits(), slow.to_bits(), "at ({x}, {y}, {z})");
+                        }
+                    }
+                }
+            }
+        }
+        let after = hash_stats::local();
+        let (reused, computed) = (after[0] - before[0], after[1] - before[1]);
+        assert!(reused > 1000 && computed > 1000, "{reused} reused, {computed} computed");
     }
 
     /// Captured 2026-08-22 from a standalone Java transcription of the confirmed-correct
