@@ -1362,3 +1362,33 @@ Two sub-agents, both based on this head:
 - `datapath-26`: where 8-thread scaling is lost: per-chunk allocation and the allocator,
   thread-local memo footprint against Zen 1's caches, the shared corner-column cache, rayon
   scheduling. Measured with alternating 8-thread holds of 6+ rounds.
+
+### Fused fill-plus-surface pass (`datapath-25`): stopped after the design stage, as allowed
+
+From the sub-agent's design (profile at 0f15cef, 1 thread):
+- `fill_chunk_culling` 45.2% inclusive;
+- `SurfaceSystem::apply` 20.4%: `eval_program` 9.6%, `apply` self 6.9%, `column_state` 3.2%;
+- ore 4.3%, carvers 10.3%, heightmaps 0.5%.
+
+The surface rules need the whole column: `stone_depth_above` and water height come from above,
+`stone_depth_below` from below. The fill runs layer by layer, y ascending, which the noise
+track's cell batching relies on. So a full fusion means a column-major fill: a rewrite with a
+remap of all 98k positions at the end, saving nothing. The largest palette-neutral piece is the
+fill emitting `kinds` for surface (and folding the heightmap into the fill), worth ~1-1.5%: below
+the 2.2-2.3% build floor. Not implemented; that was a valid result under the brief. The box dir is deleted.
+
+**Finding: the digest does not cover palette order.** `merkle.rs` `hash_sub_region` hashes
+`block.to_string()` per position, so `a977961a58122047` cannot see palette order or dead palette
+entries. Both reach anvil NBT and `bits_per_entry`. Every palette-touching change this session
+(E1, E2, E9, E10, E11, E16, E22) argued that it preserves first-write order, but the digest did not
+check it. Checking now: a throwaway harness build (not committed) prints a second digest over
+every section's block and biome palettes in order, plus their packed longs. It runs at the
+session start (3fd5cf6) and at the head (0f15cef).
+
+### 8-thread row for 0f15cef: 392.9 cps -- under investigation
+
+`BENCH chunks=1089 threads=8 secs=2.772 cps=392.9 ms_per_chunk_core=20.36 digest=a977961a58122047`,
+against ~700 at b1f77a6. Either the box was disturbed, or the 3362440 noise merge (01528de,
+lane-batched corner columns with a shared cache, measured by noise on 1 thread only) regresses
+at 8 threads. The scaling sub-agent (`datapath-26`) is told to make 0f15cef against b1f77a6 at 8
+threads its first exclusive hold.
