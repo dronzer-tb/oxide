@@ -15,8 +15,8 @@ use anyhow::{anyhow, Context, Result};
 
 use oxide_biome::BiomeSearchTree;
 use oxide_chunkgen::{
-    decorated_chunk, generate_chunk, BiomeDecorator, BiomeTemperatures, CarverSetup,
-    DecorationCache,
+    decorated_chunk_with_extras, generate_chunk, BiomeDecorator, BiomeTemperatures, CarverSetup,
+    ChunkExtras, DecorationCache,
 };
 use oxide_core::HeightmapType;
 use oxide_core::{ChunkData, ChunkPos, ResourceLocation};
@@ -36,6 +36,8 @@ thread_local! {
     /// every query rebuilt a full corner grid. Two slots make both hit.
     static BIOME_CACHES: RefCell<Option<(u64, ChunkPos, oxide_noise::ChunkCaches)>> =
         const { RefCell::new(None) };
+    /// The extras of the last chunk this thread generated, as `chunk_extras` returns them.
+    static LAST_EXTRAS: RefCell<Option<(u64, ChunkPos, String)>> = const { RefCell::new(None) };
 }
 
 pub struct OxideGenerator {
@@ -346,17 +348,40 @@ impl OxideGenerator {
         out_biomes: &mut [u16],
     ) -> Result<()> {
         let pos = ChunkPos::new(chunk_x, chunk_z);
-        let chunk = match &self.decoration {
-            Ok(decoration) if self.decorate.load(Ordering::Acquire) => decorated_chunk(
+        let (chunk, extras) = match &self.decoration {
+            Ok(decoration) if self.decorate.load(Ordering::Acquire) => decorated_chunk_with_extras(
                 pos,
                 &|at| self.terrain(at),
                 &decoration.decorator,
                 decoration.decorator.facts(),
                 &decoration.cache,
             ),
-            _ => self.terrain(pos),
+            _ => (self.terrain(pos), ChunkExtras::default()),
         };
+        LAST_EXTRAS.with(|slot| *slot.borrow_mut() = Some((self.id, pos, extras_text(&extras))));
         self.write_out(&chunk, out_blocks, out_biomes)
+    }
+
+    /// The extras of the last `generate_chunk` on this thread, when it was this handle's chunk
+    /// at `(chunk_x, chunk_z)`: one item per line, absolute coordinates,
+    ///
+    /// ```text
+    /// be <x> <y> <z> <snbt>      block entity
+    /// ft <x> <y> <z> <fluid_id>  scheduled fluid tick
+    /// bt <x> <y> <z> <block_id>  scheduled block tick
+    /// pp <x> <y> <z>             post-processing mark
+    /// ```
+    ///
+    /// Empty when decoration is off. Fails when this thread's last chunk was another.
+    pub fn chunk_extras(&self, chunk_x: i32, chunk_z: i32) -> Result<String> {
+        let pos = ChunkPos::new(chunk_x, chunk_z);
+        LAST_EXTRAS.with(|slot| match &*slot.borrow() {
+            Some((id, at, text)) if *id == self.id && *at == pos => Ok(text.clone()),
+            _ => Err(anyhow!(
+                "no extras for chunk ({chunk_x}, {chunk_z}): it is not the last chunk this \
+                 thread generated with this handle"
+            )),
+        })
     }
 
     /// The undecorated chunk at `pos`: noise fill, surface rules and carvers. A pure function
@@ -534,6 +559,27 @@ impl OxideGenerator {
     }
 }
 
+/// `extras` in the line format [`OxideGenerator::chunk_extras`] documents: block entities, then
+/// fluid ticks, block ticks and post-processing marks, each in the order decoration left them.
+fn extras_text(extras: &ChunkExtras) -> String {
+    use std::fmt::Write;
+    let mut text = String::new();
+    for entity in &extras.block_entities {
+        let p = entity.pos;
+        let _ = writeln!(text, "be {} {} {} {}", p.x, p.y, p.z, entity.snbt);
+    }
+    for (p, fluid) in &extras.fluid_ticks {
+        let _ = writeln!(text, "ft {} {} {} {fluid}", p.x, p.y, p.z);
+    }
+    for (p, block) in &extras.block_ticks {
+        let _ = writeln!(text, "bt {} {} {} {block}", p.x, p.y, p.z);
+    }
+    for p in &extras.post_process {
+        let _ = writeln!(text, "pp {} {} {}", p.x, p.y, p.z);
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,6 +629,69 @@ mod tests {
         second.set_decoration(true).unwrap();
         assert_eq!(generate(&second, 3, -2), decorated);
         assert_eq!(generate(&second, 4, -2), neighbour);
+    }
+
+    /// `oxide_take_chunk_extras` hands out the last generated chunk's extras in the line
+    /// format, asks for a bigger buffer without writing, is empty with decoration off, and
+    /// refuses a chunk this thread did not generate last.
+    #[test]
+    fn chunk_extras_come_out_through_the_c_export() {
+        if !reference().join("block_facts.tsv").is_file() {
+            eprintln!("skipping: no block facts in {}", reference().display());
+            return;
+        }
+        let handle = OxideGenerator::open(reference(), "minecraft:overworld", 883502277).unwrap();
+        let generate = |x: i32, z: i32| {
+            let mut blocks = vec![0u16; handle.block_buffer_len()];
+            let mut biomes = vec![0u16; handle.biome_buffer_len()];
+            handle
+                .generate_chunk(x, z, &mut blocks, &mut biomes)
+                .unwrap();
+        };
+        let take = |x: i32, z: i32, cap: usize| -> (i64, Vec<u8>) {
+            let mut out = vec![0xAAu8; cap];
+            let needed =
+                unsafe { crate::oxide_take_chunk_extras(&handle, x, z, out.as_mut_ptr(), cap) };
+            (needed, out)
+        };
+
+        generate(0, 0);
+        assert_eq!(take(0, 0, 0).0, 0, "decoration off: nothing");
+
+        handle.set_decoration(true).unwrap();
+        generate(0, 0);
+        let (needed, untouched) = take(0, 0, 4);
+        assert!(needed > 4, "chunk (0, 0) has extras");
+        assert!(
+            untouched.iter().all(|&b| b == 0xAA),
+            "too small: nothing written"
+        );
+        let (again, out) = take(0, 0, needed as usize);
+        assert_eq!(again, needed);
+        let text = std::str::from_utf8(&out).unwrap();
+        assert!(text.ends_with('\n'));
+        for line in text.lines() {
+            let words: Vec<&str> = line.splitn(5, ' ').collect();
+            let coords: Vec<i32> = words[1..4].iter().map(|w| w.parse().unwrap()).collect();
+            assert!(
+                (0..16).contains(&coords[0]) && (0..16).contains(&coords[2]),
+                "{line}"
+            );
+            match words[0] {
+                "be" => assert!(words[4].starts_with("{id:\""), "{line}"),
+                "ft" | "bt" => assert!(words[4].starts_with("minecraft:"), "{line}"),
+                "pp" => assert_eq!(words.len(), 4, "{line}"),
+                other => panic!("unknown kind {other}"),
+            }
+        }
+
+        assert_eq!(take(1, 0, 0).0, -2, "not the last chunk generated here");
+        assert_eq!(
+            unsafe {
+                crate::oxide_take_chunk_extras(std::ptr::null(), 0, 0, std::ptr::null_mut(), 0)
+            },
+            -1
+        );
     }
 
     /// Answering `getBaseHeight` for a chunk's 256 columns must not cost more than generating
