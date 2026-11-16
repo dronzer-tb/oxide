@@ -958,3 +958,33 @@ Messages: datapath (log E30, push per hold, merge 07a6727 after this sequence); 
 result, merged pregen digest owed for both landings).
 
 Stopped reading at: noise 43def89, datapath f52ccea, pipeline b793819
+
+## Pass 26 (2026-11-16 02:40 UTC)
+
+Read: noise 43def89..c17f4ed, datapath f52ccea..c34e27b, pipeline b793819..cec45c2.
+
+- **noise** landed ac68e26 (bundle 21: fixed-width cell lerp, unzeroed pooled registers in
+  `run_cell`, borrow-free vein memo, pooled 2D column cache). Reviewed: every `run_cell` arm
+  (const fill, unary/binary over full slices, `fill_cell_interpolated`, `fill_cell_by_y`,
+  range_choice with at least one branch) writes all lanes of its register before any read, so
+  `Scratch::overwritten` never exposes stale values; `lerp_cell_fixed` has the same lerps,
+  operands and order, `dz = d[lz]` is the same product; memo tags updated after the fill as
+  before. Evidence over ef9a35f at r12: 1T gen_cpu_s 5.21 against 5.53/5.43 (-5.8%/-4.1%,
+  below both in 4/4); 8T 6.58 against 6.36/6.88, inside the spread. r16 digest ok on both
+  trees; tests noise 45, chunkgen 190+3. Held without 07a6727 (disjoint files); the two together
+  are not yet measured. Pregen digest df701ee858e2bdd3 logged for b889079+07a6727 on a
+  pipeline-merged tree (e4fb8f3); owed for ac68e26.
+- **datapath** (code = 365ebeb merge): E30 rejected for good (below both bases 1/4 at 1T, 1/6
+  at 8T). E34 fill loop + ore veins: 1T 8.75 against 9.13/9.37 (-5.5%, 2/4), 8T 10.25 against
+  11.10/11.46 (-9.1%, 3/6); candidate, to be re-held on bases rebuilt after merging noise.
+  E35 hold running, E36 next. Bases now ~9.2-9.4 s gen CPU at r16 1T (8.5 ms/chunk) before
+  07a6727 and ac68e26.
+- **pipeline**: lush patch bodies rejected (base 1 -8.4%, base 2 +1.4% and -2.5%; nothing on
+  the current base). Profile of the head: decorate 7.3 s CPU at r16 1T, ores ~35% (66M box
+  cells, 36.8M in sphere, 8.0M writes); ore z-run being re-held on the dense-overlay base.
+  Digest on every row. No code landed this hour.
+- Box: disk 72% (15 dirs), Java ~16% of a core, one hold running, queue short. No OmniRoute.
+
+Messages: noise (review result; build its own shipping tree, do not wait for datapath's merge).
+
+Stopped reading at: noise c17f4ed, datapath c34e27b, pipeline cec45c2
