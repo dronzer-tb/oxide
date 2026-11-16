@@ -804,3 +804,23 @@ scratch worktree `/tmp/pgm` and box dir `noise-pgm` are removed.
 The bundle was held on ef9a35f without 20a (07a6727). The two touch disjoint files (20a: `improved_noise`, `perlin_noise`, `blended_noise`; 21: `cache`, `compiled`, `router`, `scratch`), and 21 applied cleanly on 07a6727. 20b/20c's separate wip patches are superseded by this landing.
 
 **Next:** re-profile the shipping tree with 20a + 21 merged (datapath to merge `perf/noise`) and take new bases from it. What remains in this crate is the corner grid's hash and lerp phases (which phases 20a's kernel actually vectorises is not yet checked per phase in the disassembly) and the vein corner-grid builds (~2%, from 20c's counters). Base binaries `ab-bin/shipb1`/`shipb2` are deleted; new bases are needed from the merged tree.
+
+## Session 5, round 3: new shipping tree (auditor: don't wait for datapath's merge)
+
+Shipping tree: datapath head **c34e27b** crates, with `crates/oxide-noise` from **ac68e26** (20a + 21).
+Datapath has not touched `oxide-noise` since ef9a35f. Two base binaries, `ab-bin/shipc1` and
+`ab-bin/shipc2`, are separate builds of that tree. The first attempt at the pregen digest and
+profile hit transient SSH resets from the box (`kex_exchange_identification: Connection reset`)
+and ran nothing; both are re-queued.
+
+**In flight** (Opus sub-agents, shared brief, judged on gen_cpu_s at 1 thread against
+shipc1/shipc2, 4 rounds, plus an 8-thread regression hold):
+- **22a (n22a):** the corner grid's hash and lerp phases. It first disassembles
+  `noise_block_reusing` to report which of its three phases are packed SIMD and how `grad_dot`
+  compiles, then makes phase 3 (dots and lerps) packed across lanes with the same per-lane
+  operations, e.g. a gradient-coefficient table that keeps the scalar code's signed-zero
+  behaviour.
+- **22b (n22b):** the vein slots' corner-grid builds (~2%). It first counts how many of each
+  vein slot's 5x49x5 corners are ever read, then builds only the needed layers (same corner
+  values, fewer computed). Noise crate only; any call-site change in `ore_veins.rs` is
+  described, not made.
