@@ -1739,3 +1739,37 @@ New base: pipeline-p1 (cbc2955).
 
 The row batching adds a sync per row (37 steps of ~68 items at 8 threads); finishing each chunk as soon
 as its own nine regions are done (dependency-driven) may recover the 8-thread wall time.
+
+### Dependency-driven chunk finishing (sub-agent ef5e48b, now f4b0792): -14% to -25% decorate at 8 threads, kept
+
+`oxide-pregen/src/generate.rs` only. Regions run in row order on a FIFO rayon scope
+(`scope_fifo`/`spawn_fifo`). Each chunk counts its outstanding regions; the region that completes a
+chunk's ninth neighbour queues it. Each region counts the chunks still to read its write list; the
+last one recycles it to the pool. Terrain chunks are shared through `Arc`; a chunk's base moves out
+without a copy once its nine regions drop their handles. Same base, same complete write lists in the
+same order per chunk; finished chunks collected in row order.
+
+Instrumented 8 threads (reverted), two runs: idle per worker ~0.27 s -> ~0.04 s (all workers 2.06/2.27
+-> 0.37/0.33 s), but busy time rose (regions 6.64/6.37 -> 7.91/7.28 s, chunks 1.66/1.41 -> 2.47/2.20
+s), stage wall 1.30/1.26 -> 1.34/1.23 s. Likely cache locality from interleaving chunk and region work
+on the same cores (not measured).
+
+| 8-thread hold (6 rounds) | p1 decorate_ms mean / median | q1 decorate_ms mean / median | change (mean) | q1 ahead | cps p1 / q1 |
+|---|---|---|---|---|---|
+| 1 (p1 first, sub-agent) | 1740 / 1613 | 1442 / 1464 | -17% | 5/6 | 289 / 298 |
+| 2 (q1 first) | 1929 / 1932 | 1662 / 1596 | -13.9% | 4/6 | 268 / 293 |
+| 3 (p1 first, after a 10 min wait) | 2599 / 2758 | 1960 / 1831 | -24.6% | 5/6 | 230 / 259 |
+
+Hold 2 had four rows with cpu_sys_s > 6 s (three p1), so it was rerun after 10 minutes as hold 3,
+which was noisier still (sys up to 10.3 s on both trees; the box has been noisy at 8 threads all day,
+cause outside the lock). All three holds favour q1 in both orders, 14/18 rounds. 1-thread hold (4
+rounds): 6193 vs 5867 (-5.3%, 3/4), no regression; no barriers exist at 1 thread, so read as noise.
+java_cpu_s_per_10s 0.16-1.29 (one 1.29 row; under the 2 CPU-s cutoff).
+
+**Kept.** Branch head: tests pass (oxide-chunkgen, oxide-pregen, oxide-anvil, 0 failed); digest
+df701ee858e2bdd3 at 1, 3 and 8 threads; off-centre r7 4-thread digest dea822a7b8517773 and .mca
+files identical to p1's outside the timestamp table. Digest held on every hold row. New base:
+pipeline-q1 (ef5e48b).
+
+The 8-thread box noise (sys spikes 6-14 s on a growing share of rows) now limits how small an
+8-thread gain can be resolved; absolute cps across days is not comparable until it is traced.
