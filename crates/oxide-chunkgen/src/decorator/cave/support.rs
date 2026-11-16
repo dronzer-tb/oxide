@@ -68,15 +68,6 @@ impl Dir {
             Dir::East => "east",
         }
     }
-
-    /// The axis as an index: 0 = x, 1 = y, 2 = z.
-    pub fn axis(self) -> u8 {
-        match self {
-            Dir::West | Dir::East => 0,
-            Dir::Down | Dir::Up => 1,
-            Dir::North | Dir::South => 2,
-        }
-    }
 }
 
 /// `pos.offset(dx, dy, dz)`.

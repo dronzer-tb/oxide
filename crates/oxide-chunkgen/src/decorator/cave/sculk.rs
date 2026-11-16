@@ -78,6 +78,31 @@ struct Cursor {
     facings: Option<u8>,
 }
 
+/// `ChargeCursor.NON_CORNER_NEIGHBOURS` in `BlockPos.betweenClosed` order: x fastest, then y,
+/// then z.
+const NON_CORNER_NEIGHBOURS: [(i32, i32, i32); 18] = {
+    let mut offsets = [(0, 0, 0); 18];
+    let mut n = 0;
+    let mut z = -1;
+    while z <= 1 {
+        let mut y = -1;
+        while y <= 1 {
+            let mut x = -1;
+            while x <= 1 {
+                if (x == 0 || y == 0 || z == 0) && !(x == 0 && y == 0 && z == 0) {
+                    offsets[n] = (x, y, z);
+                    n += 1;
+                }
+                x += 1;
+            }
+            y += 1;
+        }
+        z += 1;
+    }
+    assert!(n == 18);
+    offsets
+};
+
 /// The properties a sculk vein has: its six faces and `waterlogged`.
 const VEIN_KEYS: [&str; 7] = [
     "down",
@@ -246,6 +271,13 @@ const I_FACE_SHIFT: u32 = 12;
 /// Direct-mapped `Info` slots per run.
 const INFO_SLOTS: usize = 256;
 
+/// The `Info` slot of `key`. `StateKey::slot` keeps a terrain key's section and palette entry
+/// in separate bits, but its low bits overlap them (a section's later entries share slots with
+/// the next section's first ones); a multiplicative mix spreads them over the slots.
+fn info_slot(key: StateKey) -> usize {
+    ((key.slot() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 56) as usize & (INFO_SLOTS - 1)
+}
+
 /// One block as the spreader reads it.
 #[derive(Clone, Copy, Default)]
 struct Info {
@@ -370,15 +402,61 @@ impl Deref for Spreader<'_, '_> {
     }
 }
 
-/// A block's offset from the source of one spread, each coordinate in `-1..=1`.
-type Local = [i32; 3];
+/// A block of the 3x3x3 around the source of one spread: `(z + 1) * 9 + (y + 1) * 3 + (x + 1)`
+/// for its offset `(x, y, z)`, each coordinate in `-1..=1`.
+type Local = usize;
 
-const SOURCE: Local = [0, 0, 0];
+const SOURCE: Local = 13;
 
-fn step(at: Local, direction: Dir) -> Local {
-    let (dx, dy, dz) = direction.step();
-    [at[0] + dx, at[1] + dy, at[2] + dz]
+/// Per face index (as `Dir::ALL`), the change in [`Local`] one step that way.
+const STEP: [isize; 6] = [-3, 3, -9, 9, -1, 1];
+
+/// The face index of the opposite face: `Dir::ALL` lists each face next to its opposite.
+const fn opposite(face: usize) -> usize {
+    face ^ 1
 }
+
+fn step(at: Local, face: usize) -> Local {
+    at.wrapping_add_signed(STEP[face])
+}
+
+/// The offset `(x, y, z)` of a [`Local`].
+const fn coords(at: Local) -> [i32; 3] {
+    let at = at as i32;
+    [at % 3 - 1, at / 3 % 3 - 1, at / 9 - 1]
+}
+
+/// Per [`Local`], its Manhattan distance from the source.
+const MANHATTAN: [u8; 27] = {
+    let mut table = [0; 27];
+    let mut at = 0;
+    while at < 27 {
+        let [x, y, z] = coords(at);
+        table[at] = (x.abs() + y.abs() + z.abs()) as u8;
+        at += 1;
+    }
+    table
+};
+
+/// Every `(face, direction)` pair `spread_all` walks, faces then directions in `Dir::ALL`
+/// order, each pair on two different axes.
+const PAIRS: [(usize, usize); 24] = {
+    let mut pairs = [(0, 0); 24];
+    let mut n = 0;
+    let mut face = 0;
+    while face < 6 {
+        let mut direction = 0;
+        while direction < 6 {
+            if direction >> 1 != face >> 1 {
+                pairs[n] = (face, direction);
+                n += 1;
+            }
+            direction += 1;
+        }
+        face += 1;
+    }
+    pairs
+};
 
 /// The 3x3x3 blocks around the source of one `spread_all`, read from the region as first
 /// asked. Every block a spread looks at -- its targets, what they spread against, the faces they
@@ -387,6 +465,10 @@ fn step(at: Local, direction: Dir) -> Local {
 struct Near {
     source: BlockPos,
     slots: [Info; 27],
+    /// Bumped on every write, so an answer worked out before it is known to be stale.
+    writes: u32,
+    /// Bumped on every unknown-shape record, so an answer that recorded one is never reused.
+    records: u32,
 }
 
 impl Near {
@@ -394,20 +476,19 @@ impl Near {
         Self {
             source,
             slots: [Info::default(); 27],
+            writes: 0,
+            records: 0,
         }
     }
 
     fn pos(&self, at: Local) -> BlockPos {
-        offset(self.source, at[0], at[1], at[2])
-    }
-
-    fn index(at: Local) -> usize {
-        debug_assert!(at.iter().all(|c| (-1..=1).contains(c)));
-        ((at[2] + 1) * 9 + (at[1] + 1) * 3 + (at[0] + 1)) as usize
+        let [x, y, z] = coords(at);
+        offset(self.source, x, y, z)
     }
 
     fn forget(&mut self, at: Local) {
-        self.slots[Self::index(at)] = Info::default();
+        self.slots[at] = Info::default();
+        self.writes += 1;
     }
 
     fn get(
@@ -416,11 +497,10 @@ impl Near {
         cx: &FeatureContext<'_, '_, '_>,
         at: Local,
     ) -> Info {
-        let index = Self::index(at);
-        if !self.slots[index].has(I_READ) {
-            self.slots[index] = spreader.info(cx, self.pos(at));
+        if !self.slots[at].has(I_READ) {
+            self.slots[at] = spreader.info(cx, self.pos(at));
         }
-        self.slots[index]
+        self.slots[at]
     }
 }
 
@@ -499,7 +579,7 @@ impl Spreader<'_, '_> {
         let Some((key, state)) = cx.region.block_keyed(pos) else {
             return self.outside;
         };
-        let slot = &self.infos[key.slot() & (INFO_SLOTS - 1)];
+        let slot = &self.infos[info_slot(key)];
         if let Some((known, info)) = slot.get() {
             if known == key {
                 return info;
@@ -620,10 +700,10 @@ impl Spreader<'_, '_> {
         cursors: Vec<Cursor>,
         spread_veins: bool,
     ) -> Vec<Cursor> {
-        let mut processed: Vec<Cursor> = Vec::new();
-        // The mergeable cursor charge per position, as an index into `processed`.
-        let mut mergeable: Vec<(BlockPos, usize, i32)> = Vec::new();
-        for mut cursor in cursors {
+        let mut cursors = cursors;
+        // World generation never merges cursors, so vanilla's map of mergeable cursors per
+        // position is never read: the cursors that keep charge go on in their order.
+        cursors.retain_mut(|cursor| {
             let distance = [
                 cursor.pos.x.wrapping_sub(origin.x),
                 cursor.pos.y.wrapping_sub(origin.y),
@@ -634,27 +714,12 @@ impl Spreader<'_, '_> {
             .max()
             .unwrap_or(0);
             if distance > 1024 {
-                continue;
+                return false;
             }
-            self.update(cx, origin, &mut cursor, spread_veins);
-            if cursor.charge <= 0 {
-                continue;
-            }
-            match mergeable.iter_mut().find(|(pos, _, _)| *pos == cursor.pos) {
-                None => {
-                    mergeable.push((cursor.pos, processed.len(), cursor.charge));
-                    processed.push(cursor);
-                }
-                Some(entry) => {
-                    // World generation never merges cursors.
-                    if cursor.charge < entry.2 {
-                        *entry = (cursor.pos, processed.len(), cursor.charge);
-                    }
-                    processed.push(cursor);
-                }
-            }
-        }
-        processed
+            self.update(cx, origin, cursor, spread_veins);
+            cursor.charge > 0
+        });
+        cursors
     }
 
     /// `ChargeCursor.update`.
@@ -761,6 +826,36 @@ impl Spreader<'_, '_> {
         true
     }
 
+    /// `support::face_full` for `info` where its shape is known: `None` for a side face of a
+    /// block neither empty nor a full cube, which `face_full` records as unsupported and fails.
+    fn face_full_known(info: Info, face: Dir, collision: bool) -> Option<bool> {
+        match face {
+            Dir::Up | Dir::Down => {
+                let sturdy = if face == Dir::Up {
+                    BlockFact::SturdyTop
+                } else {
+                    BlockFact::SturdyBottom
+                };
+                Some(info.is(sturdy) || (collision && info.is(BlockFact::FullCollision)))
+            }
+            _ => {
+                if info.is(BlockFact::Air) || info.is(BlockFact::NoCollision) {
+                    return Some(false);
+                }
+                if info.is(BlockFact::FullCollision) {
+                    return Some(collision || info.is(BlockFact::SturdyTop));
+                }
+                None
+            }
+        }
+    }
+
+    /// The unsupported-shape record of `face_full` for the block at `pos`.
+    fn record_shape(cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos) {
+        let name = block_in(cx.region, pos).name.to_string();
+        cx.unsupported.record("shape", &name);
+    }
+
     /// `support::face_full` for `info`, the block at `pos`.
     fn face_full_of(
         cx: &mut FeatureContext<'_, '_, '_>,
@@ -769,27 +864,10 @@ impl Spreader<'_, '_> {
         face: Dir,
         collision: bool,
     ) -> bool {
-        match face {
-            Dir::Up | Dir::Down => {
-                let sturdy = if face == Dir::Up {
-                    BlockFact::SturdyTop
-                } else {
-                    BlockFact::SturdyBottom
-                };
-                info.is(sturdy) || (collision && info.is(BlockFact::FullCollision))
-            }
-            _ => {
-                if info.is(BlockFact::Air) || info.is(BlockFact::NoCollision) {
-                    return false;
-                }
-                if info.is(BlockFact::FullCollision) {
-                    return collision || info.is(BlockFact::SturdyTop);
-                }
-                let name = block_in(cx.region, pos).name.to_string();
-                cx.unsupported.record("shape", &name);
-                false
-            }
-        }
+        Self::face_full_known(info, face, collision).unwrap_or_else(|| {
+            Self::record_shape(cx, pos);
+            false
+        })
     }
 
     /// `support::face_full` for the block at `pos`.
@@ -817,6 +895,11 @@ impl Spreader<'_, '_> {
     /// `MultifaceSpreader.spreadAll` with the sculk vein spreader's configuration, from a vein
     /// with faces `source`, or from another block when `None`. The blocks around it are read
     /// through one [`Near`].
+    ///
+    /// Every test reads blocks only through `near`, and only this spread writes while it runs,
+    /// so a failed same-position test stays failed until the next write: it is looked up rather
+    /// than worked out again, unless working it out recorded an unknown shape, which vanilla
+    /// would record again.
     fn spread_all(
         &self,
         cx: &mut FeatureContext<'_, '_, '_>,
@@ -827,48 +910,52 @@ impl Spreader<'_, '_> {
         let other_source = source.is_none();
         let faces = source.unwrap_or(0);
         let mut near = Near::new(pos);
+        // Per direction, `near.writes + 1` when the same-position spread that way failed at
+        // that count of writes, with no record.
+        let mut same_position_failed = [0u32; 6];
         let mut count = 0;
-        for face in Dir::ALL {
-            let on_face = faces & face_bit(face) != 0;
-            if !(other_source || on_face) {
+        for (face, direction) in PAIRS {
+            let on_face = faces & 1 << face != 0;
+            if !(other_source || (on_face && faces & 1 << direction == 0)) {
                 continue;
             }
-            for direction in Dir::ALL {
-                if direction.axis() == face.axis() {
-                    continue;
-                }
-                if !(other_source || (on_face && faces & face_bit(direction) == 0)) {
-                    continue;
-                }
-                let mut target = None;
-                for kind in types {
-                    let candidate = match kind {
-                        Spread::SamePosition => (SOURCE, direction),
-                        Spread::SamePlane => (step(SOURCE, direction), face),
-                        Spread::WrapAround => {
-                            (step(step(SOURCE, direction), face), direction.opposite())
+            let mut target = None;
+            for kind in types {
+                let candidate = match kind {
+                    Spread::SamePosition => {
+                        if same_position_failed[direction] == near.writes + 1 {
+                            continue;
                         }
-                    };
-                    if self.can_spread_into(cx, &mut near, candidate.0, candidate.1) {
-                        target = Some(candidate);
-                        break;
+                        let records = near.records;
+                        if self.can_spread_into(cx, &mut near, SOURCE, direction) {
+                            target = Some((SOURCE, direction));
+                            break;
+                        }
+                        if near.records == records {
+                            same_position_failed[direction] = near.writes + 1;
+                        }
+                        continue;
                     }
+                    Spread::SamePlane => (step(SOURCE, direction), face),
+                    Spread::WrapAround => (step(step(SOURCE, direction), face), opposite(direction)),
+                };
+                if self.can_spread_into(cx, &mut near, candidate.0, candidate.1) {
+                    target = Some(candidate);
+                    break;
                 }
-                let Some((target, face_to)) = target else {
-                    continue;
-                };
-                let Some(new) = self.state_for_placement(cx, &mut near, target, face_to) else {
-                    continue;
-                };
-                let at = near.pos(target);
-                let written = match new {
-                    Placement::Id(id) => Self::write_id(cx, at, id),
-                    Placement::State(state) => cx.region.set_block(at, state),
-                };
-                near.forget(target);
-                if written {
-                    count += 1;
-                }
+            }
+            let Some((target, face_to)) = target else {
+                continue;
+            };
+            let new = self.state_for_placement(cx, &mut near, target, Dir::ALL[face_to]);
+            let at = near.pos(target);
+            let written = match new {
+                Placement::Id(id) => Self::write_id(cx, at, id),
+                Placement::State(state) => cx.region.set_block(at, state),
+            };
+            near.forget(target);
+            if written {
+                count += 1;
             }
         }
         count
@@ -880,39 +967,32 @@ impl Spreader<'_, '_> {
         cx: &mut FeatureContext<'_, '_, '_>,
         near: &mut Near,
         at: Local,
-        face: Dir,
+        face: usize,
         collision: bool,
     ) -> bool {
         let info = near.get(self, cx, at);
-        Self::face_full_of(cx, info, near.pos(at), face, collision)
+        Self::face_full_known(info, Dir::ALL[face], collision).unwrap_or_else(|| {
+            near.records += 1;
+            Self::record_shape(cx, near.pos(at));
+            false
+        })
     }
 
-    /// `MultifaceBlock.canAttachTo` for the block at `at` looking at `direction`.
-    fn near_can_attach_to(
-        &self,
-        cx: &mut FeatureContext<'_, '_, '_>,
-        near: &mut Near,
-        at: Local,
-        direction: Dir,
-    ) -> bool {
-        self.near_face_full(cx, near, step(at, direction), direction.opposite(), true)
-    }
-
-    /// `SculkVeinBlock.getStateForPlacement` for the block now at `at`. `can_spread_into` has
-    /// just read it and nothing has written since.
+    /// `SculkVeinBlock.getStateForPlacement` for the block now at `at`, which `can_spread_into`
+    /// has just accepted with `face`. Its own tests -- no vein face there already, and a face to
+    /// attach to -- are two of the ones `can_spread_into` passed on the same blocks, with nothing
+    /// written since, so they pass again (and an attach test that passes records nothing).
     fn state_for_placement(
         &self,
         cx: &mut FeatureContext<'_, '_, '_>,
         near: &mut Near,
         at: Local,
         face: Dir,
-    ) -> Option<Placement> {
+    ) -> Placement {
         let existing = near.get(self, cx, at);
         let vein = existing.has(I_VEIN);
-        if (vein && existing.has_face(face)) || !self.near_can_attach_to(cx, near, at, face) {
-            return None;
-        }
-        Some(if vein && !existing.has(I_CANONICAL) {
+        debug_assert!(!(vein && existing.has_face(face)));
+        if vein && !existing.has(I_CANONICAL) {
             let state = block_in(cx.region, near.pos(at)).clone();
             Placement::State(Self::with_face(state, face, true))
         } else if vein {
@@ -925,24 +1005,25 @@ impl Spreader<'_, '_> {
             let wet =
                 existing.fact_in(BlockFact::Water) && existing.fact_in(BlockFact::FluidSource);
             Placement::Id(self.vein_id(cx, face_bit(face), wet))
-        })
+        }
     }
 
     /// `MultifaceSpreader.canSpreadInto` with the sculk vein spreader's rules, from the source
-    /// of `near` into the block at `target`.
+    /// of `near` into the block at `target`, on its face `face` (a `Dir::ALL` index).
     fn can_spread_into(
         &self,
         cx: &mut FeatureContext<'_, '_, '_>,
         near: &mut Near,
         target: Local,
-        face: Dir,
+        face: usize,
     ) -> bool {
-        if near.get(self, cx, step(target, face)).has(I_BLOCKER) {
+        let behind = step(target, face);
+        if near.get(self, cx, behind).has(I_BLOCKER) {
             return false;
         }
-        // `distManhattan(source, target)`: exact for offsets this small.
-        if target.iter().map(|c| c.abs()).sum::<i32>() == 2 {
-            let neighbor = step(SOURCE, face.opposite());
+        // `distManhattan(source, target)`.
+        if MANHATTAN[target] == 2 {
+            let neighbor = step(SOURCE, opposite(face));
             if self.near_face_full(cx, near, neighbor, face, false) {
                 return false;
             }
@@ -962,9 +1043,10 @@ impl Spreader<'_, '_> {
             || existing.fact_in(BlockFact::Air)
             || vein
             || (existing.has(I_WATER) && water_source_here);
+        // `MultifaceBlock.canAttachTo(target, face)`: the face of the block behind it.
         replaceable
-            && !(vein && existing.has_face(face))
-            && self.near_can_attach_to(cx, near, target, face)
+            && !(vein && existing.faces() & 1 << face != 0)
+            && self.near_face_full(cx, near, behind, opposite(face), true)
     }
 
     /// `SculkBehaviour.attemptUseCharge` for the three behaviours.
@@ -1170,20 +1252,7 @@ impl Spreader<'_, '_> {
         pos: BlockPos,
         origin: BlockPos,
     ) -> Option<BlockPos> {
-        // `NON_CORNER_NEIGHBOURS` in `BlockPos.betweenClosed` order: x fastest, then y, then z.
-        let mut offsets = [(0, 0, 0); 18];
-        let mut n = 0;
-        for z in -1..=1 {
-            for y in -1..=1 {
-                for x in -1..=1 {
-                    if (x == 0 || y == 0 || z == 0) && (x, y, z) != (0, 0, 0) {
-                        offsets[n] = (x, y, z);
-                        n += 1;
-                    }
-                }
-            }
-        }
-        debug_assert_eq!(n, 18);
+        let mut offsets = NON_CORNER_NEIGHBOURS;
         shuffle(&mut offsets, cx.random);
         let mut best = pos;
         for (x, y, z) in offsets {
