@@ -1225,3 +1225,33 @@ pipeline-b5 = this branch at 80f76d3 merged with origin/perf/datapath **667bdbb*
 
 -8.3% decorate, -4.2% user CPU, ahead 3/3 on both; with base 1 (-9.1%) ahead 6/6 on two bases.
 Java quiet; df701ee858e2bdd3 on every row. **Kept**, cherry-picked onto the branch.
+
+## Sculk round 2: indexed neighbourhood, run-wide read cache; base 1 -9.6%
+
+**Change** (sub-agent commits 31e1016 + 553a015; `cave/sculk.rs`, unused `Dir::axis` removed from
+`cave/support.rs`). Its sampling of the base put ~65% of sculk in `spread_all`, mostly region reads.
+- cursors: in world generation vanilla never merges cursors (`!isWorldGeneration()` guards the
+  merge), so its per-position map is never read; the list is filtered in place (`retain_mut`), same
+  order.
+- `spread_all`'s 3x3x3 neighbourhood indexed 0..26 with step/offset/distance tables and the 24
+  face/direction pairs; a failed same-position test is reused until the next write (not when
+  computing it tallied an unknown shape); `getStateForPlacement` no longer repeats two checks
+  `canSpreadInto` just passed on unchanged blocks.
+- a per-run read cache over a 32^3 cube around the origin, per thread, stamped per run (nothing
+  carries over); every write in the run clears its cell.
+- description-cache keys are mixed before picking a slot (section palettes collided); movement
+  offsets are a const table; built vein states kept on the feature.
+- Draws, write order and written states unchanged.
+
+**Hold, base 1** (pipeline-b6 = 1a87a00 [branch 80f76d3 + datapath **667bdbb**] + the ore cell change,
+i.e. the branch head; pipeline-sc6 adds the two sculk commits):
+
+| | run 1 | run 2 | run 3 | mean |
+|---|---|---|---|---|
+| base decorate_ms | 8568 | 8033 | 7958 | 8186 |
+| sculk decorate_ms | 7354 | 7454 | 7399 | 7402 |
+| base / sculk cpu_user_s | 23.48 / 22.69 | 23.76 / 22.38 | 23.38 / 22.37 | 23.54 / 22.48 |
+| java_cpu_s_per_10s | 0.20 / 0.21 | 0.24 / 0.20 | 0.23 / 0.20 | |
+
+-9.6% decorate, -4.5% user CPU, ahead 3/3 on both. Java quiet; df701ee858e2bdd3 on every row; tests
+195 pass. Second base next.
