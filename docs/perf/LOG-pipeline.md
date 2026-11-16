@@ -1773,3 +1773,50 @@ pipeline-q1 (ef5e48b).
 
 The 8-thread box noise (sys spikes 6-14 s on a growing share of rows) now limits how small an
 8-thread gain can be resolved; absolute cps across days is not comparable until it is traced.
+
+### 8-thread sys spikes traced to glibc arena growth; up-front arena reserve (sub-agent 0b56ce5, now 2359e11): +40% cps at 8 threads, kept
+
+**Diagnosis** (20 timed r16 8-thread runs of q1, one at a time under `flock -x`, ~2-3 min exclusive in
+total; /proc/vmstat, PSI and the session cgroup's memory.stat/events diffed per run; per-task
+stat/wchan/syscall sampled every 20 ms). Per-run sys time ranged 1.7 s to 19.8 s with:
+- no compaction, THP faults, reclaim (pgscan/pgsteal 0), allocstall or drop_pagecache; pgmajfault 0-2;
+  memory PSI 0 in every run: **not memory pressure and not another tenant**;
+- pgfault flat at 175-215k whatever the sys time: the same faults cost more;
+- blocked threads almost all in `D:do_mprotect_pkey` (syscall 10, mprotect), `vma_merge`,
+  `lock_mm_and_find_vma`; 100-160 such samples in spike runs vs 25-60 in calm ones.
+- `strace -f -c` (one run): **53,233 mprotect** calls, 1,105 madvise, 558 brk, 58 mmap, 19 munmap.
+  `strace -k`: all from glibc `malloc` -> `sysmalloc` growing each worker's 64 MB arena heap,
+  mostly one 4 KB page at a time. Each mprotect takes mmap_lock for writing, so with 8 threads
+  faulting under the same lock they queue; how badly depends on scheduling, hence the spread.
+
+So the "box noise" at 8 threads in the last several holds was largely our own process.
+
+**Fix** (`oxide-pregen/src/main.rs`, 28 lines): after the pool is built, `rayon::broadcast(reserve_arena)`
+allocates two 64 MB heaps' worth of untouched 120 KB blocks per worker (below the 128 KB mmap
+threshold, so the thread's arena serves them) and frees them, keeping the one block that opened the
+second heap so it is not unmapped. glibc keeps a heap's write permission after trimming (it releases
+pages with madvise), so the arena then grows with no mprotect during the run. Only malloc's chunk
+headers are written (about one page per block, released on trim). No global malloc setting changed.
+Relies on current glibc behaviour; on another allocator it is a burst of allocations and frees.
+Work-time mprotect calls: ~53k -> 0 (8,616 remain, all at start-up, ~1,076 per worker).
+
+8-thread hold (6 rounds, ABBA, q1 listed first):
+
+| | q1 | k1 | change |
+|---|---|---|---|
+| cps per round | 306.1 230.0 264.7 289.1 237.2 252.8 | 393.3 358.3 325.0 373.5 378.9 377.4 | |
+| cps mean | 263 | **368** | **+40%** (6/6) |
+| decorate_ms mean | 1878 | 921 | -51% |
+| secs mean | 4.18 | 2.97 | -29% |
+| cpu_sys_s mean (range) | 5.19 (2.86-8.10) | 1.60 (1.38-1.88) | -69% |
+
+1-thread hold (4 rounds, k1 listed first): decorate 6174 vs 6297 (-2%, 2/4), sys 1.42 vs 1.36:
+neutral, as expected with one arena. java_cpu_s_per_10s 0.14-0.61.
+
+**Kept.** Branch head: tests pass (0 failed); digest df701ee858e2bdd3 at 1 and 8 threads; r7
+off-centre digest dea822a7b8517773 and .mca identical to q1's outside the timestamp table; digest held
+on every hold row. New base: pipeline-k1 (0b56ce5).
+
+**Against PumpkinMC:** decorated, byte-exact pregen at 8 threads is now 368 cps mean (325-393) on this
+box, vs PumpkinMC terrain-only ~404 cps (not byte exact). Earlier 8-thread figures (335 cps headline,
+332 on fb) were taken with this contention present and are not directly comparable.
