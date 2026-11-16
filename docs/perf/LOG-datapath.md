@@ -1960,3 +1960,17 @@ Generation-only CPU-s against the two base builds; java at most 0.39 CPU-s per r
   show at 8 threads is open.
 
 A strong candidate for the re-hold on the 07a6727 base.
+
+### E36 (carvers: tunnel walk recorded once per thread and replayed), 1 thread on the real base
+
+A first attempt failed before taking the lock: the ssh connection to the box was reset (02:4x UTC, transient).
+Rerun: generation-only CPU-s, 4 rounds, java at most 0.40 CPU-s per run. All `digest=a977961a58122047`.
+
+| | r1 | r2 | r3 | r4 | mean |
+|---|---|---|---|---|---|
+| base 1 | 8.63 | 8.62 | 8.86 | 8.85 | 8.74 |
+| base 2 | 9.22 | 9.81 | 9.21 | 9.04 | 9.32 |
+| E36 | 8.83 | 8.41 | 8.51 | 7.95 | **8.43** |
+
+-6.7% against the bases' mean, -3.6% against the faster base; below both in 3 of 4. The two bases differ by
+6.6% here, unusually wide. A candidate; the 8-thread hold is next.
