@@ -1571,3 +1571,27 @@ hold swings here reach ~7%, larger than a ~2% sampled gain. **Rejected**; patch 
 What remains in `place_blob` is branchy loop control (~half) and cache-missing block reads (~20%);
 section-local reads need a view that survives interleaved writes (unsafe in region.rs) and a per-row
 sphere bound is the rejected z-run, so ores are parked unless a different formulation appears.
+
+### Decoration profile on h1 (f3dfae0): no feature clears 5%; apply_writes and heightmaps do
+
+Sub-agent, r16 1 thread, two sampled runs plus two runs with throwaway per-feature wall timers
+(reverted; digest df701ee858e2bdd3, decorate_ms 7266 / 7491).
+
+decorate_ms split (~3500 samples): features + driver (`BiomeDecorator::decorate`) 73%,
+**`apply_writes` (oxide-pregen) 14.6%**, **heightmaps (`decorate.rs`) 7.2%**, region build /
+`into_interned` / drop 5%.
+
+Per feature (ms, two runs): sculk_patch_deep_dark 670/602 (~8.7% of decorate_ms),
+dark_forest_vegetation 315/303 (~4.2%), ore_clay 290/305, glow_lichen 232/247 (~3.3%),
+lush_caves_ceiling_vegetation 227/234, amethyst_geode 210/256, ore_diorite/tuff/granite/andesite
+208-227 each, lush_caves_vegetation 147/148, ore_gravel 143/149, lush_caves_clay 127/126,
+ore_coal_lower 117/138, ore_dirt 114/153, disk_sand 87/86, freeze_top_layer 83/81, sculk_vein 80/72.
+By code (share of decorator samples): ore 37-38%, driver + placement modifiers 17-18% (spread thin),
+sculk 12%, vegetation patch 7.4%, tree 7-8%, multiface 5-6%, geode 4%, disk ~2%, rest ~1% each.
+
+The largest non-ore, non-sculk feature (dark forest, ~4%) cannot yield a 5% cut, which is about the
+smallest gain holds here resolve. Next targets instead:
+- `apply_writes` searches the section palette by full `BlockState` equality per write; resolve each
+  interned state to a palette index once per section.
+- `heightmaps()` keeps scanning sections below the surface after all six maps are filled and does six
+  fact lookups per palette entry; stop once every column is set.
