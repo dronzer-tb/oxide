@@ -1595,3 +1595,32 @@ smallest gain holds here resolve. Next targets instead:
   interned state to a palette index once per section.
 - `heightmaps()` keeps scanning sections below the surface after all six maps are filled and does six
   fact lookups per palette entry; stop once every column is set.
+
+### apply_writes palette index per section + heightmap early stop (now 59af47f + 1e047df): -18.2% decorate, kept
+
+- A, `oxide-pregen/src/generate.rs` `apply_writes`: each interned state's section palette index is
+  resolved once per section and reused. The first write resolves exactly as before (first equal
+  entry, else inserted), and a palette only grows, so that stays the first equal entry.
+- B, `decorate.rs` `heightmaps()`: stop once no column of any of the six maps is unset (a column keeps
+  the first counted block from the top), and read each palette entry's facts in one lookup.
+
+Samples (r16 1 thread, two runs): `apply_writes` 484/544 -> 392/355 (-27%), `heightmaps()` 243/259 ->
+42/43 (-83%).
+
+One ABBA hold, 4 rounds, three trees (h1 = base f3dfae0, fa = A, fb = A+B):
+
+| | round 1 | round 2 | round 3 | round 4 | mean | change |
+|---|---|---|---|---|---|---|
+| h1 decorate_ms | 7904 | 7035 | 7351 | 7734 | 7506 | |
+| fa decorate_ms | 7243 | 5954 | 7026 | 6256 | 6620 | -11.8% (4/4) |
+| fb decorate_ms | 6813 | 6232 | 5809 | 5692 | 6137 | -18.2% (4/4) |
+| h1 / fa / fb secs | 23.09 / 23.09 / 22.04 | 21.80 / 20.22 / 21.71 | 22.01 / 22.48 / 20.25 | 22.46 / 20.78 / 20.65 | 22.34 / 21.64 / 21.16 | -3.1% / -5.3% |
+
+java_cpu_s_per_10s 0.18-0.86 on every row. A and A+B each clear 10% in one hold; B over A is -7.3%
+(3/4), matching its -83% heightmap samples. **Both kept.** Cherry-picked; branch head tests pass
+(oxide-chunkgen, oxide-pregen, oxide-anvil, 0 failed) and an r16 2-thread run gives digest
+df701ee858e2bdd3; digest held on every hold row. New base: pipeline-fb (4d750ec = branch head +
+datapath 323b9d4).
+
+Next in apply_writes: each finished chunk walks all writes of its nine neighbour regions and keeps
+the ones landing in it; bucketing each region's writes by target chunk once should remove most of it.
