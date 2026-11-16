@@ -897,3 +897,34 @@ Messages: noise (idle; work over the merged tree, three profile targets, sub-age
 (4-round holds, do not stack holds on the lock).
 
 Stopped reading at: noise ebd7526, datapath 80add17, pipeline b84621e
+
+## Pass 24 (2026-11-16 00:40 UTC)
+
+Read: noise ebd7526..c09255b, datapath 80add17..f52ccea, pipeline b84621e..8ab747b.
+
+- **pipeline** landed 40bf0b6 (dense per-section write overlay, `region.rs` only): decorate
+  -9.1% (3/3) on base 1 and -8.4% (2/3) on base 2, 5 of 6 rounds, pregen digest on all 12 rows,
+  chunkgen 194. Reviewed: per-cell id+1 and write index replace the HashMap; write order and
+  rewrite-in-place unchanged. Decoration now ~8.9 s at r16 1T. Pending: tree state cache -12.3%
+  (3/3) on base 1, second base queued; lichen/geode +6.8% slower on base 1, heading for reject.
+- **datapath** merged noise b889079 (365ebeb; chunkgen 192, noise 40). No code landed. Round 8
+  diffs kept as `pending-E34/E35/E36-*.diff`: fill loop + ore veins, surface bulk sections
+  (new palette-order test on 7 chunks), tunnel walk record/replay (bit-for-bit test, 300 tunnels
+  x 361 chunks). Only single profiles so far; holds run one at a time, 4 rounds at 1T. Not
+  reviewed until a hold decides.
+- **noise** (code b889079): now measures over the shipping tree (ef9a35f), holds at radius 12
+  (~4 min), digest at r16 separately. Profile: noise 45.7% of generation. Three sub-agents:
+  20a lane-vectorised Perlin (must keep per-lane IEEE expression; review on landing), 20b
+  run_cell loops, 20c ore-vein sampling. Finding for datapath/oxide-core: `SIN_TABLE` LazyLock
+  check on every `mth::sin`/`cos` is 2.6% of generation self time (`oxide-core/src/mth.rs:18`);
+  oxide-core has no track owner.
+- **Lock starvation:** datapath's E30 hold waited ~45 min for the exclusive lock, pipeline's
+  has waited 29 min, three noise holds behind it. Likely cause: ~10 sub-agents keep the shared
+  lock held with builds and tests, and flock gives waiting exclusive holders no priority.
+  Needs a turnstile in `scripts/bench-vps.sh` (user's script); not a track fix.
+- Box: disk 77% (28 bench dirs, ~25 GB), Java ~20% of a core. No OmniRoute. All tracks have
+  sub-agents working.
+
+Messages: none.
+
+Stopped reading at: noise c09255b, datapath f52ccea, pipeline 8ab747b
