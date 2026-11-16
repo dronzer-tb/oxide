@@ -1271,3 +1271,21 @@ pipeline-b7 = this branch at 2979ec0 merged with origin/perf/datapath **464c8d4*
 -3.9% decorate, -2.1% user CPU, ahead 2/3 on each. With base 1 (-9.6%, 3/3) it is ahead in 5 of 6
 rounds on both measures over two bases. Java quiet; df701ee858e2bdd3 on every row. **Kept**,
 cherry-picked onto the branch.
+
+## Profile after ore cells + sculk round 2 (branch fad1f9e + datapath 464c8d4), lite split timers
+
+1 thread r16, digest df701ee858e2bdd3. Decorate CPU **6240 ms** (7344 at the previous profile, 9328 at
+the first lite profile). Branch-head tests: chunkgen 192 pass (1 ignored), pregen pass.
+
+| feature | ms | share |
+|---|---|---|
+| sculk_patch_deep_dark | 666 | 10.7% |
+| ores: clay 416, tuff 328, granite 325, diorite 316, andesite 312, gravel 210, dirt 159, coal 148, copper 77, iron 71+ | ~2360 | ~38% |
+| dark_forest_vegetation | 333 | 5.3% |
+| lush: ceiling 301, vegetation 184, clay 183 | 668 | 10.7% |
+| glow_lichen | 276 | 4.4% |
+| amethyst_geode | 235 | 3.8% |
+| disk_sand 116, classic_vines 103, freeze_top_layer 96, sculk_vein 94, cave_vines 84 | 493 | 7.9% |
+
+Ores remain the largest group at ~230 ns per fresh cell (10.1M fresh cells); next round needs a
+sampled view of the ore body rather than wall timers.
