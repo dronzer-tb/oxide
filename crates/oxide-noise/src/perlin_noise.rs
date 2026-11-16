@@ -1,7 +1,7 @@
 //! `PerlinNoise`: multi-octave combinator over [`ImprovedNoise`], matching vanilla's
 //! `net.minecraft.world.level.levelgen.synth.PerlinNoise`.
 
-use crate::improved_noise::{wrap_coordinate, HashKind, ImprovedNoise};
+use crate::improved_noise::{wrap_coordinate, HashKind, ImprovedNoise, NOISE_BLOCK};
 use crate::random::WorldRandom;
 
 #[derive(Debug, Clone)]
@@ -139,16 +139,22 @@ impl PerlinNoise {
             if let Some(noise) = level {
                 let amplitude = self.amplitudes[i];
                 let mut memo = noise.cell_hashes(HashKind::Perlin);
-                for (((o, x), y), z) in out.iter_mut().zip(xs).zip(ys).zip(zs) {
-                    let sample = noise.noise_with_scale_reusing(
-                        wrap_coordinate(x * freq),
-                        wrap_coordinate(y * freq),
-                        wrap_coordinate(z * freq),
+                let mut samples = [0.0f64; NOISE_BLOCK];
+                for start in (0..out.len()).step_by(NOISE_BLOCK) {
+                    let end = (start + NOISE_BLOCK).min(out.len());
+                    noise.noise_block_reusing(
+                        &xs[start..end],
+                        &ys[start..end],
+                        &zs[start..end],
+                        freq,
                         0.0 * freq,
-                        0.0 * freq,
+                        Some(0.0 * freq),
                         &mut memo,
+                        &mut samples,
                     );
-                    *o += amplitude * sample * amp;
+                    for (o, sample) in out[start..end].iter_mut().zip(&samples) {
+                        *o += amplitude * sample * amp;
+                    }
                 }
             }
             freq *= 2.0;

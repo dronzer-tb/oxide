@@ -771,7 +771,10 @@ impl Program {
 
         let lanes = out.len();
         let n = self.ops.len();
-        let mut regs = Scratch::filled(n * lanes, 0.0f64);
+        // Every instruction below writes all `lanes` of its register before any later one
+        // reads it (each arm fills `dst` completely; `range_choice` runs at least one branch,
+        // whose own `run_cell` writes all of `dst`), so the stale contents are never seen.
+        let mut regs = Scratch::overwritten(n * lanes, 0.0f64);
         for i in 0..n {
             let (done, rest) = regs.split_at_mut(i * lanes);
             let dst = &mut rest[..lanes];
@@ -812,7 +815,7 @@ impl Program {
                     if any_out && !any_in {
                         r.when_out_of_range.run_cell(caches, cell, cx, dst);
                     } else if any_out {
-                        let mut other = Scratch::filled(lanes, 0.0f64);
+                        let mut other = Scratch::overwritten(lanes, 0.0f64);
                         r.when_out_of_range.run_cell(caches, cell, cx, &mut other);
                         for ((d, o), v) in dst.iter_mut().zip(&other).zip(input) {
                             if !inside(*v) {
