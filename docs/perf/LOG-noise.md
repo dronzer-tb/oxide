@@ -824,3 +824,24 @@ shipc1/shipc2, 4 rounds, plus an 8-thread regression hold):
   vein slot's 5x49x5 corners are ever read, then builds only the needed layers (same corner
   values, fewer computed). Noise crate only; any call-site change in `ore_veins.rs` is
   described, not made.
+
+**Pregen digest for ac68e26 on a pipeline-merged tree:** the scratch merge is `origin/perf/pipeline`
+ee2243f plus `perf/noise` ac68e26 (its noise crate is identical to ac68e26; the only conflict was
+`scripts/bench-vps.sh`, resolved to pipeline's side). The run was under the shared lock:
+
+    BENCH chunks=1089 threads=8 secs=14.065 cps=77.4 ms_per_chunk_core=103.33 digest=df701ee858e2bdd3 generate_ms=8470 decorate_ms=4799 serialise_ms=371 compress_ms=425 write_ms=0 compression=zlib6 mb_disk=0.0
+
+**df701ee858e2bdd3 matches.** All three landings of this session (b889079, 07a6727, ac68e26) are
+now pregen-checked. Not a timing: shared lock, box loaded.
+
+**Profile of the new shipping tree** (c34e27b + ac68e26; radius 12, 8 threads, 1,775
+generation samples, so ~±1 point per row). Noise is **41.9%** of generation (45.7% before 20a + 21):
+
+| Share | Where |
+|---|---|
+| 24.3% | corner grid. Self time: `grad_dot` 4.6% (improved_noise.rs:52-53), `[ext]` 2.5%, `lerp` 1.1%, `block_coords` ~1.4%, `corner_hashes` 0.4%, the `[i32; 3]` memo compare 0.4% |
+| 5.0% | per-block `run_cell` (was 7.5%) |
+| 3.7% | ore veins through noise (was 4.2%) |
+
+Over all of generation, `grad_dot` (5.2%) is now the largest named self-time item, ahead of the
+aquifer's `compute_kind` (3.9%). That is 22a's target.
