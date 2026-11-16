@@ -8,6 +8,8 @@
 //! input position at once (vanilla's modifiers all draw eagerly when asked), then the rest of the
 //! chain consumes them one at a time.
 
+use std::cell::RefCell;
+
 use anyhow::Result;
 use oxide_core::{BlockPos, HeightmapType, RandomSource};
 use oxide_datapack::placement::IntProvider;
@@ -576,11 +578,21 @@ pub fn run(
         cx.origin = pos;
         return place_configured_feature(feature, cx);
     };
-    let mut emitted = Vec::new();
+    let mut emitted = SPARE_POSITIONS
+        .with(|spare| spare.borrow_mut().pop())
+        .unwrap_or_default();
     modifier.positions(cx, pos, &mut emitted);
     let mut placed = false;
-    for next in emitted {
+    for &next in &emitted {
         placed |= run(rest, cx, next, feature, gate);
     }
+    emitted.clear();
+    SPARE_POSITIONS.with(|spare| spare.borrow_mut().push(emitted));
     placed
+}
+
+thread_local! {
+    /// Emptied position lists for [`run`] to fill, one per chain level in use: every level of
+    /// every chain used to allocate (and grow, and free) a fresh list.
+    static SPARE_POSITIONS: RefCell<Vec<Vec<BlockPos>>> = const { RefCell::new(Vec::new()) };
 }

@@ -22,6 +22,8 @@ const WINDOW: usize = 48;
 const NEVER_WRITTEN: i32 = i32::MIN;
 /// Writes to reserve room for up front: a region averages about 7.5k at radius 16.
 const RESERVED_WRITES: usize = 8192;
+/// Distinct written states to reserve room for up front: a region writes a few dozen.
+const RESERVED_STATES: usize = 64;
 /// Cells in one 16x16x16 section.
 const SECTION_CELLS: usize = 4096;
 
@@ -175,7 +177,7 @@ pub struct DecorationRegion<'a> {
     /// `BlockState` (two heap strings and a map) each.
     states: Vec<BlockState>,
     /// `states` the other way round.
-    state_ids: AHashMap<BlockState, u32>,
+    state_ids: StateIds,
     /// Per entry of `states`, the facts already answered for it (see [`FactCache`]).
     state_facts: Vec<FactCache>,
     /// Per terrain section (`chunk * sections + section`), per palette entry, the facts already
@@ -211,9 +213,9 @@ impl<'a> DecorationRegion<'a> {
                 .map(|_| None)
                 .collect(),
             writes: prefaulted(Vec::with_capacity(RESERVED_WRITES)),
-            states: Vec::new(),
-            state_ids: AHashMap::default(),
-            state_facts: Vec::new(),
+            states: Vec::with_capacity(RESERVED_STATES),
+            state_ids: StateIds::with_capacity(RESERVED_STATES),
+            state_facts: Vec::with_capacity(RESERVED_STATES),
             terrain_facts: (0..9 * middle.sections.len())
                 .map(|_| OnceCell::new())
                 .collect(),
@@ -431,9 +433,10 @@ impl<'a> DecorationRegion<'a> {
         let Some(cell) = self.locate(pos) else {
             return false;
         };
-        let id = match self.state_ids.get(&state) {
-            Some(&id) => id,
-            None => self.add_state(state),
+        let (hash, found) = self.state_ids.find(&self.states, &state);
+        let id = match found {
+            Some(id) => id,
+            None => self.add_state(hash, state),
         };
         self.write_id(pos, cell, id);
         true
@@ -445,10 +448,7 @@ impl<'a> DecorationRegion<'a> {
         let Some(cell) = self.locate(pos) else {
             return false;
         };
-        let id = match self.state_ids.get(state) {
-            Some(&id) => id,
-            None => self.add_state(state.clone()),
-        };
+        let id = self.intern(state);
         self.write_id(pos, cell, id);
         true
     }
@@ -456,9 +456,10 @@ impl<'a> DecorationRegion<'a> {
     /// The id [`Self::set_block_id`] writes `state` with. Interning a state that is then never
     /// written leaves it in the table unused; the writes are unaffected.
     pub fn intern(&mut self, state: &BlockState) -> u32 {
-        match self.state_ids.get(state) {
-            Some(&id) => id,
-            None => self.add_state(state.clone()),
+        let (hash, found) = self.state_ids.find(&self.states, state);
+        match found {
+            Some(id) => id,
+            None => self.add_state(hash, state.clone()),
         }
     }
 
@@ -484,10 +485,10 @@ impl<'a> DecorationRegion<'a> {
         self.write_id(pos, (cell.chunk_index, cell.section_index, cell.slot), id);
     }
 
-    /// Interns a state `state_ids` does not hold yet.
-    fn add_state(&mut self, state: BlockState) -> u32 {
+    /// Interns a state `state_ids` does not hold yet, `hash` being its [`StateIds`] hash.
+    fn add_state(&mut self, hash: u64, state: BlockState) -> u32 {
         let id = self.states.len() as u32;
-        self.state_ids.insert(state.clone(), id);
+        self.state_ids.add(hash, id);
         self.states.push(state);
         self.state_facts.push(FactCache::default());
         id
@@ -504,6 +505,13 @@ impl<'a> DecorationRegion<'a> {
             self.writes[cells[at + 1] as usize].1 = id;
         } else {
             cells[at + 1] = self.writes.len() as u32;
+            if self.writes.len() == self.writes.capacity() {
+                // Past the reserved room: double it in one step and map the new pages up front
+                // too, rather than let `push` grow it and fault them in one by one.
+                let mut grown = std::mem::take(&mut self.writes);
+                grown.reserve_exact(grown.capacity().max(RESERVED_WRITES));
+                self.writes = prefaulted(grown);
+            }
             self.writes.push((pos, id));
         }
         cells[at] = id + 1;
@@ -670,6 +678,51 @@ impl<'a> DecorationRegion<'a> {
 impl Drop for DecorationRegion<'_> {
     fn drop(&mut self) {
         self.recycle_overlay();
+    }
+}
+
+/// [`DecorationRegion::states`] the other way round, without a second copy of each state (a
+/// region's interning used to clone every new state once for the list and once for a map key):
+/// per hash of a state, the last id interned with that hash, earlier ids with an equal hash
+/// chained through `next`. A lookup compares against the states themselves, so a hash collision
+/// costs a comparison, never a wrong id.
+#[derive(Default)]
+struct StateIds {
+    hasher: ahash::RandomState,
+    heads: AHashMap<u64, u32>,
+    /// Per id, the previous id with the same hash, or [`NO_STATE`].
+    next: Vec<u32>,
+}
+
+const NO_STATE: u32 = u32::MAX;
+
+impl StateIds {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            hasher: ahash::RandomState::new(),
+            heads: AHashMap::with_capacity(capacity),
+            next: Vec::with_capacity(capacity),
+        }
+    }
+
+    /// `state`'s hash, and its id if `states` holds it.
+    fn find(&self, states: &[BlockState], state: &BlockState) -> (u64, Option<u32>) {
+        let hash = self.hasher.hash_one(state);
+        let mut id = self.heads.get(&hash).copied().unwrap_or(NO_STATE);
+        while id != NO_STATE {
+            if states[id as usize] == *state {
+                return (hash, Some(id));
+            }
+            id = self.next[id as usize];
+        }
+        (hash, None)
+    }
+
+    /// Records `id`, the next id, for a state with hash `hash`.
+    fn add(&mut self, hash: u64, id: u32) {
+        debug_assert_eq!(id as usize, self.next.len());
+        self.next
+            .push(self.heads.insert(hash, id).unwrap_or(NO_STATE));
     }
 }
 
