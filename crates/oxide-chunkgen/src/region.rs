@@ -106,6 +106,20 @@ pub struct InternedWrites {
 }
 
 impl InternedWrites {
+    /// Hands the write list back for a later region to fill, so its pages, already mapped,
+    /// are reused instead of freed and faulted in fresh. The decoration stage keeps every
+    /// region's list until the chunks reading it are finished; without this each region's list
+    /// was new memory, and at eight threads those page faults contend in the kernel.
+    pub fn recycle(self) {
+        let mut list = self.writes;
+        list.clear();
+        if let Ok(mut pool) = WRITE_POOL.lock() {
+            if pool.len() < POOLED_WRITE_LISTS {
+                pool.push(list);
+            }
+        }
+    }
+
     /// The writes in order, each with its state.
     pub fn iter(&self) -> impl Iterator<Item = (BlockPos, &BlockState)> + '_ {
         self.writes
@@ -154,6 +168,19 @@ fn prefaulted<T>(mut list: Vec<T>, entries: usize) -> Vec<T> {
         }
     }
     list
+}
+
+/// Write lists handed back by [`InternedWrites::recycle`], shared between threads: a list is
+/// handed back by whichever thread finishes the last chunk reading it.
+static WRITE_POOL: std::sync::Mutex<Vec<Vec<(BlockPos, u32)>>> = std::sync::Mutex::new(Vec::new());
+/// Lists kept in [`WRITE_POOL`], at most.
+const POOLED_WRITE_LISTS: usize = 256;
+
+/// An empty write list: a recycled one if there is one, its pages already mapped, otherwise a
+/// new one with its reserved room mapped up front (see [`prefaulted`]).
+fn take_write_list() -> Vec<(BlockPos, u32)> {
+    let recycled = WRITE_POOL.lock().ok().and_then(|mut pool| pool.pop());
+    recycled.unwrap_or_else(|| prefaulted(Vec::with_capacity(RESERVED_WRITES), PREFAULTED_WRITES))
 }
 
 /// The last [`DecorationRegion::serial`] handed out.
@@ -216,7 +243,7 @@ impl<'a> DecorationRegion<'a> {
             overlay: (0..9 * ((middle.height + 15) >> 4) as usize)
                 .map(|_| None)
                 .collect(),
-            writes: prefaulted(Vec::with_capacity(RESERVED_WRITES), PREFAULTED_WRITES),
+            writes: take_write_list(),
             states: Vec::with_capacity(RESERVED_STATES),
             state_ids: StateIds::with_capacity(RESERVED_STATES),
             state_facts: Vec::with_capacity(RESERVED_STATES),
