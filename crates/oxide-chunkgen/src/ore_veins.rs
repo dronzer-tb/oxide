@@ -91,30 +91,59 @@ pub fn apply_ore_veins(
         })
         .collect();
 
-    // Cells that provably hold no vein. `vein_state` gives up when
-    // `|vein_toggle| + edge_roundoff < VEININESS_THRESHOLD`, and `edge_roundoff` is never
-    // positive, so a cell whose `vein_toggle` stays strictly inside +-threshold cannot place
-    // anything -- and veins are rare, so that is most cells. The bounds must clear the
-    // threshold by [`CELL_BOUND_MARGIN`]; see there for why. The bounds come from the
-    // slot's cell-corner grid, which exists once the slot has been sampled in this chunk;
-    // where none can be proven the cell is evaluated block by block as before.
     let cell_width = caches.cell_width();
     let cell_height = caches.cell_height();
     let cells_xz = (16 / cell_width).max(1) as usize;
     let cells_y = (height / cell_height).max(0) as usize;
+    let y_lo = band_min.max(min_y);
+    let y_hi = band_max.min(min_y + height - 1);
+
+    // Per y, the `edge_roundoff` each vein type would use there, or `None` where y is outside
+    // that type's band. These are `vein_state`'s own first steps, which depend on y alone:
+    // `vein_toggle > 0` picks copper, else iron; a y outside the picked band gives up; and so
+    // does `|vein_toggle| + edge_roundoff < VEININESS_THRESHOLD`. Each value is computed by the
+    // same `edge_roundoff` call `vein_state` makes, so a test against it is bit-for-bit that
+    // test. Between the bands (y -7..=-1) both are `None` and the whole row is skipped.
+    let band_len = (y_hi - y_lo + 1).max(0) as usize;
+    let copper_roundoff: Vec<Option<f64>> =
+        (0..band_len).map(|i| edge_roundoff(&COPPER, y_lo + i as i32)).collect();
+    let iron_roundoff: Vec<Option<f64>> =
+        (0..band_len).map(|i| edge_roundoff(&IRON, y_lo + i as i32)).collect();
+
+    // Cells that provably hold no vein. A block can only place something when its type's
+    // `|vein_toggle| + edge_roundoff` reaches `VEININESS_THRESHOLD`: a positive toggle is copper
+    // and needs `toggle + copper_roundoff >= threshold` at a y in the copper band; a
+    // non-positive one is iron and needs `-toggle + iron_roundoff >= threshold` in the iron
+    // band. So a cell is veinless when, over its layer's y, neither side can get there:
+    // `hi + max(copper_roundoff) < threshold` (or no y of the layer is in the copper band), and
+    // the same for `-lo` and iron. Float addition rounds monotonically, so the block's own sum
+    // is at most the bound's sum; the bounds must clear the threshold by
+    // [`CELL_BOUND_MARGIN`] (see there for why). This contains the old test
+    // (`-threshold < lo`, `hi < threshold`), since a roundoff is never positive. The bounds
+    // come from the slot's cell-corner grid, which exists once the slot has been sampled in
+    // this chunk; where none can be proven the cell is evaluated block by block.
     let _ = router.sample_in_chunk(
         caches,
         RouterSlot::VeinToggle,
         pos.min_block_x(),
-        band_min.max(min_y),
+        y_lo,
         pos.min_block_z(),
     );
+    let layer_max = |table: &[Option<f64>], cell_y: usize| -> Option<f64> {
+        let layer_min_y = min_y + cell_y as i32 * cell_height;
+        (layer_min_y..layer_min_y + cell_height)
+            .filter(|y| (y_lo..=y_hi).contains(y))
+            .filter_map(|y| table[(y - y_lo) as usize])
+            .reduce(f64::max)
+    };
     let mut veinless = vec![false; cells_xz * cells_xz * cells_y];
     for cell_y in 0..cells_y {
         let cell_min_y = min_y + cell_y as i32 * cell_height;
         if cell_min_y > band_max || cell_min_y + cell_height <= band_min {
             continue;
         }
+        let copper_max = layer_max(&copper_roundoff, cell_y);
+        let iron_max = layer_max(&iron_roundoff, cell_y);
         for cell_z in 0..cells_xz {
             for cell_x in 0..cells_xz {
                 veinless[(cell_y * cells_xz + cell_z) * cells_xz + cell_x] = router
@@ -126,8 +155,11 @@ pub fn apply_ore_veins(
                         cell_z as i32,
                     )
                     .is_some_and(|(lo, hi)| {
-                        lo > -VEININESS_THRESHOLD + CELL_BOUND_MARGIN
-                            && hi < VEININESS_THRESHOLD - CELL_BOUND_MARGIN
+                        copper_max.map_or(true, |er| {
+                            hi + er < VEININESS_THRESHOLD - CELL_BOUND_MARGIN
+                        }) && iron_max.map_or(true, |er| {
+                            -lo + er < VEININESS_THRESHOLD - CELL_BOUND_MARGIN
+                        })
                     });
             }
         }
@@ -142,21 +174,67 @@ pub fn apply_ore_veins(
         .collect();
     let mut palette_index = vec![u32::MAX; chunk.sections.len() * VEIN_BLOCKS.len()];
 
-    for y in band_min.max(min_y)..=band_max.min(min_y + height - 1) {
+    // Per-column cell coordinates, resolved once instead of a `div_euclid` per block.
+    let cell_of: [usize; 16] =
+        std::array::from_fn(|local| (local as i32).div_euclid(cell_width) as usize);
+    let in_cell: [usize; 16] = std::array::from_fn(|local| {
+        local.wrapping_sub(cell_of[local].wrapping_mul(cell_width as usize))
+    });
+
+    // `vein_toggle` a whole cell at a time through `sample_cell` (bit-identical to
+    // `sample_in_chunk` at each block), into a buffer for one layer of cells, evaluated on a
+    // cell's first use. `toggle_state` per cell: 0 not yet asked, 1 in `toggle_values`, 2
+    // declined (that cell's blocks go through `sample_in_chunk`).
+    let cell_w = cell_width as usize;
+    let cell_len = router.cell_len(caches);
+    let mut toggle_values = vec![0.0f64; cells_xz * cells_xz * cell_len];
+    let mut toggle_state = vec![0u8; cells_xz * cells_xz];
+    let mut loaded_cell_y = usize::MAX;
+
+    for y in y_lo..=y_hi {
         let Some(section_index) = section_of(settings, y) else {
             continue;
         };
+        let band_row = (y - y_lo) as usize;
+        let copper_er = copper_roundoff[band_row];
+        let iron_er = iron_roundoff[band_row];
+        if copper_er.is_none() && iron_er.is_none() {
+            continue;
+        }
         let cell_y = ((y - min_y).div_euclid(cell_height)) as usize;
         let Some(Some(default_index)) = default_index.get(section_index).copied() else {
             continue;
         };
+        if cell_y != loaded_cell_y {
+            toggle_state.fill(0);
+            loaded_cell_y = cell_y;
+        }
+        let cell_local_y = ((y - min_y) - cell_y as i32 * cell_height) as usize;
         let local_y = (y - min_y).rem_euclid(16) as usize;
         for local_z in 0..16usize {
             let block_z = pos.min_block_z() + local_z as i32;
-            let cell_z = (local_z as i32).div_euclid(cell_width) as usize;
+            let cell_z = cell_of[local_z];
+            let row_index = local_index(0, local_y, local_z);
+            // Which blocks of this row hold the default block. Read once per row: a vein
+            // write only changes its own position, and each position is read before its own
+            // write, so this is what the per-block read saw.
+            let mut row_default = 0u32;
+            {
+                let indices = &chunk.sections[section_index].block_states.indices()
+                    [row_index..row_index + 16];
+                for (local_x, &index) in indices.iter().enumerate() {
+                    row_default |= ((index == default_index) as u32) << local_x;
+                }
+            }
+            if row_default == 0 {
+                continue;
+            }
+            let lane_row = (cell_local_y * cell_w + in_cell[local_z]) * cell_w;
             for local_x in 0..16usize {
-                let block_x = pos.min_block_x() + local_x as i32;
-                let cell_x = (local_x as i32).div_euclid(cell_width) as usize;
+                if row_default & (1 << local_x) == 0 {
+                    continue;
+                }
+                let cell_x = cell_of[local_x];
                 if veinless
                     .get((cell_y * cells_xz + cell_z) * cells_xz + cell_x)
                     .copied()
@@ -164,13 +242,44 @@ pub fn apply_ore_veins(
                 {
                     continue;
                 }
-                if chunk.sections[section_index].block_states.indices()
-                    [local_index(local_x, local_y, local_z)]
-                    != default_index
-                {
+                let block_x = pos.min_block_x() + local_x as i32;
+                let cell_index = cell_z * cells_xz + cell_x;
+                let in_grid = cell_x < cells_xz && cell_z < cells_xz && cell_y < cells_y;
+                let veininess = if in_grid {
+                    if toggle_state[cell_index] == 0 {
+                        let values =
+                            &mut toggle_values[cell_index * cell_len..(cell_index + 1) * cell_len];
+                        toggle_state[cell_index] = if router.sample_cell(
+                            caches,
+                            RouterSlot::VeinToggle,
+                            cell_x as i32,
+                            cell_y as i32,
+                            cell_z as i32,
+                            values,
+                        ) {
+                            1
+                        } else {
+                            2
+                        };
+                    }
+                    if toggle_state[cell_index] == 1 {
+                        toggle_values[cell_index * cell_len + lane_row + in_cell[local_x]]
+                    } else {
+                        router.sample_in_chunk(caches, RouterSlot::VeinToggle, block_x, y, block_z)
+                    }
+                } else {
+                    router.sample_in_chunk(caches, RouterSlot::VeinToggle, block_x, y, block_z)
+                };
+                // `vein_state`'s own early outs, against the per-y tables.
+                let Some(er) = (if veininess > 0.0 { copper_er } else { iron_er }) else {
+                    continue;
+                };
+                if veininess.abs() + er < VEININESS_THRESHOLD {
                     continue;
                 }
-                if let Some(name) = vein_state(router, caches, &ore_factory, block_x, y, block_z) {
+                if let Some(name) =
+                    vein_state(router, caches, &ore_factory, block_x, y, block_z, veininess)
+                {
                     let id = vein_block_id(name);
                     let cached = &mut palette_index[section_index * VEIN_BLOCKS.len() + id];
                     let block_states = &mut chunk.sections[section_index].block_states;
@@ -179,13 +288,33 @@ pub fn apply_ore_veins(
                     if *cached == u32::MAX {
                         *cached = block_states.index_of_or_insert(states[id].clone());
                     }
-                    block_states.set_index(local_index(local_x, local_y, local_z), *cached);
+                    block_states.set_index(row_index + local_x, *cached);
                 }
             }
         }
     }
 }
 
+/// `vein`'s `edge_roundoff` at `y`, or `None` when y is outside its band -- exactly the values
+/// `vein_state` computes and gives up on.
+fn edge_roundoff(vein: &VeinType, y: i32) -> Option<f64> {
+    let distance_from_top = vein.max_y - y;
+    let distance_from_bottom = y - vein.min_y;
+    if distance_from_bottom < 0 || distance_from_top < 0 {
+        return None;
+    }
+    let distance_from_edge = distance_from_top.min(distance_from_bottom);
+    // Fades veins out over the last 20 blocks before a band's edge.
+    Some(clamped_map(
+        distance_from_edge as f64,
+        0.0,
+        EDGE_ROUNDOFF_BEGIN,
+        MAX_EDGE_ROUNDOFF,
+        0.0,
+    ))
+}
+
+/// Vanilla's `OreVeinifier` filler at one position, given `vein_toggle` there.
 fn vein_state(
     router: &NoiseRouterEvaluator,
     caches: &ChunkCaches,
@@ -193,26 +322,11 @@ fn vein_state(
     x: i32,
     y: i32,
     z: i32,
+    veininess: f64,
 ) -> Option<&'static str> {
-    let veininess = router.sample_in_chunk(caches, RouterSlot::VeinToggle, x, y, z);
     let vein = if veininess > 0.0 { &COPPER } else { &IRON };
-
-    let distance_from_top = vein.max_y - y;
-    let distance_from_bottom = y - vein.min_y;
-    if distance_from_bottom < 0 || distance_from_top < 0 {
-        return None;
-    }
-
+    let edge_roundoff = edge_roundoff(vein, y)?;
     let veininess_ridged = veininess.abs();
-    let distance_from_edge = distance_from_top.min(distance_from_bottom);
-    // Fades veins out over the last 20 blocks before a band's edge.
-    let edge_roundoff = clamped_map(
-        distance_from_edge as f64,
-        0.0,
-        EDGE_ROUNDOFF_BEGIN,
-        MAX_EDGE_ROUNDOFF,
-        0.0,
-    );
     if veininess_ridged + edge_roundoff < VEININESS_THRESHOLD {
         return None;
     }

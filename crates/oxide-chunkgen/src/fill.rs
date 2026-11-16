@@ -179,9 +179,6 @@ pub fn fill_chunk_culling(
     // palette on first use (so palettes hold exactly what the section contains, in the order
     // it was first written) and written by index after that -- no `BlockState` is built,
     // hashed or dropped per block.
-    const DEFAULT: usize = 0;
-    const SEA: usize = 1;
-    const LAVA: usize = 2;
     let lava = BlockState::new(ResourceLocation::minecraft("lava"));
     let placeable: [&BlockState; 3] = [&settings.default_block, &settings.default_fluid, &lava];
     // A fluid that *is* air needs no write: air is every section's palette default.
@@ -198,6 +195,25 @@ pub fn fill_chunk_culling(
     let mut cell_values = vec![0.0f64; cells_xz * cells_xz * cell_len];
     let mut cell_state = vec![0u8; cells_xz * cells_xz];
     let mut loaded_cell_y = i32::MIN;
+    // Whether a row of 16 blocks is exactly `cells_xz` whole cells, which the cell-run path
+    // in the loop below relies on (and `sample_cell` declines every cell otherwise anyway).
+    let cells_tile_row = cells_xz * cell_w == 16 && cell_len == cell_w * cell_w * cell_height as usize;
+
+    let sea_level = settings.sea_level;
+    // `kind`'s palette index in `section`, interned on the section's first write of it -- the
+    // same place the per-block `set` would have added it, so palette order is first-write order.
+    let intern = |section: &mut ChunkSection, palette_index: &mut [Option<u32>; 3], kind: usize| {
+        match palette_index[kind] {
+            Some(index) => index,
+            None => {
+                let index = section
+                    .block_states
+                    .index_of_or_insert(placeable[kind].clone());
+                palette_index[kind] = Some(index);
+                index
+            }
+        }
+    };
 
     for i in 0..section_count {
         let section_y = min_y / 16 + i as i32;
@@ -242,6 +258,101 @@ pub fn fill_chunk_culling(
                 };
                 let row_cells = row_in_cells && cell_z < cells_xz;
                 let row_index = local_index(0, local_y as usize, local_z);
+
+                // Cell-run path: the row is walked one cell at a time, `cell_w` blocks per
+                // cell, in the same x order as the per-block loop below. Every block gets the
+                // same density, the same classification and the same write (or skip) in the
+                // same order, so palettes and every `compute_kind` call are unchanged; only
+                // the per-block bookkeeping is hoisted to once per cell. Needs the cells to
+                // tile the row exactly.
+                if row_cells && cells_tile_row {
+                    for cell_x in 0..cells_xz {
+                        if let Some(row) = air_row {
+                            if row[cell_x] {
+                                continue;
+                            }
+                        }
+                        let cell_index = cell_z * cells_xz + cell_x;
+                        if cell_state[cell_index] == 0 {
+                            let values = &mut cell_values
+                                [cell_index * cell_len..(cell_index + 1) * cell_len];
+                            cell_state[cell_index] = if router.sample_cell(
+                                caches,
+                                RouterSlot::FinalDensity,
+                                cell_x as i32,
+                                cell_y,
+                                cell_z as i32,
+                                values,
+                            ) {
+                                1
+                            } else {
+                                2
+                            };
+                        }
+                        let first_x = cell_x * cell_w;
+                        if cell_state[cell_index] == 1 {
+                            let start = cell_index * cell_len + lane_row;
+                            let run = &cell_values[start..start + cell_w];
+                            // A run that is solid throughout is `DEFAULT` at every block on
+                            // both arms below (`density > 0` answers before the aquifer is
+                            // asked), so it is written without classifying each block. The
+                            // first of these writes interns `DEFAULT` exactly where the
+                            // per-block loop's first solid block would have.
+                            if run.iter().all(|&density| density > 0.0) {
+                                let index = intern(&mut section, &mut palette_index, DEFAULT);
+                                for lx in 0..cell_w {
+                                    section
+                                        .block_states
+                                        .set_index(row_index + first_x + lx, index);
+                                }
+                                continue;
+                            }
+                            for (lx, &density) in run.iter().enumerate() {
+                                let local_x = first_x + lx;
+                                let block_x = pos.min_block_x() + local_x as i32;
+                                if let Some(kind) = classify(
+                                    aquifer.as_deref_mut(),
+                                    sea_level,
+                                    block_x,
+                                    y,
+                                    block_z,
+                                    density,
+                                ) {
+                                    if !skip[kind] {
+                                        let index = intern(&mut section, &mut palette_index, kind);
+                                        section.block_states.set_index(row_index + local_x, index);
+                                    }
+                                }
+                            }
+                        } else {
+                            for local_x in first_x..first_x + cell_w {
+                                let block_x = pos.min_block_x() + local_x as i32;
+                                let density = router.sample_in_chunk(
+                                    caches,
+                                    RouterSlot::FinalDensity,
+                                    block_x,
+                                    y,
+                                    block_z,
+                                );
+                                if let Some(kind) = classify(
+                                    aquifer.as_deref_mut(),
+                                    sea_level,
+                                    block_x,
+                                    y,
+                                    block_z,
+                                    density,
+                                ) {
+                                    if !skip[kind] {
+                                        let index = intern(&mut section, &mut palette_index, kind);
+                                        section.block_states.set_index(row_index + local_x, index);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
+
                 for local_x in 0..16usize {
                     let block_x = pos.min_block_x() + local_x as i32;
                     let cell_x = cell_of[local_x];
@@ -293,46 +404,14 @@ pub fn fill_chunk_culling(
                             block_z,
                         )
                     };
-                    // The aquifer decides what a non-solid position holds -- air, water or
-                    // lava, at a level that varies per underground body. Vanilla runs exactly
-                    // this as the first filler in its noise fill.
-                    //
-                    // A solid density is answered here: `compute_kind` returns `None` for
-                    // `density > 0` before touching any state, and ~3 in 4 calls were that.
-                    let kind = match aquifer.as_deref_mut() {
-                        Some(_) if density > 0.0 => DEFAULT,
-                        Some(aquifer) => match aquifer.compute_kind(block_x, y, block_z, density) {
-                            None => DEFAULT,
-                            Some(crate::aquifer::FluidKind::Air) => continue,
-                            Some(crate::aquifer::FluidKind::Sea) => SEA,
-                            Some(crate::aquifer::FluidKind::Lava) => LAVA,
-                        },
-                        // Aquifers disabled by the settings: solid below the surface, the
-                        // dimension's fluid up to sea level, air above.
-                        None => {
-                            if density > 0.0 {
-                                DEFAULT
-                            } else if y <= settings.sea_level {
-                                SEA
-                            } else {
-                                continue;
-                            }
+                    if let Some(kind) =
+                        classify(aquifer.as_deref_mut(), sea_level, block_x, y, block_z, density)
+                    {
+                        if !skip[kind] {
+                            let index = intern(&mut section, &mut palette_index, kind);
+                            section.block_states.set_index(row_index + local_x, index);
                         }
-                    };
-                    if skip[kind] {
-                        continue;
                     }
-                    let index = match palette_index[kind] {
-                        Some(index) => index,
-                        None => {
-                            let index = section
-                                .block_states
-                                .index_of_or_insert(placeable[kind].clone());
-                            palette_index[kind] = Some(index);
-                            index
-                        }
-                    };
-                    section.block_states.set_index(row_index + local_x, index);
                 }
             }
         }
@@ -348,6 +427,49 @@ pub fn fill_chunk_culling(
     chunk.needs_relight = true;
     chunk.heightmaps = compute_heightmaps(&chunk, settings);
     chunk
+}
+
+/// Fill kinds besides air: the default block, the dimension's fluid, and lava.
+const DEFAULT: usize = 0;
+const SEA: usize = 1;
+const LAVA: usize = 2;
+
+/// What a position holds given its density: `None` for nothing to write (air, the section's
+/// palette default), else one of [`DEFAULT`], [`SEA`], [`LAVA`].
+///
+/// The aquifer decides what a non-solid position holds -- air, water or lava, at a level that
+/// varies per underground body. Vanilla runs exactly this as the first filler in its noise
+/// fill. A solid density is answered here: `compute_kind` returns `None` for `density > 0`
+/// before touching any state, and ~3 in 4 calls were that.
+#[inline(always)]
+fn classify(
+    aquifer: Option<&mut crate::aquifer::Aquifer<'_>>,
+    sea_level: i32,
+    block_x: i32,
+    y: i32,
+    block_z: i32,
+    density: f64,
+) -> Option<usize> {
+    match aquifer {
+        Some(_) if density > 0.0 => Some(DEFAULT),
+        Some(aquifer) => match aquifer.compute_kind(block_x, y, block_z, density) {
+            None => Some(DEFAULT),
+            Some(crate::aquifer::FluidKind::Air) => None,
+            Some(crate::aquifer::FluidKind::Sea) => Some(SEA),
+            Some(crate::aquifer::FluidKind::Lava) => Some(LAVA),
+        },
+        // Aquifers disabled by the settings: solid below the surface, the dimension's fluid up
+        // to sea level, air above.
+        None => {
+            if density > 0.0 {
+                Some(DEFAULT)
+            } else if y <= sea_level {
+                Some(SEA)
+            } else {
+                None
+            }
+        }
+    }
 }
 
 /// The height a structure would sit at in the column `(x, z)`, as vanilla's

@@ -2051,3 +2051,13 @@ All `digest=a977961a58122047`.
 
 **E34 + E35 land**, after the pregen NBT digest on a pipeline-merged tree. E36 stays parked
 (`pending-E36-...` becomes `parked-E36-...`), to retry with a bounded or shared cache.
+
+### E34 + E35 landed (pregen NBT gate holds)
+
+Pregen gate on a scratch merge of this tree with `origin/perf/pipeline`, r16, 8 threads, `--no-write --bench`:
+`BENCH chunks=1089 threads=8 secs=3.645 cps=298.7 ms_per_chunk_core=26.78 digest=df701ee858e2bdd3 generate_ms=2082 decorate_ms=1370 serialise_ms=100 compress_ms=93 write_ms=0 compression=zlib6 mb_disk=0.0`
+The digest equals pipeline's reference, so palettes, biomes and heightmaps in the NBT are unchanged too.
+
+On this branch: noise merged at c17f4ed (187ce0c), then E34 (`fill.rs`, `ore_veins.rs`) and E35 (`surface.rs`).
+The landed `crates/` is byte-identical to the held `datapath-stk2` tree (`diff -rq` empty). The pending
+diffs are removed, since the code is now in the tree.
