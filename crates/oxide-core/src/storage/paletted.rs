@@ -66,6 +66,23 @@ impl<T: Clone + Eq + Hash> PalettedContainer<T> {
         self.set_index(index, palette_index);
     }
 
+    /// [`Self::set`] for a borrowed value: it is cloned only when the palette gains it.
+    pub fn set_cloned(&mut self, index: usize, value: &T) {
+        let known = match &self.index_of {
+            Some(map) => map.get(value).copied(),
+            None => self
+                .palette
+                .iter()
+                .position(|entry| entry == value)
+                .map(|i| i as u32),
+        };
+        let palette_index = match known {
+            Some(i) => i,
+            None => self.index_of_or_insert(value.clone()),
+        };
+        self.set_index(index, palette_index);
+    }
+
     /// The palette index for `value`, adding it to the palette if it is not there yet.
     ///
     /// Callers that write the same value into many slots -- a chunk fill placing its default

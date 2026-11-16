@@ -24,12 +24,13 @@
 //! the tree next door, it overlaps it), and overlaps resolve by the fixed order below rather
 //! than by scheduler order. Features that stay inside one chunk's own writes are unaffected.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use oxide_core::{
-    BlockPos, BlockState, ChunkData, ChunkPos, ChunkStatus, Heightmap, HeightmapType,
+    BlockPos, BlockState, ChunkData, ChunkPos, ChunkStatus, FastHashMap, FastHashSet, Heightmap,
+    HeightmapType,
 };
 use oxide_datapack::{BlockFact, BlockFacts};
 
@@ -207,7 +208,7 @@ pub fn decorated_chunk_with_extras(
         }
     }
     // The last write to each position, numbered in application order.
-    let mut last_write: HashMap<BlockPos, (usize, &BlockState)> = HashMap::new();
+    let mut last_write: FastHashMap<BlockPos, (usize, &BlockState)> = FastHashMap::default();
     let mut sequence = 0;
     for output in &sources {
         for (at, state) in output.0.iter() {
@@ -222,14 +223,14 @@ pub fn decorated_chunk_with_extras(
                 ((at.y - chunk.min_y) & 15) as usize,
                 (at.z & 15) as usize,
             );
-            section.block_states.set(slot, state.clone());
+            section.block_states.set_cloned(slot, state);
             last_write.insert(*at, (sequence, state));
             sequence += 1;
         }
     }
 
     let mut extras = ChunkExtras::default();
-    let mut filled: HashMap<BlockPos, &BlockEntityData> = HashMap::new();
+    let mut filled: FastHashMap<BlockPos, &BlockEntityData> = FastHashMap::default();
     for output in &sources {
         for entity in output.1.block_entities.iter().filter(|e| inside(&e.pos)) {
             filled.insert(entity.pos, entity);
@@ -251,8 +252,11 @@ pub fn decorated_chunk_with_extras(
             },
         });
     }
-    let (mut fluid_seen, mut block_seen, mut mark_seen) =
-        (HashSet::new(), HashSet::new(), HashSet::new());
+    let (mut fluid_seen, mut block_seen, mut mark_seen) = (
+        FastHashSet::default(),
+        FastHashSet::default(),
+        FastHashSet::default(),
+    );
     for output in &sources {
         for tick in output.1.fluid_ticks.iter().filter(|(at, _)| inside(at)) {
             if fluid_seen.insert(tick) {
