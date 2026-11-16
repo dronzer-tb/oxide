@@ -241,6 +241,7 @@ impl NoiseRouterEvaluator {
     /// is the path chunk generation must use: it is ~80x less work than [`Self::sample`] and,
     /// because vanilla's terrain is the interpolated value rather than the exact one, it is
     /// also the one that can match Java.
+    #[inline]
     pub fn sample_in_chunk(
         &self,
         caches: &ChunkCaches,
@@ -568,6 +569,115 @@ mod tests {
             }
             // Both `range_choice` branches, and cells that mix them, must have been exercised.
             assert!(in_range > 1000 && out_of_range > 1000, "{in_range} / {out_of_range}");
+        }
+    }
+
+    /// The same check for 8-wide cells (`size_horizontal: 2`), which take the other fixed-width
+    /// fill, sampling cells in an order that reuses stale pooled register buffers.
+    #[test]
+    fn whole_cell_evaluation_is_bit_identical_for_wide_cells() {
+        let mut settings = interpolated_settings();
+        settings.noise.size_horizontal = 2;
+        let df_registry = Registry::default();
+        let noise_registry = Registry::default();
+        let router = NoiseRouterEvaluator::new(11, &settings, &df_registry, &noise_registry);
+        let program = &router.programs[RouterSlot::FinalDensity.index()];
+        assert!(program.cell_batchable());
+        for (chunk_x, chunk_z) in [(2, -1), (-7, 4)] {
+            let cell_caches = router.chunk_caches(chunk_x, chunk_z);
+            let plain_caches = router.chunk_caches(chunk_x, chunk_z);
+            let cx = RunCtx {
+                noises: &router.noises,
+                blended: &router.blended,
+                caches: Some(&plain_caches),
+            };
+            let lanes = router.cell_len(&cell_caches);
+            assert_eq!(lanes, 8 * 8 * 8);
+            let mut cell = vec![f64::NAN; lanes];
+            for cell_y in (0..48).rev() {
+                for (cell_x, cell_z) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                    assert!(router.sample_cell(
+                        &cell_caches,
+                        RouterSlot::FinalDensity,
+                        cell_x,
+                        cell_y,
+                        cell_z,
+                        &mut cell
+                    ));
+                    for (lane, got) in cell.iter().enumerate() {
+                        let (ly, lz, lx) = (lane as i32 / 64, lane as i32 / 8 % 8, lane as i32 % 8);
+                        let x = chunk_x * 16 + cell_x * 8 + lx;
+                        let z = chunk_z * 16 + cell_z * 8 + lz;
+                        let y = -64 + cell_y * 8 + ly;
+                        let want = program.run(FunctionContext { x, y, z }, &cx);
+                        assert_eq!(want.to_bits(), got.to_bits(), "cell at {x} {y} {z}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// The ore-vein access pattern: two cell-batchable slots read alternately at a sparse,
+    /// irregular subset of blocks, with layers revisited after the memo moved on, each read
+    /// bit-identical to per-block evaluation.
+    #[test]
+    fn interleaved_sparse_memo_reads_are_bit_identical() {
+        let mut settings = interpolated_settings();
+        settings.noise_router.vein_toggle = settings.noise_router.final_density.clone();
+        settings.noise_router.vein_ridged = match &settings.noise_router.final_density {
+            DensityFunction::Object(o) => match o.as_ref() {
+                oxide_datapack::DensityFunctionObject::Add { argument2, .. } => argument2.clone(),
+                _ => unreachable!(),
+            },
+            _ => unreachable!(),
+        };
+        let df_registry = Registry::default();
+        let noise_registry = Registry::default();
+        let router = NoiseRouterEvaluator::new(11, &settings, &df_registry, &noise_registry);
+        let slots = [RouterSlot::VeinToggle, RouterSlot::VeinRidged];
+        for slot in slots {
+            assert!(router.programs[slot.index()].cell_batchable());
+        }
+        for (chunk_x, chunk_z) in [(0, 0), (2, -7)] {
+            let memo_caches = router.chunk_caches(chunk_x, chunk_z);
+            let plain_caches = router.chunk_caches(chunk_x, chunk_z);
+            let cx = RunCtx {
+                noises: &router.noises,
+                blended: &router.blended,
+                caches: Some(&plain_caches),
+            };
+            let mut state = 0x9e37_79b9_7f4a_7c15u64;
+            let mut next = || {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state
+            };
+            let mut reads = [0usize; 2];
+            // y ascending through the band, then a pass back down that revisits old layers.
+            let ys: Vec<i32> = (-64..60).chain((-64..60).rev().step_by(5)).collect();
+            for y in ys {
+                for local_z in 0..16 {
+                    for local_x in 0..16 {
+                        let r = next();
+                        if r % 3 == 0 {
+                            continue;
+                        }
+                        let (x, z) = (chunk_x * 16 + local_x, chunk_z * 16 + local_z);
+                        for (i, slot) in slots.iter().enumerate() {
+                            if i == 1 && r % 5 != 0 {
+                                continue;
+                            }
+                            let program = &router.programs[slot.index()];
+                            let expected = program.run(FunctionContext { x, y, z }, &cx);
+                            let got = router.sample_in_chunk(&memo_caches, *slot, x, y, z);
+                            assert_eq!(expected.to_bits(), got.to_bits(), "{i} at {x} {y} {z}");
+                            reads[i] += 1;
+                        }
+                    }
+                }
+            }
+            assert!(reads[0] > 10000 && reads[1] > 3000, "{reads:?}");
         }
     }
 

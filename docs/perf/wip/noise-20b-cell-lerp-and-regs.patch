@@ -1,0 +1,281 @@
+diff --git a/crates/oxide-noise/src/cache.rs b/crates/oxide-noise/src/cache.rs
+index fc572c8..4f9b1de 100644
+--- a/crates/oxide-noise/src/cache.rs
++++ b/crates/oxide-noise/src/cache.rs
+@@ -346,32 +346,12 @@ impl ChunkCaches {
+         let v011 = grid[base + y_stride + z_stride];
+         let v111 = grid[base + y_stride + z_stride + x_stride];
+ 
+-        let mut x00 = [0.0f64; MAX_CELL_WIDTH];
+-        let mut x10 = [0.0f64; MAX_CELL_WIDTH];
+-        let mut x01 = [0.0f64; MAX_CELL_WIDTH];
+-        let mut x11 = [0.0f64; MAX_CELL_WIDTH];
+-        for lx in 0..cw {
+-            let dx = lx as f64 * self.inv_cell_width;
+-            x00[lx] = lerp(dx, v000, v100);
+-            x10[lx] = lerp(dx, v010, v110);
+-            x01[lx] = lerp(dx, v001, v101);
+-            x11[lx] = lerp(dx, v011, v111);
+-        }
+-        for ly in 0..ch {
+-            let dy = ly as f64 * self.inv_cell_height;
+-            let mut y0 = [0.0f64; MAX_CELL_WIDTH];
+-            let mut y1 = [0.0f64; MAX_CELL_WIDTH];
+-            for lx in 0..cw {
+-                y0[lx] = lerp(dy, x00[lx], x10[lx]);
+-                y1[lx] = lerp(dy, x01[lx], x11[lx]);
+-            }
+-            for lz in 0..cw {
+-                let dz = lz as f64 * self.inv_cell_width;
+-                let row = &mut dst[(ly * cw + lz) * cw..(ly * cw + lz + 1) * cw];
+-                for lx in 0..cw {
+-                    row[lx] = lerp(dz, y0[lx], y1[lx]);
+-                }
+-            }
++        let corners = [v000, v100, v010, v110, v001, v101, v011, v111];
++        let (iw, ih) = (self.inv_cell_width, self.inv_cell_height);
++        match cw {
++            4 => lerp_cell_fixed::<4>(corners, iw, ih, dst),
++            8 => lerp_cell_fixed::<8>(corners, iw, ih, dst),
++            _ => lerp_cell_any(corners, cw, ch, iw, ih, dst),
+         }
+     }
+ 
+@@ -892,6 +872,68 @@ fn div_cell(value: i32, cell: i32, log2: Option<u32>) -> i32 {
+     }
+ }
+ 
++/// The trilinear fill of [`ChunkCaches::fill_cell_interpolated`] for any cell width up to
++/// [`MAX_CELL_WIDTH`]. `c` is `[v000, v100, v010, v110, v001, v101, v011, v111]`.
++fn lerp_cell_any(c: [f64; 8], cw: usize, ch: usize, iw: f64, ih: f64, dst: &mut [f64]) {
++    let [v000, v100, v010, v110, v001, v101, v011, v111] = c;
++    let mut x00 = [0.0f64; MAX_CELL_WIDTH];
++    let mut x10 = [0.0f64; MAX_CELL_WIDTH];
++    let mut x01 = [0.0f64; MAX_CELL_WIDTH];
++    let mut x11 = [0.0f64; MAX_CELL_WIDTH];
++    for lx in 0..cw {
++        let dx = lx as f64 * iw;
++        x00[lx] = lerp(dx, v000, v100);
++        x10[lx] = lerp(dx, v010, v110);
++        x01[lx] = lerp(dx, v001, v101);
++        x11[lx] = lerp(dx, v011, v111);
++    }
++    for ly in 0..ch {
++        let dy = ly as f64 * ih;
++        let mut y0 = [0.0f64; MAX_CELL_WIDTH];
++        let mut y1 = [0.0f64; MAX_CELL_WIDTH];
++        for lx in 0..cw {
++            y0[lx] = lerp(dy, x00[lx], x10[lx]);
++            y1[lx] = lerp(dy, x01[lx], x11[lx]);
++        }
++        for lz in 0..cw {
++            let dz = lz as f64 * iw;
++            let row = &mut dst[(ly * cw + lz) * cw..(ly * cw + lz + 1) * cw];
++            for lx in 0..cw {
++                row[lx] = lerp(dz, y0[lx], y1[lx]);
++            }
++        }
++    }
++}
++
++/// [`lerp_cell_any`] with the cell width known at compile time, so the per-lane loops have
++/// constant trip counts and no bounds checks and unroll / vectorize. Every lane performs the
++/// same lerps on the same operands in the same order (x, then y, then z), so the results are
++/// bit-identical; only the loop control changes. The layer count is `dst.len() / (CW * CW)`.
++#[inline(always)]
++fn lerp_cell_fixed<const CW: usize>(c: [f64; 8], iw: f64, ih: f64, dst: &mut [f64]) {
++    let [v000, v100, v010, v110, v001, v101, v011, v111] = c;
++    let mut d = [0.0f64; CW];
++    for (lx, d) in d.iter_mut().enumerate() {
++        *d = lx as f64 * iw;
++    }
++    let x00: [f64; CW] = std::array::from_fn(|lx| lerp(d[lx], v000, v100));
++    let x10: [f64; CW] = std::array::from_fn(|lx| lerp(d[lx], v010, v110));
++    let x01: [f64; CW] = std::array::from_fn(|lx| lerp(d[lx], v001, v101));
++    let x11: [f64; CW] = std::array::from_fn(|lx| lerp(d[lx], v011, v111));
++    for (ly, layer) in dst.chunks_exact_mut(CW * CW).enumerate() {
++        let dy = ly as f64 * ih;
++        let y0: [f64; CW] = std::array::from_fn(|lx| lerp(dy, x00[lx], x10[lx]));
++        let y1: [f64; CW] = std::array::from_fn(|lx| lerp(dy, x01[lx], x11[lx]));
++        for (lz, row) in layer.chunks_exact_mut(CW).enumerate() {
++            // `dz` for row `lz` is the same product `dx` is for lane `lz`.
++            let dz = d[lz];
++            for lx in 0..CW {
++                row[lx] = lerp(dz, y0[lx], y1[lx]);
++            }
++        }
++    }
++}
++
+ /// Vanilla `Mth.lerp3`.
+ #[allow(clippy::too_many_arguments)]
+ fn lerp3(
+@@ -916,6 +958,59 @@ fn lerp2(dx: f64, dy: f64, v00: f64, v10: f64, v01: f64, v11: f64) -> f64 {
+     lerp(dy, lerp(dx, v00, v10), lerp(dx, v01, v11))
+ }
+ 
++#[inline(always)]
+ fn lerp(delta: f64, from: f64, to: f64) -> f64 {
+     from + delta * (to - from)
+ }
++
++#[cfg(test)]
++mod lerp_cell_tests {
++    use super::*;
++
++    /// The fixed-width fill must equal the general one bit for bit, signed zeros, infinities
++    /// and NaN payloads included, for every supported width and several layer counts.
++    #[test]
++    fn fixed_width_fill_is_bit_identical() {
++        let mut state = 0x9e37_79b9_7f4a_7c15u64;
++        let mut next = move || {
++            state ^= state << 13;
++            state ^= state >> 7;
++            state ^= state << 17;
++            state
++        };
++        let specials = [0.0, -0.0, f64::INFINITY, f64::NEG_INFINITY, f64::from_bits(0x7ff8_0000_0000_1234), 1e-310];
++        for round in 0..2000 {
++            let mut c = [0.0f64; 8];
++            for v in &mut c {
++                let r = next();
++                *v = if r % 7 == 0 {
++                    specials[(r >> 8) as usize % specials.len()]
++                } else {
++                    (r >> 11) as f64 / (1u64 << 53) as f64 * 4.0 - 2.0
++                };
++            }
++            for (cw, ch) in [(4usize, 8usize), (4, 4), (8, 4), (8, 8)] {
++                let (iw, ih) = (1.0 / cw as f64, 1.0 / ch as f64);
++                let mut want = vec![0.0; cw * ch * cw];
++                let mut got = vec![f64::from_bits(round); cw * ch * cw];
++                lerp_cell_any(c, cw, ch, iw, ih, &mut want);
++                match cw {
++                    4 => lerp_cell_fixed::<4>(c, iw, ih, &mut got),
++                    _ => lerp_cell_fixed::<8>(c, iw, ih, &mut got),
++                }
++                // When two *different* NaNs meet in one `fadd` (a payload NaN corner and a NaN
++                // generated by `inf - inf`), which payload survives depends on how LLVM orders
++                // the commutative operands -- unspecified by Rust, in the old code too. Only
++                // there is "both NaN" accepted; everywhere else the bits must match.
++                let two_nan_sources = c.iter().any(|v| v.is_nan())
++                    && c.iter().any(|v| v.is_infinite());
++                for (w, g) in want.iter().zip(&got) {
++                    if two_nan_sources && w.is_nan() && g.is_nan() {
++                        continue;
++                    }
++                    assert_eq!(w.to_bits(), g.to_bits(), "cw {cw} ch {ch} corners {c:?}");
++                }
++            }
++        }
++    }
++}
+diff --git a/crates/oxide-noise/src/compiled.rs b/crates/oxide-noise/src/compiled.rs
+index 9b8d57d..b717820 100644
+--- a/crates/oxide-noise/src/compiled.rs
++++ b/crates/oxide-noise/src/compiled.rs
+@@ -771,7 +771,10 @@ impl Program {
+ 
+         let lanes = out.len();
+         let n = self.ops.len();
+-        let mut regs = Scratch::filled(n * lanes, 0.0f64);
++        // Every instruction below writes all `lanes` of its register before any later one
++        // reads it (each arm fills `dst` completely; `range_choice` runs at least one branch,
++        // whose own `run_cell` writes all of `dst`), so the stale contents are never seen.
++        let mut regs = Scratch::overwritten(n * lanes, 0.0f64);
+         for i in 0..n {
+             let (done, rest) = regs.split_at_mut(i * lanes);
+             let dst = &mut rest[..lanes];
+@@ -812,7 +815,7 @@ impl Program {
+                     if any_out && !any_in {
+                         r.when_out_of_range.run_cell(caches, cell, cx, dst);
+                     } else if any_out {
+-                        let mut other = Scratch::filled(lanes, 0.0f64);
++                        let mut other = Scratch::overwritten(lanes, 0.0f64);
+                         r.when_out_of_range.run_cell(caches, cell, cx, &mut other);
+                         for ((d, o), v) in dst.iter_mut().zip(&other).zip(input) {
+                             if !inside(*v) {
+diff --git a/crates/oxide-noise/src/router.rs b/crates/oxide-noise/src/router.rs
+index ce62af4..3c3efcb 100644
+--- a/crates/oxide-noise/src/router.rs
++++ b/crates/oxide-noise/src/router.rs
+@@ -571,6 +571,51 @@ mod tests {
+         }
+     }
+ 
++    /// The same check for 8-wide cells (`size_horizontal: 2`), which take the other fixed-width
++    /// fill, sampling cells in an order that reuses stale pooled register buffers.
++    #[test]
++    fn whole_cell_evaluation_is_bit_identical_for_wide_cells() {
++        let mut settings = interpolated_settings();
++        settings.noise.size_horizontal = 2;
++        let df_registry = Registry::default();
++        let noise_registry = Registry::default();
++        let router = NoiseRouterEvaluator::new(11, &settings, &df_registry, &noise_registry);
++        let program = &router.programs[RouterSlot::FinalDensity.index()];
++        assert!(program.cell_batchable());
++        for (chunk_x, chunk_z) in [(2, -1), (-7, 4)] {
++            let cell_caches = router.chunk_caches(chunk_x, chunk_z);
++            let plain_caches = router.chunk_caches(chunk_x, chunk_z);
++            let cx = RunCtx {
++                noises: &router.noises,
++                blended: &router.blended,
++                caches: Some(&plain_caches),
++            };
++            let lanes = router.cell_len(&cell_caches);
++            assert_eq!(lanes, 8 * 8 * 8);
++            let mut cell = vec![f64::NAN; lanes];
++            for cell_y in (0..48).rev() {
++                for (cell_x, cell_z) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
++                    assert!(router.sample_cell(
++                        &cell_caches,
++                        RouterSlot::FinalDensity,
++                        cell_x,
++                        cell_y,
++                        cell_z,
++                        &mut cell
++                    ));
++                    for (lane, got) in cell.iter().enumerate() {
++                        let (ly, lz, lx) = (lane as i32 / 64, lane as i32 / 8 % 8, lane as i32 % 8);
++                        let x = chunk_x * 16 + cell_x * 8 + lx;
++                        let z = chunk_z * 16 + cell_z * 8 + lz;
++                        let y = -64 + cell_y * 8 + ly;
++                        let want = program.run(FunctionContext { x, y, z }, &cx);
++                        assert_eq!(want.to_bits(), got.to_bits(), "cell at {x} {y} {z}");
++                    }
++                }
++            }
++        }
++    }
++
+     /// Outside the chunk the memo does not apply and sampling falls back to the per-block path.
+     #[test]
+     fn sampling_outside_the_chunk_matches_per_block() {
+diff --git a/crates/oxide-noise/src/scratch.rs b/crates/oxide-noise/src/scratch.rs
+index 8ff0fdc..96be2d7 100644
+--- a/crates/oxide-noise/src/scratch.rs
++++ b/crates/oxide-noise/src/scratch.rs
+@@ -59,6 +59,23 @@ impl<T: Pooled> Scratch<T> {
+         Scratch(v)
+     }
+ 
++    /// `n` elements with **unspecified** contents (whatever the pooled buffer last held, or
++    /// `value` where it was shorter). Only for callers that write every element before
++    /// reading it, which then see exactly what they wrote; this skips [`Self::filled`]'s
++    /// full re-initialisation.
++    #[inline]
++    pub(crate) fn overwritten(n: usize, value: T) -> Self {
++        let mut v = T::with_pool(|p| p.borrow_mut().pop())
++            .flatten()
++            .unwrap_or_default();
++        if v.len() > n {
++            v.truncate(n);
++        } else {
++            v.resize(n, value);
++        }
++        Scratch(v)
++    }
++
+     /// An empty buffer to push into: the same contents as `Vec::new()`.
+     #[inline]
+     pub(crate) fn empty() -> Self {

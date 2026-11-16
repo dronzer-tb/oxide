@@ -43,6 +43,7 @@ pooled!(f64, POOL_F64);
 pooled!(usize, POOL_USIZE);
 pooled!(u32, POOL_U32);
 pooled!(u64, POOL_U64);
+pooled!(Option<f64>, POOL_OPT_F64);
 
 /// A `Vec<T>` borrowed from this thread's free list, returned to it on drop.
 pub(crate) struct Scratch<T: Pooled>(Vec<T>);
@@ -56,6 +57,23 @@ impl<T: Pooled> Scratch<T> {
             .unwrap_or_default();
         v.clear();
         v.resize(n, value);
+        Scratch(v)
+    }
+
+    /// `n` elements with **unspecified** contents (whatever the pooled buffer last held, or
+    /// `value` where it was shorter). Only for callers that write every element before
+    /// reading it, which then see exactly what they wrote; this skips [`Self::filled`]'s
+    /// full re-initialisation.
+    #[inline]
+    pub(crate) fn overwritten(n: usize, value: T) -> Self {
+        let mut v = T::with_pool(|p| p.borrow_mut().pop())
+            .flatten()
+            .unwrap_or_default();
+        if v.len() > n {
+            v.truncate(n);
+        } else {
+            v.resize(n, value);
+        }
         Scratch(v)
     }
 

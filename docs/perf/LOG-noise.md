@@ -717,3 +717,197 @@ check was required. Tests: noise 40, chunkgen 190 + 1 + 1 + 1.
 since then (its base is also ~0.8 s faster per run). I have not traced which callers allocate
 more there. It shows when `perf/noise` is merged with datapath; on `perf/noise` alone,
 expect no change.
+
+## Session 5, continued: measuring over the shipping tree (auditor)
+
+From now on, every hold is measured over **the shipping tree**: datapath's head with this crate
+merged in. Datapath merged `perf/noise` at ef9a35f, so that is ef9a35f itself. (My `/tmp/ship`,
+80add17 plus b889079's `crates/oxide-noise`, has crates identical to ef9a35f.) fd4bfe2 on its own
+behaves differently (see 18). Two shared base binaries, `ab-bin/shipb1` and `ab-bin/shipb2`, are
+separate builds of that code. `ab.sh` now takes `label=@` for a prebuilt binary and `0` rounds
+to build only. Holds are 4 rounds at **radius 12**: 625 chunks, ~21 s per run, so a 3-label
+hold is ~4 min. The radius-16 digest is checked separately under the shared lock.
+
+**Profile of the shipping tree** (`profile-tree.sh`, frame pointers, radius 12, 8 threads,
+2,947 generation samples). Noise is **45.7%** of generation:
+
+| Share of generation | Where |
+|---|---|
+| 24.0% | corner grid. Self time: `grad_dot` 3.9%, `lerp` 2.4%, `smoothstep` 1.2%, `noise_with_scale_reusing` ~1.6%, `floor` 0.5%, `get_values`/`compute_chunk` ~1.8% |
+| 7.5% | per-block `run_cell` excluding the grid. `fill_cell_interpolated` ~2.6% (1.5% of it in range iterators), `[ext]` libc 1.5% |
+| 4.2% | ore veins through noise: `sample_in_chunk` from ore_veins.rs:224 (1.8%), :197 (1.4%), :105 (0.9%) |
+| 4.9% + 1.7% | the aquifer's `preliminary_surface_level` / `surface_level` samples (datapath's callers) |
+
+Also in self time: `atomic_load::u32` 2.6% (to identify: the `CornerColumns` mutexes or
+thread-local access) and `[ext]` 16% overall.
+
+**In flight:** three Opus sub-agents, one exact experiment each. They share a brief
+(`scratchpad/subagent-brief.md`) and are judged on `gen_cpu_s` at 1 thread against shipb1/shipb2,
+4 rounds. The corner-path one also runs an 8-thread hold.
+- **20a (n20a):** the corner grid's Perlin math, vectorized *across lanes* in phases (coordinates
+  and smoothstep, hash gathers, gradient dots and lerps), with the same per-lane IEEE expression.
+- **20b (n20b):** per-block `run_cell` / `fill_cell_interpolated`: bounds-check-free,
+  vectorizable lane loops, and fewer copies.
+- **20c (n20c):** ore-vein sampling, a cheaper `sample_via_cell` hit path. If that falls short,
+  a cell-batch API with a minimal call-site change in `ore_veins.rs`.
+
+**Two smaller findings from the same profile:**
+- **For datapath / oxide-core:** the 2.6% `atomic_load::u32` self time is `Once::is_completed`
+  inside `LazyLock<[f32; 65536]>::force`. That is `SIN_TABLE` in
+  `crates/oxide-core/src/mth.rs:18`, forced on every `mth::sin`/`cos` call from the carvers. It is
+  exact to deref it once per hot loop (`let table = &*SIN_TABLE;`) or to make the table a plain
+  `static` filled at build time. Not this crate's; reported only.
+- **Noise crate, bundling candidate:** 1.8% of generation is allocation under
+  `ChunkCaches::column_cached` (cache.rs:585). That is `vec![None; COLUMNS]` (289 `Option<f64>`)
+  per 2D slot per `ChunkCaches`, and the aquifer builds one per neighbouring chunk
+  (aquifer.rs:976). It is exact to take those vectors from the scratch pool. At 1.8% it cannot
+  clear the 5% bar alone; bundle it with the next landing in the same area.
+
+| # | What | Holds | Bases | Patched | Digest | Verdict |
+|---|---|---|---|---|---|---|
+| 20c (n20c) | Ore-vein sampling: the per-slot cell memo goes from one `RefCell<[CellMemo; 16]>` to `Cell` tags plus `OnceCell<Box<[Cell<f64>]>>` values, so a hit is plain loads with no borrow flag. `sample_via_cell` and `sample_in_chunk` are `#[inline]`; misses go to an out-of-line `fill_memo` (`run_cell` into a pooled buffer, then a copy). Each value is the same `run_cell` output, so it is exact. New test `interleaved_sparse_memo_reads_are_bit_identical`. Tests: noise 41, chunkgen 192 + 1 + 1 + 1 | 4 rounds, 1 thread, radius 12, rotating, against shipb1/shipb2 | gen_cpu_s 5.51, 5.62 | 5.40 | r12 `582147091732a06d` x12; r16 `a977961a58122047` | **inconclusive, not landed**: -2.0% (3/4) / -3.8% (4/4). Patch at `wip/noise-20c-vein-memo-hit-path.patch` |
+
+**Why 20c can't reach the bar** (temporary counters, radius 8, 1 thread):
+- **Reads:** `vein_toggle` is read ~11k times per chunk and misses its memo ~98 times; each miss evaluates a whole cell, and ~113 of its 128 lanes get read. `vein_ridged` is ~3.1k reads and 47 cell evaluations per chunk, ~66 of 128 lanes read.
+- **The ~4% splits into:**
+  - corner-grid builds for the three vein grids: ~2%;
+  - ~4.1M memo hits at ~7 ns: ~1.3%;
+  - cell evaluations: ~1.1%.
+- **Implication:** wasted lanes are not the cost, and a batch API would only remove the same ~1.3% hit overhead. The vein grids' share belongs to 20a's corner-grid work.
+- **Bundling:** 20c's hit path is a bundling candidate together with the 2D-cache allocation (1.8%), both exact. Note: `ab.sh` prints no `=== HOLD` header, so `ab-analyze.py` needs one added by hand to a single-hold file.
+| 20b (n20b) | Per-block `run_cell`, two parts. (1) `fill_cell_interpolated` gains `lerp_cell_fixed::<CW>` for cell widths 4 and 8: fixed arrays and `chunks_exact_mut`, no bounds checks, the same lerps in the same order; other widths keep the general loop. (2) `run_cell`'s register file and `range_choice` scratch come from a new `Scratch::overwritten` and are not zeroed per cell. That is valid because every op writes all its `dst` lanes before any later op reads them, and `range_choice` always runs a branch. Tests: noise 42 (2 new, including `fixed_width_fill_is_bit_identical` over 2000 random corner sets with special values, and whole-cell against per-block on 8-wide cells in an order that reuses pooled buffers), chunkgen 192 + 1 + 1 + 1 | 4 rounds, 1 thread, radius 12, against shipb1/shipb2 | gen_cpu_s 5.36, 5.20 | 5.04 | r12 x12; r16 `a977961a58122047` | **inconclusive, not landed**: -5.9% (3/4) / -3.0% (3/4); lower `cpu_s` in 7 of 8 base comparisons. Patch at `wip/noise-20b-cell-lerp-and-regs.patch` |
+
+**NaN note from 20b:** the random test found one case where the old and new code can differ: a corner NaN with a payload meets a NaN made by `inf - inf` inside the same `fadd`. Which NaN wins depends on how LLVM orders a commutative `fadd`'s operands, which Rust leaves unspecified, so the old code doesn't pin it either. Real densities never feed infinities into the lerp. The test accepts "both NaN" only for that two-source case and demands `to_bits` everywhere else.
+
+**Next:** 20b and 20c are both exact, in different parts of the per-block path, and each is about 3-4% in a consistent direction. Bundle them (plus the 2D-cache allocation from the pool) and hold the bundle against the same bases.
+| 20a (n20a) | Corner-grid Perlin leaf math, vectorized across lanes. New `ImprovedNoise::noise_block_reusing` (up to 64 lanes) in three phases: (1) coordinates as straight-line SoA f64 code (scale, wrap, offset, floor, fractions, y-smear, the three smoothsteps), with the smear mode fixed by const generics; (2) hashes through the same `CellHashes` memo, in lane order; (3) `lerp_corners_faded`, the same 8 `grad_dot`s and 7 lerps. `PerlinNoise::get_values` runs it in 64-lane blocks. `BlendedNoise::compute_chunk` runs it for the main stack, and for each limit stack over its active lanes (the same `!(factor >= 1)` / `!(factor <= 0)` tests), each sum written back to its lane. Disassembly shows `vmulpd/vaddpd/vsubpd/vroundpd` with no FMA. **Reviewed by me against the scalar path:** the same per-lane expressions, `u = smoothstep(dy)` on the un-smeared dy, `y_max` as the same `y * pow` product. Tests: noise 42 (2 new `to_bits` tests: 48 seeds x 40 blocks, every block length, all smear modes, coordinates up to `f64::MAX` and the wrap half-period, signed zeros; saturating selectors). On perf/noise: chunkgen 190 + 1 + 1 + 1 | 4 rounds, radius 12, rotating, against shipb1/shipb2 (ef9a35f), 1 thread and 8 threads | 1 t gen_cpu_s 5.46, 5.42; 8 t 6.87, 7.82 | 1 t **5.17**; 8 t 7.47 | r12 `582147091732a06d` x24; r16 `a977961a58122047` | **landed (07a6727)**: 1 thread -5.3% / -4.5%, **lower than both bases in 4/4 rounds** (per round n20a 5.10/5.08/5.33/5.18 against shipb1 5.52/5.35/5.59/5.39 and shipb2 5.34/5.68/5.42/5.23). 8 threads (regression check): +8.8% (2/4) against shipb1, -4.4% (3/4) against shipb2, cps +5.7% / +10.4%; shipb2 alone ranged 6.23-9.09, so no regression is visible above the 8-thread spread |
+
+### Pregen digest of b889079 + 07a6727 on a tree merged with pipeline (auditor's gap)
+
+Scratch merge: `origin/perf/pipeline` b793819 plus `perf/noise` 07a6727, which carries both
+b889079 (scratch pool) and 07a6727 (block noise kernel). Its noise crate is identical to 07a6727.
+The only conflict was `scripts/bench-vps.sh`, resolved to pipeline's side; pregen does not use
+it. Built and run under the shared lock at nice 10:
+`oxide-pregen --datapack reference --seed 12345 --world out/pregen-world --center-x 0 --center-z 0 --radius 16 --threads 8 --no-write --bench`
+
+    BENCH chunks=1089 threads=8 secs=3.753 cps=290.2 ms_per_chunk_core=27.57 digest=df701ee858e2bdd3 generate_ms=2264 decorate_ms=1275 serialise_ms=120 compress_ms=93 write_ms=0 compression=zlib6 mb_disk=0.0
+
+**digest=df701ee858e2bdd3: matches**, so palettes, biomes and heightmaps are unchanged by
+both landings. (Not a timing: shared lock, box not quiet.) A first attempt without
+`--world/--center-x/--center-z` stopped at argument parsing and generated nothing. The
+scratch worktree `/tmp/pgm` and box dir `noise-pgm` are removed.
+
+| # | What | Holds | Bases | Patched | Digest | Verdict |
+|---|---|---|---|---|---|---|
+| 21 (n21) | **Bundle** of 20b (fixed-width `lerp_cell_fixed` for cell widths 4/8; `run_cell` registers and `range_choice` scratch via `Scratch::overwritten`, not zeroed per cell), 20c (borrow-free per-slot vein memo: `Cell` tags plus `OnceCell<Box<[Cell<f64>]>>` values, inlined hit path, out-of-line `fill_memo`), and the 2D column cache's `vec![None; COLUMNS]` taken from the scratch pool (new `pooled!(Option<f64>)`; `Scratch::filled` gives exactly `vec![None; n]`). All exact; no float operation changes. Tests: on ef9a35f noise 43, chunkgen 192 + 1 + 1 + 1; on perf/noise (with 20a) noise 45, chunkgen 190 + 1 + 1 + 1 | 4 rounds, radius 12, rotating, against shipb1/shipb2 (ef9a35f), 1 thread and 8 threads | 1 t gen_cpu_s 5.53, 5.43; 8 t 6.36, 6.88 | 1 t **5.21**; 8 t 6.58 | r12 `582147091732a06d` x24; r16 `a977961a58122047` on ef9a35f+21 and on perf/noise+21 | **landed (ac68e26)**: 1 thread -5.8% / -4.1%, **lower than both in 4/4 rounds** (per round n21 5.27/5.12/5.34/5.11 against shipb1 5.55/5.43/5.70/5.44 and shipb2 5.66/5.24/5.51/5.31); `cpu_s` lower in 4/4 against both. 8 threads (regression check): +3.5% / -4.4%, 2/4 each; one n21 outlier round (8.33 against 5.76-6.41); `cpu_s` -1.3% / -4.1%. No regression visible above the 8-thread spread |
+
+The bundle was held on ef9a35f without 20a (07a6727). The two touch disjoint files (20a: `improved_noise`, `perlin_noise`, `blended_noise`; 21: `cache`, `compiled`, `router`, `scratch`), and 21 applied cleanly on 07a6727. 20b/20c's separate wip patches are superseded by this landing.
+
+**Next:** re-profile the shipping tree with 20a + 21 merged (datapath to merge `perf/noise`) and take new bases from it. What remains in this crate is the corner grid's hash and lerp phases (which phases 20a's kernel actually vectorises is not yet checked per phase in the disassembly) and the vein corner-grid builds (~2%, from 20c's counters). Base binaries `ab-bin/shipb1`/`shipb2` are deleted; new bases are needed from the merged tree.
+
+## Session 5, round 3: new shipping tree (auditor: don't wait for datapath's merge)
+
+Shipping tree: datapath head **c34e27b** crates, with `crates/oxide-noise` from **ac68e26** (20a + 21).
+Datapath has not touched `oxide-noise` since ef9a35f. Two base binaries, `ab-bin/shipc1` and
+`ab-bin/shipc2`, are separate builds of that tree. The first attempt at the pregen digest and
+profile hit transient SSH resets from the box (`kex_exchange_identification: Connection reset`)
+and ran nothing; both are re-queued.
+
+**In flight** (Opus sub-agents, shared brief, judged on gen_cpu_s at 1 thread against
+shipc1/shipc2, 4 rounds, plus an 8-thread regression hold):
+- **22a (n22a):** the corner grid's hash and lerp phases. It first disassembles
+  `noise_block_reusing` to report which of its three phases are packed SIMD and how `grad_dot`
+  compiles, then makes phase 3 (dots and lerps) packed across lanes with the same per-lane
+  operations, e.g. a gradient-coefficient table that keeps the scalar code's signed-zero
+  behaviour.
+- **22b (n22b):** the vein slots' corner-grid builds (~2%). It first counts how many of each
+  vein slot's 5x49x5 corners are ever read, then builds only the needed layers (same corner
+  values, fewer computed). Noise crate only; any call-site change in `ore_veins.rs` is
+  described, not made.
+
+**Pregen digest for ac68e26 on a pipeline-merged tree:** the scratch merge is `origin/perf/pipeline`
+ee2243f plus `perf/noise` ac68e26 (its noise crate is identical to ac68e26; the only conflict was
+`scripts/bench-vps.sh`, resolved to pipeline's side). The run was under the shared lock:
+
+    BENCH chunks=1089 threads=8 secs=14.065 cps=77.4 ms_per_chunk_core=103.33 digest=df701ee858e2bdd3 generate_ms=8470 decorate_ms=4799 serialise_ms=371 compress_ms=425 write_ms=0 compression=zlib6 mb_disk=0.0
+
+**df701ee858e2bdd3 matches.** All three landings of this session (b889079, 07a6727, ac68e26) are
+now pregen-checked. Not a timing: shared lock, box loaded.
+
+**Profile of the new shipping tree** (c34e27b + ac68e26; radius 12, 8 threads, 1,775
+generation samples, so ~±1 point per row). Noise is **41.9%** of generation (45.7% before 20a + 21):
+
+| Share | Where |
+|---|---|
+| 24.3% | corner grid. Self time: `grad_dot` 4.6% (improved_noise.rs:52-53), `[ext]` 2.5%, `lerp` 1.1%, `block_coords` ~1.4%, `corner_hashes` 0.4%, the `[i32; 3]` memo compare 0.4% |
+| 5.0% | per-block `run_cell` (was 7.5%) |
+| 3.7% | ore veins through noise (was 4.2%) |
+
+Over all of generation, `grad_dot` (5.2%) is now the largest named self-time item, ahead of the
+aquifer's `compute_kind` (3.9%). That is 22a's target.
+
+| # | What | Holds | Bases | Patched | Digest | Verdict |
+|---|---|---|---|---|---|---|
+| 22b (n22b) | Vein slots' corner grids built lazily per layer. At router build, a slot reached only from `vein_toggle`/`vein_ridged`/`vein_gap` is marked lazy, and builds one 25-corner layer (one `run_lanes` batch) when a cell or `cell_bounds` first needs it, with a bitmask of built layers. Lazy slots skip the shared `CornerColumns`; every other slot is unchanged. `Program::cell_bounds` gets a `RunCtx`. Exact: the same program at the same positions, only fewer computed. Tests: noise 46 (new `lazy_vein_corner_layers_are_bit_identical`: sparse, out-of-order per-block / per-cell / bounds reads against an eager cache, `to_bits`), chunkgen 192 + 1 + 1 + 1 | 4 rounds, radius 12, 1 thread and 8 threads, against shipc1/shipc2 | 1 t gen_cpu_s 5.05, 5.15; 8 t 6.13, 6.88 | 1 t 5.25; 8 t 5.54 | r12 x24; r16 `a977961a58122047` | **rejected**: 1 thread +3.8% (2/4) / +1.9% (1/4). 8 threads -9.7% / -19.5%, but the bases have outlier rounds (7.40, 9.16), so this only shows no regression. Patch at `wip/noise-22b-lazy-vein-layers.patch` |
+
+**What 22b's counters showed** (radius 8, 1 thread, 289 chunks, counters since removed):
+- **`vein_toggle`:** reads 400 of its 1,225 corners per chunk (corner layers 0-15 in every column, fixed by `ore_veins.rs` running `cell_bounds` over the band). Its build took 26.4 ms in total.
+- **`vein_ridged`:** two grids, built in 166 chunks, ~155 corners read per build (layers 0-12). ~25.5 ms for both.
+- **`vein_gap`:** has no interpolated node.
+
+So ~70-87% of each vein grid is never read. But the unread corners were already cheap, because `run_lanes` only runs noise for in-range lanes. The whole area's ceiling is ~52 ms of 2.37 s (2.2%), and a hold whose rounds swing ~18% cannot resolve it. It is not worth re-holding.
+
+**Pointer:** the only larger build-side waste is the three noodle grids inside `final_density`, ~27 ms each with ~456 of 1,225 corners read. Making those lazy would give up their shared-column hits across chunks, so it is a trade to measure, not a clear win.
+| 22a (n22a) | Gather-free gradient selection in the block kernel's phase 3. The scalar `grad_dot` already does three real multiplies, `g0*x + g1*y + g2*z` (no skipped zero terms), so only the coefficient lookup changed: `GRAD_PACKED = [0x3100dddd, 0xdddd00f5, 0xc4f5f500]` (sixteen 2-bit signed fields per axis), each coefficient `f64::from(((C << (30 - 2h)) as i32) >> 30)`, exactly +1.0 / -1.0 / +0.0. Each lane's 8 hashes are read as one `u64`. The products, sums and lerps are unchanged. Tests: noise 49 (4 new `to_bits`: the table against `GRADIENT` for all 256 bytes; `grad_dot` with +-0 and subnormals; 200k corner-kernel cases; the block kernel at lattice points), chunkgen 192 + 1 + 1 + 1 | 4 rounds, radius 12, 1 thread and 8 threads, against shipc1/shipc2 | 1 t gen_cpu_s 4.98, 4.99; 8 t 5.40, 5.77 | 1 t 5.03; 8 t 5.48 | r12 x24; r16 `a977961a58122047` | **rejected**: 1 thread +1.0% (1/4) / +0.8% (2/4); 8 threads +1.5% / -5.0%, 2/4 each. Patch at `wip/noise-22a-packed-grad-select.patch` |
+
+**Disassembly of the landed `noise_block_reusing`** (22a, release, box is Zen 1 EPYC with AVX2 and no AVX-512; no FMA anywhere):
+- **Phase 1:** packed (`vmulpd`/`vaddpd`/`vsubpd`, `vroundpd` for floor), except the saturating `floor() as i32` (scalar on all three axes: `vcvttsd2si` with `vmaxsd`/`vminsd`/`cmovp`, ~15 instructions per axis) and the y-smear clamp.
+- **Phase 2:** scalar (cell compare, the hash chain on a miss, an 8-byte copy per lane); cheap.
+- **Phase 3:** already packed across lanes, but `grad_dot`'s selection compiled to an emulated gather (40 `vpextrb`, 43 `vmovsd`, 24 `vmovhps`, 21 `vinsertf128`). 22a removed that gather entirely (`vpsllvd`/`vpsrad`, 36 `vmulpd`, 24 `vaddpd`), and it bought nothing measurable. On Zen 1 the 256-bit integer shifts cost about what the scalar loads did, and phase 3 is not the bottleneck.
+
+**Remaining leads in the kernel:** phase 1's scalar saturating casts. A packed `vcvttpd2dq` is exact wherever every lane is finite and inside the i32 range, which wrapped coordinates plus offsets always are, with a scalar fallback otherwise. It is small and likely below hold resolution.
+
+### 23: larger corner-column cache: no effect on misses (deterministic count, no hold needed)
+
+The question was whether the 22,220 evictions per radius-16 run (1 thread) are capacity misses. On
+the shipping tree, `COLUMN_SETS` 128 → 512 (4x capacity), 1 thread, `OXIDE_CORNER_STATS=1`,
+untimed under the shared lock:
+
+| | hits | misses | evictions |
+|---|---|---|---|
+| r16, 128 sets (every hold so far) | 63,296 | 53,728 | 22,220 |
+| r16, 512 sets | 63,302 | **53,722** | 1,073 |
+| r12, 128 sets | 37,101 | 31,907 | 5,881 |
+| r12, 512 sets | 37,101 | **31,907** | 113 |
+
+The evictions nearly vanish but the misses don't move, so every evicted column was already dead.
+The 54% hit rate is the compulsory limit of this generation order (each edge column is shared by
+at most 2 or 4 chunks). Cache capacity offers nothing; the patch is not kept. Digests
+`a977961a58122047` / `582147091732a06d`. The only way to fewer corner evaluations is evaluating
+fewer columns or layers per chunk, i.e. 22b's finding: the unread corners are already cheap.
+
+## Handover, session 5 (end of round 3)
+
+`perf/noise` code head: **ac68e26**. This session landed:
+- b889079 (scratch pool);
+- 07a6727 (block noise kernel, 20a);
+- ac68e26 (bundle 21: per-block cell path, vein memo hits, pooled 2D cache).
+
+All are exact, and all have the harness digest and the pregen digest on a pipeline-merged tree.
+Rejected, with patches in wip: 17, 22a, 22b, 23. The shipping tree for holds is datapath's head
+c34e27b plus `oxide-noise` ac68e26, with bases `ab-bin/shipc1`/`shipc2` on the box.
+
+The noise share is 41.9% of generation, and the rest of it is below hold resolution item by item:
+- **Kernel leaf math:** the coordinate and dot phases already pack. The remaining scalar part is
+  the saturating casts, est. <1%.
+- **Corner-cache sharing:** at its compulsory limit (23).
+- **Vein builds:** ceiling 2.2% (22b).
+- **Per-block cell path and vein hits:** landed in 21.
+
+**Next, if continued:** structural work, not micro-optimisation:
+1. Measure the noodle grids' laziness trade (22b's pointer: ~456 of 1,225 corners read, ~27 ms
+   per grid) with shared columns kept for the read layers.
+2. Find out why `run_lanes`/`run_subset` interpreter overhead shows in the grid (`[ext]` 2.5%,
+   the `[i32; 3]` memo compare 0.4%); a per-program specialised lane loop might cut it.
+3. Datapath's own areas (surface 16-20%, aquifer, carvers) are now the larger share of
+   generation.

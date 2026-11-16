@@ -9,7 +9,7 @@
 //! the factor *first* -- an older signature had it last, which would silently swap the
 //! arguments here.
 
-use crate::improved_noise::HashKind;
+use crate::improved_noise::{HashKind, NOISE_BLOCK};
 use crate::normal_noise::LANE_CHUNK;
 use crate::perlin_noise::PerlinNoise;
 use crate::random::WorldRandom;
@@ -162,19 +162,23 @@ impl BlendedNoise {
         let main_smear = limit_smear / params.y_factor;
 
         let mut main_value = [0.0f64; LANE_CHUNK];
+        let mut samples = [0.0f64; NOISE_BLOCK];
         let mut pow = 1.0;
         for i in 0..8 {
             if let Some(noise) = self.main.get_octave_noise(i) {
                 let mut memo = noise.cell_hashes(HashKind::Blended);
+                noise.noise_block_reusing(
+                    &main_x[..k],
+                    &main_y[..k],
+                    &main_z[..k],
+                    pow,
+                    main_smear * pow,
+                    None,
+                    &mut memo,
+                    &mut samples,
+                );
                 for j in 0..k {
-                    main_value[j] += noise.noise_with_scale_reusing(
-                        wrap(main_x[j] * pow),
-                        wrap(main_y[j] * pow),
-                        wrap(main_z[j] * pow),
-                        main_smear * pow,
-                        main_y[j] * pow,
-                        &mut memo,
-                    ) / pow;
+                    main_value[j] += samples[j] / pow;
                 }
             }
             pow /= 2.0;
@@ -184,53 +188,91 @@ impl BlendedNoise {
         for j in 0..k {
             factor[j] = (main_value[j] / 10.0 + 1.0) / 2.0;
         }
+        // Vanilla skips a limit stack for a lane whose selector saturates; gather each stack's
+        // lanes (in lane order) so the octave kernel runs over exactly those.
+        let mut min_lanes = Compact::new();
+        let mut max_lanes = Compact::new();
+        for j in 0..k {
+            // Negated as the scalar path tests them, so a NaN factor behaves the same.
+            let is_max = factor[j] >= 1.0;
+            let is_min = factor[j] <= 0.0;
+            if !is_max {
+                min_lanes.push(j, limit_x[j], limit_y[j], limit_z[j]);
+            }
+            if !is_min {
+                max_lanes.push(j, limit_x[j], limit_y[j], limit_z[j]);
+            }
+        }
         let mut blend_min = [0.0f64; LANE_CHUNK];
         let mut blend_max = [0.0f64; LANE_CHUNK];
-        pow = 1.0;
-        for i in 0..16 {
-            let y_scale_pow = limit_smear * pow;
-            let min_noise = self.min_limit.get_octave_noise(i);
-            let max_noise = self.max_limit.get_octave_noise(i);
-            let mut min_memo = min_noise.map(|n| n.cell_hashes(HashKind::Blended));
-            let mut max_memo = max_noise.map(|n| n.cell_hashes(HashKind::Blended));
-            for j in 0..k {
-                let wx = wrap(limit_x[j] * pow);
-                let wy = wrap(limit_y[j] * pow);
-                let wz = wrap(limit_z[j] * pow);
-                // Negated as the scalar path tests them, so a NaN factor behaves the same.
-                let is_max = factor[j] >= 1.0;
-                let is_min = factor[j] <= 0.0;
-                if !is_max {
-                    if let (Some(noise), Some(memo)) = (min_noise, min_memo.as_mut()) {
-                        blend_min[j] += noise.noise_with_scale_reusing(
-                            wx,
-                            wy,
-                            wz,
-                            y_scale_pow,
-                            limit_y[j] * pow,
-                            memo,
-                        ) / pow;
-                    }
-                }
-                if !is_min {
-                    if let (Some(noise), Some(memo)) = (max_noise, max_memo.as_mut()) {
-                        blend_max[j] += noise.noise_with_scale_reusing(
-                            wx,
-                            wy,
-                            wz,
-                            y_scale_pow,
-                            limit_y[j] * pow,
-                            memo,
-                        ) / pow;
-                    }
-                }
+        for (stack, lanes, blend) in [
+            (&self.min_limit, &min_lanes, &mut blend_min),
+            (&self.max_limit, &max_lanes, &mut blend_max),
+        ] {
+            let m = lanes.len;
+            if m == 0 {
+                continue;
             }
-            pow /= 2.0;
+            let mut sums = [0.0f64; LANE_CHUNK];
+            pow = 1.0;
+            for i in 0..16 {
+                if let Some(noise) = stack.get_octave_noise(i) {
+                    let mut memo = noise.cell_hashes(HashKind::Blended);
+                    noise.noise_block_reusing(
+                        &lanes.x[..m],
+                        &lanes.y[..m],
+                        &lanes.z[..m],
+                        pow,
+                        limit_smear * pow,
+                        None,
+                        &mut memo,
+                        &mut samples,
+                    );
+                    for c in 0..m {
+                        sums[c] += samples[c] / pow;
+                    }
+                }
+                pow /= 2.0;
+            }
+            for c in 0..m {
+                blend[lanes.lane[c] as usize] = sums[c];
+            }
         }
 
         for j in 0..k {
             out[j] = clamped_lerp(factor[j], blend_min[j] / 512.0, blend_max[j] / 512.0) / 128.0;
         }
+    }
+}
+
+/// The lanes of a [`BlendedNoise::compute_chunk`] that sample one limit stack, compacted.
+struct Compact {
+    len: usize,
+    lane: [u8; LANE_CHUNK],
+    x: [f64; LANE_CHUNK],
+    y: [f64; LANE_CHUNK],
+    z: [f64; LANE_CHUNK],
+}
+
+impl Compact {
+    fn new() -> Self {
+        Self {
+            len: 0,
+            lane: [0; LANE_CHUNK],
+            x: [0.0; LANE_CHUNK],
+            y: [0.0; LANE_CHUNK],
+            z: [0.0; LANE_CHUNK],
+        }
+    }
+
+    #[inline(always)]
+    fn push(&mut self, lane: usize, x: f64, y: f64, z: f64) {
+        let c = self.len;
+        self.lane[c] = lane as u8;
+        self.x[c] = x;
+        self.y[c] = y;
+        self.z[c] = z;
+        self.len = c + 1;
     }
 }
 
@@ -302,6 +344,33 @@ mod tests {
             xz_factor: 80.0,
             y_factor: 160.0,
             smear_scale_multiplier: 8.0,
+        }
+    }
+
+    impl BlendedNoise {
+        /// The main-stack selector `compute` derives, for checking test coverage.
+        fn selector_for_test(&self, params: &BlendedNoiseParams, x: f64, y: f64, z: f64) -> f64 {
+            let xz_multiplier = 684.412 * params.xz_scale;
+            let y_multiplier = 684.412 * params.y_scale;
+            let main_x = x * xz_multiplier / params.xz_factor;
+            let main_y = y * y_multiplier / params.y_factor;
+            let main_z = z * xz_multiplier / params.xz_factor;
+            let main_smear = y_multiplier * params.smear_scale_multiplier / params.y_factor;
+            let mut main_value = 0.0;
+            let mut pow = 1.0;
+            for i in 0..8 {
+                if let Some(noise) = self.main.get_octave_noise(i) {
+                    main_value += noise.noise_with_scale(
+                        wrap(main_x * pow),
+                        wrap(main_y * pow),
+                        wrap(main_z * pow),
+                        main_smear * pow,
+                        main_y * pow,
+                    ) / pow;
+                }
+                pow /= 2.0;
+            }
+            (main_value / 10.0 + 1.0) / 2.0
         }
     }
 
@@ -395,6 +464,81 @@ mod tests {
         );
         assert!(perlin > 0.5, "perlin reuse {perlin}");
         assert!(blended_rate > 0.2, "blended reuse {blended_rate}");
+    }
+
+    /// Lanes with random (also huge and negative) positions, and parameter sets whose
+    /// selector saturates for some lanes and not others, so the compacted limit stacks skip
+    /// lanes exactly as the scalar path does.
+    #[test]
+    fn lanes_are_bit_identical_with_saturating_selectors() {
+        use oxide_core::{LegacyRandom, RandomSource};
+        let mut r = WorldRandom::new(99, false);
+        let blended = BlendedNoise::new(&mut r);
+        let mut rng = LegacyRandom::new(0xb1e);
+        let param_sets = [
+            overworld(),
+            BlendedNoiseParams {
+                xz_scale: 1.0,
+                y_scale: 1.0,
+                xz_factor: 1.0,
+                y_factor: 1.0,
+                smear_scale_multiplier: 8.0,
+            },
+            BlendedNoiseParams {
+                xz_scale: 0.25,
+                y_scale: 0.375,
+                xz_factor: 80.0,
+                y_factor: 60.0,
+                smear_scale_multiplier: 0.0,
+            },
+            BlendedNoiseParams {
+                xz_scale: 3.0,
+                y_scale: 0.01,
+                xz_factor: 0.5,
+                y_factor: 0.7,
+                smear_scale_multiplier: -4.0,
+            },
+        ];
+        let (mut saw_min, mut saw_max, mut saw_mid) = (false, false, false);
+        for params in &param_sets {
+            for round in 0..24 {
+                let n = 1 + (round * 13) % 130;
+                let mag = [64.0, 3.0e4, 3.0e7, 2.0e9][round % 4];
+                let xs: Vec<f64> = (0..n)
+                    .map(|_| ((rng.next_double() * 2.0 - 1.0) * mag).floor())
+                    .collect();
+                let ys: Vec<f64> = (0..n)
+                    .map(|_| ((rng.next_double() * 2.0 - 1.0) * 400.0).floor())
+                    .collect();
+                let zs: Vec<f64> = (0..n)
+                    .map(|_| ((rng.next_double() * 2.0 - 1.0) * mag).floor())
+                    .collect();
+                let mut out = vec![0.0; n];
+                blended.compute_lanes(params, &xs, &ys, &zs, &mut out);
+                for j in 0..n {
+                    let expected = blended.compute(params, xs[j], ys[j], zs[j]);
+                    assert_eq!(
+                        out[j].to_bits(),
+                        expected.to_bits(),
+                        "lane {j} at {} {} {}",
+                        xs[j],
+                        ys[j],
+                        zs[j]
+                    );
+                }
+                for j in 0..n {
+                    let probe =
+                        BlendedNoise::selector_for_test(&blended, params, xs[j], ys[j], zs[j]);
+                    saw_min |= probe <= 0.0;
+                    saw_max |= probe >= 1.0;
+                    saw_mid |= probe > 0.0 && probe < 1.0;
+                }
+            }
+        }
+        assert!(
+            saw_min && saw_max && saw_mid,
+            "{saw_min} {saw_max} {saw_mid}"
+        );
     }
 
     #[test]
