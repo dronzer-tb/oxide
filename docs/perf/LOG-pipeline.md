@@ -1624,3 +1624,30 @@ datapath 323b9d4).
 
 Next in apply_writes: each finished chunk walks all writes of its nine neighbour regions and keeps
 the ones landing in it; bucketing each region's writes by target chunk once should remove most of it.
+
+### apply_writes bucketed by target chunk (sub-agent 7968121): +9.3% decorate, rejected
+
+Each region's writes stable-counting-sorted once by target chunk (in place through a per-thread
+buffer), so a finished chunk reads only its own bucket from each of nine neighbour regions; per-chunk
+write order unchanged. Premise wrong: skipping foreign writes was only ~35 samples (~1 ns each); the
+cost of `apply_writes` is the writes themselves (palette lookups, section stores). Samples:
+`apply_writes` + grouping ~374 (base) -> ~456 (fresh list per region) -> ~406 (in place). Max RSS
+723 vs 724 MB.
+
+1-thread hold (ABBA, 4 rounds): decorate fb 5808 5809 5933 6155 = 5926, w1 6627 6321 6866 6095 =
+6477 (**+9.3%**, w1 behind 4/4); secs 20.72 vs 21.30 (+2.8%); cpu_sys_s 1.27 vs 1.83 (+44%,
+untraced). **Rejected**; patch at `docs/perf/rejected-apply-writes-buckets.patch`. Digest
+df701ee858e2bdd3 on every row; tests pass.
+
+8-thread r16 hold (same command as the 335 cps headline, 4 rounds):
+
+| round | fb cps / generate_ms / decorate_ms | w1 cps / generate_ms / decorate_ms |
+|---|---|---|
+| 1 | 323.9 / 1832 / 1322 | 293.3 / 1790 / 1692 |
+| 2 | 356.7 / 1841 / 1052 | 336.3 / 1811 / 1207 |
+| 3 | 314.6 / 2015 / 1254 | 343.8 / 1854 / 1154 |
+| 4 | 206.1 / 1886 / 2834 (cpu_sys_s 11.68: box interference, dropped) | 314.3 / 1896 / 1399 |
+
+Branch head (fb) at 8 threads: 323.9 / 356.7 / 314.6, mean 332 cps, about the 335 headline. The
+1-thread decorate cut (-18% since h1, about -25% since the headline base) doesn't show at 8 threads:
+8-thread spread is about +/-10% here, and generate (~1.85 s, not ours) is now the larger stage.
