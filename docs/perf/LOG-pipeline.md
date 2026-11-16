@@ -1848,3 +1848,35 @@ Takeaway: at 8 threads the run is CPU-bound, so further gains must cut CPU, not 
 run at 1 thread: generate ~13.9 s (other tracks), decorate ~6.0 s, serialise ~0.65 s, compress
 ~0.6 s. Reaching PumpkinMC's ~404 cps from ~368 needs roughly 10% less total CPU; within this track
 that means decoration (ores still ~37% of it) or serialise/compress.
+
+### Whole-process CPU profile on k1 (0b56ce5), 1 thread r16: no single cut in our code reaches 3%
+
+Sampler on a frame-pointer build, two runs (~11,300 samples each, digest df701ee858e2bdd3), classified
+by outermost stage:
+
+| part | share of run CPU |
+|---|---|
+| generation (other tracks) | 62.7% / 64.2% |
+| decoration features | 19.0% / 19.0% (ore 8.7/8.5, sculk 2.8/2.7, vegetation patch 1.9, tree 1.6/1.7, multiface 1.2/1.3, geode 1.0, rest ~1.3) |
+| decoration driver + placement chains | 3.7 / 3.2 (largest frame `placement::run` 0.4-0.5%) |
+| serialise (oxide-anvil NBT) | 2.9 / 3.2 (~40% `pack_bits` in oxide-core, ~37% libc copy/alloc) |
+| compress | 2.9 / 3.2 (flate2 1.1.9, zlib-rs 0.6.8 backend, level 6 = `Compression::VANILLA`) |
+| region build, `into_interned`, recycle | 2.5 / 1.7 |
+| `apply_writes` | 2.3 / 2.2 (~42% libc: oxide-core palette and index arrays; ~16% per-write target check; ~8% oxide-core `set_index`) |
+| start-up (datapack load, feature compile) | 1.8 / 1.7 |
+| heightmaps | 0.5 / 0.3 |
+| other / scheduler | ~1.5 |
+
+Our code is ~36% of run CPU, generation ~64%. Ranked candidates (best realistic saving of total CPU):
+ore placement (8.6%; needs a ~35% ore cut to reach 3%), serialise oxide-anvil side (0.5-1%), sculk
+(2.8%, cut twice), driver (3.5%, spread thin), apply_writes per-write check (<=0.4%), region build
+(<0.5% each), start-up (1.7% at r16, fixed per run). Compress left alone: zlib-rs is already fast,
+and any other implementation risks the .mca bytes.
+
+Out of our scope but worth noting for its owner: oxide-core `pack_bits` and the palette/section index
+allocations are ~2% of run CPU across serialise and apply_writes.
+
+Next: one more ore attempt with a formulation not yet tried: evaluate the inside-sphere test for a
+whole x row at once (same per-element float operations, no reordering or FMA) into a bit mask, then
+visit set bits in the original order, so the branchy per-cell loop control (~55% of `place_blob`)
+shrinks.
