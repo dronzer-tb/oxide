@@ -12,7 +12,7 @@
 //! (the platform libm, not the `Mth` table). They agree to the last bit for almost every input
 //! but are not guaranteed to; a mismatch would shift a blob end by a block now and then.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::f32::consts::PI;
 use std::str::FromStr;
 
@@ -311,7 +311,7 @@ impl OreFeature {
             }
         }
 
-        let mut tested = BitSet::default();
+        let mut tested = BitSet::take();
         let mut placed = 0;
         let feature = self as *const Self as usize;
         let mut memo = ORE_MEMOS
@@ -391,6 +391,7 @@ impl OreFeature {
             }
         }
         ORE_MEMOS.with(|memos| memos.borrow_mut().push(memo));
+        tested.give_back();
         placed > 0
     }
 
@@ -535,10 +536,26 @@ fn is_adjacent_to_air(region: &DecorationRegion<'_>, pos: BlockPos) -> bool {
 }
 
 /// A growable bit set keyed by a signed index, like `java.util.BitSet`.
-#[derive(Default)]
 struct BitSet(Vec<u64>);
 
+thread_local! {
+    /// The last blob's [`BitSet`] words, emptied, for the next blob to grow into without
+    /// allocating: each of a run's blobs used to allocate and regrow its own.
+    static SPARE_WORDS: Cell<Vec<u64>> = const { Cell::new(Vec::new()) };
+}
+
 impl BitSet {
+    /// An empty set, reusing the thread's spare words.
+    fn take() -> Self {
+        let mut words = SPARE_WORDS.with(Cell::take);
+        words.clear();
+        Self(words)
+    }
+
+    fn give_back(self) {
+        SPARE_WORDS.with(|spare| spare.set(self.0));
+    }
+
     /// Sets the bit and returns whether it was clear. A negative index is never set.
     fn insert(&mut self, index: i64) -> bool {
         let Ok(index) = usize::try_from(index) else {
