@@ -1381,3 +1381,20 @@ digest held. The base ranged 7134-8612, so a reversed repeat decides.
 -4.4% decorate, user+sys -1.7%, ahead 2/3 on each. Over both holds (6 rounds, either order):
 decorate 7624 vs 7951 mean (-4.1%), user+sys -2.2%, ahead 4/6 on each; the direction holds in both
 orders. Java quiet; df701ee858e2bdd3 on every row. **Kept**, cherry-picked onto the branch.
+
+## Headline: decorated pregen at 8 threads on the branch head (6142cff + datapath 323b9d4)
+
+`bench-ab-pregen-vps.sh 16 8 3 pipeline-b9` (single tree, 3 rounds, `--no-write`, exclusive lock;
+scratch merge 5238497). Tests on the merged tree: chunkgen 196 pass (1 ignored), pregen pass.
+
+| run | cps | generate_ms | decorate_ms | cpu_user_s | cpu_sys_s | java_cpu_s_per_10s |
+|---|---|---|---|---|---|---|
+| 1 | 319.9 | 1798 | 1437 | 23.31 | 3.06 | 0.18 |
+| 2 | 341.4 | 1810 | 1187 | 23.12 | 1.98 | 0.19 |
+| 3 | 344.0 | 1788 | 1196 | 23.02 | 2.13 | 0.28 |
+
+Mean **335 cps** with decoration, digest df701ee858e2bdd3 on every row, Java quiet. The merged-tree
+pregen rows at the start of this log were 184.3/171.5 (datapath 0e3cf61) and 194.2/183.4 (noise
+e6ecc65), so the decorated pipeline is about +75% since then (both tracks' work). PumpkinMC terrain is
+about 404 cps on this box (not byte exact). At 8 threads decoration is still ~40% of the two stage
+times (generate ~1.8 s, decorate ~1.2 s), so decoration stays this track's lever.
