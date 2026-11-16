@@ -104,7 +104,7 @@ fn env_with(facts: BlockFacts, block_tags: TagSet) -> Environment {
         sea_level: 63,
         placed: HashMap::new(),
         biome_climate: HashMap::new(),
-        biome_features: HashMap::new(),
+        biome_features: Default::default(),
     }
 }
 

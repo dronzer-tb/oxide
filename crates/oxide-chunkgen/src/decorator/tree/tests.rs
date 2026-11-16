@@ -86,7 +86,7 @@ fn environment(facts: BlockFacts, block_tags: TagSet) -> Environment {
         behaviours: Box::new(NoBlockBehaviours),
         placed: HashMap::new(),
         biome_climate: HashMap::new(),
-        biome_features: HashMap::new(),
+        biome_features: Default::default(),
     }
 }
 

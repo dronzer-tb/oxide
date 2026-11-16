@@ -120,7 +120,7 @@ fn env(tags: &[(&str, &[&str])], behaviours: Box<dyn BlockBehaviours>) -> Enviro
         behaviours,
         placed: HashMap::new(),
         biome_climate: HashMap::new(),
-        biome_features: HashMap::new(),
+        biome_features: Default::default(),
     }
 }
 

@@ -431,6 +431,38 @@ impl<'a> DecorationRegion<'a> {
         levels
     }
 
+    /// The center chunk's stored biomes, each with the levels [`Self::center_biome_levels`]
+    /// gives for a filter accepting just it: one pass over the chunk's biomes, which a
+    /// decoration step then combines per feature instead of passing over them per feature.
+    pub fn center_biomes(&self) -> CenterBiomes<'a> {
+        let sections = &self.chunks[4].sections;
+        let levels = sections.len() * 4;
+        let mut biomes: Vec<(&'a BiomeId, Vec<u16>)> = Vec::new();
+        let mut which: Vec<usize> = Vec::new();
+        for (s, section) in sections.iter().enumerate() {
+            let palette = section.biomes.palette();
+            // Per palette entry, its place in `biomes`, added on the entry's first use.
+            which.clear();
+            which.resize(palette.len(), usize::MAX);
+            for (slot, &entry) in section.biomes.indices().iter().enumerate() {
+                let entry = entry as usize;
+                if which[entry] == usize::MAX {
+                    let biome = &palette[entry];
+                    which[entry] = match biomes.iter().position(|(known, _)| *known == biome) {
+                        Some(index) => index,
+                        None => {
+                            biomes.push((biome, vec![0u16; levels]));
+                            biomes.len() - 1
+                        }
+                    };
+                }
+                // A biome slot is `((qy * 4 + qz) * 4 + qx)`.
+                biomes[which[entry]].1[s * 4 + (slot >> 4)] |= 1 << (slot & 15);
+            }
+        }
+        CenterBiomes { levels, biomes }
+    }
+
     /// Writes `state` at `pos`. Returns `false`, writing nothing, outside the window -- the
     /// same refusal vanilla's region gives a feature that reaches past its write radius.
     pub fn set_block(&mut self, pos: BlockPos, state: BlockState) -> bool {
@@ -730,6 +762,29 @@ impl StateIds {
     }
 }
 
+/// [`DecorationRegion::center_biomes`]: the center chunk's distinct stored biomes in first-seen
+/// order, each with its quart levels.
+pub struct CenterBiomes<'r> {
+    levels: usize,
+    biomes: Vec<(&'r BiomeId, Vec<u16>)>,
+}
+
+impl CenterBiomes<'_> {
+    /// [`DecorationRegion::center_biome_levels`] for `wanted`: the levels of every biome it
+    /// accepts, combined.
+    pub fn levels(&self, mut wanted: impl FnMut(&BiomeId) -> bool) -> Vec<u16> {
+        let mut levels = vec![0u16; self.levels];
+        for (biome, bits) in &self.biomes {
+            if wanted(biome) {
+                for (level, bit) in levels.iter_mut().zip(bits) {
+                    *level |= bit;
+                }
+            }
+        }
+        levels
+    }
+}
+
 /// One position's state as [`DecorationRegion::probe`] read it.
 pub struct Probe<'r> {
     pub key: StateKey,
@@ -746,8 +801,10 @@ impl Probe<'_> {
     }
 }
 
-/// The facts already looked up for one block state: bit `f` of the low half says fact `f` has
-/// been asked, the same bit of the high half holds the answer. Every `BlockFact` is one bit.
+/// The facts of one block state, looked up on the first question: the low half is all ones
+/// once they are known (0 before), the high half holds `BlockFacts::bits`. Every `BlockFact` is
+/// one bit, and `bits(state) & fact` is `is(state, fact)`, so one table lookup answers every
+/// fact a region later asks about the state, where it used to be one lookup per fact.
 #[derive(Default)]
 struct FactCache(Cell<u64>);
 
@@ -755,14 +812,12 @@ impl FactCache {
     #[inline]
     fn is(&self, facts: &BlockFacts, state: &BlockState, fact: BlockFact) -> bool {
         let bit = u64::from(fact as u32);
-        let known = self.0.get();
-        if known & bit != 0 {
-            return known & (bit << 32) != 0;
+        let mut known = self.0.get();
+        if known == 0 {
+            known = u64::from(u32::MAX) | u64::from(facts.bits(state)) << 32;
+            self.0.set(known);
         }
-        let answer = facts.is(state, fact);
-        self.0
-            .set(known | bit | if answer { bit << 32 } else { 0 });
-        answer
+        known & (bit << 32) != 0
     }
 }
 

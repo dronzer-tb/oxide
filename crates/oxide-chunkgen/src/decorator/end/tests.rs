@@ -76,7 +76,7 @@ fn env(behaviours: Box<dyn BlockBehaviours>) -> Environment {
         behaviours,
         placed: HashMap::new(),
         biome_climate: HashMap::new(),
-        biome_features: HashMap::new(),
+        biome_features: Default::default(),
     }
 }
 

@@ -115,7 +115,7 @@ fn env() -> Environment {
         sea_level: 63,
         placed: HashMap::new(),
         biome_climate: HashMap::new(),
-        biome_features: HashMap::new(),
+        biome_features: Default::default(),
     }
 }
 

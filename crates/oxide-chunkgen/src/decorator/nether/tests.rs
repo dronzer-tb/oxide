@@ -77,7 +77,7 @@ fn env_with(block_tags: TagSet, behaviours: Box<dyn BlockBehaviours>) -> Environ
         behaviours,
         placed: HashMap::new(),
         biome_climate: HashMap::new(),
-        biome_features: HashMap::new(),
+        biome_features: Default::default(),
     }
 }
 

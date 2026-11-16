@@ -25,8 +25,10 @@ use anyhow::{anyhow, bail, Context, Result};
 use oxide_core::{BiomeId, BlockPos, WorldgenRandom};
 use oxide_datapack::Datapack;
 
-use super::context::{BlockBehaviours, Environment, FeatureContext, UnsupportedTally};
-use super::feature::{place_placed, Compiler, Placed};
+use super::context::{
+    BiomeFeatures, BlockBehaviours, Environment, FeatureContext, UnsupportedTally,
+};
+use super::feature::{place_top, Compiler, Placed};
 use super::ground::BiomeClimate;
 use super::survival::SurvivalRules;
 use crate::decorate::Decorator;
@@ -151,15 +153,12 @@ impl BiomeDecorator {
             biome_steps.insert((*biome).clone(), sorted);
         }
 
-        let biome_features = lists
-            .into_iter()
-            .map(|(biome, per_step)| {
-                (
-                    biome,
-                    per_step.into_iter().flatten().collect::<HashSet<u32>>(),
-                )
-            })
-            .collect();
+        let biome_features = BiomeFeatures::new(lists.into_iter().map(|(biome, per_step)| {
+            (
+                biome,
+                per_step.into_iter().flatten().collect::<HashSet<u32>>(),
+            )
+        }));
 
         let env = Environment {
             block_tags: datapack.block_tags.clone(),
@@ -229,6 +228,7 @@ impl Decorator for BiomeDecorator {
             .cloned()
             .collect();
 
+        let center = region.center_biomes();
         let mut tally = UnsupportedTally::default();
         for (step, features) in self.steps.iter().enumerate() {
             let mut indices: Vec<u32> = present
@@ -255,7 +255,7 @@ impl Decorator for BiomeDecorator {
                     unsupported: &mut tally,
                     top_feature: Some(key),
                 };
-                place_placed(&self.placed[key as usize], &mut cx, origin, Some(key));
+                place_top(&self.placed[key as usize], &mut cx, origin, key, &center);
             }
         }
         if !tally.is_empty() {

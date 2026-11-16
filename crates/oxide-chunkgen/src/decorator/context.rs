@@ -93,15 +93,44 @@ pub struct Environment {
     pub biome_climate: HashMap<BiomeId, BiomeClimate>,
     /// The placed features each biome lists, by the content key that identifies them: what the
     /// `minecraft:biome` placement modifier checks against.
-    pub(super) biome_features: HashMap<BiomeId, HashSet<u32>>,
+    pub(super) biome_features: BiomeFeatures,
 }
 
 impl Environment {
     /// Whether `biome` lists the placed feature with content key `key` at any step.
     pub(super) fn biome_lists(&self, biome: &BiomeId, key: u32) -> bool {
-        self.biome_features
-            .get(biome)
-            .is_some_and(|features| features.contains(&key))
+        self.biome_features.lists(biome, key)
+    }
+}
+
+/// Per biome, the content keys of the placed features it lists, as a bit set: the `biome`
+/// placement modifier and the biome gate ask this for every position and every feature, so it
+/// is one fast hash of the biome and one bit test rather than two SipHash lookups.
+#[derive(Default)]
+pub(crate) struct BiomeFeatures(ahash::AHashMap<BiomeId, Box<[u64]>>);
+
+impl BiomeFeatures {
+    pub(crate) fn new(lists: impl IntoIterator<Item = (BiomeId, HashSet<u32>)>) -> Self {
+        Self(
+            lists
+                .into_iter()
+                .map(|(biome, keys)| {
+                    let words = keys.iter().max().map_or(0, |&max| max as usize / 64 + 1);
+                    let mut bits = vec![0u64; words].into_boxed_slice();
+                    for key in keys {
+                        bits[key as usize / 64] |= 1 << (key % 64);
+                    }
+                    (biome, bits)
+                })
+                .collect(),
+        )
+    }
+
+    fn lists(&self, biome: &BiomeId, key: u32) -> bool {
+        self.0.get(biome).is_some_and(|bits| {
+            bits.get(key as usize / 64)
+                .is_some_and(|word| word >> (key % 64) & 1 != 0)
+        })
     }
 }
 

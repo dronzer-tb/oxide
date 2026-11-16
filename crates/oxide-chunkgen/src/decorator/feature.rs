@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
-use oxide_core::{BlockPos, BlockState, RandomSource, ResourceLocation};
+use oxide_core::{BiomeId, BlockPos, BlockState, RandomSource, ResourceLocation};
 use oxide_datapack::feature::Holder;
 use oxide_datapack::feature::{ConfiguredFeature, HolderList};
 use oxide_datapack::placement::PlacedFeature as PlacedFeatureIr;
@@ -40,6 +40,7 @@ use super::templated::{TemplateLibrary, TemplatedFeature};
 use super::tree::{FallenTreeFeature, TreeFeature};
 use super::vegetation::VegetationFeature;
 use super::water::WaterFeature;
+use crate::region::CenterBiomes;
 
 /// A placed feature: a modifier chain and the feature it leads to.
 #[derive(Debug)]
@@ -385,13 +386,39 @@ pub fn place_placed(
     origin: BlockPos,
     top_feature: Option<u32>,
 ) -> bool {
+    place_gated(placed, cx, origin, top_feature, None)
+}
+
+/// [`place_placed`] for the registered feature `key`, with the center chunk's biomes already
+/// gathered (see [`DecorationRegion::center_biomes`]) for its biome gate.
+///
+/// [`DecorationRegion::center_biomes`]: crate::region::DecorationRegion::center_biomes
+pub fn place_top(
+    placed: &Placed,
+    cx: &mut FeatureContext<'_, '_, '_>,
+    origin: BlockPos,
+    key: u32,
+    center: &CenterBiomes<'_>,
+) -> bool {
+    place_gated(placed, cx, origin, Some(key), Some(center))
+}
+
+fn place_gated(
+    placed: &Placed,
+    cx: &mut FeatureContext<'_, '_, '_>,
+    origin: BlockPos,
+    top_feature: Option<u32>,
+    center: Option<&CenterBiomes<'_>>,
+) -> bool {
     let saved = std::mem::replace(&mut cx.top_feature, top_feature);
     let gate = match (placed.biome_gate, top_feature) {
         (Some((start, span)), Some(key)) => {
             let env = cx.env;
-            let levels = cx
-                .region
-                .center_biome_levels(|biome| env.biome_lists(biome, key));
+            let wanted = |biome: &BiomeId| env.biome_lists(biome, key);
+            let levels = match center {
+                Some(center) => center.levels(wanted),
+                None => cx.region.center_biome_levels(wanted),
+            };
             Some(Gate {
                 remaining: placed.modifiers.len() - start,
                 columns: levels.iter().fold(0, |all, level| all | level),

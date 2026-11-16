@@ -122,7 +122,7 @@ fn env(
         behaviours,
         placed: HashMap::new(),
         biome_climate: climates,
-        biome_features: HashMap::new(),
+        biome_features: Default::default(),
     }
 }
 

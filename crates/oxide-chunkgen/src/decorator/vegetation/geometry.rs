@@ -4,8 +4,6 @@
 //! the *order* of iteration is part of the output. Vanilla's sets are `java.util.HashSet`, whose
 //! order is a function of `BlockPos.hashCode`; [`PosSet`] reproduces it.
 
-use std::collections::HashSet;
-
 use oxide_core::{BlockPos, RandomSource};
 
 /// `net.minecraft.core.Direction`, in the order of `Direction.values()`.
@@ -123,7 +121,7 @@ pub(super) fn shuffle<T>(values: &mut [T], random: &mut impl RandomSource) {
 /// is not expected to occur; confirm against a real run if a patch ever disagrees.
 #[derive(Debug, Default)]
 pub(super) struct PosSet {
-    seen: HashSet<BlockPos>,
+    seen: ahash::AHashSet<BlockPos>,
     order: Vec<BlockPos>,
 }
 
