@@ -1487,3 +1487,34 @@ Also tried and dropped by the sub-agent, all within noise or worse: skipping rep
 (241k spreads made 217k writes, so it almost never applies), 4-byte remembered-block cells, reading
 the whole 3x3x3 up front (310 -> 360 samples). What's left in `update_cursors` is the first
 region read of each block and the region writes. Sculk is done for now.
+
+### Decoration allocator cut (sub-agent, now e4b7c5c + 79121e4 + 86f691b): -11.2% decorate, kept
+
+Three changes, all inside our decoration files; RNG draws, ids, intern order and write order unchanged:
+- `region.rs`: a new state is cloned once on intern (the second copy was a map key); 64 states reserved.
+  `placement.rs`: placement chains reuse emptied position lists per thread.
+- `region.rs`: the write list reserves 16k entries and prefaults the first 8k, so regions past 8k
+  writes no longer realloc-copy (max RSS one run 724 MB; base RSS not measured alike).
+- `ore.rs`: each blob reuses the thread's visited-cell bit set.
+
+Sampling (r16 1 thread, two runs each): allocator (malloc/realloc/free) 266/228 -> 158/171 samples
+(-33%); decoration 3053/2806 -> 2697/2687 (-8%). The earlier "17% malloc/free" was all of libc; the
+allocator itself was 8-9% of decoration. Gone: add_state clone (42 -> 4), placement lists (54 -> 0),
+write_id realloc (21 -> 0), ore bit set (22 -> 0). Left: the one intern clone (~23), `pos_set` grow
+and vegetation geometry insert (~25 each), state-provider clones (~12), ore sphere lists (~8),
+`biomes_present` (~8).
+
+ABBA hold, 4 rounds, r16 1 thread (b9 = branch + datapath 323b9d4):
+
+| | round 1 | round 2 | round 3 | round 4 | mean |
+|---|---|---|---|---|---|
+| base decorate_ms | 8367 | 8097 | 7927 | 8175 | 8142 |
+| alloc decorate_ms | 7238 | 6890 | 7338 | 7468 | 7234 |
+| base / alloc secs | 23.25 / 22.28 | 22.90 / 21.36 | 23.18 / 22.45 | 23.31 / 23.57 | 23.16 / 22.41 |
+| base / alloc cpu_sys_s | 2.08 / 1.35 | 1.68 / 1.26 | 1.82 / 1.41 | 1.65 / 1.46 | 1.81 / 1.37 |
+| java_cpu_s_per_10s | 0.22 / 0.24 | 0.23 / 0.22 | 0.24 / 0.26 | 0.24 / 0.28 | |
+
+Decorate -11.2%, ahead 4/4 in both slot orders; secs -3.2%; sys -24%. Over 10%, so one base. **Kept.**
+Cherry-picked onto the branch; branch head tests pass (oxide-chunkgen 192 + others, 0 failed) and a
+2-thread r16 run of the branch head gives digest df701ee858e2bdd3. Digest held on every hold row.
+New base for holds: `pipeline-m1` (ee3b211 = branch head + datapath 323b9d4); `pipeline-b9` deleted.
