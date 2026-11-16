@@ -1518,3 +1518,31 @@ Decorate -11.2%, ahead 4/4 in both slot orders; secs -3.2%; sys -24%. Over 10%, 
 Cherry-picked onto the branch; branch head tests pass (oxide-chunkgen 192 + others, 0 failed) and a
 2-thread r16 run of the branch head gives digest df701ee858e2bdd3. Digest held on every hold row.
 New base for holds: `pipeline-m1` (ee3b211 = branch head + datapath 323b9d4); `pipeline-b9` deleted.
+
+### Decoration hash cut (sub-agent f3dfae0, now a3fb9fb): -4.7% decorate over two ABBA holds, kept
+
+Hash lookups were ~15% of decoration on base m1 (409/421 of 2729/2661 samples). Changes, all in
+decorator/ and region.rs; RNG draws, write order, written states, intern order unchanged:
+- Per-feature biome gate: center-chunk biomes and their levels gathered once per chunk; gated
+  features combine those instead of rescanning with a hash lookup per palette entry (the gating part
+  of the rejected be05004, which had only been held with the old fixed-order script).
+- Each biome's placed features as a bitset behind one AHash lookup (gate + biome modifier), replacing
+  two SipHash lookups.
+- Region per-state fact cache fetches all of a state's `BlockFacts` bits in one lookup.
+- Vegetation patch `PosSet` uses AHash (order still from its insertion list).
+
+Samples: hash 415 -> 281 avg (-32%); biome checks 119/142 -> 28/20; decoration 2695 -> 2586 (-4%).
+
+| hold | m1 decorate_ms | h1 decorate_ms | change | h1 ahead | m1 / h1 secs |
+|---|---|---|---|---|---|
+| 1 (m1 listed first) | 7806 7668 7453 7200 = 7532 | 7090 7635 7167 8134 = 7507 | -0.3% | 3/4 | 22.57 / 22.81 |
+| 2 (h1 listed first) | 8316 7500 7597 7770 = 7796 | 6935 6805 7044 7630 = 7104 | -8.9% | 4/4 | 22.83 / 22.26 |
+| both | 7664 | 7305 | **-4.7%** | 7/8 | 22.70 / 22.53 (-0.7%) |
+
+java_cpu_s_per_10s 0.28-0.49 on every row. Hold 1's one loss was a slow h1 run (8134 ms, sys 2.22 s).
+Both holds ABBA, so no slot bias; the hold result matches the sampled -4%. **Kept.** Cherry-picked;
+branch head tests pass (0 failed) and an r16 2-thread run gives digest df701ee858e2bdd3; digest held
+on every hold row. New base: pipeline-h1 (f3dfae0 = branch head + datapath 323b9d4).
+
+Left in hashing: ore rule tag matching (~31), state interning (~35), remaining fact lookups (~60),
+block predicates (~45).
