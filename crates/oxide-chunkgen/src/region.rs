@@ -7,7 +7,7 @@
 //! function of the terrain around it, which is what lets `crate::decorate` hand out chunks in
 //! any order and still agree (see that module).
 
-use std::cell::{Cell, OnceCell};
+use std::cell::{Cell, OnceCell, RefCell};
 
 use ahash::AHashMap;
 
@@ -25,10 +25,42 @@ const RESERVED_WRITES: usize = 8192;
 /// Cells in one 16x16x16 section.
 const SECTION_CELLS: usize = 4096;
 
-/// One written section's overlay: entries `0..4096` hold, per cell (as [`local_index`]), the id
-/// of the state written there plus one (0 for a cell not written); entries `4096..` hold the
-/// written cell's index into `writes`, meaningful only where the id half is nonzero.
+/// One written section's overlay, two entries per cell (as [`local_index`]) side by side so a
+/// write touches one cache line: entry `2 * cell` holds the id of the state written there plus
+/// one (0 for a cell not written), entry `2 * cell + 1` the written cell's index into `writes`,
+/// meaningful only where the id entry is nonzero.
 type SectionWrites = Box<[u32; 2 * SECTION_CELLS]>;
+
+/// Overlay sections kept per thread for the next region, at most this many.
+const POOLED_SECTIONS: usize = 256;
+
+thread_local! {
+    /// Overlay sections a finished region handed back, every id entry zero again (the index
+    /// entries are left as they were: they mean nothing under a zero id). Reusing them saves
+    /// zeroing a fresh 32 KB per section a region first writes.
+    static SECTION_POOL: RefCell<Vec<SectionWrites>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A blank overlay section: from the pool when it has one.
+fn take_section() -> SectionWrites {
+    SECTION_POOL
+        .with(|pool| pool.borrow_mut().pop())
+        .unwrap_or_else(|| {
+            vec![0u32; 2 * SECTION_CELLS]
+                .into_boxed_slice()
+                .try_into()
+                .expect("a section's overlay is two cells per block")
+        })
+}
+
+/// A cell of the window as [`DecorationRegion::cell`] located it: lets a caller that reads a
+/// position and then writes it do the window test and index arithmetic once.
+#[derive(Clone, Copy, Debug)]
+pub struct CellRef {
+    chunk_index: usize,
+    section_index: usize,
+    slot: usize,
+}
 
 /// The six heightmap kinds as indices into a per-chunk table.
 fn kind_index(kind: HeightmapType) -> usize {
@@ -223,8 +255,20 @@ impl<'a> DecorationRegion<'a> {
     #[inline]
     fn written(&self, chunk_index: usize, section_index: usize, slot: usize) -> Option<u32> {
         let cells = self.overlay[chunk_index * self.sections + section_index].as_deref()?;
-        let id = cells[slot & (SECTION_CELLS - 1)];
+        let id = cells[2 * (slot & (SECTION_CELLS - 1))];
         (id != 0).then(|| id - 1)
+    }
+
+    /// `pos` located once for [`Self::block_keyed_at`] and [`Self::set_block_id_at`], or `None`
+    /// outside the window and the world's height (the test [`Self::contains`] makes).
+    #[inline]
+    pub fn cell(&self, pos: BlockPos) -> Option<CellRef> {
+        let (chunk_index, section_index, slot) = self.locate(pos)?;
+        Some(CellRef {
+            chunk_index,
+            section_index,
+            slot,
+        })
     }
 
     /// The block at `pos` as decoration so far left it, or `None` outside the window.
@@ -239,7 +283,17 @@ impl<'a> DecorationRegion<'a> {
 
     /// [`Self::block`] together with a [`StateKey`] for the state, or `None` outside the window.
     pub fn block_keyed(&self, pos: BlockPos) -> Option<(StateKey, &BlockState)> {
-        let (chunk_index, section_index, slot) = self.locate(pos)?;
+        self.block_keyed_at(self.cell(pos)?)
+    }
+
+    /// [`Self::block_keyed`] at a cell [`Self::cell`] located.
+    #[inline]
+    pub fn block_keyed_at(&self, cell: CellRef) -> Option<(StateKey, &BlockState)> {
+        let CellRef {
+            chunk_index,
+            section_index,
+            slot,
+        } = cell;
         if let Some(id) = self.written(chunk_index, section_index, slot) {
             return Some((StateKey(1 << 63 | u64::from(id)), &self.states[id as usize]));
         }
@@ -378,6 +432,17 @@ impl<'a> DecorationRegion<'a> {
         true
     }
 
+    /// [`Self::set_block_id`] at `pos`, already located by [`Self::cell`] as `cell`.
+    #[inline]
+    pub fn set_block_id_at(&mut self, pos: BlockPos, cell: CellRef, id: u32) {
+        debug_assert!((id as usize) < self.states.len());
+        debug_assert_eq!(
+            self.locate(pos),
+            Some((cell.chunk_index, cell.section_index, cell.slot))
+        );
+        self.write_id(pos, (cell.chunk_index, cell.section_index, cell.slot), id);
+    }
+
     /// Interns a state `state_ids` does not hold yet.
     fn add_state(&mut self, state: BlockState) -> u32 {
         let id = self.states.len() as u32;
@@ -391,22 +456,16 @@ impl<'a> DecorationRegion<'a> {
     /// position written before keeps its place in `writes` and takes the new state.
     fn write_id(&mut self, pos: BlockPos, cell: (usize, usize, usize), id: u32) {
         let (chunk_index, section_index, slot) = cell;
-        let slot = slot & (SECTION_CELLS - 1);
-        let cells = self.overlay[chunk_index * self.sections + section_index].get_or_insert_with(
-            || {
-                vec![0u32; 2 * SECTION_CELLS]
-                    .into_boxed_slice()
-                    .try_into()
-                    .expect("a section's overlay is two cells per block")
-            },
-        );
-        if cells[slot] != 0 {
-            self.writes[cells[SECTION_CELLS + slot] as usize].1 = id;
+        let at = 2 * (slot & (SECTION_CELLS - 1));
+        let cells = self.overlay[chunk_index * self.sections + section_index]
+            .get_or_insert_with(take_section);
+        if cells[at] != 0 {
+            self.writes[cells[at + 1] as usize].1 = id;
         } else {
-            cells[SECTION_CELLS + slot] = self.writes.len() as u32;
+            cells[at + 1] = self.writes.len() as u32;
             self.writes.push((pos, id));
         }
-        cells[slot] = id + 1;
+        cells[at] = id + 1;
         let column = self.column(pos.x, pos.z);
         let top = &mut self.written_top[column];
         *top = if *top == NEVER_WRITTEN { pos.y } else { (*top).max(pos.y) };
@@ -530,11 +589,46 @@ impl<'a> DecorationRegion<'a> {
     }
 
     /// [`Self::into_writes`] without a copy of the state per write.
-    pub fn into_interned(self) -> InternedWrites {
+    pub fn into_interned(mut self) -> InternedWrites {
+        self.recycle_overlay();
         InternedWrites {
-            writes: self.writes,
-            states: self.states,
+            writes: std::mem::take(&mut self.writes),
+            states: std::mem::take(&mut self.states),
         }
+    }
+
+    /// Hands the overlay's sections back to the thread's pool, clearing just the id entries
+    /// `writes` names (every nonzero id entry is one of them). Leaves the overlay empty.
+    fn recycle_overlay(&mut self) {
+        for index in 0..self.writes.len() {
+            let pos = self.writes[index].0;
+            let Some((chunk_index, section_index, slot)) = self.locate(pos) else {
+                continue;
+            };
+            let section = &mut self.overlay[chunk_index * self.sections + section_index];
+            if let Some(cells) = section.as_mut() {
+                cells[2 * (slot & (SECTION_CELLS - 1))] = 0;
+            }
+        }
+        // `try_with`: a region dropped while its thread is torn down just frees its sections.
+        let _ = SECTION_POOL.try_with(|pool| {
+            let mut pool = pool.borrow_mut();
+            for section in self.overlay.iter_mut() {
+                let Some(cells) = section.take() else {
+                    continue;
+                };
+                debug_assert!(cells.iter().step_by(2).all(|&id| id == 0));
+                if pool.len() < POOLED_SECTIONS {
+                    pool.push(cells);
+                }
+            }
+        });
+    }
+}
+
+impl Drop for DecorationRegion<'_> {
+    fn drop(&mut self) {
+        self.recycle_overlay();
     }
 }
 
@@ -754,6 +848,40 @@ mod tests {
             writes,
             vec![(stone_a, block("oak_log")), (stone_b, block("oak_log"))]
         );
+    }
+
+    #[test]
+    fn a_later_region_sees_none_of_an_earlier_ones_writes() {
+        let facts = facts();
+        let chunks = flat_ring(ChunkPos::new(0, 0), 64);
+        let a = BlockPos::new(1, 10, 1);
+        let b = BlockPos::new(-3, 70, 17);
+        for round in 0..3 {
+            // Rounds 1 and 2 write into sections the previous region handed back to the pool,
+            // one through `into_interned` and one through a plain drop.
+            let mut region = DecorationRegion::new(ChunkPos::new(0, 0), refs(&chunks), &facts);
+            assert_eq!(region.block(a), Some(&block("stone")));
+            assert_eq!(region.block(b), Some(&block("air")));
+            let log = region.intern(&block("oak_log"));
+            let cell = region.cell(b).unwrap();
+            assert_eq!(region.block_keyed_at(cell).unwrap().1, &block("air"));
+            region.set_block_id_at(b, cell, log);
+            assert!(region.set_block(a, block("deepslate")));
+            assert!(region.set_block(b, block("coal_ore")));
+            assert_eq!(region.block_keyed_at(cell).unwrap().1, &block("coal_ore"));
+            assert!(region.cell(BlockPos::new(100, 10, 1)).is_none());
+            assert!(region.cell(BlockPos::new(1, 320, 1)).is_none());
+            if round == 1 {
+                drop(region);
+                continue;
+            }
+            let writes: Vec<BlockWrite> = region
+                .into_interned()
+                .iter()
+                .map(|(pos, state)| (pos, state.clone()))
+                .collect();
+            assert_eq!(writes, vec![(b, block("coal_ore")), (a, block("deepslate"))]);
+        }
     }
 
     #[test]

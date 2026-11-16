@@ -308,12 +308,14 @@ impl OreFeature {
                 }
                 for y in y_lo..=y_hi {
                     let dy = (f64::from(y) + 0.5 - sy) / radius;
-                    if dx * dx + dy * dy >= 1.0 {
+                    // A row outside the build height skips every cell, as the per-cell test
+                    // vanilla makes would; nothing in the row draws or marks `tested` first.
+                    if dx * dx + dy * dy >= 1.0 || cx.outside_build_height(y) {
                         continue;
                     }
                     for z in z_lo..=z_hi {
                         let dz = (f64::from(z) + 0.5 - sz) / radius;
-                        if dx * dx + dy * dy + dz * dz >= 1.0 || cx.outside_build_height(y) {
+                        if dx * dx + dy * dy + dz * dz >= 1.0 {
                             continue;
                         }
                         // Vanilla's index, collisions included: it strides by the box size,
@@ -377,13 +379,16 @@ impl OreFeature {
         ids: &[u32],
         matches: &mut MatchCache,
     ) -> bool {
-        if !cx.ensure_can_write(pos) {
+        // `ensure_can_write` and the read's own window test in one: `cell` refuses exactly the
+        // positions outside the window (which `ensure_can_write` refuses) or the world's height
+        // (which `block_keyed` refuses), both before any draw, so the answer is the same `false`.
+        let Some(cell) = cx.region.cell(pos) else {
             return false;
-        }
+        };
         let mut chosen = None;
         {
             let region: &DecorationRegion<'_> = &*cx.region;
-            let Some((key, state)) = region.block_keyed(pos) else {
+            let Some((key, state)) = region.block_keyed_at(cell) else {
                 return false;
             };
             let mask = matches.mask(key, state, &self.targets, &cx.env.block_tags);
@@ -400,7 +405,10 @@ impl OreFeature {
             }
         }
         match chosen {
-            Some(index) => cx.region.set_block_id(pos, ids[index]),
+            Some(index) => {
+                cx.region.set_block_id_at(pos, cell, ids[index]);
+                true
+            }
             None => false,
         }
     }
