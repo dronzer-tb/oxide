@@ -5,6 +5,7 @@
 //! RNG primitive that must be bit-exact with vanilla Java (`java.util.Random` and
 //! `Xoroshiro128PlusPlus`), since every downstream parity property is built on top of it.
 
+pub mod fast_hash;
 mod ident;
 mod pos;
 mod rng;
@@ -13,6 +14,7 @@ mod storage;
 pub mod mth;
 pub mod rotation;
 
+pub use fast_hash::{FastBuildHasher, FastHashMap, FastHashSet};
 pub use ident::{BiomeId, BlockState, ResourceLocation, ResourceLocationParseError};
 pub use pos::{BlockPos, ChunkPos, SectionPos};
 pub use rng::{

@@ -11,6 +11,7 @@
 use crate::error::{DatapackError, Result};
 use crate::registry::load_registry_at;
 use oxide_core::ResourceLocation;
+use oxide_core::{FastHashMap, FastHashSet};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -55,8 +56,8 @@ impl TagEntry {
 /// each id kept at its first appearance.
 #[derive(Debug, Default, Clone)]
 pub struct TagSet {
-    tags: HashMap<ResourceLocation, HashSet<ResourceLocation>>,
-    ordered: HashMap<ResourceLocation, Vec<ResourceLocation>>,
+    tags: FastHashMap<ResourceLocation, FastHashSet<ResourceLocation>>,
+    ordered: FastHashMap<ResourceLocation, Vec<ResourceLocation>>,
 }
 
 impl TagSet {
@@ -67,7 +68,7 @@ impl TagSet {
             .is_some_and(|members| members.contains(id))
     }
 
-    pub fn get(&self, tag: &ResourceLocation) -> Option<&HashSet<ResourceLocation>> {
+    pub fn get(&self, tag: &ResourceLocation) -> Option<&FastHashSet<ResourceLocation>> {
         self.tags.get(tag)
     }
 
@@ -124,7 +125,7 @@ pub fn load_tags(pack_roots: &[&Path], kind: &str) -> Result<TagSet> {
         .collect();
     Ok(TagSet {
         tags,
-        ordered: resolved,
+        ordered: resolved.into_iter().collect(),
     })
 }
 

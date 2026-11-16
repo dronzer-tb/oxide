@@ -6,8 +6,8 @@
 //! "where is the surface of this column" needs the game's own answer, not a guess by block name.
 
 use crate::error::{DatapackError, Result};
+use oxide_core::FastHashMap;
 use oxide_core::{BlockState, ResourceLocation};
-use std::collections::HashMap;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -74,8 +74,8 @@ impl BlockFact {
 /// The exported facts of every block state, plus each block's default state.
 #[derive(Debug, Default, Clone)]
 pub struct BlockFacts {
-    flags: HashMap<BlockState, u32>,
-    defaults: HashMap<ResourceLocation, BlockState>,
+    flags: FastHashMap<BlockState, u32>,
+    defaults: FastHashMap<ResourceLocation, BlockState>,
 }
 
 impl BlockFacts {

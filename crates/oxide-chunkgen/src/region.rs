@@ -7,10 +7,9 @@
 //! function of the terrain around it, which is what lets `crate::decorate` hand out chunks in
 //! any order and still agree (see that module).
 
-use std::collections::HashMap;
-
 use oxide_core::{
-    BiomeId, BlockPos, BlockState, ChunkData, ChunkPos, HeightmapType, ResourceLocation,
+    BiomeId, BlockPos, BlockState, ChunkData, ChunkPos, FastHashMap, HeightmapType,
+    ResourceLocation,
 };
 use oxide_datapack::{BlockFact, BlockFacts};
 
@@ -78,11 +77,11 @@ pub struct DecorationRegion<'a> {
     facts: &'a BlockFacts,
     min_y: i32,
     height: i32,
-    overlay: HashMap<BlockPos, BlockState>,
+    overlay: FastHashMap<BlockPos, BlockState>,
     /// Positions in the order they were first written, so the write list is deterministic.
     order: Vec<BlockPos>,
     /// Highest written Y per column: a column with no entry still has its terrain heights.
-    written_top: HashMap<(i32, i32), i32>,
+    written_top: FastHashMap<(i32, i32), i32>,
     extras: ChunkExtras,
 }
 
@@ -98,9 +97,9 @@ impl<'a> DecorationRegion<'a> {
             facts,
             min_y: middle.min_y,
             height: middle.height,
-            overlay: HashMap::new(),
+            overlay: FastHashMap::default(),
             order: Vec::new(),
-            written_top: HashMap::new(),
+            written_top: FastHashMap::default(),
             extras: ChunkExtras::default(),
         }
     }

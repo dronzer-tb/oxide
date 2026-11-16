@@ -21,9 +21,7 @@ mod rules;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashSet;
-
-use oxide_core::{BlockPos, BlockState, ResourceLocation};
+use oxide_core::{BlockPos, BlockState, FastHashSet, ResourceLocation};
 use oxide_datapack::TagSet;
 
 use super::context::BlockBehaviours;
@@ -143,7 +141,7 @@ impl Tag {
 pub struct SurvivalRules {
     /// The members of each tag in [`Tag::ALL`] order, copied out of the tag set so a lookup
     /// is one hash probe with no id built.
-    members: Vec<HashSet<ResourceLocation>>,
+    members: Vec<FastHashSet<ResourceLocation>>,
 }
 
 impl SurvivalRules {

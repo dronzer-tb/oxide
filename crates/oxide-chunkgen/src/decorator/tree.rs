@@ -28,11 +28,12 @@ mod pos_set;
 mod root;
 mod trunk;
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::Result;
-use oxide_core::{BlockPos, BlockState, RandomSource, ResourceLocation, WorldgenRandom};
+use oxide_core::{
+    BlockPos, BlockState, FastHashSet, RandomSource, ResourceLocation, WorldgenRandom,
+};
 use oxide_datapack::tree::{FeatureSize, TreeConfig, TrunkKind};
 use oxide_datapack::{BlockFact, BlockFacts};
 
@@ -201,10 +202,10 @@ struct Sets {
 
 /// The block tags a tree reads, looked up once per tree instead of once per block.
 struct Tags<'e> {
-    leaves: Option<&'e HashSet<ResourceLocation>>,
-    logs: Option<&'e HashSet<ResourceLocation>>,
-    replaceable_by_trees: Option<&'e HashSet<ResourceLocation>>,
-    prevents_leaf_decay: Option<&'e HashSet<ResourceLocation>>,
+    leaves: Option<&'e FastHashSet<ResourceLocation>>,
+    logs: Option<&'e FastHashSet<ResourceLocation>>,
+    replaceable_by_trees: Option<&'e FastHashSet<ResourceLocation>>,
+    prevents_leaf_decay: Option<&'e FastHashSet<ResourceLocation>>,
 }
 
 impl<'e> Tags<'e> {
@@ -219,7 +220,7 @@ impl<'e> Tags<'e> {
     }
 }
 
-fn in_tag(tag: Option<&HashSet<ResourceLocation>>, state: &BlockState) -> bool {
+fn in_tag(tag: Option<&FastHashSet<ResourceLocation>>, state: &BlockState) -> bool {
     tag.is_some_and(|members| members.contains(&state.name))
 }
 
