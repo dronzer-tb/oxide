@@ -2061,3 +2061,26 @@ The digest equals pipeline's reference, so palettes, biomes and heightmaps in th
 On this branch: noise merged at c17f4ed (187ce0c), then E34 (`fill.rs`, `ore_veins.rs`) and E35 (`surface.rs`).
 The landed `crates/` is byte-identical to the held `datapath-stk2` tree (`diff -rq` empty). The pending
 diffs are removed, since the code is now in the tree.
+
+8-thread row for 18f8317 (E34 + E35 landed): `BENCH chunks=1089 threads=8 secs=1.534 cps=709.9 ms_per_chunk_core=11.27 digest=a977961a58122047`.
+This is a single wall-clock run with no java logging, and well below the 940 cps the same code averaged in
+the E34+E35 hold. Single 8-thread runs here spread 15-25%. The measure of record is the hold's
+generation-only CPU: 8.83 s per 1,089 chunks, ~8.1 ms core per chunk at 8 threads, against 9.63 / 10.04 for
+the bases. M2 needs ~7.3. The scratch dirs on the box and the local worktrees are all deleted; only `datapath` remains.
+
+### Handover (current state, next three)
+
+Head **18f8317**: datapath E1-E13, E16, E18, E21, E22, E27, E28, E34, E35, and noise merged up to c17f4ed.
+Gates: block digest `a977961a58122047`; pregen NBT `df701ee858e2bdd3` (last checked on this head).
+Generation-only CPU in the last hold: 7.41 s at 1 thread (~6.8 ms per chunk), 8.83 s at 8 threads.
+Parked with diffs: E29 (needs nothing now: `is_quart_invariant` exists, but it lost bundled with E30), E32,
+E33, E36. Rejected: E14, E15, E17, E19, E23, E25, E30.
+
+Next three:
+1. E36 at 8 threads: the per-thread tunnel cache loses there (0 of 6). Retry with a bounded cache
+   (record only segments that pass the reach pre-check) or one shared across threads, held on the
+   CPU-seconds method against two bases.
+2. Re-profile 18f8317 at 1 and 8 threads with generation-only splits. E35's 8-thread result alone was
+   flat; find what grows at 8 threads (fill +13% at 8 threads earlier).
+3. Retry E33 (surface program per thread) and E32 (shared surface table) as a stack on this head.
+   Neither was resolvable alone; together with the current lower floor they may be.
