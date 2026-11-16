@@ -83,6 +83,9 @@ impl RuleTest {
     }
 }
 
+/// The last block name a tag rule was asked about, and its answer.
+type TagMemo = Option<(ResourceLocation, bool)>;
+
 #[derive(Debug, Clone)]
 struct Target {
     rule: RuleTest,
@@ -117,6 +120,7 @@ impl OreFeature {
     }
 
     /// `OreFeature.canPlaceOre`, with its draws: the rule first, then the discard roll.
+    #[allow(clippy::too_many_arguments)]
     fn can_place(
         &self,
         target: &Target,
@@ -125,8 +129,21 @@ impl OreFeature {
         random: &mut impl RandomSource,
         env: &Environment,
         pos: BlockPos,
+        memo: &mut TagMemo,
     ) -> bool {
-        if !target.rule.test(state, random, &env.block_tags) {
+        let matches = match &target.rule {
+            // A blob tests the same few blocks over and over: remember the last answer.
+            RuleTest::TagMatch(tag) => match memo {
+                Some((name, answer)) if *name == state.name => *answer,
+                _ => {
+                    let answer = env.block_tags.contains(tag, &state.name);
+                    *memo = Some((state.name.clone(), answer));
+                    answer
+                }
+            },
+            rule => rule.test(state, random, &env.block_tags),
+        };
+        if !matches {
             return false;
         }
         if skip_air_check(random, self.discard_chance_on_air_exposure) {
@@ -235,6 +252,7 @@ impl OreFeature {
         }
 
         let mut tested = BitSet::default();
+        let mut memos: Vec<TagMemo> = vec![None; self.targets.len()];
         let mut placed = 0;
         for [sx, sy, sz, radius] in spheres {
             if radius < 0.0 {
@@ -271,7 +289,7 @@ impl OreFeature {
                         if !tested.insert(index) {
                             continue;
                         }
-                        if self.place_at(cx, BlockPos::new(x, y, z)) {
+                        if self.place_at(cx, BlockPos::new(x, y, z), &mut memos) {
                             placed += 1;
                         }
                     }
@@ -283,7 +301,12 @@ impl OreFeature {
 
     /// Tries each target in order at `pos`; the first that matches and survives the air check
     /// wins.
-    fn place_at(&self, cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos) -> bool {
+    fn place_at(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        pos: BlockPos,
+        memos: &mut [TagMemo],
+    ) -> bool {
         if !cx.ensure_can_write(pos) {
             return false;
         }
@@ -293,8 +316,8 @@ impl OreFeature {
             let Some(state) = region.block(pos) else {
                 return false;
             };
-            for (index, target) in self.targets.iter().enumerate() {
-                if self.can_place(target, state, region, &mut *cx.random, cx.env, pos) {
+            for (index, (target, memo)) in self.targets.iter().zip(memos).enumerate() {
+                if self.can_place(target, state, region, &mut *cx.random, cx.env, pos, memo) {
                     chosen = Some(index);
                     break;
                 }
@@ -332,7 +355,15 @@ impl OreFeature {
                 let region: &DecorationRegion<'_> = &*cx.region;
                 let state = block_in(region, pos);
                 for (index, target) in self.targets.iter().enumerate() {
-                    if self.can_place(target, state, region, &mut *cx.random, cx.env, pos) {
+                    if self.can_place(
+                        target,
+                        state,
+                        region,
+                        &mut *cx.random,
+                        cx.env,
+                        pos,
+                        &mut None,
+                    ) {
                         chosen = Some(index);
                         break;
                     }
