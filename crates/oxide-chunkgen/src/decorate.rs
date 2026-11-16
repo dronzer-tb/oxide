@@ -36,7 +36,7 @@ use oxide_datapack::{BlockFact, BlockFacts};
 
 use crate::decorator::block_entity;
 use crate::fill::local_index;
-use crate::region::{height_fact, BlockEntityData, BlockWrite, ChunkExtras, DecorationRegion};
+use crate::region::{height_fact, BlockEntityData, ChunkExtras, DecorationRegion};
 
 /// Runs one chunk's features. The region's centre is the chunk being decorated.
 pub trait Decorator: Sync {
@@ -123,7 +123,10 @@ pub struct DecorationCache {
 }
 
 /// One chunk's features' output: block writes and the extras that came with them.
-type SourceOutput = (Vec<BlockWrite>, ChunkExtras);
+///
+/// The writes are split by the chunk they land in (index `(dz + 1) * 3 + (dx + 1)` from the
+/// source chunk), each in first-write order with its state's fact bits.
+type SourceOutput = ([Vec<(BlockPos, BlockState, u32)>; 9], ChunkExtras);
 
 impl DecorationCache {
     /// `terrain_chunks` bounds memory: an undecorated chunk is a few hundred kilobytes, and
@@ -160,7 +163,7 @@ impl DecorationCache {
             let chunks: [&ChunkData; 9] = std::array::from_fn(|index| ring[index].as_ref());
             let mut region = DecorationRegion::new(pos, chunks, facts);
             decorator.decorate(&mut region);
-            region.into_parts()
+            region.into_buckets()
         })
     }
 }
@@ -204,14 +207,18 @@ pub fn decorated_chunk_with_extras(
     for dx in -1..=1 {
         for dz in -1..=1 {
             let source = ChunkPos::new(pos.x + dx, pos.z + dz);
-            sources.push(cache.writes(source, generate, decorator, facts));
+            // This chunk as seen from the source: the opposite offset.
+            let bucket = ((1 - dz) * 3 + (1 - dx)) as usize;
+            sources.push((cache.writes(source, generate, decorator, facts), bucket));
         }
     }
-    // The last write to each position, numbered in application order.
-    let mut last_write: FastHashMap<BlockPos, (usize, &BlockState)> = FastHashMap::default();
+    // Every write of a block-entity block, numbered in application order. The last write to a
+    // position decides its block, so such a write stands only if the finished chunk holds its
+    // state there and no later write of a block-entity block went to the same position.
+    let mut entity_writes: Vec<(usize, BlockPos, &BlockState)> = Vec::new();
     let mut sequence = 0;
-    for output in &sources {
-        for (at, state) in output.0.iter() {
+    for (output, bucket) in &sources {
+        for (at, state, bits) in output.0[*bucket].iter() {
             if !inside(at) {
                 continue;
             }
@@ -224,25 +231,28 @@ pub fn decorated_chunk_with_extras(
                 (at.z & 15) as usize,
             );
             section.block_states.set_cloned(slot, state);
-            last_write.insert(*at, (sequence, state));
+            if bits & BlockFact::BlockEntity as u32 != 0 {
+                entity_writes.push((sequence, *at, state));
+            }
             sequence += 1;
         }
     }
 
     let mut extras = ChunkExtras::default();
     let mut filled: FastHashMap<BlockPos, &BlockEntityData> = FastHashMap::default();
-    for output in &sources {
+    for (output, _) in &sources {
         for entity in output.1.block_entities.iter().filter(|e| inside(&e.pos)) {
             filled.insert(entity.pos, entity);
         }
     }
-    let mut standing: Vec<(usize, BlockPos, &BlockState)> = last_write
+    let mut latest: FastHashMap<BlockPos, usize> = FastHashMap::default();
+    for (order, at, _) in &entity_writes {
+        latest.insert(*at, *order);
+    }
+    let standing = entity_writes
         .iter()
-        .filter(|(_, (_, state))| facts.is(state, BlockFact::BlockEntity))
-        .map(|(at, (order, state))| (*order, *at, *state))
-        .collect();
-    standing.sort_unstable_by_key(|(order, _, _)| *order);
-    for (_, at, state) in standing {
+        .filter(|(order, at, state)| latest[at] == *order && state_at(&chunk, *at) == *state);
+    for &(_, at, state) in standing {
         extras.block_entities.push(match filled.get(&at) {
             Some(entity) if entity.block == state.name => (*entity).clone(),
             _ => BlockEntityData {
@@ -257,7 +267,7 @@ pub fn decorated_chunk_with_extras(
         FastHashSet::default(),
         FastHashSet::default(),
     );
-    for output in &sources {
+    for (output, _) in &sources {
         for tick in output.1.fluid_ticks.iter().filter(|(at, _)| inside(at)) {
             if fluid_seen.insert(tick) {
                 extras.fluid_ticks.push(tick.clone());
@@ -278,6 +288,18 @@ pub fn decorated_chunk_with_extras(
     chunk.heightmaps = heightmaps(&chunk, facts);
     chunk.status = ChunkStatus::Features;
     (chunk, extras)
+}
+
+/// The block at `pos`, which must lie inside `chunk`.
+fn state_at(chunk: &ChunkData, pos: BlockPos) -> &BlockState {
+    let y = pos.y - chunk.min_y;
+    chunk.sections[(y >> 4) as usize]
+        .block_states
+        .get(local_index(
+            (pos.x & 15) as usize,
+            (y & 15) as usize,
+            (pos.z & 15) as usize,
+        ))
 }
 
 /// All six heightmaps from the game's own per-state predicates.

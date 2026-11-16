@@ -374,6 +374,19 @@ impl<'a> DecorationRegion<'a> {
         self.into_parts().0
     }
 
+    /// The writes split by the chunk they land in (`[chunk index]`, row-major from the
+    /// north-west as [`Self::new`] takes the chunks), each in first-write order with its state's
+    /// fact bits, and everything else the features left.
+    pub(crate) fn into_buckets(mut self) -> ([Vec<(BlockPos, BlockState, u32)>; 9], ChunkExtras) {
+        let mut buckets: [Vec<(BlockPos, BlockState, u32)>; 9] = Default::default();
+        for write in std::mem::take(&mut self.writes) {
+            if let Some(index) = self.chunk_index(write.0.x, write.0.z) {
+                buckets[index].push(write);
+            }
+        }
+        (buckets, self.extras)
+    }
+
     /// [`Self::into_writes`] and everything else the features left, in the order they left it.
     pub fn into_parts(self) -> (Vec<BlockWrite>, ChunkExtras) {
         let writes = self
