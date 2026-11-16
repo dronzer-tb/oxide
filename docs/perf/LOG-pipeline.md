@@ -1950,3 +1950,42 @@ to 4.92 s in hold 2), and the 1-thread run is slower in every round. **Rejected*
 Lead: decoration still pays ~25% of its 8-thread time for glibc allocation. A decoration-local fix
 (per-thread reuse of the remaining per-region and per-feature allocations, or an arena for region
 build) could capture that without changing the allocator for generation.
+
+### Decoration per-write allocations cut (sub-agent 845de28, now abfb474): -7.1% decorate at 1 thread, kept
+
+Counted with an `LD_PRELOAD` malloc/calloc/realloc/free shim walking frame pointers (attributed to the
+first non-container frame in our crates, decoration stacks only; counts identical at 1 and 8 threads).
+Decoration allocations per r16 run: **5,867,271 -> 3,230,664 (-45%)**; frees 4,956,097 -> 2,352,925.
+
+| call site | before alloc / free | after |
+|---|---|---|
+| `apply_writes` palette entry clones (oxide-core `index_of_or_insert`) | 1,180,893 / 189,483 | unchanged (not ours) |
+| `set_block` dropping a passed-in owned state | 0 / 1,357,550 | 0 / 418,620 |
+| multiface neighbour clone per search repeat | 1,024,218 / 1,024,218 | 56,092 / 78,925 |
+| state provider `Simple` / `Weighted` clones | 844,752 / 527,667 | gone |
+| write-list `recycle` drops | 0 / 443,678 | unchanged |
+| `biomes_present` `Vec<bool>` per section | 264,600 / 264,600 | gone |
+| region `intern` clone | 242,102 | 290,286 (states now interned from a reference) |
+| freeze `should_snow` rebuild / block-below clone | 164,665 frees / 105,348 | gone |
+| ore blob sphere list | 130,258 / 130,258 | gone (per-thread reuse) |
+
+Changes (draws, writes, intern order, output unchanged): `StateProvider::state_cow` returns a borrowed
+state where the provider names one (same draws; `state()` wraps it), used with `set_block_ref` by disk,
+block column, simple block, vegetation patch ground and tree ground decorations; multiface reads the
+searched neighbour once; freeze passes its compiled snow state and clones the block below only when it
+gains `snowy=true`; `biomes_present` marks palette entries in a u64; ore reuses a per-thread sphere list.
+
+| hold | k1 | d1 | change | d1 ahead |
+|---|---|---|---|---|
+| 1 thread #1 (k1 first): decorate_ms | 5991 | 5620 | -6.2% | 3/4 |
+| 1 thread #2 (d1 first): decorate_ms | 6446 | 5934 | -7.9% | 3/4 |
+| 1 thread both: decorate_ms / secs | 6218 / 21.30 | 5777 / 20.72 | **-7.1%** / -2.7% | 6/8 |
+| 8 threads #1 (k1 first): cps | 386.8 | 360.3 | -6.9% | (two slow d1 rows, user 24-29 s) |
+| 8 threads #2 (d1 first): cps | 355.0 | 371.3 | +4.6% | 4/6 |
+| 8 threads both: cps | 370.9 | 365.8 | -1.4% (neutral) | |
+
+**Kept** on the 1-thread result in both orders, with 8 threads neutral (as with the write-list pool).
+Halving mallocs did not reproduce mimalloc's ~25% 8-thread decorate gain, so that gain is from
+mimalloc's per-thread heaps and free-list locality, not call counts. Branch head: tests pass; digest
+df701ee858e2bdd3 at 1 and 8 threads; r7 digest dea822a7b8517773 and .mca identical to k1's outside the
+timestamp table; digest held on every hold row. New base: pipeline-d1 (845de28).
