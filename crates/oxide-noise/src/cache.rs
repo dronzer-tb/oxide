@@ -13,11 +13,12 @@
 //! Scoped to one chunk and one thread: the storage sits behind `RefCell`, so a `ChunkCaches`
 //! must not be shared across threads. Chunks in different Folia regions each build their own.
 
-use std::cell::RefCell;
+use std::cell::{Cell, OnceCell, RefCell};
 use std::sync::{Arc, Mutex};
 
 use crate::compiled::{Batch, CacheKind, CacheSlotCounts, Program, RunCtx};
 use crate::density::FunctionContext;
+use crate::scratch::Scratch;
 
 /// A remembered sample: the position it was taken at, and the value there.
 type LastSample = ((i32, i32, i32), f64);
@@ -62,7 +63,7 @@ pub struct ChunkCaches {
     interpolated: RefCell<Vec<Option<Vec<f64>>>>,
     /// Slot -> one value per column of this chunk, for the 2D subtrees (continents, erosion,
     /// factor, offset) that would otherwise be recomputed once per block of height.
-    two_d: RefCell<Vec<Option<Vec<Option<f64>>>>>,
+    two_d: RefCell<Vec<Option<Scratch<Option<f64>>>>>,
     /// Slot -> (last position, value).
     once: RefCell<Vec<Option<LastSample>>>,
 
@@ -72,8 +73,10 @@ pub struct ChunkCaches {
     /// few and small enough for its fixed-size bookkeeping. True for every vanilla setting.
     memo_ok: bool,
     /// One memo per router slot, so two programs sampled alternately (the ore-vein pass reads
-    /// `vein_toggle` and `vein_ridged` at the same block) do not evict each other.
-    memos: RefCell<[CellMemo; MEMO_SLOTS]>,
+    /// `vein_toggle` and `vein_ridged` at the same block) do not evict each other. Plain
+    /// `Cell`s rather than a `RefCell`, so a hit is loads only: no borrow flag to check and
+    /// write back on every one of the ~15k calls per chunk the ore-vein pass makes.
+    memos: [CellMemo; MEMO_SLOTS],
 
     /// Corner columns shared with the other chunks of the same router, when this chunk's
     /// geometry matches the one the shared cache was built for. See [`CornerColumns`].
@@ -87,11 +90,11 @@ pub struct ChunkCaches {
 /// touch (see `Program::run_cell`) and the rest of its blocks are then plain loads.
 struct CellMemo {
     /// The layer the values belong to; `i32::MIN` when empty.
-    cell_y: i32,
+    cell_y: Cell<i32>,
     /// Bit `cell_z * cells_x + cell_x` set when that cell's values are filled.
-    valid: u32,
+    valid: Cell<u32>,
     /// `cells_x * cells_z` cells of `cell_lanes` values each; allocated on first use.
-    values: Vec<f64>,
+    values: OnceCell<Box<[Cell<f64>]>>,
 }
 
 impl ChunkCaches {
@@ -202,11 +205,11 @@ impl ChunkCaches {
             once: RefCell::new(vec![None; slots.once]),
             cell_lanes,
             memo_ok,
-            memos: RefCell::new(std::array::from_fn(|_| CellMemo {
-                cell_y: i32::MIN,
-                valid: 0,
-                values: Vec::new(),
-            })),
+            memos: std::array::from_fn(|_| CellMemo {
+                cell_y: Cell::new(i32::MIN),
+                valid: Cell::new(0),
+                values: OnceCell::new(),
+            }),
             shared_columns: None,
         }
     }
@@ -252,6 +255,7 @@ impl ChunkCaches {
     ///
     /// `program` must be cell-batchable, and `memo_slot` (below [`MEMO_SLOTS`]) must always be
     /// passed with the same program. Values are bit-identical to `program.run(ctx, ..)`.
+    #[inline]
     pub(crate) fn sample_via_cell(
         &self,
         memo_slot: usize,
@@ -281,34 +285,50 @@ impl ChunkCaches {
             * self.cell_width
             + (local_x - cell_x * self.cell_width)) as usize;
 
-        {
-            let memo = &self.memos.borrow()[memo_slot];
-            if memo.cell_y == cell_y && memo.valid & (1 << cell_index) != 0 {
-                return Some(memo.values[cell_index * lanes + lane]);
+        let memo = &self.memos[memo_slot];
+        if memo.cell_y.get() == cell_y && memo.valid.get() & (1 << cell_index) != 0 {
+            if let Some(values) = memo.values.get() {
+                return Some(values[cell_index * lanes + lane].get());
             }
         }
+        Some(self.fill_memo(memo, program, (cell_x, cell_y, cell_z), cell_index, lane, cx))
+    }
 
-        // Taken out for the evaluation, which reads the corner grids but never the memos.
-        let mut values = std::mem::take(&mut self.memos.borrow_mut()[memo_slot].values);
-        if values.is_empty() {
-            values = vec![0.0; self.cells_x * self.cells_z * lanes];
+    /// The miss half of [`Self::sample_via_cell`]: evaluates the whole cell, stores it in
+    /// `memo` and returns lane `lane` of it. Kept out of line so the hit path stays small
+    /// enough to inline into every caller.
+    #[inline(never)]
+    fn fill_memo(
+        &self,
+        memo: &CellMemo,
+        program: &Program,
+        cell: (i32, i32, i32),
+        cell_index: usize,
+        lane: usize,
+        cx: &RunCtx,
+    ) -> f64 {
+        let lanes = self.cell_lanes;
+        // The evaluation reads the corner grids but never the memos; were it to, the memo's
+        // tag is only updated below, so it would see this cell as not yet filled.
+        let mut cell_values = Scratch::filled(lanes, 0.0f64);
+        program.run_cell(self, cell, cx, &mut cell_values);
+        let values = memo.values.get_or_init(|| {
+            (0..self.cells_x * self.cells_z * lanes)
+                .map(|_| Cell::new(0.0))
+                .collect()
+        });
+        for (dst, value) in values[cell_index * lanes..(cell_index + 1) * lanes]
+            .iter()
+            .zip(cell_values.iter())
+        {
+            dst.set(*value);
         }
-        program.run_cell(
-            self,
-            (cell_x, cell_y, cell_z),
-            cx,
-            &mut values[cell_index * lanes..(cell_index + 1) * lanes],
-        );
-        let value = values[cell_index * lanes + lane];
-
-        let memo = &mut self.memos.borrow_mut()[memo_slot];
-        if memo.cell_y != cell_y {
-            memo.cell_y = cell_y;
-            memo.valid = 0;
+        if memo.cell_y.get() != cell.1 {
+            memo.cell_y.set(cell.1);
+            memo.valid.set(0);
         }
-        memo.valid |= 1 << cell_index;
-        memo.values = values;
-        Some(value)
+        memo.valid.set(memo.valid.get() | 1 << cell_index);
+        cell_values[lane]
     }
 
     /// One `interpolated` slot at every block of the cell `(cell_x, cell_y, cell_z)`, written
@@ -346,32 +366,12 @@ impl ChunkCaches {
         let v011 = grid[base + y_stride + z_stride];
         let v111 = grid[base + y_stride + z_stride + x_stride];
 
-        let mut x00 = [0.0f64; MAX_CELL_WIDTH];
-        let mut x10 = [0.0f64; MAX_CELL_WIDTH];
-        let mut x01 = [0.0f64; MAX_CELL_WIDTH];
-        let mut x11 = [0.0f64; MAX_CELL_WIDTH];
-        for lx in 0..cw {
-            let dx = lx as f64 * self.inv_cell_width;
-            x00[lx] = lerp(dx, v000, v100);
-            x10[lx] = lerp(dx, v010, v110);
-            x01[lx] = lerp(dx, v001, v101);
-            x11[lx] = lerp(dx, v011, v111);
-        }
-        for ly in 0..ch {
-            let dy = ly as f64 * self.inv_cell_height;
-            let mut y0 = [0.0f64; MAX_CELL_WIDTH];
-            let mut y1 = [0.0f64; MAX_CELL_WIDTH];
-            for lx in 0..cw {
-                y0[lx] = lerp(dy, x00[lx], x10[lx]);
-                y1[lx] = lerp(dy, x01[lx], x11[lx]);
-            }
-            for lz in 0..cw {
-                let dz = lz as f64 * self.inv_cell_width;
-                let row = &mut dst[(ly * cw + lz) * cw..(ly * cw + lz + 1) * cw];
-                for lx in 0..cw {
-                    row[lx] = lerp(dz, y0[lx], y1[lx]);
-                }
-            }
+        let corners = [v000, v100, v010, v110, v001, v101, v011, v111];
+        let (iw, ih) = (self.inv_cell_width, self.inv_cell_height);
+        match cw {
+            4 => lerp_cell_fixed::<4>(corners, iw, ih, dst),
+            8 => lerp_cell_fixed::<8>(corners, iw, ih, dst),
+            _ => lerp_cell_any(corners, cw, ch, iw, ih, dst),
         }
     }
 
@@ -582,7 +582,9 @@ impl ChunkCaches {
         let value = argument.run(sample_ctx, cx);
 
         let mut cache = self.two_d.borrow_mut();
-        cache[slot].get_or_insert_with(|| vec![None; COLUMNS])[column] = Some(value);
+        // Pooled: a chunk's caches (and the aquifer's per-neighbour ones) are built and dropped
+        // many times per chunk; reusing the column vectors keeps that off the allocator.
+        cache[slot].get_or_insert_with(|| Scratch::filled(COLUMNS, None))[column] = Some(value);
         value
     }
 
@@ -892,6 +894,68 @@ fn div_cell(value: i32, cell: i32, log2: Option<u32>) -> i32 {
     }
 }
 
+/// The trilinear fill of [`ChunkCaches::fill_cell_interpolated`] for any cell width up to
+/// [`MAX_CELL_WIDTH`]. `c` is `[v000, v100, v010, v110, v001, v101, v011, v111]`.
+fn lerp_cell_any(c: [f64; 8], cw: usize, ch: usize, iw: f64, ih: f64, dst: &mut [f64]) {
+    let [v000, v100, v010, v110, v001, v101, v011, v111] = c;
+    let mut x00 = [0.0f64; MAX_CELL_WIDTH];
+    let mut x10 = [0.0f64; MAX_CELL_WIDTH];
+    let mut x01 = [0.0f64; MAX_CELL_WIDTH];
+    let mut x11 = [0.0f64; MAX_CELL_WIDTH];
+    for lx in 0..cw {
+        let dx = lx as f64 * iw;
+        x00[lx] = lerp(dx, v000, v100);
+        x10[lx] = lerp(dx, v010, v110);
+        x01[lx] = lerp(dx, v001, v101);
+        x11[lx] = lerp(dx, v011, v111);
+    }
+    for ly in 0..ch {
+        let dy = ly as f64 * ih;
+        let mut y0 = [0.0f64; MAX_CELL_WIDTH];
+        let mut y1 = [0.0f64; MAX_CELL_WIDTH];
+        for lx in 0..cw {
+            y0[lx] = lerp(dy, x00[lx], x10[lx]);
+            y1[lx] = lerp(dy, x01[lx], x11[lx]);
+        }
+        for lz in 0..cw {
+            let dz = lz as f64 * iw;
+            let row = &mut dst[(ly * cw + lz) * cw..(ly * cw + lz + 1) * cw];
+            for lx in 0..cw {
+                row[lx] = lerp(dz, y0[lx], y1[lx]);
+            }
+        }
+    }
+}
+
+/// [`lerp_cell_any`] with the cell width known at compile time, so the per-lane loops have
+/// constant trip counts and no bounds checks and unroll / vectorize. Every lane performs the
+/// same lerps on the same operands in the same order (x, then y, then z), so the results are
+/// bit-identical; only the loop control changes. The layer count is `dst.len() / (CW * CW)`.
+#[inline(always)]
+fn lerp_cell_fixed<const CW: usize>(c: [f64; 8], iw: f64, ih: f64, dst: &mut [f64]) {
+    let [v000, v100, v010, v110, v001, v101, v011, v111] = c;
+    let mut d = [0.0f64; CW];
+    for (lx, d) in d.iter_mut().enumerate() {
+        *d = lx as f64 * iw;
+    }
+    let x00: [f64; CW] = std::array::from_fn(|lx| lerp(d[lx], v000, v100));
+    let x10: [f64; CW] = std::array::from_fn(|lx| lerp(d[lx], v010, v110));
+    let x01: [f64; CW] = std::array::from_fn(|lx| lerp(d[lx], v001, v101));
+    let x11: [f64; CW] = std::array::from_fn(|lx| lerp(d[lx], v011, v111));
+    for (ly, layer) in dst.chunks_exact_mut(CW * CW).enumerate() {
+        let dy = ly as f64 * ih;
+        let y0: [f64; CW] = std::array::from_fn(|lx| lerp(dy, x00[lx], x10[lx]));
+        let y1: [f64; CW] = std::array::from_fn(|lx| lerp(dy, x01[lx], x11[lx]));
+        for (lz, row) in layer.chunks_exact_mut(CW).enumerate() {
+            // `dz` for row `lz` is the same product `dx` is for lane `lz`.
+            let dz = d[lz];
+            for lx in 0..CW {
+                row[lx] = lerp(dz, y0[lx], y1[lx]);
+            }
+        }
+    }
+}
+
 /// Vanilla `Mth.lerp3`.
 #[allow(clippy::too_many_arguments)]
 fn lerp3(
@@ -916,6 +980,59 @@ fn lerp2(dx: f64, dy: f64, v00: f64, v10: f64, v01: f64, v11: f64) -> f64 {
     lerp(dy, lerp(dx, v00, v10), lerp(dx, v01, v11))
 }
 
+#[inline(always)]
 fn lerp(delta: f64, from: f64, to: f64) -> f64 {
     from + delta * (to - from)
+}
+
+#[cfg(test)]
+mod lerp_cell_tests {
+    use super::*;
+
+    /// The fixed-width fill must equal the general one bit for bit, signed zeros, infinities
+    /// and NaN payloads included, for every supported width and several layer counts.
+    #[test]
+    fn fixed_width_fill_is_bit_identical() {
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let specials = [0.0, -0.0, f64::INFINITY, f64::NEG_INFINITY, f64::from_bits(0x7ff8_0000_0000_1234), 1e-310];
+        for round in 0..2000 {
+            let mut c = [0.0f64; 8];
+            for v in &mut c {
+                let r = next();
+                *v = if r % 7 == 0 {
+                    specials[(r >> 8) as usize % specials.len()]
+                } else {
+                    (r >> 11) as f64 / (1u64 << 53) as f64 * 4.0 - 2.0
+                };
+            }
+            for (cw, ch) in [(4usize, 8usize), (4, 4), (8, 4), (8, 8)] {
+                let (iw, ih) = (1.0 / cw as f64, 1.0 / ch as f64);
+                let mut want = vec![0.0; cw * ch * cw];
+                let mut got = vec![f64::from_bits(round); cw * ch * cw];
+                lerp_cell_any(c, cw, ch, iw, ih, &mut want);
+                match cw {
+                    4 => lerp_cell_fixed::<4>(c, iw, ih, &mut got),
+                    _ => lerp_cell_fixed::<8>(c, iw, ih, &mut got),
+                }
+                // When two *different* NaNs meet in one `fadd` (a payload NaN corner and a NaN
+                // generated by `inf - inf`), which payload survives depends on how LLVM orders
+                // the commutative operands -- unspecified by Rust, in the old code too. Only
+                // there is "both NaN" accepted; everywhere else the bits must match.
+                let two_nan_sources = c.iter().any(|v| v.is_nan())
+                    && c.iter().any(|v| v.is_infinite());
+                for (w, g) in want.iter().zip(&got) {
+                    if two_nan_sources && w.is_nan() && g.is_nan() {
+                        continue;
+                    }
+                    assert_eq!(w.to_bits(), g.to_bits(), "cw {cw} ch {ch} corners {c:?}");
+                }
+            }
+        }
+    }
 }
