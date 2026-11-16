@@ -136,6 +136,33 @@ struct RegionReport {
     file_bytes: u64,
 }
 
+/// Grows the calling thread's malloc arena up front, by allocating and freeing blocks of
+/// address space without touching them.
+///
+/// glibc gives each worker thread its own arena, made of 64 MiB heaps, and grows a heap only as
+/// far as each allocation needs, one `mprotect` per growth, usually of a page or two: an r16
+/// run at eight threads made about 53,000 of them. `mprotect` takes the process's memory-map
+/// lock for writing, so with eight threads faulting pages in under the same lock those calls
+/// queued behind one another. Their waits showed up as several seconds of system time, up to
+/// 20 s in bad runs. A heap keeps the write permission it was given (glibc releases trimmed
+/// pages with `madvise`), so growing two heaps here, before any other work, lets the arena
+/// grow within them later with no `mprotect`. The block that opened the second heap stays
+/// allocated, or freeing it would unmap that heap. Nothing is written, so no page is faulted in
+/// and no memory is used; on other allocators it is a short burst of allocations and frees.
+fn reserve_arena() {
+    // Below glibc's 128 KiB mmap threshold, so the arena serves each block.
+    const BLOCK: usize = 120 * 1024;
+    const HEAP: usize = 64 * 1024 * 1024;
+    const BLOCKS: usize = 2 * HEAP / BLOCK - 16;
+    let mut held: Vec<Vec<u8>> = (0..BLOCKS).map(|_| Vec::with_capacity(BLOCK)).collect();
+    let heap_of = |block: &Vec<u8>| block.as_ptr() as usize & !(HEAP - 1);
+    let first = heap_of(&held[0]);
+    if let Some(second) = held.iter().position(|block| heap_of(block) != first) {
+        std::mem::forget(held.swap_remove(second));
+    }
+    drop(std::hint::black_box(held));
+}
+
 /// One region's worth of already-serialized chunks, keyed by region coordinates.
 type ChunksByRegion = BTreeMap<(i32, i32), Vec<(ChunkPos, Vec<u8>)>>;
 
@@ -149,6 +176,7 @@ fn main() -> Result<()> {
             .build_global()
             .context("building the thread pool")?;
     }
+    rayon::broadcast(|_| reserve_arena());
     if cli.datapack.is_some() {
         return real(&cli);
     }
