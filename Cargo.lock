@@ -884,6 +884,7 @@ dependencies = [
  "oxide-datapack",
  "oxide-noise",
  "pacside",
+ "rayon",
 ]
 
 [[package]]

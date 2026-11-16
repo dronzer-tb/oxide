@@ -18,3 +18,6 @@ anyhow.workspace = true
 
 [features]
 cull-stats = ["oxide-chunkgen/cull-stats"]
+
+[dev-dependencies]
+rayon.workspace = true
