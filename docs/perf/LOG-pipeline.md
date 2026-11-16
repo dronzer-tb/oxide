@@ -1546,3 +1546,28 @@ on every hold row. New base: pipeline-h1 (f3dfae0 = branch head + datapath 323b9
 
 Left in hashing: ore rule tag matching (~31), state interning (~35), remaining fact lookups (~60),
 block predicates (~45).
+
+### Ore visited-bit-first + 256-slot match cache (sub-agent 3eecd2d): +1.1% over three holds, rejected
+
+`place_blob` split on base h1 (two runs, ~35% of decoration): sphere math and loop control 53-57%
+(the per-cell inside-sphere division ~148 samples), block reads 22-25% (memory stalls), rule match
+and draws 9%, writes 6%, visited set 3-4%, air check 2%. Change (`ore.rs` only, no float expression
+touched): test the visited bit before the sphere test (identical cells, draws, writes and order,
+including vanilla's colliding visited index), and grow the region match cache from 32 to 256 slots.
+Profile: `place_blob` 938/897 -> 928/849 (-3%), decoration about -2%; skipping the division mostly
+moved its time onto the bit test, so the loop is branch-bound, not division-bound.
+
+| hold | h1 decorate_ms | o4 decorate_ms | change | o4 ahead |
+|---|---|---|---|---|
+| 1 (h1 first, sub-agent) | 7598 7429 7726 7335 = 7522 | 6920 6782 7450 6928 = 7020 | -6.7% | 4/4 |
+| 2 (o4 first) | 7382 7137 7948 6991 = 7365 | 8263 7478 7604 7198 = 7636 | +3.7% | 1/4 |
+| 3 (h1 first) | 7118 7372 7108 7331 = 7232 | 7401 7986 7448 7963 = 7700 | +6.5% | 0/4 |
+| all 12 rounds | 7373 | 7452 | **+1.1%** | 5/12 |
+
+java_cpu_s_per_10s 0.21-0.38 on every row. Hold 1's 4/4 win did not repeat in either order: hold to
+hold swings here reach ~7%, larger than a ~2% sampled gain. **Rejected**; patch at
+`docs/perf/rejected-ore-visited-first.patch`. Digest df701ee858e2bdd3 on every row.
+
+What remains in `place_blob` is branchy loop control (~half) and cache-missing block reads (~20%);
+section-local reads need a view that survives interleaved writes (unsafe in region.rs) and a per-row
+sphere bound is the rejected z-run, so ores are parked unless a different formulation appears.

@@ -1,0 +1,86 @@
+From 3eecd2dbbac519e387fcc9d04e394823118ebff8 Mon Sep 17 00:00:00 2001
+From: Kasniya <36neelansh@gmail.com>
+Date: Mon, 16 Nov 2026 13:22:42 +0000
+Subject: [PATCH] perf(ore): test a cell's visited bit before its sphere, widen
+ the match cache
+
+A set bit skips the cell whatever the sphere test says, so asking the bit
+first gives the same cells, draws and writes while most cells of a blob,
+whose spheres overlap, skip the division. The per-region rule-match cache
+grows from 32 to 256 slots: a region's ore blobs read far more than 32
+section palette entries, and each miss re-hashed the rule's tag lookup.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ crates/oxide-chunkgen/src/decorator/ore.rs | 27 +++++++++++++++++-----
+ 1 file changed, 21 insertions(+), 6 deletions(-)
+
+diff --git a/crates/oxide-chunkgen/src/decorator/ore.rs b/crates/oxide-chunkgen/src/decorator/ore.rs
+index 90eab35..b563f2f 100644
+--- a/crates/oxide-chunkgen/src/decorator/ore.rs
++++ b/crates/oxide-chunkgen/src/decorator/ore.rs
+@@ -95,7 +95,7 @@ impl RuleTest {
+ }
+ 
+ /// Slots in a [`MatchCache`].
+-const MATCH_SLOTS: usize = 32;
++const MATCH_SLOTS: usize = 256;
+ 
+ /// Per feature and region, which targets' rules match a state, by [`StateKey`]: an ore blob
+ /// reads thousands of cells but only a handful of distinct states (stone, deepslate, ...), so
+@@ -119,7 +119,7 @@ impl MatchCache {
+     ) -> u64 {
+         // `StateKey::slot`'s low bits are mostly the palette entry, the same in every section;
+         // a multiplicative mix spreads the sections over the slots too.
+-        let mixed = (key.slot() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 59;
++        let mixed = (key.slot() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 56;
+         let slot = &mut self.0[mixed as usize & (MATCH_SLOTS - 1)];
+         if let Some((cached, mask)) = *slot {
+             if cached == key {
+@@ -363,10 +363,6 @@ impl OreFeature {
+                         continue;
+                     }
+                     for z in z_lo..=z_hi {
+-                        let dz = (f64::from(z) + 0.5 - sz) / radius;
+-                        if dx * dx + dy * dy + dz * dz >= 1.0 {
+-                            continue;
+-                        }
+                         // Vanilla's index, collisions included: it strides by the box size,
+                         // not by the box size plus one, so distinct cells can share a bit.
+                         let index = i64::from(x.wrapping_sub(x_start))
+@@ -374,6 +370,16 @@ impl OreFeature {
+                             + i64::from(z.wrapping_sub(z_start))
+                                 * i64::from(size_xz)
+                                 * i64::from(size_y);
++                        // Vanilla tests the sphere, then the bit; a set bit skips the cell
++                        // whatever the sphere says, so it is asked first, and most cells of a
++                        // blob (its spheres overlap) skip the division.
++                        if tested.contains(index) {
++                            continue;
++                        }
++                        let dz = (f64::from(z) + 0.5 - sz) / radius;
++                        if dx * dx + dy * dy + dz * dz >= 1.0 {
++                            continue;
++                        }
+                         if !tested.insert(index) {
+                             continue;
+                         }
+@@ -545,6 +551,15 @@ thread_local! {
+ }
+ 
+ impl BitSet {
++    /// Whether the bit is set. A negative index never is.
++    fn contains(&self, index: i64) -> bool {
++        usize::try_from(index).is_ok_and(|index| {
++            self.0
++                .get(index / 64)
++                .is_some_and(|word| word & 1 << (index % 64) != 0)
++        })
++    }
++
+     /// An empty set, reusing the thread's spare words.
+     fn take() -> Self {
+         let mut words = SPARE_WORDS.with(Cell::take);
+-- 
+2.43.0
+
