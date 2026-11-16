@@ -1921,3 +1921,22 @@ Noise landed 07a6727 (block Perlin kernel, reviewed exact, -5% generation CPU at
 ef9a35f). Plan from the auditor: finish the E34, E35 and E36 holds on the current bases and push each as
 it finishes. Then merge 07a6727, rebuild the two bases, and re-hold any winner there, with the
 pregen digest on a pipeline-merged tree before anything lands.
+
+### E34 (fill loop + ore veins) on the real base: a candidate, re-hold on the 07a6727 base
+
+Generation-only CPU-s against the two base builds; java at most 0.39 CPU-s per run. All `digest=a977961a58122047`.
+
+| | r1 | r2 | r3 | r4 | r5 | r6 | mean |
+|---|---|---|---|---|---|---|---|
+| 1 thread: base 1 | 9.58 | 9.14 | 8.99 | 8.80 | | | 9.13 |
+| 1 thread: base 2 | 8.96 | 9.68 | 9.53 | 9.32 | | | 9.37 |
+| 1 thread: E34 | 8.98 | 8.68 | 9.18 | 8.14 | | | **8.75** |
+| 8 threads: base 1 | 12.13 | 11.78 | 12.94 | 9.82 | 10.02 | 9.90 | 11.10 |
+| 8 threads: base 2 | 12.00 | 9.61 | 15.16 | 10.78 | 10.94 | 10.25 | 11.46 |
+| 8 threads: E34 | 9.91 | 9.93 | 9.53 | 10.31 | 12.00 | 9.84 | **10.25** |
+
+- 1 thread: -5.5% against the bases' mean, below both in 2 of 4 rounds (r1 misses base 2 by 0.02 s).
+- 8 threads: -9.1% and +11% cps, below both in 3 of 6.
+
+The means clear the build floor, but the rounds are mixed, so E34 is a candidate, not yet a keep. It is
+re-held on the bases rebuilt after the 07a6727 merge, with the pregen digest, before it lands.
