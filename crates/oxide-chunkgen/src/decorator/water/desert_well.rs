@@ -6,14 +6,15 @@
 //! the two `Util.getRandom` picks among the five water cells (centre, east, south, west, north)
 //! whose cells one and two below become suspicious sand.
 //!
-//! Suspicious sand gets its `archaeology/desert_well` loot table through a block entity, which
-//! the region cannot carry: each one placed is tallied as `block_entity:minecraft:brushable_block`.
+//! Suspicious sand gets its `archaeology/desert_well` loot table (seeded with `pos.asLong()`)
+//! through a block entity, handed to the region as SNBT.
 
 use anyhow::Result;
 use oxide_core::{BlockPos, BlockState, RandomSource};
 use oxide_datapack::BlockFacts;
 
 use super::support::{default_state, is_air, is_block_at, offset, relative, Dir, HORIZONTAL};
+use crate::decorator::block_entity;
 use crate::decorator::context::FeatureContext;
 
 #[derive(Debug)]
@@ -107,8 +108,13 @@ impl DesertWellFeature {
             let cell = water_cells[cx.random.next_int_bounded(water_cells.len() as i32) as usize];
             let pos = relative(cell, Dir::Down, depth);
             if cx.region.set_block(pos, self.suspicious_sand.clone()) {
-                cx.unsupported
-                    .record("block_entity", "minecraft:brushable_block");
+                let snbt = block_entity::with_loot_table(
+                    "minecraft:brushable_block",
+                    pos,
+                    "minecraft:archaeology/desert_well",
+                    block_entity::pos_as_long(pos),
+                );
+                cx.region.put_block_entity(pos, snbt);
             }
         }
         true

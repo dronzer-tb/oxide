@@ -29,6 +29,7 @@ fn facts() -> BlockFacts {
     let mut text = String::from(
         "minecraft:air\tDarc\nminecraft:cave_air\tDarc\nminecraft:void_air\tDarc\n\
          minecraft:water[level=0]\tDlcWS\n\
+         minecraft:lava[level=0]\tDlrcLS\n\
          minecraft:pointed_dripstone[thickness=tip,vertical_direction=up,waterlogged=false]\tDsm\n\
          minecraft:sculk_catalyst[bloom=false]\tDsmoudf\n\
          minecraft:sculk_sensor[power=0,sculk_sensor_phase=inactive,waterlogged=false]\tDsm\n\
@@ -678,4 +679,37 @@ fn every_reference_cave_feature_compiles() {
             "{id} has an unsupported entry"
         );
     }
+}
+
+/// A side face of the terrain's bare `minecraft:lava` (no `level`, which the facts do not list)
+/// and of a moss carpet is not full, and neither is a gap.
+#[test]
+fn terrain_lava_and_partial_blocks_have_no_full_side_face() {
+    use super::support::{face_full, Dir};
+    let env = env();
+    let chunks = flat_ring(ChunkPos::new(0, 0), 64);
+    let mut region = DecorationRegion::new(ChunkPos::new(0, 0), refs(&chunks), &env.facts);
+    region.set_block(BlockPos::new(0, 70, 0), block("lava"));
+    region.set_block(BlockPos::new(1, 70, 0), block("moss_carpet"));
+    let mut random = WorldgenRandom::new(0);
+    let mut tally = UnsupportedTally::default();
+    let mut cx = FeatureContext {
+        env: &env,
+        region: &mut region,
+        random: &mut random,
+        origin: BlockPos::new(0, 70, 0),
+        unsupported: &mut tally,
+        top_feature: None,
+    };
+    for x in 0..2 {
+        for collision in [false, true] {
+            assert!(!face_full(
+                &mut cx,
+                BlockPos::new(x, 70, 0),
+                Dir::East,
+                collision
+            ));
+        }
+    }
+    assert!(tally.is_empty(), "{tally:?}");
 }

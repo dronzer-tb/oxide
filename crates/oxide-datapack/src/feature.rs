@@ -231,6 +231,9 @@ pub struct SpringConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimpleBlockConfig {
     pub to_place: BlockStateProvider,
+    /// Schedule a block tick at the placed block (`schedule_tick`, default false).
+    #[serde(default)]
+    pub schedule_tick: bool,
 }
 
 /// Picks the first entry whose roll succeeds, else `default`.

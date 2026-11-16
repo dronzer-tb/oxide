@@ -276,6 +276,64 @@ pub unsafe extern "C" fn oxide_generate_chunk(
     }
 }
 
+/// Copies out what native decoration left in chunk `(chunk_x, chunk_z)` besides block states,
+/// for the last `oxide_generate_chunk` of that chunk on the calling thread (the extras are kept
+/// per thread, one chunk at a time; call this right after generating, on the same thread).
+///
+/// The text is UTF-8, one item per line (`\n`-terminated), absolute block coordinates:
+///
+/// - `be <x> <y> <z> <snbt>`: a block entity as vanilla saves it (`id`, `x`, `y`, `z`, data).
+///   A block-entity block with no data from its feature is `{id:"DUMMY",x:..,y:..,z:..}`, the
+///   placeholder `WorldGenRegion.setBlock` stores in a proto chunk.
+/// - `ft <x> <y> <z> <fluid_id>`: a scheduled fluid tick (`minecraft:water`, `minecraft:lava`,
+///   `minecraft:flowing_water`, ..).
+/// - `bt <x> <y> <z> <block_id>`: a scheduled block tick.
+/// - `pp <x> <y> <z>`: a position marked for post-processing.
+///
+/// Returns the number of bytes the text needs. When that is `<= cap` the text has been written
+/// to `out` (not NUL-terminated); when it is `> cap` nothing is written and the caller retries
+/// with a buffer of at least that size. `0` (empty) when decoration is off. Negative on error
+/// (check `oxide_last_error`): `-1` null handle (or null `out` with `cap > 0`), `-2` this
+/// thread's last generated chunk is not that chunk of this handle, `-3` panic.
+///
+/// # Safety
+/// `handle` must be a live pointer from `oxide_open`. `out` must be valid for `cap` writable
+/// bytes (it may be null when `cap` is 0).
+#[no_mangle]
+pub unsafe extern "C" fn oxide_take_chunk_extras(
+    handle: *const OxideGenerator,
+    chunk_x: i32,
+    chunk_z: i32,
+    out: *mut u8,
+    cap: usize,
+) -> i64 {
+    if handle.is_null() || (out.is_null() && cap > 0) {
+        set_last_error("oxide_take_chunk_extras: handle (and out when cap > 0) must not be null");
+        return -1;
+    }
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let text = (*handle)
+            .chunk_extras(chunk_x, chunk_z)
+            .map_err(|e| format!("{e:#}"))?;
+        let bytes = text.as_bytes();
+        if bytes.len() <= cap && !bytes.is_empty() {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len());
+        }
+        Ok::<usize, String>(bytes.len())
+    }));
+    match result {
+        Ok(Ok(needed)) => needed as i64,
+        Ok(Err(msg)) => {
+            set_last_error(msg);
+            -2
+        }
+        Err(_) => {
+            set_last_error("oxide_take_chunk_extras panicked");
+            -3
+        }
+    }
+}
+
 /// Packs a block buffer filled by `oxide_generate_chunk` into per-section palettes and
 /// vanilla `SimpleBitStorage` longs (see [`pack`]), so the server installs whole sections.
 ///

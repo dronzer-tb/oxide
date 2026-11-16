@@ -5,20 +5,24 @@
 //! level. It is hollowed, floored in cobblestone (mostly mossy), then up to two chests are placed
 //! against a single wall and a spawner at the origin.
 //!
-//! The chests' loot table and the spawner's mob are block-entity data, which the region cannot
-//! carry. The blocks are placed and the random stream is advanced exactly as vanilla advances it
-//! (a loot seed per chest, a mob pick for the spawner), so everything drawn after the room still
-//! matches; the missing data is tallied as `block_entity:minecraft:chest` (loot table
-//! `minecraft:chests/simple_dungeon`) and `block_entity:minecraft:mob_spawner` (skeleton, zombie,
-//! zombie or spider). Until a consumer supplies it, these chests are empty and these spawners
-//! spawn nothing.
+//! The chests' loot table (`minecraft:chests/simple_dungeon` with the seed vanilla draws) and the
+//! spawner's mob (skeleton, zombie, zombie or spider) go to the region as block-entity SNBT.
 
 use anyhow::Result;
 use oxide_core::{BlockPos, BlockState, RandomSource};
 use oxide_datapack::{BlockFact, BlockFacts};
 
+use super::super::block_entity;
 use super::super::context::{block_in, FeatureContext};
 use super::{default_state, in_tag, is_air, is_block, is_block_at, offset};
+
+/// `MonsterRoomFeature.MOBS`.
+const MOBS: [&str; 4] = [
+    "minecraft:skeleton",
+    "minecraft:zombie",
+    "minecraft:zombie",
+    "minecraft:spider",
+];
 
 /// `Direction.Plane.HORIZONTAL`: north, east, south, west.
 const HORIZONTAL: [(&str, [i32; 3]); 4] = [
@@ -144,9 +148,15 @@ impl MonsterRoomFeature {
                     let chest = self.reorient(cx, pos);
                     Self::safe_set(cx, pos, chest);
                     if is_block_at(cx, pos, "chest") {
-                        // `RandomizableContainer.setBlockEntityLootTable`: the loot seed.
-                        cx.random.next_long();
-                        cx.unsupported.record("block_entity", "minecraft:chest");
+                        // `RandomizableContainer.setBlockEntityLootTable`.
+                        let seed = cx.random.next_long();
+                        let snbt = block_entity::with_loot_table(
+                            "minecraft:chest",
+                            pos,
+                            "minecraft:chests/simple_dungeon",
+                            seed,
+                        );
+                        cx.region.put_block_entity(pos, snbt);
                     }
                     break;
                 }
@@ -159,10 +169,11 @@ impl MonsterRoomFeature {
         let origin = cx.origin;
         Self::safe_set(cx, origin, self.spawner.clone());
         if is_block_at(cx, origin, "spawner") {
-            // `Util.getRandom(MOBS, random)` over skeleton, zombie, zombie, spider.
-            cx.random.next_int_bounded(4);
-            cx.unsupported
-                .record("block_entity", "minecraft:mob_spawner");
+            // `Util.getRandom(MOBS, random)`; a fresh spawner's empty `SpawnPotentials` draws
+            // nothing more in `setEntityId`.
+            let mob = MOBS[cx.random.next_int_bounded(4) as usize];
+            cx.region
+                .put_block_entity(origin, block_entity::spawner(origin, mob));
         }
     }
 

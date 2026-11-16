@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, LazyLock};
 
 use oxide_core::{BiomeId, BlockPos, BlockState, ResourceLocation, WorldgenRandom};
-use oxide_datapack::{BlockFacts, TagSet};
+use oxide_datapack::{BlockFact, BlockFacts, TagSet};
 
 use super::feature::Placed;
 use super::ground::BiomeClimate;
@@ -128,6 +128,67 @@ static VOID_AIR: LazyLock<BlockState> =
 /// and below the world.
 pub fn block_in<'a>(region: &'a DecorationRegion<'_>, pos: BlockPos) -> &'a BlockState {
     region.block(pos).unwrap_or(&VOID_AIR)
+}
+
+/// Whether `fact` holds for the block at `pos`, reading a property-less state the facts do not
+/// list as its block's default state.
+///
+/// Terrain writes fluids as bare `minecraft:lava` (the aquifer and the noise fill never set
+/// `level`), which the facts table, keyed by full state, does not list; the game's state is the
+/// default one, `level=0`.
+pub(crate) fn fact_at(cx: &FeatureContext<'_, '_, '_>, pos: BlockPos, fact: BlockFact) -> bool {
+    let Some(state) = cx.region.block(pos) else {
+        return false;
+    };
+    let facts = &cx.env.facts;
+    if state.properties.is_empty() && !facts.knows(state) {
+        if let Some(default) = facts.default_state(&state.name) {
+            return facts.is(default, fact);
+        }
+    }
+    facts.is(state, fact)
+}
+
+/// The type of `level.getFluidState(pos)`, `None` for an empty fluid: `minecraft:water` or
+/// `minecraft:lava` for a source (a liquid block or a waterlogged one), `flowing_` for the rest.
+pub(crate) fn fluid_id_at(
+    cx: &FeatureContext<'_, '_, '_>,
+    pos: BlockPos,
+) -> Option<ResourceLocation> {
+    let kind = if fact_at(cx, pos, BlockFact::Water) {
+        "water"
+    } else if fact_at(cx, pos, BlockFact::Lava) {
+        "lava"
+    } else {
+        return None;
+    };
+    Some(ResourceLocation::minecraft(
+        if fact_at(cx, pos, BlockFact::FluidSource) {
+            kind.to_string()
+        } else {
+            format!("flowing_{kind}")
+        },
+    ))
+}
+
+/// Blocks whose four side faces are not full squares in either the support or the collision
+/// shape, in every state. The facts hold the up and down faces only; these are the side faces
+/// decoration has been seen to ask about, read off the 26.2 shapes:
+///
+/// - `moss_carpet` (`CarpetBlock`): `column(16, 0, 1)`;
+/// - `azalea`, `flowering_azalea` (`AzaleaBlock`): `column(16, 8, 16) | column(4, 0, 8)`, no
+///   collision override;
+/// - `bamboo` (`BambooStalkBlock`): collision `column(3, 0, 16)`;
+/// - `cocoa` (`CocoaBlock`): at most `column(8, 3, 12)`, moved off-centre;
+/// - `big_dripleaf` (`BigDripleafBlock`): collision is the leaf, `column(16, 11, 15)` at most.
+///
+/// None overrides `getBlockSupportShape`, so the support shape is the collision shape.
+pub(crate) fn sides_never_full(state: &BlockState) -> bool {
+    state.name.namespace() == "minecraft"
+        && matches!(
+            state.name.path(),
+            "moss_carpet" | "azalea" | "flowering_azalea" | "bamboo" | "cocoa" | "big_dripleaf"
+        )
 }
 
 impl FeatureContext<'_, '_, '_> {

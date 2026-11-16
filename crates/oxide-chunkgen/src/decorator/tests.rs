@@ -12,7 +12,7 @@ use oxide_datapack::{load_tags, BlockFacts, Registry, TagSet};
 use super::*;
 use crate::decorate::Decorator;
 use crate::region::testutil::{block, facts, flat_ring, refs};
-use crate::region::{BlockWrite, DecorationRegion};
+use crate::region::{BlockWrite, ChunkExtras, DecorationRegion};
 
 struct AlwaysSurvives;
 
@@ -66,6 +66,7 @@ fn compile(json: &str, facts: &BlockFacts) -> Placed {
 
 struct Outcome {
     writes: Vec<BlockWrite>,
+    extras: ChunkExtras,
     tally: UnsupportedTally,
     placed: bool,
 }
@@ -96,8 +97,10 @@ fn place_in_flat(
         };
         place_placed(&placed, &mut cx, origin, None)
     };
+    let (writes, extras) = region.into_parts();
     Outcome {
-        writes: region.into_writes(),
+        writes,
+        extras,
         tally,
         placed: placed_any,
     }
@@ -541,6 +544,11 @@ fn a_spring_needs_four_rocks_and_one_hole() {
             (origin, block("water").with_property("level", "8")),
         ]
     );
+    // The fluid tick that starts it flowing: the source fluid, falling or not.
+    assert_eq!(
+        outcome.extras.fluid_ticks,
+        vec![(origin, ResourceLocation::minecraft("water"))]
+    );
 
     // Two air neighbours is one hole too many.
     let crowded = place_in_flat(&env, SPRING, 1, origin, |region| {
@@ -554,6 +562,27 @@ fn a_spring_needs_four_rocks_and_one_hole() {
             .all(|(_, state)| *state == block("air")),
         "no spring"
     );
+}
+
+#[test]
+fn a_simple_block_with_schedule_tick_ticks_the_placed_block() {
+    let env = env(&[], Box::new(AlwaysSurvives));
+    let feature = |tick: bool| {
+        format!(
+            r#"{{"feature":{{"type":"minecraft:simple_block","config":{{"schedule_tick":{tick},
+            "to_place":{{"type":"minecraft:simple_state_provider","state":{{"Name":"minecraft:short_grass"}}}}}}}},
+            "placement":[]}}"#
+        )
+    };
+    let origin = BlockPos::new(5, 64, 5);
+    let ticked = place_in_flat(&env, &feature(true), 1, origin, |_| {});
+    assert!(ticked.placed);
+    assert_eq!(
+        ticked.extras.block_ticks,
+        vec![(origin, ResourceLocation::minecraft("short_grass"))]
+    );
+    let plain = place_in_flat(&env, &feature(false), 1, origin, |_| {});
+    assert!(plain.placed && plain.extras.is_empty());
 }
 
 #[test]

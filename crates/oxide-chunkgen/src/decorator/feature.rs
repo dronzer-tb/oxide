@@ -53,7 +53,8 @@ pub struct Placed {
 pub enum Feature {
     Ore(OreFeature),
     ScatteredOre(OreFeature),
-    SimpleBlock(StateProvider),
+    /// The provider and `schedule_tick`.
+    SimpleBlock(StateProvider, bool),
     Spring(SpringFeature),
     /// Rolls each entry's `chance` in order and places the first that passes, else `default`.
     RandomSelector {
@@ -219,9 +220,10 @@ impl<'d> Compiler<'d> {
             ConfiguredFeature::ScatteredOre(config) => {
                 Feature::ScatteredOre(OreFeature::compile(config, self.facts)?)
             }
-            ConfiguredFeature::SimpleBlock(config) => {
-                Feature::SimpleBlock(StateProvider::compile(&config.to_place, self.facts)?)
-            }
+            ConfiguredFeature::SimpleBlock(config) => Feature::SimpleBlock(
+                StateProvider::compile(&config.to_place, self.facts)?,
+                config.schedule_tick,
+            ),
             ConfiguredFeature::SpringFeature(config) => {
                 match SpringFeature::compile(config, self.facts)? {
                     Some(spring) => Feature::Spring(spring),
@@ -396,7 +398,9 @@ pub fn place_configured_feature(feature: &Feature, cx: &mut FeatureContext<'_, '
     match feature {
         Feature::Ore(ore) => ore.place(cx),
         Feature::ScatteredOre(ore) => ore.place_scattered(cx),
-        Feature::SimpleBlock(provider) => place_simple_block(provider, cx),
+        Feature::SimpleBlock(provider, schedule_tick) => {
+            place_simple_block(provider, *schedule_tick, cx)
+        }
         Feature::Spring(spring) => spring.place(cx),
         Feature::RandomSelector { features, default } => {
             for (chance, placed) in features {
@@ -472,8 +476,13 @@ pub fn place_configured_feature(feature: &Feature, cx: &mut FeatureContext<'_, '
 /// (`DoublePlantBlock.placeAt`).
 ///
 /// Survival is per-block Java (`BlockBehaviours`); a block whose rule is unknown is tallied and
-/// not placed rather than guessed. Vanilla's scheduled tick is not recorded.
-fn place_simple_block(provider: &StateProvider, cx: &mut FeatureContext<'_, '_, '_>) -> bool {
+/// not placed rather than guessed. With `schedule_tick`, a placed block gets a block tick for the
+/// block then at the origin.
+fn place_simple_block(
+    provider: &StateProvider,
+    schedule_tick: bool,
+    cx: &mut FeatureContext<'_, '_, '_>,
+) -> bool {
     let pos = cx.origin;
     let state = match provider.state(cx, pos) {
         Ok(Some(state)) => state,
@@ -496,9 +505,17 @@ fn place_simple_block(provider: &StateProvider, cx: &mut FeatureContext<'_, '_, 
         .get("half")
         .is_some_and(|half| half == "lower")
     {
-        return place_two_block_plant(cx, state, pos);
+        if !place_two_block_plant(cx, state, pos) {
+            return false;
+        }
+    } else {
+        cx.region.set_block(pos, state);
     }
-    cx.region.set_block(pos, state)
+    if schedule_tick {
+        let block = block_in(cx.region, pos).name.clone();
+        cx.region.schedule_block_tick(pos, block);
+    }
+    true
 }
 
 /// `DoublePlantBlock.placeAt`, behind `SimpleBlockFeature`'s check that the cell above is empty.

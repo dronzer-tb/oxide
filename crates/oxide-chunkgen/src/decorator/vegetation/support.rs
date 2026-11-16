@@ -16,7 +16,7 @@ use oxide_core::{BlockPos, BlockState, ResourceLocation};
 use oxide_datapack::BlockFact;
 
 use super::geometry::Dir;
-use crate::decorator::context::{block_in, FeatureContext};
+use crate::decorator::context::{block_in, fact_at, sides_never_full, FeatureContext};
 use crate::decorator::feature::{place_placed, Placed};
 use crate::decorator::state_provider::{StateProvider, Unsupported};
 
@@ -42,7 +42,7 @@ pub(super) fn face_full(
     face: Dir,
     shape: Shape,
 ) -> bool {
-    let fact = |cx: &FeatureContext<'_, '_, '_>, fact: BlockFact| cx.region.is(pos, fact);
+    let fact = |cx: &FeatureContext<'_, '_, '_>, fact: BlockFact| fact_at(cx, pos, fact);
     let full_collision = fact(cx, BlockFact::FullCollision);
     match face {
         Dir::Up | Dir::Down => {
@@ -59,6 +59,9 @@ pub(super) fn face_full(
             }
             if full_collision {
                 return shape == Shape::Collision || fact(cx, BlockFact::SturdyTop);
+            }
+            if sides_never_full(block_in(cx.region, pos)) {
+                return false;
             }
             let name = block_in(cx.region, pos).name.to_string();
             cx.unsupported.record("shape", &name);
