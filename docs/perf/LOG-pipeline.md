@@ -1183,3 +1183,30 @@ minutes around 02:20 UTC; it accepted connections again at 02:25.)
 -2.1% decorate and -1.3% user CPU, ahead 2/3 on each: inside run-to-run spread, as on the first try
 (-0.7%). **Rejected.** The ore cost is in the 10M fresh cells (read + match + write), not the box
 arithmetic. Digest held.
+
+## Ore: one lookup per fresh cell, per-row height test, pooled overlay sections; base 1 -9.1%
+
+**Change** (sub-agent commit 1e10bc6; `decorator/ore.rs`, `region.rs`):
+- `DecorationRegion::cell(pos)` resolves a cell once; `block_keyed_at(cell)` and
+  `set_block_id_at(cell, id)` use it, so each fresh ore cell does one window/height test and one index
+  computation. The ore path drops `ensure_can_write` (`cell` refuses the same positions before any
+  draw, so the answer is the same `false`). `block_keyed` goes through the same code.
+- `outside_build_height(y)` once per y row (it only ever skipped cells: no draw, no `tested` bit).
+- overlay: a cell's state id and its `writes` index sit side by side (one cache line per write); a
+  finished region zeroes only the cells it wrote and returns its sections to a per-thread pool (up to
+  256), instead of each region zeroing 32 KB per written section. New test
+  `a_later_region_sees_none_of_an_earlier_ones_writes` (reuse after `into_interned` and after drop).
+- Draws, visit order, `writes` order, written states and interning order unchanged.
+
+**Hold, base 1** (pipeline-b4 = branch b793819 + datapath **f52ccea**; pipeline-rc4 adds abfc677):
+
+| | run 1 | run 2 | run 3 | mean |
+|---|---|---|---|---|
+| base decorate_ms | 9032 | 8289 | 9190 | 8837 |
+| ore cell decorate_ms | 8603 | 7784 | 7713 | 8033 |
+| base / change cpu_user_s | 25.15 / 24.36 | 24.41 / 23.38 | 24.82 / 23.26 | 24.79 / 23.67 |
+| java_cpu_s_per_10s | 0.23 / 0.28 | 0.25 / 0.22 | 0.26 / 0.22 | |
+
+-9.1% decorate, -4.5% user CPU, ahead 3/3 on both. Java quiet; df701ee858e2bdd3 on every row; tests
+195 pass (the chained test step printed nothing, so they were re-run separately and passed). Under
+10%, second base next.
