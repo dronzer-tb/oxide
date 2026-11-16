@@ -803,4 +803,4 @@ scratch worktree `/tmp/pgm` and box dir `noise-pgm` are removed.
 
 The bundle was held on ef9a35f without 20a (07a6727). The two touch disjoint files (20a: `improved_noise`, `perlin_noise`, `blended_noise`; 21: `cache`, `compiled`, `router`, `scratch`), and 21 applied cleanly on 07a6727. 20b/20c's separate wip patches are superseded by this landing.
 
-**Next:** re-profile the shipping tree with 20a + 21 merged (datapath to merge `perf/noise`) and take new bases from it. What remains in this crate is the corner grid's hash and lerp phases (20a vectorised only the coordinate phase cleanly) and the vein corner-grid builds (~2%, from 20c's counters).
+**Next:** re-profile the shipping tree with 20a + 21 merged (datapath to merge `perf/noise`) and take new bases from it. What remains in this crate is the corner grid's hash and lerp phases (which phases 20a's kernel actually vectorises is not yet checked per phase in the disassembly) and the vein corner-grid builds (~2%, from 20c's counters). Base binaries `ab-bin/shipb1`/`shipb2` are deleted; new bases are needed from the merged tree.
