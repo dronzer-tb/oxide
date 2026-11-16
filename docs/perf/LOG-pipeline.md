@@ -1060,3 +1060,35 @@ head with the dense overlay, merged with datapath) before landing.
 +6.8% decorate (behind 2/3, one even), +2.4% user CPU (behind 3/3). Java quiet; digest held; tests 194
 pass. A second hold on base 2 (branch head with the overlay + datapath 80add17) is queued; unless it
 reverses clearly, this is rejected.
+
+### Trees, base 2: -3.8%; kept
+
+pipeline-b3 = this branch at 69984c6 (with the dense overlay) merged with origin/perf/datapath
+**80add17** (scratch merge 106d867); pipeline-df3 adds the tree change.
+
+| | run 1 | run 2 | run 3 | mean |
+|---|---|---|---|---|
+| base decorate_ms | 10196 | 8500 | 9114 | 9270 |
+| trees decorate_ms | 9358 | 8399 | 9004 | 8920 |
+| base / trees cpu_user_s | 27.68 / 26.28 | 25.14 / 25.04 | 25.80 / 25.77 | 26.21 / 25.70 |
+| java_cpu_s_per_10s | 0.38 / 0.29 | 0.22 / 0.24 | 0.24 / 0.26 | |
+
+-3.8% decorate, -1.9% user CPU, ahead 3/3 on both. With base 1 (-12.3%) it is ahead 6/6 on two
+bases; the gain is smaller on top of the overlay, which already made the tree code's reads cheap.
+Java quiet; df701ee858e2bdd3 on every row; tests 194 pass. **Kept**, cherry-picked onto the branch.
+
+### Glow lichen + geode, base 2: +1.2%; rejected
+
+Same base (pipeline-b3, datapath 80add17); pipeline-gl3 adds the change.
+
+| | run 1 | run 2 | run 3 | mean |
+|---|---|---|---|---|
+| base decorate_ms | 10122 | 9064 | 9213 | 9466 |
+| change decorate_ms | 10248 | 8758 | 9746 | 9584 |
+| base / change cpu_user_s | 28.09 / 29.20 | 26.44 / 26.83 | 26.47 / 27.40 | 27.00 / 27.81 |
+| java_cpu_s_per_10s | 0.42 / 0.30 | 0.29 / 0.26 | 0.26 / 0.27 | |
+
++1.2% decorate, +3.0% user CPU, behind 3/3 on CPU. Losing on both bases (+6.8% on base 1).
+**Rejected**; patch at `docs/perf/rejected-lichen-geode.patch`. Digest held throughout. A likely
+reason: the per-call caches and extra branches cost more than the repeated reads they save now that
+reads are cheap; glow lichen's early stop alone may still be worth a separate small try.

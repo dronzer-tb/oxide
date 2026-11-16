@@ -1,0 +1,342 @@
+From 05548b713e82687e65c4bcfa687ecf47954f089a Mon Sep 17 00:00:00 2001
+From: Kasniya <36neelansh@gmail.com>
+Date: Sun, 15 Nov 2026 23:07:40 +0000
+Subject: [PATCH] perf(decorate): glow lichen search stops on a read-only miss;
+ geode writes interned layer states
+
+multiface: vanilla's search revisits the same neighbour search_range times; an attempt that
+found no supporting face read blocks only (no write, draw or tally), so the remaining
+iterations repeat it exactly and are skipped. One probe per open-cell test, keyed
+can_be_placed_on cache, no Vec/state clones on the miss path.
+
+geode: simple layer providers and crack air interned once per run and written with
+set_block_id; cannot_replace answered once per StateKey. Noise and float order untouched.
+
+Digest df701ee858e2bdd3 unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../src/decorator/cave/geode.rs               |  95 +++++++++++---
+ .../src/decorator/vegetation/multiface.rs     | 121 ++++++++++++++----
+ 2 files changed, 170 insertions(+), 46 deletions(-)
+
+diff --git a/crates/oxide-chunkgen/src/decorator/cave/geode.rs b/crates/oxide-chunkgen/src/decorator/cave/geode.rs
+index a3363d4..b0b371f 100644
+--- a/crates/oxide-chunkgen/src/decorator/cave/geode.rs
++++ b/crates/oxide-chunkgen/src/decorator/cave/geode.rs
+@@ -62,6 +62,12 @@ pub struct GeodeFeature {
+     air: BlockState,
+ }
+ 
++const REPLACE_SLOTS: usize = 16;
++
++/// Per [`StateKey`](crate::region::StateKey), whether that state is in `cannot_replace`.
++#[derive(Default)]
++struct ReplaceCache([Option<(crate::region::StateKey, bool)>; REPLACE_SLOTS]);
++
+ /// `BlockPos.distSqr(BlockPos)`, in doubles.
+ fn dist_sqr(a: BlockPos, b: BlockPos) -> f64 {
+     let d = |from: i32, to: i32| f64::from(from) - f64::from(to);
+@@ -150,6 +156,60 @@ impl GeodeFeature {
+         }
+     }
+ 
++    /// [`Self::safe_set`] for a state interned as `id`, with the `cannot_replace` test answered
++    /// once per distinct state in `cache`. Outside the window the write is refused either way.
++    fn safe_set_id(
++        &self,
++        cx: &mut FeatureContext<'_, '_, '_>,
++        pos: BlockPos,
++        id: u32,
++        cache: &mut ReplaceCache,
++    ) {
++        let blocked = 'blocked: {
++            let Some((key, state)) = cx.region.block_keyed(pos) else {
++                // As `safe_set` reads it; `set_block_id` refuses outside the window.
++                break 'blocked self
++                    .cannot_replace
++                    .contains_block(cx.env, &block_in(cx.region, pos).name);
++            };
++            let slot = &mut cache.0[key.slot() & (REPLACE_SLOTS - 1)];
++            match *slot {
++                Some((cached, answer)) if cached == key => answer,
++                _ => {
++                    let answer = self.cannot_replace.contains_block(cx.env, &state.name);
++                    *slot = Some((key, answer));
++                    answer
++                }
++            }
++        };
++        if !blocked {
++            cx.region.set_block_id(pos, id);
++        }
++    }
++
++    /// Writes `provider`'s state at `pos` as `safe_set` would; `false` when the provider gave
++    /// none (tallied). A simple provider draws nothing, so its state is interned once into
++    /// `id` and written by id.
++    fn place_layer(
++        &self,
++        cx: &mut FeatureContext<'_, '_, '_>,
++        provider: &StateProvider,
++        id: &mut Option<u32>,
++        pos: BlockPos,
++        cache: &mut ReplaceCache,
++    ) -> bool {
++        if let StateProvider::Simple(state) = provider {
++            let id = *id.get_or_insert_with(|| cx.region.intern(state));
++            self.safe_set_id(cx, pos, id, cache);
++            return true;
++        }
++        let Some(state) = Self::sample(cx, provider, pos) else {
++            return false;
++        };
++        self.safe_set(cx, pos, state);
++        true
++    }
++
+     /// The provider's state at `pos`; a provider that cannot give one is tallied.
+     fn sample(
+         cx: &mut FeatureContext<'_, '_, '_>,
+@@ -221,6 +281,10 @@ impl GeodeFeature {
+             }
+         }
+         let mut potential = Vec::new();
++        let mut cache = ReplaceCache::default();
++        // Interned layer states, for simple providers: filling, inner, alternate inner, middle,
++        // outer, crack air.
++        let mut ids: [Option<u32>; 6] = [None; 6];
+         let (low, high) = (self.min_gen_offset, self.max_gen_offset);
+         // `BlockPos.betweenClosed` walks x fastest, then y, then z.
+         for dz in low..=high {
+@@ -239,10 +303,9 @@ impl GeodeFeature {
+                         continue;
+                     }
+                     if shell >= inner_air {
+-                        let Some(state) = Self::sample(cx, &self.filling, pos) else {
++                        if !self.place_layer(cx, &self.filling, &mut ids[0], pos, &mut cache) {
+                             return false;
+-                        };
+-                        self.safe_set(cx, pos, state);
++                        }
+                         continue;
+                     }
+                     let mut crack_sum = 0.0;
+@@ -252,33 +315,29 @@ impl GeodeFeature {
+                             + noise_offset;
+                     }
+                     if crack && crack_sum >= crack_size {
+-                        self.safe_set(cx, pos, self.air.clone());
++                        let air = *ids[5].get_or_insert_with(|| cx.region.intern(&self.air));
++                        self.safe_set_id(cx, pos, air, &mut cache);
+                     } else if shell >= innermost {
+                         let alternate = f64::from(cx.random.next_float()) < self.alternate_chance;
+-                        let provider = if alternate {
+-                            &self.alternate_inner
++                        let (provider, id) = if alternate {
++                            (&self.alternate_inner, &mut ids[2])
+                         } else {
+-                            &self.inner
++                            (&self.inner, &mut ids[1])
+                         };
+-                        let Some(state) = Self::sample(cx, provider, pos) else {
++                        if !self.place_layer(cx, provider, id, pos, &mut cache) {
+                             return false;
+-                        };
+-                        self.safe_set(cx, pos, state);
++                        }
+                         if (!self.require_alternate || alternate)
+                             && f64::from(cx.random.next_float()) < self.potential_chance
+                         {
+                             potential.push(pos);
+                         }
+                     } else if shell >= inner_crust {
+-                        let Some(state) = Self::sample(cx, &self.middle, pos) else {
++                        if !self.place_layer(cx, &self.middle, &mut ids[3], pos, &mut cache) {
+                             return false;
+-                        };
+-                        self.safe_set(cx, pos, state);
+-                    } else {
+-                        let Some(state) = Self::sample(cx, &self.outer, pos) else {
+-                            return false;
+-                        };
+-                        self.safe_set(cx, pos, state);
++                        }
++                    } else if !self.place_layer(cx, &self.outer, &mut ids[4], pos, &mut cache) {
++                        return false;
+                     }
+                 }
+             }
+diff --git a/crates/oxide-chunkgen/src/decorator/vegetation/multiface.rs b/crates/oxide-chunkgen/src/decorator/vegetation/multiface.rs
+index 563518b..c5fbec6 100644
+--- a/crates/oxide-chunkgen/src/decorator/vegetation/multiface.rs
++++ b/crates/oxide-chunkgen/src/decorator/vegetation/multiface.rs
+@@ -47,6 +47,21 @@ enum Spread {
+ 
+ const SPREAD_ORDER: [Spread; 3] = [Spread::SamePosition, Spread::SamePlane, Spread::WrapAround];
+ 
++/// How one `placeGrowthWithin` attempt ended.
++enum Growth {
++    Placed,
++    /// No face had a block from `can_be_placed_on` behind it: decided by block reads alone.
++    NoSupport,
++    /// A face had support but the state could not be placed (possibly tallying why).
++    Refused,
++}
++
++const PLACEABLE_SLOTS: usize = 8;
++
++/// Per [`StateKey`](crate::region::StateKey), whether that state is in `can_be_placed_on`.
++#[derive(Default)]
++struct PlaceableCache([Option<(crate::region::StateKey, bool)>; PLACEABLE_SLOTS]);
++
+ impl MultifaceFeature {
+     /// Compiles the config; `Ok(None)` for a block vanilla's codec would not accept here (only
+     /// glow lichen and sculk veins are spreadable multiface blocks).
+@@ -109,35 +124,86 @@ impl MultifaceFeature {
+         is_air(cx, pos) || self.is_water(block_in(cx.region, pos))
+     }
+ 
++    /// Whether the block at `pos` is air or water (and, with `or_block`, this feature's own
++    /// block): one read for what `is_air`, `block_in` and the name tests would each look up.
++    fn open_at(&self, cx: &FeatureContext<'_, '_, '_>, pos: BlockPos, or_block: bool) -> bool {
++        match cx.region.probe(pos) {
++            Some(probe) => {
++                probe.is(BlockFact::Air)
++                    || self.is_water(probe.state)
++                    || (or_block && self.is_block(probe.state))
++            }
++            None => {
++                let state = block_in(cx.region, pos);
++                self.air_or_water(cx, pos) || (or_block && self.is_block(state))
++            }
++        }
++    }
++
++    /// Whether the block at `pos` is in `can_be_placed_on`, answered once per distinct state
++    /// within one placement.
++    fn placeable_on(
++        &self,
++        cx: &FeatureContext<'_, '_, '_>,
++        pos: BlockPos,
++        cache: &mut PlaceableCache,
++    ) -> bool {
++        match cx.region.block_keyed(pos) {
++            Some((key, state)) => {
++                let slot = &mut cache.0[key.slot() & (PLACEABLE_SLOTS - 1)];
++                if let Some((cached, answer)) = *slot {
++                    if cached == key {
++                        return answer;
++                    }
++                }
++                let answer = self.can_be_placed_on.contains_block(cx.env, &state.name);
++                *slot = Some((key, answer));
++                answer
++            }
++            None => self
++                .can_be_placed_on
++                .contains_block(cx.env, &block_in(cx.region, pos).name),
++        }
++    }
++
+     pub fn place(&self, cx: &mut FeatureContext<'_, '_, '_>) -> bool {
+         let origin = cx.origin;
+-        if !self.air_or_water(cx, origin) {
++        if !self.open_at(cx, origin, false) {
+             return false;
+         }
+-        let mut directions = self.directions.clone();
+-        shuffle(&mut directions, &mut *cx.random);
+-        let here = block_in(cx.region, origin).clone();
+-        if self.place_growth(cx, origin, &here, &directions) {
++        let mut cache = PlaceableCache::default();
++        let count = self.directions.len();
++        let mut directions = [Dir::Down; 6];
++        directions[..count].copy_from_slice(&self.directions);
++        let directions = &mut directions[..count];
++        shuffle(directions, &mut *cx.random);
++        if let Growth::Placed = self.place_growth(cx, origin, directions, &mut cache) {
+             return true;
+         }
+-        for &search in &directions {
+-            let mut placement: Vec<Dir> = self
+-                .directions
+-                .iter()
+-                .copied()
+-                .filter(|&dir| dir != search.opposite())
+-                .collect();
+-            shuffle(&mut placement, &mut *cx.random);
++        for &search in directions.iter() {
++            let mut placement = [Dir::Down; 6];
++            let mut len = 0;
++            for &dir in &self.directions {
++                if dir != search.opposite() {
++                    placement[len] = dir;
++                    len += 1;
++                }
++            }
++            let placement = &mut placement[..len];
++            shuffle(placement, &mut *cx.random);
+             for _ in 0..self.search_range {
+                 // Vanilla's `setWithOffset(origin, search)` restarts from the origin every
+                 // iteration, so the search looks at the same neighbour `search_range` times.
+                 let pos = relative(origin, search, 1);
+-                let state = block_in(cx.region, pos).clone();
+-                if !self.air_or_water(cx, pos) && !self.is_block(&state) {
++                if !self.open_at(cx, pos, true) {
+                     break;
+                 }
+-                if self.place_growth(cx, pos, &state, &placement) {
+-                    return true;
++                match self.place_growth(cx, pos, placement, &mut cache) {
++                    Growth::Placed => return true,
++                    // Nothing was read but blocks, nothing written, drawn or tallied: every
++                    // remaining iteration would look at the same blocks and fail the same way.
++                    Growth::NoSupport => break,
++                    Growth::Refused => {}
+                 }
+             }
+         }
+@@ -148,19 +214,18 @@ impl MultifaceFeature {
+         &self,
+         cx: &mut FeatureContext<'_, '_, '_>,
+         pos: BlockPos,
+-        old: &BlockState,
+         directions: &[Dir],
+-    ) -> bool {
++        cache: &mut PlaceableCache,
++    ) -> Growth {
+         for &direction in directions {
+-            let neighbour = block_in(cx.region, relative(pos, direction, 1));
+-            if !self
+-                .can_be_placed_on
+-                .contains_block(cx.env, &neighbour.name)
+-            {
++            if !self.placeable_on(cx, relative(pos, direction, 1), cache) {
+                 continue;
+             }
+-            let Some(state) = self.state_for_placement(cx, old, pos, direction) else {
+-                return false;
++            // Nothing has been written since the caller looked at `pos`, so this is the state
++            // vanilla passes in.
++            let old = block_in(cx.region, pos).clone();
++            let Some(state) = self.state_for_placement(cx, &old, pos, direction) else {
++                return Growth::Refused;
+             };
+             cx.region.set_block_ref(pos, &state);
+             if cx.random.next_float() < self.chance_of_spreading {
+@@ -172,9 +237,9 @@ impl MultifaceFeature {
+                     }
+                 }
+             }
+-            return true;
++            return Growth::Placed;
+         }
+-        false
++        Growth::NoSupport
+     }
+ 
+     fn valid_for_placement(
+-- 
+2.43.0
+
