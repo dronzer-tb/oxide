@@ -1899,3 +1899,25 @@ with a 90-second gap after each, so another holder can take the lock.
 
 Holds run one at a time, each 4 rounds at 1 thread and 6 at 8 against the two bases on `gen_cpu_s`:
 E30, then E34, then E35; E36 after them.
+
+### E30 retry on the real base (365ebeb code): rejected for good
+
+Generation-only CPU-s against the two base builds; java at most 0.54 CPU-s per run. All
+`digest=a977961a58122047`.
+
+| | r1 | r2 | r3 | r4 | r5 | r6 | mean |
+|---|---|---|---|---|---|---|---|
+| 1 thread: base 1 | 8.87 | 9.45 | 9.18 | 9.46 | | | 9.24 |
+| 1 thread: base 2 | 9.62 | 9.53 | 9.06 | 9.55 | | | 9.44 |
+| 1 thread: E30 | 9.37 | 9.32 | 11.09 | 9.62 | | | 9.85 |
+| 8 threads: base 1 | 10.38 | 11.82 | 10.33 | 9.97 | 10.07 | 11.84 | 10.74 |
+| 8 threads: base 2 | 10.13 | 9.54 | 9.06 | 11.33 | 10.38 | 16.80 | 11.21 |
+| 8 threads: E30 | 10.81 | 10.83 | 11.39 | 10.50 | 13.76 | 9.93 | 11.20 |
+
+E30 is below both bases in 1 of 4 rounds at 1 thread and 1 of 6 at 8. Three holds on three bases have now
+failed to show a gain, so it is not retried; the diff stays at `docs/perf/rejected-E30-...`.
+
+Noise landed 07a6727 (block Perlin kernel, reviewed exact, -5% generation CPU at 1 thread over
+ef9a35f). Plan from the auditor: finish the E34, E35 and E36 holds on the current bases and push each as
+it finishes. Then merge 07a6727, rebuild the two bases, and re-hold any winner there, with the
+pregen digest on a pipeline-merged tree before anything lands.
