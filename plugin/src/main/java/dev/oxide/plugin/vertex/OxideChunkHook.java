@@ -36,7 +36,18 @@ final class OxideChunkHook implements ChunkGenerationHook {
      * avoids taking its lock on every chunk.
      */
     private final Map<String, OxideNative.Handle> handles = new ConcurrentHashMap<>();
+    /**
+     * Block-palette names per handle. The Rust palette only grows and an index never changes
+     * meaning, so only names past the cached length are read across the FFI boundary.
+     */
+    private final Map<OxideNative.Handle, String[]> blockNames = new ConcurrentHashMap<>();
     private final AtomicLong failures = new AtomicLong();
+    /** Cleared the first time the engine turns out to predate {@code ChunkTarget.setSections}. */
+    private volatile boolean engineTakesSections = true;
+
+    private static final int SECTION_BLOCKS = 4096;
+    private static final int MAX_LOCAL_PALETTE = 256;
+    private static final int MAX_PACKED_LONGS = 512;
 
     OxideChunkHook(GeneratorService service, System.Logger logger) {
         this.service = service;
@@ -67,8 +78,7 @@ final class OxideChunkHook implements ChunkGenerationHook {
         int blockCount = 256 * height;
         int biomeCount = 64 * (height / 16);
 
-        short[] blockIndices;
-        short[] biomeIndices;
+        int sections = height / 16;
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment blocks = arena.allocate((long) blockCount * Short.BYTES);
             MemorySegment biomes = arena.allocate((long) biomeCount * Short.BYTES);
@@ -78,16 +88,68 @@ final class OxideChunkHook implements ChunkGenerationHook {
                 report("generation failed for chunk " + request.chunkX() + ", " + request.chunkZ(), e);
                 return HookResult.fallback(HookResult.FallbackReason.MODULE_ERROR);
             }
-            blockIndices = blocks.toArray(ValueLayout.JAVA_SHORT);
-            biomeIndices = biomes.toArray(ValueLayout.JAVA_SHORT);
-        }
 
-        // Read the palettes after generating, not before: the Rust side interns block states as
-        // it meets them, so a palette snapshot taken first can be short of what the indices
-        // above refer to.
-        target.setBlocks(blockPalette(handle), blockIndices);
-        target.setBiomes(biomePalette(handle), biomeIndices);
+            // Read the palettes after generating, not before: the Rust side interns block states
+            // as it meets them, so a palette snapshot taken first can be short of what the
+            // indices above refer to.
+            String[] palette = blockPalette(handle);
+            boolean written = false;
+            if (engineTakesSections) {
+                written = writeSections(handle, target, palette, blocks, sections, arena);
+            }
+            if (!written) {
+                target.setBlocks(palette, blocks.toArray(ValueLayout.JAVA_SHORT));
+            }
+            target.setBiomes(biomePalette(handle), biomes.toArray(ValueLayout.JAVA_SHORT));
+        }
         return HookResult.success();
+    }
+
+    /**
+     * Packs the chunk per section on the Rust side and hands the sections over whole. Returns
+     * false, and stops trying, if the engine's API predates {@code setSections}.
+     */
+    private boolean writeSections(OxideNative.Handle handle, ChunkTarget target, String[] palette,
+                                  MemorySegment blocks, int sections, Arena arena) {
+        MemorySegment counts = arena.allocate((long) sections * Short.BYTES);
+        MemorySegment palettes = arena.allocate((long) sections * MAX_LOCAL_PALETTE * Short.BYTES);
+        MemorySegment packed = arena.allocate((long) sections * MAX_PACKED_LONGS * Long.BYTES);
+        handle.packSections(blocks, counts, palettes, packed);
+
+        short[][] sectionPalettes = new short[sections][];
+        long[][] words = new long[sections][];
+        short[][] raw = new short[sections][];
+        for (int s = 0; s < sections; s++) {
+            int n = Short.toUnsignedInt(counts.getAtIndex(ValueLayout.JAVA_SHORT, s));
+            if (n == 0) {
+                raw[s] = blocks.asSlice((long) s * SECTION_BLOCKS * Short.BYTES,
+                        (long) SECTION_BLOCKS * Short.BYTES).toArray(ValueLayout.JAVA_SHORT);
+                continue;
+            }
+            sectionPalettes[s] = palettes.asSlice((long) s * MAX_LOCAL_PALETTE * Short.BYTES,
+                    (long) n * Short.BYTES).toArray(ValueLayout.JAVA_SHORT);
+            words[s] = packed.asSlice((long) s * MAX_PACKED_LONGS * Long.BYTES,
+                    (long) packedLongs(n) * Long.BYTES).toArray(ValueLayout.JAVA_LONG);
+        }
+        try {
+            target.setSections(palette, sectionPalettes, words, raw);
+            return true;
+        } catch (NoSuchMethodError | AbstractMethodError e) {
+            engineTakesSections = false;
+            logger.log(System.Logger.Level.WARNING, "the Vertex Engine predates setSections; "
+                    + "writing blocks one at a time");
+            return false;
+        }
+    }
+
+    /** Longs vanilla's bit storage needs for a block section with an {@code n}-entry palette. */
+    private static int packedLongs(int n) {
+        if (n == 1) {
+            return 0;
+        }
+        int bits = Math.max(4, 32 - Integer.numberOfLeadingZeros(n - 1));
+        int perLong = 64 / bits;
+        return (SECTION_BLOCKS + perLong - 1) / perLong;
     }
 
     private OxideNative.Handle handleFor(ChunkRequest request) {
@@ -100,11 +162,22 @@ final class OxideChunkHook implements ChunkGenerationHook {
         });
     }
 
-    private static String[] blockPalette(OxideNative.Handle handle) {
-        String[] palette = new String[handle.blockPaletteSize()];
-        for (int i = 0; i < palette.length; i++) {
+    private String[] blockPalette(OxideNative.Handle handle) {
+        int size = handle.blockPaletteSize();
+        String[] cached = blockNames.get(handle);
+        if (cached != null && cached.length == size) {
+            return cached;
+        }
+        String[] palette = new String[size];
+        int known = cached == null ? 0 : Math.min(cached.length, size);
+        if (known > 0) {
+            System.arraycopy(cached, 0, palette, 0, known);
+        }
+        for (int i = known; i < size; i++) {
             palette[i] = handle.blockPaletteName(i);
         }
+        // Another thread may have grown it further meanwhile; keep whichever is longer.
+        blockNames.merge(handle, palette, (a, b) -> a.length >= b.length ? a : b);
         return palette;
     }
 

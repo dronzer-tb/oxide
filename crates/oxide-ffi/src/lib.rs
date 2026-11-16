@@ -13,6 +13,7 @@
 //! inherits.
 
 mod handle;
+pub mod pack;
 mod pacside_ffi;
 
 /// Exposed for the `bench_native` example: lets a pure-Rust harness measure generator
@@ -270,6 +271,60 @@ pub unsafe extern "C" fn oxide_generate_chunk(
         }
         Err(_) => {
             set_last_error("oxide_generate_chunk panicked");
+            -3
+        }
+    }
+}
+
+/// Packs a block buffer filled by `oxide_generate_chunk` into per-section palettes and
+/// vanilla `SimpleBitStorage` longs (see [`pack`]), so the server installs whole sections.
+///
+/// For section `s` (`blocks_len / 4096` of them): `out_counts[s]` is its palette size, `0` when
+/// it has more than 256 distinct states (write that section from `blocks` instead);
+/// `out_palettes[s * 256..]` holds that many block-palette indices; `out_packed[s * 512..]`
+/// holds the packed entries, as many longs as the palette size implies (none for one entry).
+///
+/// Returns the number of sections, or `-1` on a null pointer / bad length, `-3` on panic.
+///
+/// # Safety
+/// `blocks` must be valid for `blocks_len` `u16`s; with `n = blocks_len / 4096`, `out_counts`
+/// for `n` writable `u16`s, `out_palettes` for `n * 256`, `out_packed` for `n * 512` `u64`s.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_pack_sections(
+    blocks: *const u16,
+    blocks_len: usize,
+    out_counts: *mut u16,
+    out_palettes: *mut u16,
+    out_packed: *mut u64,
+) -> i64 {
+    use pack::{MAX_LOCAL_PALETTE, MAX_PACKED_LONGS, SECTION_BLOCKS};
+    if blocks.is_null()
+        || out_counts.is_null()
+        || out_palettes.is_null()
+        || out_packed.is_null()
+        || blocks_len % SECTION_BLOCKS != 0
+    {
+        set_last_error("oxide_pack_sections: null pointer or blocks_len not a multiple of 4096");
+        return -1;
+    }
+    let sections = blocks_len / SECTION_BLOCKS;
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let blocks = std::slice::from_raw_parts(blocks, blocks_len);
+        let counts = std::slice::from_raw_parts_mut(out_counts, sections);
+        let palettes = std::slice::from_raw_parts_mut(out_palettes, sections * MAX_LOCAL_PALETTE);
+        let packed = std::slice::from_raw_parts_mut(out_packed, sections * MAX_PACKED_LONGS);
+        for s in 0..sections {
+            counts[s] = pack::pack_section(
+                &blocks[s * SECTION_BLOCKS..(s + 1) * SECTION_BLOCKS],
+                &mut palettes[s * MAX_LOCAL_PALETTE..(s + 1) * MAX_LOCAL_PALETTE],
+                &mut packed[s * MAX_PACKED_LONGS..(s + 1) * MAX_PACKED_LONGS],
+            ) as u16;
+        }
+    }));
+    match result {
+        Ok(()) => sections as i64,
+        Err(_) => {
+            set_last_error("oxide_pack_sections panicked");
             -3
         }
     }

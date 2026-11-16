@@ -51,6 +51,7 @@ public final class OxideNative implements AutoCloseable {
     private final MethodHandle hDefaultBlockName;
     private final MethodHandle hDefaultFluidName;
     private final MethodHandle hGenerateChunk;
+    private final MethodHandle hPackSections;
     private final MethodHandle hBlockPaletteLen;
     private final MethodHandle hBlockPaletteName;
     private final MethodHandle hBiomePaletteLen;
@@ -81,6 +82,9 @@ public final class OxideNative implements AutoCloseable {
                 ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
                 ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
                 ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
+        this.hPackSections = downcall(lookup, "oxide_pack_sections", FunctionDescriptor.of(
+                ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.hBlockPaletteLen = downcall(lookup, "oxide_block_palette_len",
                 FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
         this.hBlockPaletteName = downcall(lookup, "oxide_block_palette_name", FunctionDescriptor.of(
@@ -166,6 +170,27 @@ public final class OxideNative implements AutoCloseable {
                 throw new IllegalStateException(
                         "oxide_generate_chunk failed (code " + written + "): " + lastError());
             }
+        }
+
+        /**
+         * Packs a block buffer from {@link #generateChunk} into per-section palettes and
+         * vanilla bit-storage longs; see {@code oxide_pack_sections} for the layout. Returns the
+         * section count.
+         */
+        public int packSections(MemorySegment blocks, MemorySegment outCounts,
+                                MemorySegment outPalettes, MemorySegment outPacked) {
+            long sections;
+            try {
+                sections = (long) hPackSections.invokeExact(blocks, blocks.byteSize() / 2,
+                        outCounts, outPalettes, outPacked);
+            } catch (Throwable t) {
+                throw new RuntimeException("oxide_pack_sections threw across the FFI boundary", t);
+            }
+            if (sections < 0) {
+                throw new IllegalStateException(
+                        "oxide_pack_sections failed (code " + sections + "): " + lastError());
+            }
+            return (int) sections;
         }
 
         /** Number of block-state strings interned so far. Grows as generation meets new states. */
