@@ -139,6 +139,7 @@ impl ImprovedNoise {
     ///
     /// `memo` must only ever be passed with this same instance; start it with
     /// [`Self::cell_hashes`].
+    #[cfg_attr(not(test), allow(dead_code))]
     #[inline]
     pub(crate) fn noise_with_scale_reusing(
         &self,
@@ -179,6 +180,121 @@ impl ImprovedNoise {
         #[cfg(any(test, feature = "hash-stats"))]
         hash_stats::record(memo.kind, reused);
         lerp_corners(&memo.hashes, dx, dy - dy_faded, dz, dy)
+    }
+
+    /// [`Self::noise_with_scale_reusing`] over up to [`NOISE_BLOCK`] lanes, in phases so the
+    /// per-lane float work runs on contiguous arrays the compiler can vectorize across lanes.
+    ///
+    /// Lane `j` gets exactly
+    /// `noise_with_scale_reusing(wrap(xs[j] * scale), wrap(ys[j] * scale), wrap(zs[j] * scale),
+    /// y_scale, y_max.unwrap_or(ys[j] * scale), memo)`: every lane performs the same IEEE
+    /// operations on the same operands in the same order as that call (no operation is
+    /// reassociated, contracted or dropped -- only *when* each lane's steps run changes), and
+    /// the memo visits the lanes' cells in lane order, as consecutive calls would.
+    ///
+    /// Phases: (1) coordinates -- scale, wrap, offset, floor, fractions, y-smear and the three
+    /// smoothsteps, pure f64 per lane; (2) lattice hashes through `memo`, in lane order; (3)
+    /// the eight gradient dots and seven lerps.
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    pub(crate) fn noise_block_reusing(
+        &self,
+        xs: &[f64],
+        ys: &[f64],
+        zs: &[f64],
+        scale: f64,
+        y_scale: f64,
+        y_max: Option<f64>,
+        memo: &mut CellHashes,
+        out: &mut [f64; NOISE_BLOCK],
+    ) {
+        let n = xs.len();
+        assert!(n <= NOISE_BLOCK && ys.len() == n && zs.len() == n);
+        let mut lanes = LaneBlock::new();
+        match (y_scale != 0.0, y_max) {
+            (false, _) => {
+                self.block_coords::<false, false>(xs, ys, zs, scale, y_scale, 0.0, &mut lanes)
+            }
+            (true, Some(m)) => {
+                self.block_coords::<true, false>(xs, ys, zs, scale, y_scale, m, &mut lanes)
+            }
+            (true, None) => {
+                self.block_coords::<true, true>(xs, ys, zs, scale, y_scale, 0.0, &mut lanes)
+            }
+        }
+        for j in 0..n {
+            let cell = [lanes.gi[j], lanes.gj[j], lanes.gk[j]];
+            let reused = memo.cell == cell;
+            if !reused {
+                memo.cell = cell;
+                memo.hashes = self.corner_hashes(cell[0], cell[1], cell[2]);
+            }
+            #[cfg(any(test, feature = "hash-stats"))]
+            hash_stats::record(memo.kind, reused);
+            lanes.hashes[j] = memo.hashes;
+        }
+        for j in 0..n {
+            out[j] = lerp_corners_faded(
+                &lanes.hashes[j],
+                lanes.fx[j],
+                lanes.fy[j],
+                lanes.fz[j],
+                lanes.t[j],
+                lanes.u[j],
+                lanes.v[j],
+            );
+        }
+    }
+
+    /// Phase 1 of [`Self::noise_block_reusing`]. `SMEAR` is `y_scale != 0.0`; `LANE_Y_MAX`
+    /// takes each lane's `y_max` as `ys[j] * scale` instead of `y_max`. With no smear `y_max`
+    /// is unread, as in `noise_with_scale`.
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    fn block_coords<const SMEAR: bool, const LANE_Y_MAX: bool>(
+        &self,
+        xs: &[f64],
+        ys: &[f64],
+        zs: &[f64],
+        scale: f64,
+        y_scale: f64,
+        y_max: f64,
+        lanes: &mut LaneBlock,
+    ) {
+        let n = xs.len();
+        let (xs, ys, zs) = (&xs[..n], &ys[..n], &zs[..n]);
+        for j in 0..n {
+            let sy = ys[j] * scale;
+            let d0 = wrap(xs[j] * scale) + self.xo;
+            let d1 = wrap(sy) + self.yo;
+            let d2 = wrap(zs[j] * scale) + self.zo;
+            let i = d0.floor() as i32;
+            let jj = d1.floor() as i32;
+            let k = d2.floor() as i32;
+            let dx = d0 - i as f64;
+            let dy = d1 - jj as f64;
+            let dz = d2 - k as f64;
+            let dy_faded = if SMEAR {
+                let y_max = if LANE_Y_MAX { sy } else { y_max };
+                let clamped = if y_max >= 0.0 && y_max < dy {
+                    y_max
+                } else {
+                    dy
+                };
+                (clamped / y_scale + 1.0e-7).floor() * y_scale
+            } else {
+                0.0
+            };
+            lanes.gi[j] = i;
+            lanes.gj[j] = jj;
+            lanes.gk[j] = k;
+            lanes.fx[j] = dx;
+            lanes.fy[j] = dy - dy_faded;
+            lanes.fz[j] = dz;
+            lanes.t[j] = smoothstep(dx);
+            lanes.u[j] = smoothstep(dy);
+            lanes.v[j] = smoothstep(dz);
+        }
     }
 
     /// A [`CellHashes`] memo for this instance, primed with a real cell's hashes so that it is
@@ -279,6 +395,7 @@ impl ImprovedNoise {
 
 /// `sample_and_lerp`'s float work over already-hashed corners: the same expressions, operands
 /// and order, so the result is bit-identical to it for the same cell.
+#[cfg_attr(not(test), allow(dead_code))]
 #[inline(always)]
 fn lerp_corners(h: &[u8; 8], dx: f64, dy: f64, dz: f64, fade_dy: f64) -> f64 {
     let d0 = grad_dot(h[0], dx, dy, dz);
@@ -301,6 +418,64 @@ fn lerp_corners(h: &[u8; 8], dx: f64, dy: f64, dz: f64, fade_dy: f64) -> f64 {
     let f0 = lerp(u, e0, e1);
     let f1 = lerp(u, e2, e3);
     lerp(v, f0, f1)
+}
+
+/// [`lerp_corners`] with its three smoothsteps already taken (`t = smoothstep(dx)`,
+/// `u = smoothstep(fade_dy)`, `v = smoothstep(dz)`): the same dots and lerps, in the same order.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn lerp_corners_faded(h: &[u8; 8], dx: f64, dy: f64, dz: f64, t: f64, u: f64, v: f64) -> f64 {
+    let d0 = grad_dot(h[0], dx, dy, dz);
+    let d1 = grad_dot(h[1], dx - 1.0, dy, dz);
+    let d2 = grad_dot(h[2], dx, dy - 1.0, dz);
+    let d3 = grad_dot(h[3], dx - 1.0, dy - 1.0, dz);
+    let d4 = grad_dot(h[4], dx, dy, dz - 1.0);
+    let d5 = grad_dot(h[5], dx - 1.0, dy, dz - 1.0);
+    let d6 = grad_dot(h[6], dx, dy - 1.0, dz - 1.0);
+    let d7 = grad_dot(h[7], dx - 1.0, dy - 1.0, dz - 1.0);
+
+    let e0 = lerp(t, d0, d1);
+    let e1 = lerp(t, d2, d3);
+    let e2 = lerp(t, d4, d5);
+    let e3 = lerp(t, d6, d7);
+    let f0 = lerp(u, e0, e1);
+    let f1 = lerp(u, e2, e3);
+    lerp(v, f0, f1)
+}
+
+/// Lanes per [`ImprovedNoise::noise_block_reusing`] call.
+pub(crate) const NOISE_BLOCK: usize = 64;
+
+/// Per-lane scratch of [`ImprovedNoise::noise_block_reusing`], struct-of-arrays.
+struct LaneBlock {
+    gi: [i32; NOISE_BLOCK],
+    gj: [i32; NOISE_BLOCK],
+    gk: [i32; NOISE_BLOCK],
+    fx: [f64; NOISE_BLOCK],
+    fy: [f64; NOISE_BLOCK],
+    fz: [f64; NOISE_BLOCK],
+    t: [f64; NOISE_BLOCK],
+    u: [f64; NOISE_BLOCK],
+    v: [f64; NOISE_BLOCK],
+    hashes: [[u8; 8]; NOISE_BLOCK],
+}
+
+impl LaneBlock {
+    #[inline(always)]
+    fn new() -> Self {
+        Self {
+            gi: [0; NOISE_BLOCK],
+            gj: [0; NOISE_BLOCK],
+            gk: [0; NOISE_BLOCK],
+            fx: [0.0; NOISE_BLOCK],
+            fy: [0.0; NOISE_BLOCK],
+            fz: [0.0; NOISE_BLOCK],
+            t: [0.0; NOISE_BLOCK],
+            u: [0.0; NOISE_BLOCK],
+            v: [0.0; NOISE_BLOCK],
+            hashes: [[0; 8]; NOISE_BLOCK],
+        }
+    }
 }
 
 /// The last lattice cell one [`ImprovedNoise`] instance sampled, and its eight corner hashes.
@@ -616,6 +791,127 @@ mod tests {
         let after = hash_stats::local();
         let (reused, computed) = (after[0] - before[0], after[1] - before[1]);
         assert!(reused > 1000 && computed > 1000, "{reused} reused, {computed} computed");
+    }
+
+    /// The phased block kernel must give, lane for lane, the exact bits of the scalar
+    /// `noise_with_scale` on the wrapped scaled coordinates: random, negative, huge (past the
+    /// `i32` range before wrapping, and at the wrap's half-period boundaries), lattice points
+    /// and signed zeros; columns that share cells and lanes that never do; all three y-smear
+    /// modes; every block length.
+    #[test]
+    fn block_kernel_is_bit_identical_to_scalar() {
+        use oxide_core::Xoroshiro128PlusPlus;
+        let mut rng = LegacyRandom::new(0xb10c);
+        let before = hash_stats::local();
+        let half = WRAP / 2.0;
+        let specials = [
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            0.5,
+            -0.5,
+            255.0,
+            -256.0,
+            1.0e-300,
+            -1.0e-300,
+            half,
+            -half,
+            half - 0.5,
+            -half + 0.5,
+            WRAP,
+            -WRAP,
+            WRAP * 3.5,
+            2.0e9,
+            -2.0e9,
+            3.0e9,
+            -3.0e9,
+            1.0e15,
+            -1.0e15,
+            1.0e300,
+            -1.0e300,
+            f64::MAX,
+        ];
+        for seed in 0..48u64 {
+            let mut r = Xoroshiro128PlusPlus::new(seed as i64);
+            let noise = ImprovedNoise::new(&mut r);
+            for round in 0..40 {
+                let n = 1 + (round * 7 + seed as usize) % NOISE_BLOCK;
+                let mode = round % 4;
+                let column = round % 3 != 0;
+                let mag = [1.0, 50.0, 1.0e4, 1.0e7, 3.0e7, 1.0e9, 5.0e9][round % 7];
+                let x0 = (rng.next_double() * 2.0 - 1.0) * mag;
+                let z0 = (rng.next_double() * 2.0 - 1.0) * mag;
+                let y0 = (rng.next_double() * 2.0 - 1.0) * mag.min(1.0e4);
+                let step = [0.0, 8.0, 0.25, 3.0, 1.0][round % 5];
+                let mut xs = [0.0f64; NOISE_BLOCK];
+                let mut ys = [0.0f64; NOISE_BLOCK];
+                let mut zs = [0.0f64; NOISE_BLOCK];
+                for j in 0..n {
+                    if column {
+                        xs[j] = x0;
+                        ys[j] = y0 + j as f64 * step;
+                        zs[j] = z0;
+                    } else {
+                        xs[j] = (rng.next_double() * 2.0 - 1.0) * mag;
+                        ys[j] = (rng.next_double() * 2.0 - 1.0) * mag;
+                        zs[j] = (rng.next_double() * 2.0 - 1.0) * mag;
+                    }
+                    if rng.next_double() < 0.15 {
+                        let pick = (rng.next_double() * specials.len() as f64) as usize;
+                        match j % 3 {
+                            0 => xs[j] = specials[pick],
+                            1 => ys[j] = specials[pick],
+                            _ => zs[j] = specials[pick],
+                        }
+                    }
+                }
+                let scale = [1.0, 0.5, 2.0f64.powi(-15), 684.412 * 0.25, 1.0 / 3.0][round % 5];
+                let (y_scale, y_max) = match mode {
+                    0 => (0.0 * scale, Some(0.0 * scale)),
+                    1 => ((rng.next_double() * 2.0 - 1.0) * 12.0 * scale, None),
+                    2 => (rng.next_double() * 0.5, Some(rng.next_double() * 2.0 - 0.5)),
+                    _ => (-(rng.next_double() * 2.0), None),
+                };
+                let mut memo = noise.cell_hashes(HashKind::Perlin);
+                let mut out = [f64::NAN; NOISE_BLOCK];
+                noise.noise_block_reusing(
+                    &xs[..n],
+                    &ys[..n],
+                    &zs[..n],
+                    scale,
+                    y_scale,
+                    y_max,
+                    &mut memo,
+                    &mut out,
+                );
+                for j in 0..n {
+                    let sy = ys[j] * scale;
+                    let expected = noise.noise_with_scale(
+                        wrap(xs[j] * scale),
+                        wrap(sy),
+                        wrap(zs[j] * scale),
+                        y_scale,
+                        y_max.unwrap_or(sy),
+                    );
+                    assert_eq!(
+                        out[j].to_bits(),
+                        expected.to_bits(),
+                        "seed {seed} round {round} lane {j}/{n} at ({}, {}, {}) scale {scale} \
+                         y_scale {y_scale} y_max {y_max:?}",
+                        xs[j],
+                        ys[j],
+                        zs[j]
+                    );
+                }
+            }
+        }
+        let after = hash_stats::local();
+        let (reused, computed) = (after[0] - before[0], after[1] - before[1]);
+        assert!(
+            reused > 1000 && computed > 1000,
+            "{reused} reused, {computed} computed"
+        );
     }
 
     /// Captured 2026-08-22 from a standalone Java transcription of the confirmed-correct
