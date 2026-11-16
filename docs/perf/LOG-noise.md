@@ -911,3 +911,46 @@ The noise share is 41.9% of generation, and the rest of it is below hold resolut
    the `[i32; 3]` memo compare 0.4%); a per-program specialised lane loop might cut it.
 3. Datapath's own areas (surface 16-20%, aquifer, carvers) are now the larger share of
    generation.
+
+### 24: unzeroed kernel and lane-batch scratch: rejected
+
+**Sizing, from the c34e27b + ac68e26 profile (`ana2.py`/`ana6.py`):**
+- The corner grid is ~70% noise leaf math and 28.9% interpreter and other code (~7% of
+  generation).
+- `[ext]` (libc) inside the grid is 2.5% of generation. It traces to the call sites of
+  `noise_block_reusing` (its `LaneBlock::new()`, 4.3 KB zeroed per octave per block) and
+  `run_lanes`' scratch setup.
+
+**Change:**
+- `LaneBlock` is now one const-initialised thread-local, reused. Phase 1 writes lanes `0..n` before
+  phases 2 and 3 read exactly those lanes, and the kernel is not re-entered.
+- `run_lanes`' `bx/by/bz/sx/sy/sz`, `regs`, `index` and `body`, and `run_subset`'s `values`, use
+  `Scratch::overwritten` instead of `filled`. That is the invariant reviewed for `run_cell` in 21:
+  every arm writes all `k` lanes of `dst`, the `RangeChoice`/`IntervalSelect` subsets partition
+  the lanes, `run_subset` fills every listed lane, and `body` is read only on open lanes.
+- Exact; no float operation changes.
+
+**Checks:** tests noise 45, chunkgen 192 + 1 + 1 + 1. Digest r16 `a977961a58122047`; r12
+`582147091732a06d` on all 24 runs.
+
+| hold (radius 12, 4 rounds, against shipc1/shipc2) | shipc1 | shipc2 | n24 | n24 vs shipc1 | n24 vs shipc2 |
+|---|---|---|---|---|---|
+| 1 thread gen_cpu_s | 5.14 | 5.06 | 4.96 | -3.4%, 4/4 | -1.9%, 2/4 |
+| 8 threads gen_cpu_s | 6.29 | 5.99 | 6.87 | +9.3%, 1/4 | +14.8%, 1/4 |
+
+**Verdict: rejected.** It is below the bar at 1 thread. At 8 threads it reads worse: `cpu_s` is
+higher in 7 of 8 base comparisons, and n24 has an 8.53 outlier, while the bases have their own
+spread (5.00-7.12). I can't tell an 8-thread regression from noise with 4 rounds, and I see no
+mechanism (the `LaneBlock` and the pools are per thread). Since it fails at 1 thread, it is not
+re-held. Patch at `wip/noise-24-unzeroed-lane-scratch.patch`.
+
+**State of the track:** every noise-side lead from the profiles is now measured. Since 21, each one
+sits at or below the ~2-4% that a 4-round hold can resolve:
+- 22a: gather-free gradient selection;
+- 22b: lazy vein layers;
+- 23: cache capacity;
+- 24: unzeroed scratch.
+
+The remaining noise cost is the leaf noise arithmetic itself, at the volume vanilla's algorithm
+requires. Reducing that volume needs evaluating fewer corners, which 22b and 23 showed has no
+headroom in this generation order (see the noodle-grid pointer in 22b).

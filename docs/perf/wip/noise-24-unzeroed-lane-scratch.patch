@@ -1,0 +1,130 @@
+diff --git a/crates/oxide-noise/src/compiled.rs b/crates/oxide-noise/src/compiled.rs
+index b717820..8a71ca5 100644
+--- a/crates/oxide-noise/src/compiled.rs
++++ b/crates/oxide-noise/src/compiled.rs
+@@ -876,19 +876,23 @@ impl Program {
+         let n = self.ops.len();
+         let pos = |i: usize| batch.ctxs[lanes[i] as usize];
+         // Same values as collecting `pos(i).x as f64` and friends; only the storage is reused.
+-        let mut bx = Scratch::filled(k, 0.0f64);
+-        let mut by = Scratch::filled(k, 0.0f64);
+-        let mut bz = Scratch::filled(k, 0.0f64);
++        let mut bx = Scratch::overwritten(k, 0.0f64);
++        let mut by = Scratch::overwritten(k, 0.0f64);
++        let mut bz = Scratch::overwritten(k, 0.0f64);
+         for i in 0..k {
+             let p = pos(i);
+             bx[i] = p.x as f64;
+             by[i] = p.y as f64;
+             bz[i] = p.z as f64;
+         }
+-        let mut sx = Scratch::filled(k, 0.0f64);
+-        let mut sy = Scratch::filled(k, 0.0f64);
+-        let mut sz = Scratch::filled(k, 0.0f64);
+-        let mut regs = Scratch::filled(n * k, 0.0f64);
++        let mut sx = Scratch::overwritten(k, 0.0f64);
++        let mut sy = Scratch::overwritten(k, 0.0f64);
++        let mut sz = Scratch::overwritten(k, 0.0f64);
++        // Unzeroed like `run_cell`'s: every op below writes all `k` lanes of its `dst` before any
++        // later op reads them (`RangeChoice`'s two subsets and `IntervalSelect`'s groups partition
++        // the lanes; `run_subset` fills each listed lane), and `bx..sz` are written over `0..k`
++        // before each use.
++        let mut regs = Scratch::overwritten(n * k, 0.0f64);
+ 
+         for i in 0..n {
+             let (done, rest) = regs.split_at_mut(i * k);
+@@ -977,7 +981,7 @@ impl Program {
+                         // over its lanes in ascending order -- the same runs as one group per
+                         // function, without a nested allocation per call.
+                         let last = s.functions.len() - 1;
+-                        let mut index = Scratch::filled(k, 0usize);
++                        let mut index = Scratch::overwritten(k, 0usize); // every lane written below
+                         for (j, &v) in input.iter().enumerate() {
+                             index[j] = s
+                                 .thresholds
+@@ -997,7 +1001,8 @@ impl Program {
+                     let gate = reg(g.g);
+                     let mut open = Scratch::empty();
+                     open.extend((0..k).filter(|&j| gate[j] != 0.0));
+-                    let mut body = Scratch::filled(k, 0.0f64);
++                    // Read only on open lanes, which `run_subset` writes.
++                    let mut body = Scratch::overwritten(k, 0.0f64);
+                     run_subset(&g.body, &open, lanes, batch, cx, &mut body);
+                     for j in 0..k {
+                         let gv = gate[j];
+@@ -2131,7 +2136,8 @@ fn run_subset(
+     }
+     let mut sub_lanes = Scratch::empty();
+     sub_lanes.extend(subset.iter().map(|&j| lanes[j]));
+-    let mut values = Scratch::filled(subset.len(), 0.0f64);
++    // `run_lanes` writes every lane of `values`.
++    let mut values = Scratch::overwritten(subset.len(), 0.0f64);
+     program.run_lanes(&sub_lanes, batch, cx, &mut values);
+     for (&j, v) in subset.iter().zip(values.iter()) {
+         dst[j] = *v;
+diff --git a/crates/oxide-noise/src/improved_noise.rs b/crates/oxide-noise/src/improved_noise.rs
+index c64e46c..f293e60 100644
+--- a/crates/oxide-noise/src/improved_noise.rs
++++ b/crates/oxide-noise/src/improved_noise.rs
+@@ -207,19 +207,42 @@ impl ImprovedNoise {
+         y_max: Option<f64>,
+         memo: &mut CellHashes,
+         out: &mut [f64; NOISE_BLOCK],
++    ) {
++        // One block per thread, reused: phase 1 writes lanes `0..n` of every array before phases 2
++        // and 3 read exactly those lanes, so leftover contents are never seen and the 4 KB of
++        // zeroing per call (once per octave per block) is skipped. Not re-entered: nothing below
++        // calls back into a noise kernel.
++        LANE_BLOCK.with(|cell| {
++            let mut guard = cell.borrow_mut();
++            self.noise_block_with(xs, ys, zs, scale, y_scale, y_max, memo, out, &mut guard)
++        })
++    }
++
++    #[allow(clippy::too_many_arguments)]
++    #[inline(always)]
++    fn noise_block_with(
++        &self,
++        xs: &[f64],
++        ys: &[f64],
++        zs: &[f64],
++        scale: f64,
++        y_scale: f64,
++        y_max: Option<f64>,
++        memo: &mut CellHashes,
++        out: &mut [f64; NOISE_BLOCK],
++        lanes: &mut LaneBlock,
+     ) {
+         let n = xs.len();
+         assert!(n <= NOISE_BLOCK && ys.len() == n && zs.len() == n);
+-        let mut lanes = LaneBlock::new();
+         match (y_scale != 0.0, y_max) {
+             (false, _) => {
+-                self.block_coords::<false, false>(xs, ys, zs, scale, y_scale, 0.0, &mut lanes)
++                self.block_coords::<false, false>(xs, ys, zs, scale, y_scale, 0.0, lanes)
+             }
+             (true, Some(m)) => {
+-                self.block_coords::<true, false>(xs, ys, zs, scale, y_scale, m, &mut lanes)
++                self.block_coords::<true, false>(xs, ys, zs, scale, y_scale, m, lanes)
+             }
+             (true, None) => {
+-                self.block_coords::<true, true>(xs, ys, zs, scale, y_scale, 0.0, &mut lanes)
++                self.block_coords::<true, true>(xs, ys, zs, scale, y_scale, 0.0, lanes)
+             }
+         }
+         for j in 0..n {
+@@ -460,9 +483,13 @@ struct LaneBlock {
+     hashes: [[u8; 8]; NOISE_BLOCK],
+ }
+ 
++thread_local! {
++    static LANE_BLOCK: std::cell::RefCell<LaneBlock> = const { std::cell::RefCell::new(LaneBlock::new()) };
++}
++
+ impl LaneBlock {
+     #[inline(always)]
+-    fn new() -> Self {
++    const fn new() -> Self {
+         Self {
+             gi: [0; NOISE_BLOCK],
+             gj: [0; NOISE_BLOCK],
