@@ -69,7 +69,7 @@ pub struct BlockPaletteEntryNbt {
     pub properties: Option<BTreeMap<String, String>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct BlockStatesNbt {
     pub palette: Vec<BlockPaletteEntryNbt>,
     /// `None` (key omitted) for a single-entry palette: a section that's uniformly one block
@@ -79,7 +79,7 @@ pub struct BlockStatesNbt {
     pub data: Option<LongArray>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct BiomesNbt {
     pub palette: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -90,7 +90,11 @@ pub struct BiomesNbt {
 pub struct SectionNbt {
     #[serde(rename = "Y")]
     pub y: i8,
+    /// Defaulted only so a server's light-only sections (one below and one above the world,
+    /// which carry no block or biome data) parse; [`parse_chunk`] drops them.
+    #[serde(default)]
     pub block_states: BlockStatesNbt,
+    #[serde(default)]
     pub biomes: BiomesNbt,
 }
 
@@ -264,7 +268,9 @@ pub fn serialize_chunk(
 /// root. Used for round-tripping and by the validation harness to compare Oxide output against
 /// vanilla reference chunks.
 pub fn parse_chunk(bytes: &[u8]) -> Result<ChunkNbtRoot, AnvilError> {
-    Ok(fastnbt::from_bytes(bytes)?)
+    let mut root: ChunkNbtRoot = fastnbt::from_bytes(bytes)?;
+    root.sections.retain(|s| !s.block_states.palette.is_empty());
+    Ok(root)
 }
 
 #[cfg(test)]
