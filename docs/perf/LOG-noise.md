@@ -762,3 +762,16 @@ thread-local access) and `[ext]` 16% overall.
   per 2D slot per `ChunkCaches`, and the aquifer builds one per neighbouring chunk
   (aquifer.rs:976). It is exact to take those vectors from the scratch pool. At 1.8% it cannot
   clear the 5% bar alone; bundle it with the next landing in the same area.
+
+| # | What | Holds | Bases | Patched | Digest | Verdict |
+|---|---|---|---|---|---|---|
+| 20c (n20c) | Ore-vein sampling: the per-slot cell memo goes from one `RefCell<[CellMemo; 16]>` to `Cell` tags plus `OnceCell<Box<[Cell<f64>]>>` values, so a hit is plain loads with no borrow flag. `sample_via_cell` and `sample_in_chunk` are `#[inline]`; misses go to an out-of-line `fill_memo` (`run_cell` into a pooled buffer, then a copy). Each value is the same `run_cell` output, so it is exact. New test `interleaved_sparse_memo_reads_are_bit_identical`. Tests: noise 41, chunkgen 192 + 1 + 1 + 1 | 4 rounds, 1 thread, radius 12, rotating, against shipb1/shipb2 | gen_cpu_s 5.51, 5.62 | 5.40 | r12 `582147091732a06d` x12; r16 `a977961a58122047` | **inconclusive, not landed**: -2.0% (3/4) / -3.8% (4/4). Patch at `wip/noise-20c-vein-memo-hit-path.patch` |
+
+**Why 20c can't reach the bar** (temporary counters, radius 8, 1 thread):
+- **Reads:** `vein_toggle` is read ~11k times per chunk and misses its memo ~98 times; each miss evaluates a whole cell, and ~113 of its 128 lanes get read. `vein_ridged` is ~3.1k reads and 47 cell evaluations per chunk, ~66 of 128 lanes read.
+- **The ~4% splits into:**
+  - corner-grid builds for the three vein grids: ~2%;
+  - ~4.1M memo hits at ~7 ns: ~1.3%;
+  - cell evaluations: ~1.1%.
+- **Implication:** wasted lanes are not the cost, and a batch API would only remove the same ~1.3% hit overhead. The vein grids' share belongs to 20a's corner-grid work.
+- **Bundling:** 20c's hit path is a bundling candidate together with the 2D-cache allocation (1.8%), both exact. Note: `ab.sh` prints no `=== HOLD` header, so `ab-analyze.py` needs one added by hand to a single-hold file.

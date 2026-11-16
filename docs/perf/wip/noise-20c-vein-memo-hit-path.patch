@@ -1,0 +1,228 @@
+diff --git a/crates/oxide-noise/src/cache.rs b/crates/oxide-noise/src/cache.rs
+index fc572c8..dd26500 100644
+--- a/crates/oxide-noise/src/cache.rs
++++ b/crates/oxide-noise/src/cache.rs
+@@ -13,11 +13,12 @@
+ //! Scoped to one chunk and one thread: the storage sits behind `RefCell`, so a `ChunkCaches`
+ //! must not be shared across threads. Chunks in different Folia regions each build their own.
+ 
+-use std::cell::RefCell;
++use std::cell::{Cell, OnceCell, RefCell};
+ use std::sync::{Arc, Mutex};
+ 
+ use crate::compiled::{Batch, CacheKind, CacheSlotCounts, Program, RunCtx};
+ use crate::density::FunctionContext;
++use crate::scratch::Scratch;
+ 
+ /// A remembered sample: the position it was taken at, and the value there.
+ type LastSample = ((i32, i32, i32), f64);
+@@ -72,8 +73,10 @@ pub struct ChunkCaches {
+     /// few and small enough for its fixed-size bookkeeping. True for every vanilla setting.
+     memo_ok: bool,
+     /// One memo per router slot, so two programs sampled alternately (the ore-vein pass reads
+-    /// `vein_toggle` and `vein_ridged` at the same block) do not evict each other.
+-    memos: RefCell<[CellMemo; MEMO_SLOTS]>,
++    /// `vein_toggle` and `vein_ridged` at the same block) do not evict each other. Plain
++    /// `Cell`s rather than a `RefCell`, so a hit is loads only: no borrow flag to check and
++    /// write back on every one of the ~15k calls per chunk the ore-vein pass makes.
++    memos: [CellMemo; MEMO_SLOTS],
+ 
+     /// Corner columns shared with the other chunks of the same router, when this chunk's
+     /// geometry matches the one the shared cache was built for. See [`CornerColumns`].
+@@ -87,11 +90,11 @@ pub struct ChunkCaches {
+ /// touch (see `Program::run_cell`) and the rest of its blocks are then plain loads.
+ struct CellMemo {
+     /// The layer the values belong to; `i32::MIN` when empty.
+-    cell_y: i32,
++    cell_y: Cell<i32>,
+     /// Bit `cell_z * cells_x + cell_x` set when that cell's values are filled.
+-    valid: u32,
++    valid: Cell<u32>,
+     /// `cells_x * cells_z` cells of `cell_lanes` values each; allocated on first use.
+-    values: Vec<f64>,
++    values: OnceCell<Box<[Cell<f64>]>>,
+ }
+ 
+ impl ChunkCaches {
+@@ -202,11 +205,11 @@ impl ChunkCaches {
+             once: RefCell::new(vec![None; slots.once]),
+             cell_lanes,
+             memo_ok,
+-            memos: RefCell::new(std::array::from_fn(|_| CellMemo {
+-                cell_y: i32::MIN,
+-                valid: 0,
+-                values: Vec::new(),
+-            })),
++            memos: std::array::from_fn(|_| CellMemo {
++                cell_y: Cell::new(i32::MIN),
++                valid: Cell::new(0),
++                values: OnceCell::new(),
++            }),
+             shared_columns: None,
+         }
+     }
+@@ -252,6 +255,7 @@ impl ChunkCaches {
+     ///
+     /// `program` must be cell-batchable, and `memo_slot` (below [`MEMO_SLOTS`]) must always be
+     /// passed with the same program. Values are bit-identical to `program.run(ctx, ..)`.
++    #[inline]
+     pub(crate) fn sample_via_cell(
+         &self,
+         memo_slot: usize,
+@@ -281,34 +285,50 @@ impl ChunkCaches {
+             * self.cell_width
+             + (local_x - cell_x * self.cell_width)) as usize;
+ 
+-        {
+-            let memo = &self.memos.borrow()[memo_slot];
+-            if memo.cell_y == cell_y && memo.valid & (1 << cell_index) != 0 {
+-                return Some(memo.values[cell_index * lanes + lane]);
++        let memo = &self.memos[memo_slot];
++        if memo.cell_y.get() == cell_y && memo.valid.get() & (1 << cell_index) != 0 {
++            if let Some(values) = memo.values.get() {
++                return Some(values[cell_index * lanes + lane].get());
+             }
+         }
++        Some(self.fill_memo(memo, program, (cell_x, cell_y, cell_z), cell_index, lane, cx))
++    }
+ 
+-        // Taken out for the evaluation, which reads the corner grids but never the memos.
+-        let mut values = std::mem::take(&mut self.memos.borrow_mut()[memo_slot].values);
+-        if values.is_empty() {
+-            values = vec![0.0; self.cells_x * self.cells_z * lanes];
++    /// The miss half of [`Self::sample_via_cell`]: evaluates the whole cell, stores it in
++    /// `memo` and returns lane `lane` of it. Kept out of line so the hit path stays small
++    /// enough to inline into every caller.
++    #[inline(never)]
++    fn fill_memo(
++        &self,
++        memo: &CellMemo,
++        program: &Program,
++        cell: (i32, i32, i32),
++        cell_index: usize,
++        lane: usize,
++        cx: &RunCtx,
++    ) -> f64 {
++        let lanes = self.cell_lanes;
++        // The evaluation reads the corner grids but never the memos; were it to, the memo's
++        // tag is only updated below, so it would see this cell as not yet filled.
++        let mut cell_values = Scratch::filled(lanes, 0.0f64);
++        program.run_cell(self, cell, cx, &mut cell_values);
++        let values = memo.values.get_or_init(|| {
++            (0..self.cells_x * self.cells_z * lanes)
++                .map(|_| Cell::new(0.0))
++                .collect()
++        });
++        for (dst, value) in values[cell_index * lanes..(cell_index + 1) * lanes]
++            .iter()
++            .zip(cell_values.iter())
++        {
++            dst.set(*value);
+         }
+-        program.run_cell(
+-            self,
+-            (cell_x, cell_y, cell_z),
+-            cx,
+-            &mut values[cell_index * lanes..(cell_index + 1) * lanes],
+-        );
+-        let value = values[cell_index * lanes + lane];
+-
+-        let memo = &mut self.memos.borrow_mut()[memo_slot];
+-        if memo.cell_y != cell_y {
+-            memo.cell_y = cell_y;
+-            memo.valid = 0;
++        if memo.cell_y.get() != cell.1 {
++            memo.cell_y.set(cell.1);
++            memo.valid.set(0);
+         }
+-        memo.valid |= 1 << cell_index;
+-        memo.values = values;
+-        Some(value)
++        memo.valid.set(memo.valid.get() | 1 << cell_index);
++        cell_values[lane]
+     }
+ 
+     /// One `interpolated` slot at every block of the cell `(cell_x, cell_y, cell_z)`, written
+diff --git a/crates/oxide-noise/src/router.rs b/crates/oxide-noise/src/router.rs
+index ce62af4..9854d66 100644
+--- a/crates/oxide-noise/src/router.rs
++++ b/crates/oxide-noise/src/router.rs
+@@ -241,6 +241,7 @@ impl NoiseRouterEvaluator {
+     /// is the path chunk generation must use: it is ~80x less work than [`Self::sample`] and,
+     /// because vanilla's terrain is the interpolated value rather than the exact one, it is
+     /// also the one that can match Java.
++    #[inline]
+     pub fn sample_in_chunk(
+         &self,
+         caches: &ChunkCaches,
+@@ -571,6 +572,70 @@ mod tests {
+         }
+     }
+ 
++    /// The ore-vein access pattern: two cell-batchable slots read alternately at a sparse,
++    /// irregular subset of blocks, with layers revisited after the memo moved on, each read
++    /// bit-identical to per-block evaluation.
++    #[test]
++    fn interleaved_sparse_memo_reads_are_bit_identical() {
++        let mut settings = interpolated_settings();
++        settings.noise_router.vein_toggle = settings.noise_router.final_density.clone();
++        settings.noise_router.vein_ridged = match &settings.noise_router.final_density {
++            DensityFunction::Object(o) => match o.as_ref() {
++                oxide_datapack::DensityFunctionObject::Add { argument2, .. } => argument2.clone(),
++                _ => unreachable!(),
++            },
++            _ => unreachable!(),
++        };
++        let df_registry = Registry::default();
++        let noise_registry = Registry::default();
++        let router = NoiseRouterEvaluator::new(11, &settings, &df_registry, &noise_registry);
++        let slots = [RouterSlot::VeinToggle, RouterSlot::VeinRidged];
++        for slot in slots {
++            assert!(router.programs[slot.index()].cell_batchable());
++        }
++        for (chunk_x, chunk_z) in [(0, 0), (2, -7)] {
++            let memo_caches = router.chunk_caches(chunk_x, chunk_z);
++            let plain_caches = router.chunk_caches(chunk_x, chunk_z);
++            let cx = RunCtx {
++                noises: &router.noises,
++                blended: &router.blended,
++                caches: Some(&plain_caches),
++            };
++            let mut state = 0x9e37_79b9_7f4a_7c15u64;
++            let mut next = || {
++                state ^= state << 13;
++                state ^= state >> 7;
++                state ^= state << 17;
++                state
++            };
++            let mut reads = [0usize; 2];
++            // y ascending through the band, then a pass back down that revisits old layers.
++            let ys: Vec<i32> = (-64..60).chain((-64..60).rev().step_by(5)).collect();
++            for y in ys {
++                for local_z in 0..16 {
++                    for local_x in 0..16 {
++                        let r = next();
++                        if r % 3 == 0 {
++                            continue;
++                        }
++                        let (x, z) = (chunk_x * 16 + local_x, chunk_z * 16 + local_z);
++                        for (i, slot) in slots.iter().enumerate() {
++                            if i == 1 && r % 5 != 0 {
++                                continue;
++                            }
++                            let program = &router.programs[slot.index()];
++                            let expected = program.run(FunctionContext { x, y, z }, &cx);
++                            let got = router.sample_in_chunk(&memo_caches, *slot, x, y, z);
++                            assert_eq!(expected.to_bits(), got.to_bits(), "{i} at {x} {y} {z}");
++                            reads[i] += 1;
++                        }
++                    }
++                }
++            }
++            assert!(reads[0] > 10000 && reads[1] > 3000, "{reads:?}");
++        }
++    }
++
+     /// Outside the chunk the memo does not apply and sampling falls back to the per-block path.
+     #[test]
+     fn sampling_outside_the_chunk_matches_per_block() {
