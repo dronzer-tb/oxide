@@ -1367,3 +1367,17 @@ block reads ~17% (cache misses: a z step strides 16 cells); sphere test 10-15%; 
 
 -3.8% decorate ahead 2/3; user CPU -1.1%, sys -0.44 s, user+sys -2.8% (ahead 2/3). Tests 195 pass;
 digest held. The base ranged 7134-8612, so a reversed repeat decides.
+
+### Ore round 3, reversed repeat on the same base: -4.4%; kept
+
+| | run 1 | run 2 | run 3 | mean |
+|---|---|---|---|---|
+| ore r3 decorate_ms (run first) | 6968 | 8109 | 7550 | 7542 |
+| base decorate_ms | 7925 | 8344 | 7406 | 7892 |
+| ore / base cpu_user_s | 21.94 / 24.20 | 23.63 / 23.75 | 23.07 / 22.94 | 22.88 / 23.63 |
+| ore / base cpu_sys_s | 1.27 / 1.38 | 1.83 / 1.80 | 1.37 / 1.31 | 1.49 / 1.50 |
+| java_cpu_s_per_10s | 0.20 / 0.21 | 0.27 / 0.21 | 0.21 / 0.23 | |
+
+-4.4% decorate, user+sys -1.7%, ahead 2/3 on each. Over both holds (6 rounds, either order):
+decorate 7624 vs 7951 mean (-4.1%), user+sys -2.2%, ahead 4/6 on each; the direction holds in both
+orders. Java quiet; df701ee858e2bdd3 on every row. **Kept**, cherry-picked onto the branch.
