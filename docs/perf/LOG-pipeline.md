@@ -1427,3 +1427,15 @@ decoration 3024 -> 2681 samples.
 
 +0.2% decorate, user+sys -1.0% (ahead 1/3): no gain visible, against ~11% of decoration predicted by
 the profile. Tests 196 pass; digest held. A reversed repeat decides.
+
+### Decoration driver, reversed repeat: -7.9% decorate, CPU -1.8% (ahead 1/3)
+
+| | run 1 | run 2 | run 3 | mean |
+|---|---|---|---|---|
+| driver decorate_ms (run first) | 6917 | 7064 | 6760 | 6914 |
+| base decorate_ms | 7222 | 8302 | 6989 | 7504 |
+| driver / base user+sys s | 22.58 / 22.13 | 22.32 / 23.95 | 21.98 / 22.00 | 22.29 / 22.69 |
+| java_cpu_s_per_10s | 0.30 / 0.22 | 0.25 / 0.23 | 0.22 / 0.25 | |
+
+Over both holds (6 rounds): decorate 7319 vs 7607 (-3.8%, ahead 4/6), user+sys -1.4% (ahead 3/6).
+Still ambiguous; a third hold (base first) decides. Digest held.
