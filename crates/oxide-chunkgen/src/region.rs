@@ -79,6 +79,9 @@ pub struct DecorationRegion<'a> {
     height: i32,
     /// Index into `writes` of each written position.
     overlay: FastHashMap<BlockPos, u32>,
+    /// One bit per block of the window, set once the block is written: most reads are of
+    /// untouched terrain, and this answers them without probing `overlay`.
+    written: Vec<u64>,
     /// Every written position once, in the order it was first written (so the write list is
     /// deterministic), with its current state and that state's fact bits.
     writes: Vec<(BlockPos, BlockState, u32)>,
@@ -91,6 +94,9 @@ pub struct DecorationRegion<'a> {
     /// Highest written Y per column: a column with no entry still has its terrain heights.
     written_top: FastHashMap<(i32, i32), i32>,
     extras: ChunkExtras,
+    /// The last state written and its fact bits: features write runs of one state (an ore
+    /// blob, a lake), and comparing is cheaper than hashing it into the facts table again.
+    last_bits: Option<(BlockState, u32)>,
 }
 
 impl<'a> DecorationRegion<'a> {
@@ -106,6 +112,7 @@ impl<'a> DecorationRegion<'a> {
             min_y: middle.min_y,
             height: middle.height,
             overlay: FastHashMap::default(),
+            written: vec![0; (48 * 48 * middle.height.max(0) as usize).div_ceil(64)],
             writes: Vec::new(),
             terrain_bits: chunks.map(|chunk| {
                 chunk
@@ -121,6 +128,7 @@ impl<'a> DecorationRegion<'a> {
             heightmaps: chunks.map(|chunk| HEIGHTMAP_KINDS.map(|kind| chunk.heightmaps.get(&kind))),
             written_top: FastHashMap::default(),
             extras: ChunkExtras::default(),
+            last_bits: None,
         }
     }
 
@@ -174,18 +182,40 @@ impl<'a> DecorationRegion<'a> {
         Some(section.block_states.get(slot))
     }
 
+    /// `pos`'s bit in `written`, or `None` outside the window.
+    fn written_slot(&self, pos: BlockPos) -> Option<usize> {
+        if pos.y < self.min_y || pos.y >= self.max_y() {
+            return None;
+        }
+        let x = pos.x - (self.center.x - 1) * 16;
+        let z = pos.z - (self.center.z - 1) * 16;
+        if !(0..48).contains(&x) || !(0..48).contains(&z) {
+            return None;
+        }
+        Some((((pos.y - self.min_y) * 48 + z) * 48 + x) as usize)
+    }
+
+    /// Index into `writes` of the write at `pos`, if decoration wrote there.
+    fn written_index(&self, pos: BlockPos) -> Option<usize> {
+        let slot = self.written_slot(pos)?;
+        if self.written[slot >> 6] & (1 << (slot & 63)) == 0 {
+            return None;
+        }
+        self.overlay.get(&pos).map(|&index| index as usize)
+    }
+
     /// The block at `pos` as decoration so far left it, or `None` outside the window.
     pub fn block(&self, pos: BlockPos) -> Option<&BlockState> {
-        match self.overlay.get(&pos) {
-            Some(&index) => Some(&self.writes[index as usize].1),
+        match self.written_index(pos) {
+            Some(index) => Some(&self.writes[index].1),
             None => self.terrain_block(pos),
         }
     }
 
     /// The fact bits of the block at `pos` (`BlockFacts::bits`), or `None` outside the window.
     pub fn bits(&self, pos: BlockPos) -> Option<u32> {
-        if let Some(&index) = self.overlay.get(&pos) {
-            return Some(self.writes[index as usize].2);
+        if let Some(index) = self.written_index(pos) {
+            return Some(self.writes[index].2);
         }
         if pos.y < self.min_y || pos.y >= self.max_y() {
             return None;
@@ -244,10 +274,21 @@ impl<'a> DecorationRegion<'a> {
         self.extras
             .block_entities
             .retain(|entity| entity.pos != pos || entity.block == *block);
-        let bits = self.facts.bits(&state);
-        match self.overlay.get(&pos) {
-            Some(&index) => self.writes[index as usize] = (pos, state, bits),
+        let bits = match &self.last_bits {
+            Some((last, bits)) if *last == state => *bits,
+            _ => {
+                let bits = self.facts.bits(&state);
+                self.last_bits = Some((state.clone(), bits));
+                bits
+            }
+        };
+        match self.written_index(pos) {
+            Some(index) => self.writes[index] = (pos, state, bits),
             None => {
+                let slot = self
+                    .written_slot(pos)
+                    .expect("a written position is in the window");
+                self.written[slot >> 6] |= 1 << (slot & 63);
                 self.overlay.insert(pos, self.writes.len() as u32);
                 self.writes.push((pos, state, bits));
             }
