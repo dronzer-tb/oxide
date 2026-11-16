@@ -1694,3 +1694,48 @@ Next: the stage holds every region's write list and every finished chunk until i
 never reused. Free each region's writes once its nine readers are finished, and reuse those buffers,
 or overlap the phases so peak memory falls. Fresh 16 KB section arrays (oxide-core) are noted but not
 ours.
+
+### Write-list pool + overlapped decoration phases (sub-agent cbc2955, now df31e5c): -6.7% decorate at 1 thread, kept
+
+- `region.rs`: `InternedWrites::recycle()` returns a region's write list to a shared pool (cap 256); a
+  new region takes a pooled list (pages already mapped) and prefaults only when the pool is empty. Write
+  lists are 256 KB, above glibc's 128 KB mmap threshold, so before this every free returned the pages
+  to the kernel and every new list faulted fresh ones. No global malloc settings changed.
+- `oxide-pregen/src/generate.rs`: the two phases interleave along z. Batch k decorates region row k and,
+  in the same `rayon::join`, finishes chunk row k-3, whose nine regions are done; a finished chunk row
+  recycles the region row only it and earlier rows read, so ~4 rows of write lists are alive instead
+  of all 1225. Each chunk reads the same base terrain and the same nine complete write lists in the
+  same order; base terrain is moved out only once no pending region reads it; finished chunks are
+  collected in row order.
+
+Instrumented (`getrusage(RUSAGE_THREAD)` per region and chunk; reverted), r16:
+
+| phase | threads | faults before -> after | sys s before -> after |
+|---|---|---|---|
+| regions | 1 | 53.8k -> 9.3k | 0.61 -> 0.07 |
+| regions | 8 | 61k -> 21k | 2.5 / 1.85 -> 1.32 / 1.21 |
+| chunks | 1 | 31.7k -> 30.3k | 0.41 -> 0.26 |
+| chunks | 8 | 31.6k -> 25.5k | 1.17 / 0.85 -> 0.48 |
+| whole stage | 1 / 8 | 85.5k -> 39.6k / 92k -> 47k | 1.03 -> 0.34 / 3.2 -> 1.8 |
+
+Remaining chunk-phase faults are oxide-core section index arrays (not ours).
+
+| hold | fb decorate_ms | p1 decorate_ms | change | p1 ahead | sys fb / p1 |
+|---|---|---|---|---|---|
+| 1 thread #1 (fb first) | 6796 6209 6667 6251 = 6481 | 5862 6057 6369 6184 = 6118 | -5.6% | 4/4 | 1.76 / 1.36 |
+| 1 thread #2 (p1 first) | 6105 7146 6042 7261 = 6639 | 5951 6255 6031 6269 = 6127 | -7.7% | 4/4 | 1.59 / 1.36 |
+| 1 thread both | 6560 | 6122 | **-6.7%** | 8/8 | |
+| 8 threads #1 (fb first) | mean 1713 (285 cps) | mean 1543 (306 cps) | -9.9% | 5/6 | 4.62 / 2.75 |
+| 8 threads #2 (p1 first) | 1515 1243 1224 3019 1980 1488 = 1745 | 1621 1419 2389 2018 1995 1806 = 1875 | +7.4% | 2/6 | 5.82 / 4.34 |
+| 8 threads both | 1729 | 1709 | -1.2% | 7/12 | |
+
+8-thread hold 2 had spike rows on both trees (fb sys 14.29 and 6.15, p1 7.12) and disagrees with hold
+1; 8 threads is recorded as neutral. **Kept** on the 1-thread result (8/8 rounds, both orders) and the
+lower sys at both thread counts. Checks on the branch head: tests pass (oxide-chunkgen, oxide-pregen,
+oxide-anvil, 0 failed); digest df701ee858e2bdd3 at 1, 3 and 8 threads; an off-centre r7 4-thread run
+(centre 37,-20) gives the same digest as the base (dea822a7b8517773), and the written .mca files are
+byte-identical to the base's except the region timestamp table. Digest held on every hold row.
+New base: pipeline-p1 (cbc2955).
+
+The row batching adds a sync per row (37 steps of ~68 items at 8 threads); finishing each chunk as soon
+as its own nine regions are done (dependency-driven) may recover the 8-thread wall time.
