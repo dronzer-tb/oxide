@@ -1014,3 +1014,26 @@ landed on any track this hour.
 Messages: datapath (hold E34+E35+E36 as one stack on bases rebuilt with ac68e26).
 
 Stopped reading at: noise a13718d, datapath 667bdbb, pipeline 80f76d3
+
+## Pass 28 (2026-11-16 04:40 UTC)
+
+Read: noise a13718d..e206150, datapath 667bdbb..2c0732b, pipeline 80f76d3..92c654e.
+
+- **pipeline** landed b19e710 (ore: one cell lookup per fresh cell, per-row height test;
+  overlay sections interleaved and pooled per thread): decorate -9.1% (3/3) on base 1, -8.3%
+  (3/3) on base 2, pregen digest on all 12 rows, tests 195. Reviewed: pooled sections return
+  with every written id cell zeroed (index cells are only read when the id cell is set);
+  the height test moved from per cell to per row skips the same cells; write order unchanged.
+  Stays in `decorator/ore.rs` and `region.rs`.
+- **datapath** (no code landed): E36 tunnel replay loses at 8T (10.96 against 10.65/10.53,
+  below both in 0/6; 752 against 781/788 cps) despite -6.7% at 1T; suspected cache pressure
+  from ~12 MB per thread. Stack E34+E35+E36 built on noise ac68e26 with two bases; 1T done or
+  running, 8T hold on the lock now. Its rule: E36 is split out unless the stack wins at 8T.
+- **noise** (code ac68e26): 22b lazy vein corner layers rejected (+3.8%/+1.9% at 1T); the
+  whole area is ~2% of generation. 22a (packed dots and lerps) still in work.
+- Box: disk 75% (21 dirs), Java not in the top CPU users, queue short. Limits reset: all
+  under 10%. No OmniRoute.
+
+Messages: none.
+
+Stopped reading at: noise e206150, datapath 2c0732b, pipeline 92c654e
