@@ -1940,3 +1940,23 @@ Generation-only CPU-s against the two base builds; java at most 0.39 CPU-s per r
 
 The means clear the build floor, but the rounds are mixed, so E34 is a candidate, not yet a keep. It is
 re-held on the bases rebuilt after the 07a6727 merge, with the pregen digest, before it lands.
+
+### E35 (surface bulk sections) on the real base: clear at 1 thread, flat at 8
+
+Generation-only CPU-s against the two base builds; java at most 0.39 CPU-s per run. All `digest=a977961a58122047`.
+
+| | r1 | r2 | r3 | r4 | r5 | r6 | mean |
+|---|---|---|---|---|---|---|---|
+| 1 thread: base 1 | 9.42 | 9.04 | 8.81 | 8.48 | | | 8.94 |
+| 1 thread: base 2 | 9.35 | 9.07 | 9.65 | 8.75 | | | 9.21 |
+| 1 thread: E35 | 8.79 | 8.32 | 8.63 | 8.07 | | | **8.45** |
+| 8 threads: base 1 | 9.05 | 8.80 | 10.06 | 9.18 | 10.06 | 9.22 | 9.40 |
+| 8 threads: base 2 | 10.19 | 9.35 | 9.04 | 9.31 | 9.86 | 10.15 | 9.65 |
+| 8 threads: E35 | 10.03 | 9.37 | 8.55 | 9.86 | 9.14 | 9.25 | 9.37 |
+
+- 1 thread: -6.8% against the bases' mean, **below both bases in all 4 rounds**.
+- 8 threads: -1.6%, below both in 2 of 6. Not resolved. This 8-thread hold was quieter than earlier ones (bases ~9.5
+  CPU-s against ~11), so it is not box noise hiding a large gain; why a pure per-thread work cut does not
+  show at 8 threads is open.
+
+A strong candidate for the re-hold on the 07a6727 base.
