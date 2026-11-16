@@ -12,6 +12,7 @@
 //!
 //! [`BlockBehaviours`]: crate::decorator::BlockBehaviours
 
+use crate::decorator::context::fact_in;
 use oxide_core::{BlockPos, BlockState, ResourceLocation};
 use oxide_datapack::BlockFact;
 
@@ -98,7 +99,7 @@ pub(super) fn survives(
 
 /// `BlockState.isAir`, with `void_air` outside the window as vanilla's level answers.
 pub(super) fn is_air(cx: &FeatureContext<'_, '_, '_>, pos: BlockPos) -> bool {
-    cx.env.facts.is(block_in(cx.region, pos), BlockFact::Air)
+    fact_in(cx.region, pos, BlockFact::Air)
 }
 
 /// Places a nested placed feature with the caller's random stream, as `PlacedFeature.place` does.

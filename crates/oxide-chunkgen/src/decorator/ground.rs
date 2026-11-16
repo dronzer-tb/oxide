@@ -29,6 +29,7 @@ mod underwater_magma;
 #[cfg(test)]
 mod tests;
 
+use crate::decorator::context::fact_in;
 use anyhow::{anyhow, Result};
 use oxide_core::{BlockPos, BlockState, ResourceLocation};
 use oxide_datapack::feature::ConfiguredFeature;
@@ -134,7 +135,7 @@ fn is_block(state: &BlockState, path: &str) -> bool {
 
 /// Whether the block at `pos` has `fact`; outside the window it is `void_air`.
 fn has(cx: &FeatureContext<'_, '_, '_>, pos: BlockPos, fact: BlockFact) -> bool {
-    cx.env.facts.is(block_in(cx.region, pos), fact)
+    fact_in(cx.region, pos, fact)
 }
 
 /// Whether the block at `pos` is air (`air`, `cave_air` or `void_air`).

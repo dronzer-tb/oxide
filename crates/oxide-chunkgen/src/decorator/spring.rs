@@ -11,6 +11,7 @@
 //! fluid is falling (`FlowingFluid.createLegacyBlock`). The reference implementation has no
 //! equivalent to diff; confirm the water and lava springs against a real 26.2 world.
 
+use crate::decorator::context::fact_in;
 use anyhow::{bail, Result};
 use oxide_core::{BlockPos, BlockState, ResourceLocation};
 use oxide_datapack::feature::SpringConfig;
@@ -101,7 +102,7 @@ impl SpringFeature {
         let rocks = neighbours.iter().filter(|p| valid(cx, **p)).count() as i32;
         let holes = neighbours
             .iter()
-            .filter(|p| cx.env.facts.is(block_in(cx.region, **p), BlockFact::Air))
+            .filter(|p| fact_in(cx.region, **p, BlockFact::Air))
             .count() as i32;
         if rocks != self.rock_count || holes != self.hole_count {
             return false;

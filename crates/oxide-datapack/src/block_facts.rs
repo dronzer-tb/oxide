@@ -125,6 +125,11 @@ impl BlockFacts {
             .is_some_and(|bits| bits & fact as u32 != 0)
     }
 
+    /// Every fact of `state` as `BlockFact` bits; 0 for a state the table does not know.
+    pub fn bits(&self, state: &BlockState) -> u32 {
+        self.flags.get(state).copied().unwrap_or(0)
+    }
+
     /// Whether the table lists `state` at all: a guard against writing a state the game lacks.
     pub fn knows(&self, state: &BlockState) -> bool {
         self.flags.contains_key(state)

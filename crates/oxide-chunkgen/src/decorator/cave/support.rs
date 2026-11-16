@@ -8,6 +8,7 @@
 //! extremes (`NoCollision`, `FullCollision`). A side face of a block that is neither empty nor a
 //! full cube is the one open case: it is tallied as `shape:<block>` and read as "not full".
 
+use crate::decorator::context::fact_in;
 use oxide_core::{BlockPos, BlockState, RandomSource};
 use oxide_datapack::placement::{IntProvider, TaggedIntProvider};
 use oxide_datapack::BlockFact;
@@ -115,7 +116,7 @@ pub(super) fn shuffle<T>(values: &mut [T], random: &mut impl RandomSource) {
 
 /// Whether the block at `pos` has `fact`; outside the window it is `void_air`.
 pub(super) fn has(cx: &FeatureContext<'_, '_, '_>, pos: BlockPos, fact: BlockFact) -> bool {
-    cx.env.facts.is(block_in(cx.region, pos), fact)
+    fact_in(cx.region, pos, fact)
 }
 
 /// Whether `state` has `fact`.

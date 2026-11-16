@@ -28,6 +28,7 @@ mod pos_set;
 mod root;
 mod trunk;
 
+use crate::decorator::context::fact_in;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -249,7 +250,7 @@ impl<'c, 'e, 'a, 'r> Run<'c, 'e, 'a, 'r> {
     }
 
     pub fn fact(&self, p: BlockPos, fact: BlockFact) -> bool {
-        self.cx.env.facts.is(self.state(p), fact)
+        fact_in(self.cx.region, p, fact)
     }
 
     pub fn is_air(&self, p: BlockPos) -> bool {

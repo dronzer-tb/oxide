@@ -130,6 +130,11 @@ pub fn block_in<'a>(region: &'a DecorationRegion<'_>, pos: BlockPos) -> &'a Bloc
     region.block(pos).unwrap_or(&VOID_AIR)
 }
 
+/// `facts.is(block_in(region, pos), fact)`, read from the region's precomputed fact bits.
+pub fn fact_in(region: &DecorationRegion<'_>, pos: BlockPos, fact: BlockFact) -> bool {
+    region.bits_or_void(pos) & fact as u32 != 0
+}
+
 /// Whether `fact` holds for the block at `pos`, reading a property-less state the facts do not
 /// list as its block's default state.
 ///

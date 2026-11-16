@@ -17,6 +17,7 @@
 //! nothing, returns `false`, and is counted in the [`UnsupportedTally`] under
 //! `feature:<type id>`. Nothing is ever approximated.
 
+use crate::decorator::context::fact_in;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -525,13 +526,13 @@ fn place_two_block_plant(
     pos: BlockPos,
 ) -> bool {
     let above = BlockPos::new(pos.x, pos.y + 1, pos.z);
-    if !cx.env.facts.is(block_in(cx.region, above), BlockFact::Air) {
+    if !fact_in(cx.region, above, BlockFact::Air) {
         return false;
     }
     for (at, half) in [(pos, "lower"), (above, "upper")] {
         let mut half_state = state.clone().with_property("half", half);
         if half_state.properties.contains_key("waterlogged") {
-            let in_water = cx.env.facts.is(block_in(cx.region, at), BlockFact::Water);
+            let in_water = fact_in(cx.region, at, BlockFact::Water);
             half_state = half_state.with_property("waterlogged", in_water.to_string());
         }
         cx.region.set_block(at, half_state);

@@ -8,7 +8,7 @@
 //! any order and still agree (see that module).
 
 use oxide_core::{
-    BiomeId, BlockPos, BlockState, ChunkData, ChunkPos, FastHashMap, HeightmapType,
+    BiomeId, BlockPos, BlockState, ChunkData, ChunkPos, FastHashMap, Heightmap, HeightmapType,
     ResourceLocation,
 };
 use oxide_datapack::{BlockFact, BlockFacts};
@@ -77,9 +77,17 @@ pub struct DecorationRegion<'a> {
     facts: &'a BlockFacts,
     min_y: i32,
     height: i32,
-    overlay: FastHashMap<BlockPos, BlockState>,
-    /// Positions in the order they were first written, so the write list is deterministic.
-    order: Vec<BlockPos>,
+    /// Index into `writes` of each written position.
+    overlay: FastHashMap<BlockPos, u32>,
+    /// Every written position once, in the order it was first written (so the write list is
+    /// deterministic), with its current state and that state's fact bits.
+    writes: Vec<(BlockPos, BlockState, u32)>,
+    /// Fact bits per terrain palette entry, per chunk and section: `[chunk][section][entry]`.
+    terrain_bits: [Vec<Vec<u32>>; 9],
+    /// The facts of `void_air`, what the level answers outside the window.
+    void_bits: u32,
+    /// Each chunk's stored heightmaps, by `HeightmapType` index.
+    heightmaps: [[Option<&'a Heightmap>; 6]; 9],
     /// Highest written Y per column: a column with no entry still has its terrain heights.
     written_top: FastHashMap<(i32, i32), i32>,
     extras: ChunkExtras,
@@ -98,7 +106,19 @@ impl<'a> DecorationRegion<'a> {
             min_y: middle.min_y,
             height: middle.height,
             overlay: FastHashMap::default(),
-            order: Vec::new(),
+            writes: Vec::new(),
+            terrain_bits: chunks.map(|chunk| {
+                chunk
+                    .sections
+                    .iter()
+                    .map(|section| {
+                        let palette = section.block_states.palette();
+                        palette.iter().map(|state| facts.bits(state)).collect()
+                    })
+                    .collect()
+            }),
+            void_bits: facts.bits(&BlockState::new(ResourceLocation::minecraft("void_air"))),
+            heightmaps: chunks.map(|chunk| HEIGHTMAP_KINDS.map(|kind| chunk.heightmaps.get(&kind))),
             written_top: FastHashMap::default(),
             extras: ChunkExtras::default(),
         }
@@ -121,13 +141,18 @@ impl<'a> DecorationRegion<'a> {
         self.facts
     }
 
-    fn chunk_at(&self, x: i32, z: i32) -> Option<&'a ChunkData> {
+    /// Which of the nine chunks holds column `(x, z)`, or `None` outside the window.
+    fn chunk_index(&self, x: i32, z: i32) -> Option<usize> {
         let dx = (x >> 4) - self.center.x;
         let dz = (z >> 4) - self.center.z;
         if !(-1..=1).contains(&dx) || !(-1..=1).contains(&dz) {
             return None;
         }
-        Some(self.chunks[((dz + 1) * 3 + (dx + 1)) as usize])
+        Some(((dz + 1) * 3 + (dx + 1)) as usize)
+    }
+
+    fn chunk_at(&self, x: i32, z: i32) -> Option<&'a ChunkData> {
+        Some(self.chunks[self.chunk_index(x, z)?])
     }
 
     /// Whether `pos` is inside the window and the world's height.
@@ -152,15 +177,39 @@ impl<'a> DecorationRegion<'a> {
     /// The block at `pos` as decoration so far left it, or `None` outside the window.
     pub fn block(&self, pos: BlockPos) -> Option<&BlockState> {
         match self.overlay.get(&pos) {
-            Some(state) => Some(state),
+            Some(&index) => Some(&self.writes[index as usize].1),
             None => self.terrain_block(pos),
         }
     }
 
+    /// The fact bits of the block at `pos` (`BlockFacts::bits`), or `None` outside the window.
+    pub fn bits(&self, pos: BlockPos) -> Option<u32> {
+        if let Some(&index) = self.overlay.get(&pos) {
+            return Some(self.writes[index as usize].2);
+        }
+        if pos.y < self.min_y || pos.y >= self.max_y() {
+            return None;
+        }
+        let chunk = self.chunk_index(pos.x, pos.z)?;
+        let section_index = ((pos.y - self.min_y) >> 4) as usize;
+        let section = self.chunks[chunk].sections.get(section_index)?;
+        let slot = local_index(
+            (pos.x & 15) as usize,
+            ((pos.y - self.min_y) & 15) as usize,
+            (pos.z & 15) as usize,
+        );
+        let entry = section.block_states.indices()[slot] as usize;
+        Some(self.terrain_bits[chunk][section_index][entry])
+    }
+
+    /// [`Self::bits`], with `void_air`'s outside the window: the facts of `block_in(pos)`.
+    pub fn bits_or_void(&self, pos: BlockPos) -> u32 {
+        self.bits(pos).unwrap_or(self.void_bits)
+    }
+
     /// Whether `fact` holds at `pos`. Outside the window nothing holds.
     pub fn is(&self, pos: BlockPos, fact: BlockFact) -> bool {
-        self.block(pos)
-            .is_some_and(|state| self.facts.is(state, fact))
+        self.bits(pos).is_some_and(|bits| bits & fact as u32 != 0)
     }
 
     /// Writes `state` at `pos`. Returns `false`, writing nothing, outside the window -- the
@@ -195,8 +244,13 @@ impl<'a> DecorationRegion<'a> {
         self.extras
             .block_entities
             .retain(|entity| entity.pos != pos || entity.block == *block);
-        if self.overlay.insert(pos, state).is_none() {
-            self.order.push(pos);
+        let bits = self.facts.bits(&state);
+        match self.overlay.get(&pos) {
+            Some(&index) => self.writes[index as usize] = (pos, state, bits),
+            None => {
+                self.overlay.insert(pos, self.writes.len() as u32);
+                self.writes.push((pos, state, bits));
+            }
         }
         let top = self.written_top.entry((pos.x, pos.z)).or_insert(pos.y);
         *top = (*top).max(pos.y);
@@ -255,10 +309,8 @@ impl<'a> DecorationRegion<'a> {
     /// written column is rescanned, since vanilla keeps its heightmaps current block by block
     /// and a later feature must see the tree an earlier one planted.
     pub fn height(&self, kind: HeightmapType, x: i32, z: i32) -> Option<i32> {
-        let chunk = self.chunk_at(x, z)?;
-        let stored = chunk
-            .heightmaps
-            .get(&kind)
+        let chunk = self.chunk_index(x, z)?;
+        let stored = self.heightmaps[chunk][kind_index(kind)]
             .map(|map| map.get((x & 15) as usize, (z & 15) as usize) + self.min_y);
         let Some(&written_top) = self.written_top.get(&(x, z)) else {
             return Some(stored.unwrap_or(self.min_y));
@@ -323,14 +375,34 @@ impl<'a> DecorationRegion<'a> {
     }
 
     /// [`Self::into_writes`] and everything else the features left, in the order they left it.
-    pub fn into_parts(mut self) -> (Vec<BlockWrite>, ChunkExtras) {
-        let mut writes = Vec::with_capacity(self.order.len());
-        for pos in self.order {
-            if let Some(state) = self.overlay.remove(&pos) {
-                writes.push((pos, state));
-            }
-        }
+    pub fn into_parts(self) -> (Vec<BlockWrite>, ChunkExtras) {
+        let writes = self
+            .writes
+            .into_iter()
+            .map(|(pos, state, _)| (pos, state))
+            .collect();
         (writes, self.extras)
+    }
+}
+
+const HEIGHTMAP_KINDS: [HeightmapType; 6] = [
+    HeightmapType::WorldSurface,
+    HeightmapType::WorldSurfaceWg,
+    HeightmapType::OceanFloor,
+    HeightmapType::OceanFloorWg,
+    HeightmapType::MotionBlocking,
+    HeightmapType::MotionBlockingNoLeaves,
+];
+
+/// `kind`'s index in [`HEIGHTMAP_KINDS`].
+fn kind_index(kind: HeightmapType) -> usize {
+    match kind {
+        HeightmapType::WorldSurface => 0,
+        HeightmapType::WorldSurfaceWg => 1,
+        HeightmapType::OceanFloor => 2,
+        HeightmapType::OceanFloorWg => 3,
+        HeightmapType::MotionBlocking => 4,
+        HeightmapType::MotionBlockingNoLeaves => 5,
     }
 }
 
