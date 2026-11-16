@@ -1,6 +1,7 @@
 #!/bin/sh
 # Times several already-built oxide-pregen trees against each other in ONE exclusive hold,
-# alternating them round by round, so box load hits every variant alike. Each <name> is a
+# alternating them round by round (order reversed on even rounds), so box load and position in
+# the round hit every variant alike. Each <name> is a
 # bench dir ~/oxide-perf/<name> whose target/release/oxide-pregen is built, e.g. with
 # `scripts/vps-cargo.sh <name> build --release -p oxide-pregen` from that tree.
 #
@@ -40,7 +41,14 @@ java_ticks() {
     i=0
     while [ "$i" -lt "$rounds" ]; do
         i=$((i + 1))
-        for n in "$@"; do
+        # Even rounds run the trees in reverse order (ABBA...), so whatever favours a slot in
+        # the round cancels out: three holds on one change showed the tree run first winning.
+        order="$*"
+        if [ $((i % 2)) -eq 0 ]; then
+            order=""
+            for n in "$@"; do order="$n $order"; done
+        fi
+        for n in $order; do
             cd ~/oxide-perf/"$n"
             mkdir -p out
             jn="$(pgrep -cx java || true)"

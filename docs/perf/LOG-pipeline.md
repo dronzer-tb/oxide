@@ -1439,3 +1439,23 @@ the profile. Tests 196 pass; digest held. A reversed repeat decides.
 
 Over both holds (6 rounds): decorate 7319 vs 7607 (-3.8%, ahead 4/6), user+sys -1.4% (ahead 3/6).
 Still ambiguous; a third hold (base first) decides. Digest held.
+
+### Decoration driver, third hold (base first): +0.5%; rejected. Hold order now ABBA.
+
+| | run 1 | run 2 | run 3 | mean |
+|---|---|---|---|---|
+| base decorate_ms | 7507 | 7900 | 7428 | 7612 |
+| driver decorate_ms | 7828 | 7223 | 7889 | 7647 |
+| base / driver user+sys s | 22.35 / 23.59 | 24.24 / 22.71 | 22.97 / 23.39 | 23.19 / 23.23 |
+| java_cpu_s_per_10s | 0.19 / 0.22 | 0.21 / 0.20 | 0.20 / 0.24 | |
+
+Over three holds (9 rounds): decorate 7428 vs 7608 (-2.4%), user+sys -0.9%. The change won only in
+the hold where it ran first in each round (-7.9%) and was flat in both holds where it ran second
+(+0.2%, +0.5%). That is a position effect, not the change. **Rejected**; patch at
+`docs/perf/rejected-decoration-driver.patch`. Digest held on every row.
+
+**Hold script fix:** `bench-ab-pregen-vps.sh` now reverses the tree order on even rounds (ABBA...), so
+a slot advantage cancels. Use an even number of rounds (4 rounds at r16, 1 thread is about 4.5 min).
+Earlier 3-round holds gave the first-listed tree (usually the base) two first slots; the kept changes
+won as the second tree, i.e. against that bias, and the ore round 3 and lush rejections already used
+both orders.

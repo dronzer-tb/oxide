@@ -1,0 +1,498 @@
+From bfb32671d857df06c6a83b5eb156f20077a6ef4f Mon Sep 17 00:00:00 2001
+From: Kasniya <36neelansh@gmail.com>
+Date: Mon, 16 Nov 2026 07:31:01 +0000
+Subject: [PATCH] perf(decorate): gather center biomes once per chunk, bitset
+ biome feature lists, pooled placement lists
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../src/decorator/biome_decorator.rs          | 24 ++---
+ .../src/decorator/cave/tests.rs               |  2 +-
+ .../oxide-chunkgen/src/decorator/context.rs   | 37 ++++++-
+ .../oxide-chunkgen/src/decorator/end/tests.rs |  2 +-
+ .../oxide-chunkgen/src/decorator/feature.rs   | 35 ++++++-
+ .../src/decorator/ground/tests.rs             |  2 +-
+ .../src/decorator/nether/tests.rs             |  2 +-
+ .../oxide-chunkgen/src/decorator/placement.rs | 16 ++-
+ .../src/decorator/templated/tests.rs          |  2 +-
+ crates/oxide-chunkgen/src/decorator/tests.rs  |  2 +-
+ .../src/decorator/tree/tests.rs               |  2 +-
+ .../src/decorator/vegetation/tests.rs         |  2 +-
+ .../src/decorator/water/tests.rs              |  2 +-
+ crates/oxide-chunkgen/src/region.rs           | 97 +++++++++++++++++--
+ 14 files changed, 190 insertions(+), 37 deletions(-)
+
+diff --git a/crates/oxide-chunkgen/src/decorator/biome_decorator.rs b/crates/oxide-chunkgen/src/decorator/biome_decorator.rs
+index 7085646..4e9aee7 100644
+--- a/crates/oxide-chunkgen/src/decorator/biome_decorator.rs
++++ b/crates/oxide-chunkgen/src/decorator/biome_decorator.rs
+@@ -25,8 +25,10 @@ use anyhow::{anyhow, bail, Context, Result};
+ use oxide_core::{BiomeId, BlockPos, WorldgenRandom};
+ use oxide_datapack::Datapack;
+ 
+-use super::context::{BlockBehaviours, Environment, FeatureContext, UnsupportedTally};
+-use super::feature::{place_placed, Compiler, Placed};
++use super::context::{
++    BiomeFeatures, BlockBehaviours, Environment, FeatureContext, UnsupportedTally,
++};
++use super::feature::{place_top, Compiler, Placed};
+ use super::ground::BiomeClimate;
+ use super::survival::SurvivalRules;
+ use crate::decorate::Decorator;
+@@ -151,15 +153,12 @@ impl BiomeDecorator {
+             biome_steps.insert((*biome).clone(), sorted);
+         }
+ 
+-        let biome_features = lists
+-            .into_iter()
+-            .map(|(biome, per_step)| {
+-                (
+-                    biome,
+-                    per_step.into_iter().flatten().collect::<HashSet<u32>>(),
+-                )
+-            })
+-            .collect();
++        let biome_features = BiomeFeatures::new(lists.into_iter().map(|(biome, per_step)| {
++            (
++                biome,
++                per_step.into_iter().flatten().collect::<HashSet<u32>>(),
++            )
++        }));
+ 
+         let env = Environment {
+             block_tags: datapack.block_tags.clone(),
+@@ -229,6 +228,7 @@ impl Decorator for BiomeDecorator {
+             .cloned()
+             .collect();
+ 
++        let center = region.center_biomes();
+         let mut tally = UnsupportedTally::default();
+         for (step, features) in self.steps.iter().enumerate() {
+             let mut indices: Vec<u32> = present
+@@ -255,7 +255,7 @@ impl Decorator for BiomeDecorator {
+                     unsupported: &mut tally,
+                     top_feature: Some(key),
+                 };
+-                place_placed(&self.placed[key as usize], &mut cx, origin, Some(key));
++                place_top(&self.placed[key as usize], &mut cx, origin, key, &center);
+             }
+         }
+         if !tally.is_empty() {
+diff --git a/crates/oxide-chunkgen/src/decorator/cave/tests.rs b/crates/oxide-chunkgen/src/decorator/cave/tests.rs
+index 1fc0a2b..1489afe 100644
+--- a/crates/oxide-chunkgen/src/decorator/cave/tests.rs
++++ b/crates/oxide-chunkgen/src/decorator/cave/tests.rs
+@@ -154,7 +154,7 @@ fn env() -> Environment {
+         behaviours: Box::new(NoBlockBehaviours),
+         placed: HashMap::new(),
+         biome_climate: HashMap::new(),
+-        biome_features: HashMap::new(),
++        biome_features: Default::default(),
+     }
+ }
+ 
+diff --git a/crates/oxide-chunkgen/src/decorator/context.rs b/crates/oxide-chunkgen/src/decorator/context.rs
+index 833be6d..27aa107 100644
+--- a/crates/oxide-chunkgen/src/decorator/context.rs
++++ b/crates/oxide-chunkgen/src/decorator/context.rs
+@@ -93,15 +93,44 @@ pub struct Environment {
+     pub biome_climate: HashMap<BiomeId, BiomeClimate>,
+     /// The placed features each biome lists, by the content key that identifies them: what the
+     /// `minecraft:biome` placement modifier checks against.
+-    pub(super) biome_features: HashMap<BiomeId, HashSet<u32>>,
++    pub(super) biome_features: BiomeFeatures,
+ }
+ 
+ impl Environment {
+     /// Whether `biome` lists the placed feature with content key `key` at any step.
+     pub(super) fn biome_lists(&self, biome: &BiomeId, key: u32) -> bool {
+-        self.biome_features
+-            .get(biome)
+-            .is_some_and(|features| features.contains(&key))
++        self.biome_features.lists(biome, key)
++    }
++}
++
++/// Per biome, the content keys of the placed features it lists, as a bit set: the `biome`
++/// placement modifier and the biome gate ask this for every position and every feature, so it
++/// is one fast hash of the biome and one bit test rather than two SipHash lookups.
++#[derive(Default)]
++pub(crate) struct BiomeFeatures(ahash::AHashMap<BiomeId, Box<[u64]>>);
++
++impl BiomeFeatures {
++    pub(crate) fn new(lists: impl IntoIterator<Item = (BiomeId, HashSet<u32>)>) -> Self {
++        Self(
++            lists
++                .into_iter()
++                .map(|(biome, keys)| {
++                    let words = keys.iter().max().map_or(0, |&max| max as usize / 64 + 1);
++                    let mut bits = vec![0u64; words].into_boxed_slice();
++                    for key in keys {
++                        bits[key as usize / 64] |= 1 << (key % 64);
++                    }
++                    (biome, bits)
++                })
++                .collect(),
++        )
++    }
++
++    fn lists(&self, biome: &BiomeId, key: u32) -> bool {
++        self.0.get(biome).is_some_and(|bits| {
++            bits.get(key as usize / 64)
++                .is_some_and(|word| word >> (key % 64) & 1 != 0)
++        })
+     }
+ }
+ 
+diff --git a/crates/oxide-chunkgen/src/decorator/end/tests.rs b/crates/oxide-chunkgen/src/decorator/end/tests.rs
+index 70d089e..0f8119b 100644
+--- a/crates/oxide-chunkgen/src/decorator/end/tests.rs
++++ b/crates/oxide-chunkgen/src/decorator/end/tests.rs
+@@ -76,7 +76,7 @@ fn env(behaviours: Box<dyn BlockBehaviours>) -> Environment {
+         behaviours,
+         placed: HashMap::new(),
+         biome_climate: HashMap::new(),
+-        biome_features: HashMap::new(),
++        biome_features: Default::default(),
+     }
+ }
+ 
+diff --git a/crates/oxide-chunkgen/src/decorator/feature.rs b/crates/oxide-chunkgen/src/decorator/feature.rs
+index a0de1a2..c6edc45 100644
+--- a/crates/oxide-chunkgen/src/decorator/feature.rs
++++ b/crates/oxide-chunkgen/src/decorator/feature.rs
+@@ -21,7 +21,7 @@ use std::collections::HashMap;
+ use std::sync::Arc;
+ 
+ use anyhow::{anyhow, bail, Context, Result};
+-use oxide_core::{BlockPos, BlockState, RandomSource, ResourceLocation};
++use oxide_core::{BiomeId, BlockPos, BlockState, RandomSource, ResourceLocation};
+ use oxide_datapack::feature::Holder;
+ use oxide_datapack::feature::{ConfiguredFeature, HolderList};
+ use oxide_datapack::placement::PlacedFeature as PlacedFeatureIr;
+@@ -40,6 +40,7 @@ use super::templated::{TemplateLibrary, TemplatedFeature};
+ use super::tree::{FallenTreeFeature, TreeFeature};
+ use super::vegetation::VegetationFeature;
+ use super::water::WaterFeature;
++use crate::region::CenterBiomes;
+ 
+ /// A placed feature: a modifier chain and the feature it leads to.
+ #[derive(Debug)]
+@@ -384,14 +385,40 @@ pub fn place_placed(
+     cx: &mut FeatureContext<'_, '_, '_>,
+     origin: BlockPos,
+     top_feature: Option<u32>,
++) -> bool {
++    place_gated(placed, cx, origin, top_feature, None)
++}
++
++/// [`place_placed`] for the registered feature `key`, with the center chunk's biomes already
++/// gathered (see [`DecorationRegion::center_biomes`]) for its biome gate.
++///
++/// [`DecorationRegion::center_biomes`]: crate::region::DecorationRegion::center_biomes
++pub fn place_top(
++    placed: &Placed,
++    cx: &mut FeatureContext<'_, '_, '_>,
++    origin: BlockPos,
++    key: u32,
++    center: &CenterBiomes<'_>,
++) -> bool {
++    place_gated(placed, cx, origin, Some(key), Some(center))
++}
++
++fn place_gated(
++    placed: &Placed,
++    cx: &mut FeatureContext<'_, '_, '_>,
++    origin: BlockPos,
++    top_feature: Option<u32>,
++    center: Option<&CenterBiomes<'_>>,
+ ) -> bool {
+     let saved = std::mem::replace(&mut cx.top_feature, top_feature);
+     let gate = match (placed.biome_gate, top_feature) {
+         (Some((start, span)), Some(key)) => {
+             let env = cx.env;
+-            let levels = cx
+-                .region
+-                .center_biome_levels(|biome| env.biome_lists(biome, key));
++            let wanted = |biome: &BiomeId| env.biome_lists(biome, key);
++            let levels = match center {
++                Some(center) => center.levels(wanted),
++                None => cx.region.center_biome_levels(wanted),
++            };
+             Some(Gate {
+                 remaining: placed.modifiers.len() - start,
+                 columns: levels.iter().fold(0, |all, level| all | level),
+diff --git a/crates/oxide-chunkgen/src/decorator/ground/tests.rs b/crates/oxide-chunkgen/src/decorator/ground/tests.rs
+index c92d0c9..d91a636 100644
+--- a/crates/oxide-chunkgen/src/decorator/ground/tests.rs
++++ b/crates/oxide-chunkgen/src/decorator/ground/tests.rs
+@@ -122,7 +122,7 @@ fn env(
+         behaviours,
+         placed: HashMap::new(),
+         biome_climate: climates,
+-        biome_features: HashMap::new(),
++        biome_features: Default::default(),
+     }
+ }
+ 
+diff --git a/crates/oxide-chunkgen/src/decorator/nether/tests.rs b/crates/oxide-chunkgen/src/decorator/nether/tests.rs
+index 8879d05..ff3df15 100644
+--- a/crates/oxide-chunkgen/src/decorator/nether/tests.rs
++++ b/crates/oxide-chunkgen/src/decorator/nether/tests.rs
+@@ -77,7 +77,7 @@ fn env_with(block_tags: TagSet, behaviours: Box<dyn BlockBehaviours>) -> Environ
+         behaviours,
+         placed: HashMap::new(),
+         biome_climate: HashMap::new(),
+-        biome_features: HashMap::new(),
++        biome_features: Default::default(),
+     }
+ }
+ 
+diff --git a/crates/oxide-chunkgen/src/decorator/placement.rs b/crates/oxide-chunkgen/src/decorator/placement.rs
+index 34c48f6..f0b6d8a 100644
+--- a/crates/oxide-chunkgen/src/decorator/placement.rs
++++ b/crates/oxide-chunkgen/src/decorator/placement.rs
+@@ -8,6 +8,8 @@
+ //! input position at once (vanilla's modifiers all draw eagerly when asked), then the rest of the
+ //! chain consumes them one at a time.
+ 
++use std::cell::RefCell;
++
+ use anyhow::Result;
+ use oxide_core::{BlockPos, HeightmapType, RandomSource};
+ use oxide_datapack::placement::IntProvider;
+@@ -576,11 +578,21 @@ pub fn run(
+         cx.origin = pos;
+         return place_configured_feature(feature, cx);
+     };
+-    let mut emitted = Vec::new();
++    let mut emitted = SPARE_POSITIONS
++        .with(|spare| spare.borrow_mut().pop())
++        .unwrap_or_default();
+     modifier.positions(cx, pos, &mut emitted);
+     let mut placed = false;
+-    for next in emitted {
++    for &next in &emitted {
+         placed |= run(rest, cx, next, feature, gate);
+     }
++    emitted.clear();
++    SPARE_POSITIONS.with(|spare| spare.borrow_mut().push(emitted));
+     placed
+ }
++
++thread_local! {
++    /// Emptied position lists for [`run`] to fill, one per chain level in use: a chain runs once
++    /// per feature per chunk and each level used to allocate (and grow) a fresh list.
++    static SPARE_POSITIONS: RefCell<Vec<Vec<BlockPos>>> = const { RefCell::new(Vec::new()) };
++}
+diff --git a/crates/oxide-chunkgen/src/decorator/templated/tests.rs b/crates/oxide-chunkgen/src/decorator/templated/tests.rs
+index 1eea6ed..fd378ac 100644
+--- a/crates/oxide-chunkgen/src/decorator/templated/tests.rs
++++ b/crates/oxide-chunkgen/src/decorator/templated/tests.rs
+@@ -104,7 +104,7 @@ fn env_with(facts: BlockFacts, block_tags: TagSet) -> Environment {
+         sea_level: 63,
+         placed: HashMap::new(),
+         biome_climate: HashMap::new(),
+-        biome_features: HashMap::new(),
++        biome_features: Default::default(),
+     }
+ }
+ 
+diff --git a/crates/oxide-chunkgen/src/decorator/tests.rs b/crates/oxide-chunkgen/src/decorator/tests.rs
+index 97d5ad7..a618ff0 100644
+--- a/crates/oxide-chunkgen/src/decorator/tests.rs
++++ b/crates/oxide-chunkgen/src/decorator/tests.rs
+@@ -52,7 +52,7 @@ fn env(tags: &[(&str, &str)], behaviours: Box<dyn BlockBehaviours>) -> Environme
+         behaviours,
+         placed: HashMap::new(),
+         biome_climate: HashMap::new(),
+-        biome_features: HashMap::new(),
++        biome_features: Default::default(),
+     }
+ }
+ 
+diff --git a/crates/oxide-chunkgen/src/decorator/tree/tests.rs b/crates/oxide-chunkgen/src/decorator/tree/tests.rs
+index 9431553..89d2b38 100644
+--- a/crates/oxide-chunkgen/src/decorator/tree/tests.rs
++++ b/crates/oxide-chunkgen/src/decorator/tree/tests.rs
+@@ -86,7 +86,7 @@ fn environment(facts: BlockFacts, block_tags: TagSet) -> Environment {
+         behaviours: Box::new(NoBlockBehaviours),
+         placed: HashMap::new(),
+         biome_climate: HashMap::new(),
+-        biome_features: HashMap::new(),
++        biome_features: Default::default(),
+     }
+ }
+ 
+diff --git a/crates/oxide-chunkgen/src/decorator/vegetation/tests.rs b/crates/oxide-chunkgen/src/decorator/vegetation/tests.rs
+index 625e004..03c30f9 100644
+--- a/crates/oxide-chunkgen/src/decorator/vegetation/tests.rs
++++ b/crates/oxide-chunkgen/src/decorator/vegetation/tests.rs
+@@ -120,7 +120,7 @@ fn env(tags: &[(&str, &[&str])], behaviours: Box<dyn BlockBehaviours>) -> Enviro
+         behaviours,
+         placed: HashMap::new(),
+         biome_climate: HashMap::new(),
+-        biome_features: HashMap::new(),
++        biome_features: Default::default(),
+     }
+ }
+ 
+diff --git a/crates/oxide-chunkgen/src/decorator/water/tests.rs b/crates/oxide-chunkgen/src/decorator/water/tests.rs
+index 365c5de..48171cb 100644
+--- a/crates/oxide-chunkgen/src/decorator/water/tests.rs
++++ b/crates/oxide-chunkgen/src/decorator/water/tests.rs
+@@ -115,7 +115,7 @@ fn env() -> Environment {
+         sea_level: 63,
+         placed: HashMap::new(),
+         biome_climate: HashMap::new(),
+-        biome_features: HashMap::new(),
++        biome_features: Default::default(),
+     }
+ }
+ 
+diff --git a/crates/oxide-chunkgen/src/region.rs b/crates/oxide-chunkgen/src/region.rs
+index c1a7722..4ee4680 100644
+--- a/crates/oxide-chunkgen/src/region.rs
++++ b/crates/oxide-chunkgen/src/region.rs
+@@ -22,6 +22,8 @@ const WINDOW: usize = 48;
+ const NEVER_WRITTEN: i32 = i32::MIN;
+ /// Writes to reserve room for up front: a region averages about 7.5k at radius 16.
+ const RESERVED_WRITES: usize = 8192;
++/// Distinct written states to reserve room for up front: a region writes a few dozen.
++const RESERVED_STATES: usize = 64;
+ /// Cells in one 16x16x16 section.
+ const SECTION_CELLS: usize = 4096;
+ 
+@@ -211,9 +213,9 @@ impl<'a> DecorationRegion<'a> {
+                 .map(|_| None)
+                 .collect(),
+             writes: prefaulted(Vec::with_capacity(RESERVED_WRITES)),
+-            states: Vec::new(),
+-            state_ids: AHashMap::default(),
+-            state_facts: Vec::new(),
++            states: Vec::with_capacity(RESERVED_STATES),
++            state_ids: AHashMap::with_capacity(RESERVED_STATES),
++            state_facts: Vec::with_capacity(RESERVED_STATES),
+             terrain_facts: (0..9 * middle.sections.len())
+                 .map(|_| OnceCell::new())
+                 .collect(),
+@@ -425,6 +427,38 @@ impl<'a> DecorationRegion<'a> {
+         levels
+     }
+ 
++    /// The center chunk's stored biomes, each with the levels [`Self::center_biome_levels`]
++    /// gives for a filter accepting just it: one pass over the chunk's biomes, which a
++    /// decoration step then combines per feature instead of passing over them per feature.
++    pub fn center_biomes(&self) -> CenterBiomes<'a> {
++        let sections = &self.chunks[4].sections;
++        let levels = sections.len() * 4;
++        let mut biomes: Vec<(&'a BiomeId, Vec<u16>)> = Vec::new();
++        let mut which: Vec<usize> = Vec::new();
++        for (s, section) in sections.iter().enumerate() {
++            let palette = section.biomes.palette();
++            // Per palette entry, its place in `biomes`, added on the entry's first use.
++            which.clear();
++            which.resize(palette.len(), usize::MAX);
++            for (slot, &entry) in section.biomes.indices().iter().enumerate() {
++                let entry = entry as usize;
++                if which[entry] == usize::MAX {
++                    let biome = &palette[entry];
++                    which[entry] = match biomes.iter().position(|(known, _)| *known == biome) {
++                        Some(index) => index,
++                        None => {
++                            biomes.push((biome, vec![0u16; levels]));
++                            biomes.len() - 1
++                        }
++                    };
++                }
++                // A biome slot is `((qy * 4 + qz) * 4 + qx)`.
++                biomes[which[entry]].1[s * 4 + (slot >> 4)] |= 1 << (slot & 15);
++            }
++        }
++        CenterBiomes { levels, biomes }
++    }
++
+     /// Writes `state` at `pos`. Returns `false`, writing nothing, outside the window -- the
+     /// same refusal vanilla's region gives a feature that reaches past its write radius.
+     pub fn set_block(&mut self, pos: BlockPos, state: BlockState) -> bool {
+@@ -603,16 +637,44 @@ impl<'a> DecorationRegion<'a> {
+     /// nothing references any more, and vanilla collects the biomes the storage holds.
+     pub fn biomes_present(&self) -> Vec<&BiomeId> {
+         let mut found: Vec<&BiomeId> = Vec::new();
++        let mut add = |entry: &'a BiomeId| {
++            if !found
++                .iter()
++                .any(|known| std::ptr::eq(*known, entry) || *known == entry)
++            {
++                found.push(entry);
++            }
++        };
+         for chunk in self.chunks {
+             for section in &chunk.sections {
+                 let palette = section.biomes.palette();
++                let indices = section.biomes.indices();
++                if palette.len() == 1 {
++                    // Every slot of a one-entry palette holds that entry: no need to read them.
++                    if !indices.is_empty() {
++                        add(&palette[0]);
++                    }
++                    continue;
++                }
++                if palette.len() <= 64 {
++                    // The entries in use as a mask, walked in palette order.
++                    let mut used = 0u64;
++                    for &index in indices {
++                        used |= 1 << index;
++                    }
++                    while used != 0 {
++                        add(&palette[used.trailing_zeros() as usize]);
++                        used &= used - 1;
++                    }
++                    continue;
++                }
+                 let mut used = vec![false; palette.len()];
+-                for &index in section.biomes.indices() {
++                for &index in indices {
+                     used[index as usize] = true;
+                 }
+                 for (entry, in_use) in palette.iter().zip(used) {
+-                    if in_use && !found.contains(&entry) {
+-                        found.push(entry);
++                    if in_use {
++                        add(entry);
+                     }
+                 }
+             }
+@@ -673,6 +735,29 @@ impl Drop for DecorationRegion<'_> {
+     }
+ }
+ 
++/// [`DecorationRegion::center_biomes`]: the center chunk's distinct stored biomes in first-seen
++/// order, each with its quart levels.
++pub struct CenterBiomes<'r> {
++    levels: usize,
++    biomes: Vec<(&'r BiomeId, Vec<u16>)>,
++}
++
++impl CenterBiomes<'_> {
++    /// [`DecorationRegion::center_biome_levels`] for `wanted`: the levels of every biome it
++    /// accepts, combined.
++    pub fn levels(&self, mut wanted: impl FnMut(&BiomeId) -> bool) -> Vec<u16> {
++        let mut levels = vec![0u16; self.levels];
++        for (biome, bits) in &self.biomes {
++            if wanted(biome) {
++                for (level, bit) in levels.iter_mut().zip(bits) {
++                    *level |= bit;
++                }
++            }
++        }
++        levels
++    }
++}
++
+ /// One position's state as [`DecorationRegion::probe`] read it.
+ pub struct Probe<'r> {
+     pub key: StateKey,
+-- 
+2.43.0
+
