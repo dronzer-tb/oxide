@@ -1398,3 +1398,32 @@ pregen rows at the start of this log were 184.3/171.5 (datapath 0e3cf61) and 194
 e6ecc65), so the decorated pipeline is about +75% since then (both tracks' work). PumpkinMC terrain is
 about 404 cps on this box (not byte exact). At 8 threads decoration is still ~40% of the two stage
 times (generate ~1.8 s, decorate ~1.2 s), so decoration stays this track's lever.
+
+## Decoration driver (sampled across all features): biome gating once per chunk, pooled chain Vecs; base 1 +0.2%
+
+**Sampled** (same LD_PRELOAD sampler, copied into the sub-agent's own dir) at b2bdac5: 3024 of 43450
+samples (~6.0 s) under `BiomeDecorator::decorate`. Top inclusive frames: `place_placed` 95.5%,
+`placement::run` 90.8%, feature `place`s 76.7%, `OreFeature::place_blob` 33.2%, libc `[ext]` (malloc/
+realloc/free) 17.2%, `place_at_cached` 12.9%, hash `get` 11.1%, sculk `update_cursors` 10.9%,
+`place_configured_feature` 10.0%, `Modifier::positions` 9.0%, `make_hash` 8.9%.
+Shared costs found: `center_biome_levels` rescanning 24 sections per gated feature (125),
+`Environment::biome_lists` two SipHash lookups per call (128), `biomes_present` (105), and a fresh
+`emitted` Vec at every chain level of every feature run (~300 in `[ext]`).
+
+**Change** (sub-agent be05004; 14 files, 9 of them one-line test updates): `center_biomes()` once per
+chunk, `CenterBiomes::levels(wanted)` ORs the accepted biomes' bits; `biome_features` is an AHash map
+to a feature-key bit set; `biomes_present` with a u64 mask and a one-entry-palette shortcut; region
+state tables reserve 64; `placement::run` borrows position Vecs from a per-thread pool. Its profile:
+decoration 3024 -> 2681 samples.
+
+**Hold, base 1** (pipeline-b9 = branch 6142cff + datapath **323b9d4**; pipeline-d9 adds be05004):
+
+| | run 1 | run 2 | run 3 | mean |
+|---|---|---|---|---|
+| base decorate_ms | 7254 | 8162 | 7712 | 7709 |
+| driver decorate_ms | 7788 | 7250 | 8133 | 7724 |
+| base / driver user+sys s | 23.06 / 23.75 | 24.78 / 23.16 | 24.19 / 24.38 | 24.01 / 23.76 |
+| java_cpu_s_per_10s | 0.26 / 0.26 | 0.30 / 0.25 | 0.21 / 0.25 | |
+
++0.2% decorate, user+sys -1.0% (ahead 1/3): no gain visible, against ~11% of decoration predicted by
+the profile. Tests 196 pass; digest held. A reversed repeat decides.
