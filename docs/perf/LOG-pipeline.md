@@ -1210,3 +1210,18 @@ arithmetic. Digest held.
 -9.1% decorate, -4.5% user CPU, ahead 3/3 on both. Java quiet; df701ee858e2bdd3 on every row; tests
 195 pass (the chained test step printed nothing, so they were re-run separately and passed). Under
 10%, second base next.
+
+### Ore one-lookup cells, base 2: -8.3%; kept
+
+pipeline-b5 = this branch at 80f76d3 merged with origin/perf/datapath **667bdbb** (scratch merge
+1a87a00); pipeline-rc5 adds the change. Tests 195 pass.
+
+| | run 1 | run 2 | run 3 | mean |
+|---|---|---|---|---|
+| base decorate_ms | 8989 | 8903 | 9024 | 8972 |
+| ore cell decorate_ms | 8018 | 8914 | 7738 | 8223 |
+| base / change cpu_user_s | 24.72 / 22.99 | 25.55 / 25.12 | 24.92 / 23.90 | 25.06 / 24.00 |
+| java_cpu_s_per_10s | 0.24 / 0.29 | 0.26 / 0.26 | 0.25 / 0.24 | |
+
+-8.3% decorate, -4.2% user CPU, ahead 3/3 on both; with base 1 (-9.1%) ahead 6/6 on two bases.
+Java quiet; df701ee858e2bdd3 on every row. **Kept**, cherry-picked onto the branch.
