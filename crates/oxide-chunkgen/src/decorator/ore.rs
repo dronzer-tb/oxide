@@ -12,6 +12,7 @@
 //! (the platform libm, not the `Mth` table). They agree to the last bit for almost every input
 //! but are not guaranteed to; a mismatch would shift a blob end by a block now and then.
 
+use std::cell::RefCell;
 use std::f32::consts::PI;
 use std::str::FromStr;
 
@@ -93,12 +94,20 @@ impl RuleTest {
     }
 }
 
-/// Per `place()`, which targets' rules match a state, by [`StateKey`]: an ore blob reads
-/// thousands of cells but only a handful of distinct states (stone, deepslate, ...), so each
-/// rule's state-only part is worked out once per state rather than hashed per cell.
-/// Direct-mapped, 8 slots; bit `i` of the mask is target `i`'s answer.
-#[derive(Default)]
-struct MatchCache([Option<(StateKey, u64)>; 8]);
+/// Slots in a [`MatchCache`].
+const MATCH_SLOTS: usize = 32;
+
+/// Per feature and region, which targets' rules match a state, by [`StateKey`]: an ore blob
+/// reads thousands of cells but only a handful of distinct states (stone, deepslate, ...), so
+/// each rule's state-only part is worked out once per state rather than hashed per cell.
+/// Direct-mapped; bit `i` of the mask is target `i`'s answer.
+struct MatchCache([Option<(StateKey, u64)>; MATCH_SLOTS]);
+
+impl Default for MatchCache {
+    fn default() -> Self {
+        Self([None; MATCH_SLOTS])
+    }
+}
 
 impl MatchCache {
     fn mask(
@@ -108,7 +117,10 @@ impl MatchCache {
         targets: &[Target],
         tags: &TagSet,
     ) -> u64 {
-        let slot = &mut self.0[key.slot() & 7];
+        // `StateKey::slot`'s low bits are mostly the palette entry, the same in every section;
+        // a multiplicative mix spreads the sections over the slots too.
+        let mixed = (key.slot() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 59;
+        let slot = &mut self.0[mixed as usize & (MATCH_SLOTS - 1)];
         if let Some((cached, mask)) = *slot {
             if cached == key {
                 return mask;
@@ -123,6 +135,23 @@ impl MatchCache {
         *slot = Some((key, mask));
         mask
     }
+}
+
+/// What one ore feature remembers from blob to blob within one region: its targets' interned
+/// ids and its [`MatchCache`]. Both name states only within one region, so the memo is tagged
+/// with the region's serial and starts over in a new region.
+struct OreMemo {
+    /// The feature's address: features live for the whole of decoration.
+    feature: usize,
+    /// [`DecorationRegion::serial`] of the region `ids` and `matches` belong to.
+    serial: u64,
+    ids: Vec<u32>,
+    matches: MatchCache,
+}
+
+thread_local! {
+    /// The memos of the ore features this thread has placed, at most one per feature.
+    static ORE_MEMOS: RefCell<Vec<OreMemo>> = const { RefCell::new(Vec::new()) };
 }
 
 #[derive(Debug, Clone)]
@@ -284,13 +313,33 @@ impl OreFeature {
 
         let mut tested = BitSet::default();
         let mut placed = 0;
+        let feature = self as *const Self as usize;
+        let mut memo = ORE_MEMOS
+            .with(|memos| {
+                let mut memos = memos.borrow_mut();
+                let index = memos.iter().position(|memo| memo.feature == feature)?;
+                Some(memos.swap_remove(index))
+            })
+            .unwrap_or_else(|| OreMemo {
+                feature,
+                serial: 0,
+                ids: Vec::new(),
+                matches: MatchCache::default(),
+            });
+        if memo.serial != cx.region.serial() {
+            // The region's first blob of this feature interns the targets' states in order, as
+            // every blob would; in later blobs that interning finds them all and adds nothing.
+            memo.serial = cx.region.serial();
+            memo.ids.clear();
+            memo.ids.extend(
+                self.targets
+                    .iter()
+                    .map(|target| cx.region.intern(&target.state)),
+            );
+            memo.matches = MatchCache::default();
+        }
+        let OreMemo { ids, matches, .. } = &mut memo;
         // Masks hold one bit per target; more than 64 targets falls back to the plain path.
-        let ids: Vec<u32> = self
-            .targets
-            .iter()
-            .map(|target| cx.region.intern(&target.state))
-            .collect();
-        let mut matches = MatchCache::default();
         for [sx, sy, sz, radius] in spheres {
             if radius < 0.0 {
                 continue;
@@ -330,7 +379,7 @@ impl OreFeature {
                         }
                         let pos = BlockPos::new(x, y, z);
                         let done = if self.targets.len() <= 64 {
-                            self.place_at_cached(cx, pos, &ids, &mut matches)
+                            self.place_at_cached(cx, pos, ids, matches)
                         } else {
                             self.place_at(cx, pos)
                         };
@@ -341,6 +390,7 @@ impl OreFeature {
                 }
             }
         }
+        ORE_MEMOS.with(|memos| memos.borrow_mut().push(memo));
         placed > 0
     }
 

@@ -21,7 +21,7 @@ const WINDOW: usize = 48;
 /// `written_top` for a column decoration has not written.
 const NEVER_WRITTEN: i32 = i32::MIN;
 /// Writes to reserve room for up front: a region averages about 7.5k at radius 16.
-const RESERVED_WRITES: usize = 8192;
+const RESERVED_WRITES: usize = 8000;
 /// Cells in one 16x16x16 section.
 const SECTION_CELLS: usize = 4096;
 
@@ -122,7 +122,12 @@ impl StateKey {
     }
 }
 
+/// The last [`DecorationRegion::serial`] handed out.
+static REGION_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub struct DecorationRegion<'a> {
+    /// Unique to this region in the process (see [`Self::serial`]).
+    serial: u64,
     center: ChunkPos,
     /// Row-major from the north-west: index `(dz + 1) * 3 + (dx + 1)`.
     chunks: [&'a ChunkData; 9],
@@ -167,6 +172,7 @@ impl<'a> DecorationRegion<'a> {
         let middle = chunks[4];
         debug_assert_eq!(middle.pos, center);
         Self {
+            serial: REGION_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
             center,
             chunks,
             facts,
@@ -196,6 +202,13 @@ impl<'a> DecorationRegion<'a> {
         let dz = z - (self.center.z - 1) * 16;
         debug_assert!((0..WINDOW as i32).contains(&dx) && (0..WINDOW as i32).contains(&dz));
         dz as usize * WINDOW + dx as usize
+    }
+
+    /// A number no other region of this process has, never 0: a feature that remembers
+    /// [`StateKey`]s or interned ids from one placement to the next tags them with it, since
+    /// both name states only within one region.
+    pub fn serial(&self) -> u64 {
+        self.serial
     }
 
     pub fn center(&self) -> ChunkPos {
