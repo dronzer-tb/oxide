@@ -796,3 +796,11 @@ it. Built and run under the shared lock at nice 10:
 both landings. (Not a timing: shared lock, box not quiet.) A first attempt without
 `--world/--center-x/--center-z` stopped at argument parsing and generated nothing. The
 scratch worktree `/tmp/pgm` and box dir `noise-pgm` are removed.
+
+| # | What | Holds | Bases | Patched | Digest | Verdict |
+|---|---|---|---|---|---|---|
+| 21 (n21) | **Bundle** of 20b (fixed-width `lerp_cell_fixed` for cell widths 4/8; `run_cell` registers and `range_choice` scratch via `Scratch::overwritten`, not zeroed per cell), 20c (borrow-free per-slot vein memo: `Cell` tags plus `OnceCell<Box<[Cell<f64>]>>` values, inlined hit path, out-of-line `fill_memo`), and the 2D column cache's `vec![None; COLUMNS]` taken from the scratch pool (new `pooled!(Option<f64>)`; `Scratch::filled` gives exactly `vec![None; n]`). All exact; no float operation changes. Tests: on ef9a35f noise 43, chunkgen 192 + 1 + 1 + 1; on perf/noise (with 20a) noise 45, chunkgen 190 + 1 + 1 + 1 | 4 rounds, radius 12, rotating, against shipb1/shipb2 (ef9a35f), 1 thread and 8 threads | 1 t gen_cpu_s 5.53, 5.43; 8 t 6.36, 6.88 | 1 t **5.21**; 8 t 6.58 | r12 `582147091732a06d` x24; r16 `a977961a58122047` on ef9a35f+21 and on perf/noise+21 | **landed (ac68e26)**: 1 thread -5.8% / -4.1%, **lower than both in 4/4 rounds** (per round n21 5.27/5.12/5.34/5.11 against shipb1 5.55/5.43/5.70/5.44 and shipb2 5.66/5.24/5.51/5.31); `cpu_s` lower in 4/4 against both. 8 threads (regression check): +3.5% / -4.4%, 2/4 each; one n21 outlier round (8.33 against 5.76-6.41); `cpu_s` -1.3% / -4.1%. No regression visible above the 8-thread spread |
+
+The bundle was held on ef9a35f without 20a (07a6727). The two touch disjoint files (20a: `improved_noise`, `perlin_noise`, `blended_noise`; 21: `cache`, `compiled`, `router`, `scratch`), and 21 applied cleanly on 07a6727. 20b/20c's separate wip patches are superseded by this landing.
+
+**Next:** re-profile the shipping tree with 20a + 21 merged (datapath to merge `perf/noise`) and take new bases from it. What remains in this crate is the corner grid's hash and lerp phases (20a vectorised only the coordinate phase cleanly) and the vein corner-grid builds (~2%, from 20c's counters).
