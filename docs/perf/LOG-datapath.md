@@ -1974,3 +1974,16 @@ Rerun: generation-only CPU-s, 4 rounds, java at most 0.40 CPU-s per run. All `di
 
 -6.7% against the bases' mean, -3.6% against the faster base; below both in 3 of 4. The two bases differ by
 6.6% here, unusually wide. A candidate; the 8-thread hold is next.
+
+### Stack of E34 + E35 + E36 on the new base (auditor: one stack hold, not three re-holds)
+
+The lock is scarce: E36's 8-thread hold has waited ~25 min. E34, E35 and E36 touch different files
+(`fill.rs`/`ore_veins.rs`, `surface.rs`, `carver.rs`), so they are held once as a stack, as noise did
+with its bundle 21:
+- **New base:** head + `origin/perf/noise` at c17f4ed (ac68e26 cheaper cell path, with 07a6727 block Perlin
+  kernel), merged in the scratch tree `/tmp/datapath-nb3`. Two base builds, `datapath-nb3a` and `datapath-nb3b`.
+- **Stack:** the new base + `pending-E34` + `pending-E35` + `pending-E36`, all applied clean (`/tmp/datapath-stk`).
+- **Order:** after E36's 8-thread hold releases, test the stack and the new base, build all three, then hold the stack
+  once, 4 rounds at 1 thread and 6 at 8, on `gen_cpu_s`.
+- **Rule:** if the stack is below both bases in every 1-thread round, run the pregen digest on a pipeline-merged
+  tree and land all three. Split them only if the stack disappoints.
