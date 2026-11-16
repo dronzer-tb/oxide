@@ -1902,3 +1902,27 @@ as with z-run bounds and visited-first. **Not held, not kept**; patch at
 
 **Ores are closed.** Three in-loop formulations end the same way: once the arithmetic goes, ore cost is
 cache-missing reads of the visited set and block data, which the loop structure cannot remove.
+
+## Headline: decorated pregen at 8 threads on the merged head (k1 = branch + datapath 323b9d4)
+
+origin/perf/noise 4aee7cf differs from datapath 323b9d4 by one docs commit, so k1 (0b56ce5) holds every
+track's kept code. `bench-ab-pregen-vps.sh 16 8 6 pipeline-k1` (single tree, exclusive lock, `--no-write`):
+
+| run | cps | generate_ms | decorate_ms | serialise_ms | compress_ms | cpu_user_s | cpu_sys_s |
+|---|---|---|---|---|---|---|---|
+| 1 | 384.0 | 1760 | 895 | 92 | 89 | 21.11 | 2.10 |
+| 2 | 373.4 | 1745 | 999 | 87 | 86 | 21.85 | 1.89 |
+| 3 | 355.0 | 1805 | 919 | 121 | 223 | 22.63 | 1.57 |
+| 4 | 377.3 | 1917 | 790 | 82 | 97 | 22.37 | 1.59 |
+| 5 | 342.3 | 2162 | 842 | 96 | 82 | 24.25 | 1.60 |
+| 6 | 362.7 | 1801 | 984 | 98 | 119 | 22.56 | 1.42 |
+
+Mean **366 cps** (342-384), digest df701ee858e2bdd3 on every row, sys 1.4-2.1 s on every row (no
+spikes since the arena fix), java_cpu_s_per_10s 0.00 (no Java CPU during the hold). Previous
+headline 335 cps (b2bdac5) was measured with the mprotect contention present.
+
+Stage split: generate ~1.83 s (62%, other tracks), decorate ~0.90 s (31%), serialise + compress
+~0.19 s. PumpkinMC terrain-only ~404 cps on this box (not byte exact): the byte-exact decorated
+pipeline is ~9% short. Our track's remaining levers are each under 1% of run CPU (profile above), so
+the rest of the gap sits mainly in generation and in oxide-core (`pack_bits`, palette/index arrays,
+~2%), both outside this track's files.
