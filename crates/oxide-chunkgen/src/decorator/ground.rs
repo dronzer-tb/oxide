@@ -30,6 +30,8 @@ mod underwater_magma;
 #[cfg(test)]
 mod tests;
 
+use std::borrow::Cow;
+
 use anyhow::{anyhow, Result};
 use oxide_core::{BlockPos, BlockState, ResourceLocation};
 use oxide_datapack::feature::ConfiguredFeature;
@@ -162,7 +164,16 @@ fn provide(
     provider: &StateProvider,
     pos: BlockPos,
 ) -> Option<BlockState> {
-    match provider.state(cx, pos) {
+    provide_cow(cx, provider, pos).map(Cow::into_owned)
+}
+
+/// [`provide`], borrowing the provider's state where it can (see `StateProvider::state_cow`).
+fn provide_cow<'p>(
+    cx: &mut FeatureContext<'_, '_, '_>,
+    provider: &'p StateProvider,
+    pos: BlockPos,
+) -> Option<Cow<'p, BlockState>> {
+    match provider.state_cow(cx, pos) {
         Ok(Some(state)) => Some(state),
         Ok(None) => {
             cx.unsupported.record("provider", "no state for position");

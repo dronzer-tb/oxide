@@ -61,9 +61,9 @@ impl DiskFeature {
             while y > bottom {
                 let pos = BlockPos::new(x, y, z);
                 if self.target.test(cx, pos) {
-                    match self.provider.state(cx, pos) {
+                    match self.provider.state_cow(cx, pos) {
                         Ok(Some(state)) => {
-                            cx.region.set_block(pos, state);
+                            cx.region.set_block_ref(pos, &state);
                             placed = true;
                         }
                         Ok(None) => {}

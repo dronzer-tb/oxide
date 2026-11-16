@@ -525,7 +525,7 @@ pub fn place_configured_feature(feature: &Feature, cx: &mut FeatureContext<'_, '
 /// not placed rather than guessed. Vanilla's scheduled tick is not recorded.
 fn place_simple_block(provider: &StateProvider, cx: &mut FeatureContext<'_, '_, '_>) -> bool {
     let pos = cx.origin;
-    let state = match provider.state(cx, pos) {
+    let state = match provider.state_cow(cx, pos) {
         Ok(Some(state)) => state,
         Ok(None) => return false,
         Err(Unsupported(why)) => {
@@ -546,15 +546,15 @@ fn place_simple_block(provider: &StateProvider, cx: &mut FeatureContext<'_, '_, 
         .get("half")
         .is_some_and(|half| half == "lower")
     {
-        return place_two_block_plant(cx, state, pos);
+        return place_two_block_plant(cx, &state, pos);
     }
-    cx.region.set_block(pos, state)
+    cx.region.set_block_ref(pos, &state)
 }
 
 /// `DoublePlantBlock.placeAt`, behind `SimpleBlockFeature`'s check that the cell above is empty.
 fn place_two_block_plant(
     cx: &mut FeatureContext<'_, '_, '_>,
-    state: BlockState,
+    state: &BlockState,
     pos: BlockPos,
 ) -> bool {
     let above = BlockPos::new(pos.x, pos.y + 1, pos.z);

@@ -15,7 +15,7 @@ use super::super::context::FeatureContext;
 use super::super::predicate::Predicate;
 use super::super::provider::sample_int;
 use super::super::state_provider::StateProvider;
-use super::provide;
+use super::provide_cow;
 
 #[derive(Debug)]
 struct Layer {
@@ -97,10 +97,10 @@ impl BlockColumnFeature {
         let mut pos = origin;
         for (layer, height) in self.layers.iter().zip(heights) {
             for _ in 0..height {
-                let Some(state) = provide(cx, &layer.provider, pos) else {
+                let Some(state) = provide_cow(cx, &layer.provider, pos) else {
                     return false;
                 };
-                cx.region.set_block(pos, state);
+                cx.region.set_block_ref(pos, &state);
                 pos = advance(pos);
             }
         }

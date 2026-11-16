@@ -8,6 +8,7 @@
 //! The three noise providers are complete: they sample an `oxide_noise::NormalNoise` seeded
 //! from a legacy random source with the provider's own `seed`, exactly as vanilla constructs it.
 
+use std::borrow::Cow;
 use std::str::FromStr;
 
 use anyhow::{anyhow, bail, Result};
@@ -226,8 +227,19 @@ impl StateProvider {
         cx: &mut FeatureContext<'_, '_, '_>,
         pos: BlockPos,
     ) -> Result<Option<BlockState>, Unsupported> {
+        Ok(self.state_cow(cx, pos)?.map(Cow::into_owned))
+    }
+
+    /// [`Self::state`], borrowing the provider's own state where it names one rather than
+    /// cloning it: same draws, same answer. A caller that only writes the state (with
+    /// `set_block_ref`) then makes no copy at all.
+    pub fn state_cow(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        pos: BlockPos,
+    ) -> Result<Option<Cow<'_, BlockState>>, Unsupported> {
         Ok(match self {
-            Self::Simple(state) => Some(state.clone()),
+            Self::Simple(state) => Some(Cow::Borrowed(state)),
             Self::Weighted { entries, total } => {
                 if *total <= 0 {
                     return Ok(None);
@@ -238,7 +250,7 @@ impl StateProvider {
                 for (state, weight) in entries {
                     remaining -= weight;
                     if remaining < 0 {
-                        chosen = Some(state.clone());
+                        chosen = Some(Cow::Borrowed(state));
                         break;
                     }
                 }
@@ -267,18 +279,18 @@ impl StateProvider {
                         ));
                     }
                 }
-                Some(state)
+                Some(Cow::Owned(state))
             }
             Self::RuleBased { fallback, rules } => {
                 for (predicate, provider) in rules {
                     if predicate.test(cx, pos) {
-                        if let Some(state) = provider.state(cx, pos)? {
+                        if let Some(state) = provider.state_cow(cx, pos)? {
                             return Ok(Some(state));
                         }
                     }
                 }
                 match fallback {
-                    Some(fallback) => fallback.state(cx, pos)?,
+                    Some(fallback) => fallback.state_cow(cx, pos)?,
                     None => None,
                 }
             }
@@ -286,7 +298,9 @@ impl StateProvider {
                 if states.is_empty() {
                     return Err(Unsupported("noise_provider without states"));
                 }
-                Some(states[pick_by_noise(states.len(), source.value(pos))].clone())
+                Some(Cow::Borrowed(
+                    &states[pick_by_noise(states.len(), source.value(pos))],
+                ))
             }
             Self::NoiseThreshold {
                 source,
@@ -300,14 +314,18 @@ impl StateProvider {
                     if low.is_empty() {
                         return Err(Unsupported("noise_threshold_provider without low states"));
                     }
-                    Some(low[cx.random.next_int_bounded(low.len() as i32) as usize].clone())
+                    Some(Cow::Borrowed(
+                        &low[cx.random.next_int_bounded(low.len() as i32) as usize],
+                    ))
                 } else if cx.random.next_float() < *high_chance {
                     if high.is_empty() {
                         return Err(Unsupported("noise_threshold_provider without high states"));
                     }
-                    Some(high[cx.random.next_int_bounded(high.len() as i32) as usize].clone())
+                    Some(Cow::Borrowed(
+                        &high[cx.random.next_int_bounded(high.len() as i32) as usize],
+                    ))
                 } else {
-                    Some(default.clone())
+                    Some(Cow::Borrowed(default))
                 }
             }
             Self::DualNoise {
@@ -341,7 +359,9 @@ impl StateProvider {
                     pos.y,
                     pos.z.wrapping_add(picked.wrapping_mul(34234)),
                 );
-                Some(states[pick_by_noise(states.len(), slow.slow_value(shifted))].clone())
+                Some(Cow::Borrowed(
+                    &states[pick_by_noise(states.len(), slow.slow_value(shifted))],
+                ))
             }
             Self::Unsupported(why) => return Err(Unsupported(why)),
         })

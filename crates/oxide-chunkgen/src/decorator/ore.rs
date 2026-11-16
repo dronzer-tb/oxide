@@ -277,7 +277,10 @@ impl OreFeature {
     ) -> bool {
         let count = self.size.max(0) as usize;
         // Per sphere: centre x, y, z and radius, the radius going negative once it is swallowed.
-        let mut spheres = vec![[0f64; 4]; count];
+        // The list is kept per thread from blob to blob: a run places a hundred thousand blobs.
+        let mut spheres = SPARE_SPHERES.with(Cell::take);
+        spheres.clear();
+        spheres.resize(count, [0f64; 4]);
         for (index, sphere) in spheres.iter_mut().enumerate() {
             let along = index as f32 / self.size as f32;
             let t = f64::from(along);
@@ -340,7 +343,7 @@ impl OreFeature {
         }
         let OreMemo { ids, matches, .. } = &mut memo;
         // Masks hold one bit per target; more than 64 targets falls back to the plain path.
-        for [sx, sy, sz, radius] in spheres {
+        for &[sx, sy, sz, radius] in &spheres {
             if radius < 0.0 {
                 continue;
             }
@@ -392,6 +395,7 @@ impl OreFeature {
         }
         ORE_MEMOS.with(|memos| memos.borrow_mut().push(memo));
         tested.give_back();
+        SPARE_SPHERES.with(|spare| spare.set(spheres));
         placed > 0
     }
 
@@ -537,6 +541,11 @@ fn is_adjacent_to_air(region: &DecorationRegion<'_>, pos: BlockPos) -> bool {
 
 /// A growable bit set keyed by a signed index, like `java.util.BitSet`.
 struct BitSet(Vec<u64>);
+
+thread_local! {
+    /// The last blob's sphere list, emptied, for the next blob to fill (see `place_blob`).
+    static SPARE_SPHERES: Cell<Vec<[f64; 4]>> = const { Cell::new(Vec::new()) };
+}
 
 thread_local! {
     /// The last blob's [`BitSet`] words, emptied, for the next blob to grow into without

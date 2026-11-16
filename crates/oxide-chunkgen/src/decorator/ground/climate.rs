@@ -21,12 +21,12 @@
 use std::sync::LazyLock;
 
 use anyhow::{bail, Result};
-use oxide_core::{BlockPos, LegacyRandom};
+use oxide_core::{BlockPos, BlockState, LegacyRandom};
 use oxide_datapack::{Biome, BlockFact};
 
 use super::super::context::{block_in, FeatureContext};
 use super::super::simplex::{info_noise, SimplexNoise};
-use super::{default_state, is_air, is_block};
+use super::{is_air, is_block};
 
 /// `Biome.TEMPERATURE_NOISE`.
 static HEIGHT_NOISE: LazyLock<SimplexNoise> =
@@ -157,7 +157,7 @@ pub fn should_freeze(
 /// `Biome.shouldSnow(level, pos)` for the biome at `pos`: snow falls here and a snow layer could
 /// be placed, which needs air (or snow) at `pos` and the layer's survival rule to hold. An
 /// unknown survival rule is tallied and counts as no.
-pub fn should_snow(cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos) -> bool {
+pub fn should_snow(cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos, snow: &BlockState) -> bool {
     let Some(climate) = climate_at(cx, pos) else {
         return false;
     };
@@ -167,10 +167,7 @@ pub fn should_snow(cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos) -> bool {
     if !(is_air(cx, pos) || is_block(block_in(cx.region, pos), "snow")) {
         return false;
     }
-    let Ok(snow) = default_state(&cx.env.facts, "snow") else {
-        return false;
-    };
-    match cx.env.behaviours.can_survive(&snow, cx.region, pos) {
+    match cx.env.behaviours.can_survive(snow, cx.region, pos) {
         Some(survives) => survives,
         None => {
             cx.unsupported.record("survival", "minecraft:snow");

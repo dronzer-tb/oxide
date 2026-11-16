@@ -42,10 +42,11 @@ impl FreezeTopLayerFeature {
                 if should_freeze(cx, top, below, false) {
                     cx.region.set_block_ref(below, &self.ice);
                 }
-                if should_snow(cx, top) {
+                if should_snow(cx, top, &self.snow) {
                     cx.region.set_block_ref(top, &self.snow);
-                    let mut under = block_in(cx.region, below).clone();
+                    let under = block_in(cx.region, below);
                     if under.properties.contains_key("snowy") {
+                        let mut under = under.clone();
                         under
                             .properties
                             .insert("snowy".to_string(), "true".to_string());

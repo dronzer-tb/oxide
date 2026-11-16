@@ -677,13 +677,31 @@ impl<'a> DecorationRegion<'a> {
         for chunk in self.chunks {
             for section in &chunk.sections {
                 let palette = section.biomes.palette();
-                let mut used = vec![false; palette.len()];
-                for &index in section.biomes.indices() {
-                    used[index as usize] = true;
-                }
-                for (entry, in_use) in palette.iter().zip(used) {
-                    if in_use && !found.contains(&entry) {
+                // The entries in use, as a mask (a biome palette has at most 64 entries in use,
+                // one per quart; a longer one falls back to a list), walked in palette order.
+                let mut add = |entry: &'a BiomeId| {
+                    if !found.contains(&entry) {
                         found.push(entry);
+                    }
+                };
+                if palette.len() <= 64 {
+                    let mut used = 0u64;
+                    for &index in section.biomes.indices() {
+                        used |= 1 << index;
+                    }
+                    while used != 0 {
+                        add(&palette[used.trailing_zeros() as usize]);
+                        used &= used - 1;
+                    }
+                } else {
+                    let mut used = vec![false; palette.len()];
+                    for &index in section.biomes.indices() {
+                        used[index as usize] = true;
+                    }
+                    for (entry, in_use) in palette.iter().zip(used) {
+                        if in_use {
+                            add(entry);
+                        }
                     }
                 }
             }

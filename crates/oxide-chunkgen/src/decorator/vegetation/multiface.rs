@@ -128,11 +128,12 @@ impl MultifaceFeature {
                 .filter(|&dir| dir != search.opposite())
                 .collect();
             shuffle(&mut placement, &mut *cx.random);
+            // Vanilla's `setWithOffset(origin, search)` restarts from the origin every
+            // iteration, so the search looks at the same neighbour `search_range` times. A
+            // failed growth writes nothing, so that neighbour's state is read (and copied) once.
+            let pos = relative(origin, search, 1);
+            let state = block_in(cx.region, pos).clone();
             for _ in 0..self.search_range {
-                // Vanilla's `setWithOffset(origin, search)` restarts from the origin every
-                // iteration, so the search looks at the same neighbour `search_range` times.
-                let pos = relative(origin, search, 1);
-                let state = block_in(cx.region, pos).clone();
                 if !self.air_or_water(cx, pos) && !self.is_block(&state) {
                     break;
                 }

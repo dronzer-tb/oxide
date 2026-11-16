@@ -572,8 +572,8 @@ fn place_on_ground(
             continue;
         };
         if surface <= above.y {
-            let state = run.sample(provider, above)?;
-            run.set(Layer::Decoration, above, state);
+            let state = run.sample_cow(provider, above)?;
+            run.set_ref(Layer::Decoration, above, &state);
         }
     }
     Ok(())

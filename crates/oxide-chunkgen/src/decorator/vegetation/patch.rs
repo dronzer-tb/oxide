@@ -210,7 +210,7 @@ impl PatchFeature {
             return self.place_simple_ground(cx, below, depth, state, ground);
         }
         for step in 0..depth {
-            let state = match self.ground.state(cx, below) {
+            let state = match self.ground.state_cow(cx, below) {
                 Ok(Some(state)) => state,
                 Ok(None) => return false,
                 Err(Unsupported(why)) => {
@@ -223,7 +223,7 @@ impl PatchFeature {
                 if !self.replaceable.contains_block(cx.env, &existing.name) {
                     return step != 0;
                 }
-                cx.region.set_block(below, state);
+                cx.region.set_block_ref(below, &state);
                 below = relative(below, self.inwards, 1);
             }
         }

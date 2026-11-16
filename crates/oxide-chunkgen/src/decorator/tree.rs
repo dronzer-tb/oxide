@@ -467,6 +467,23 @@ impl<'c, 'e, 'a, 'r> Run<'c, 'e, 'a, 'r> {
         self.cx.region.set_block_id(pos, id);
     }
 
+    /// [`Self::sample`], borrowing the provider's state where it can.
+    pub fn sample_cow<'p>(
+        &mut self,
+        provider: &'p StateProvider,
+        p: BlockPos,
+    ) -> Res<std::borrow::Cow<'p, BlockState>> {
+        provider
+            .state_cow(self.cx, p)?
+            .ok_or(Unsupported("state provider produced no state"))
+    }
+
+    /// [`Self::set`] for a state the caller keeps.
+    pub fn set_ref(&mut self, layer: Layer, p: BlockPos, state: &BlockState) -> bool {
+        self.record(layer, p);
+        self.cx.region.set_block_ref(p, state)
+    }
+
     pub fn sample(&mut self, provider: &StateProvider, p: BlockPos) -> Res<BlockState> {
         provider
             .state(self.cx, p)?
