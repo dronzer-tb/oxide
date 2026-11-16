@@ -1311,3 +1311,19 @@ lichen/geode patch, without its caches.
 
 -4.2% decorate ahead 2/3; user CPU -3.0% but ahead only 1/3. Glow lichen is ~4.4% of decorate CPU, so
 the true effect is at most that; this hold cannot tell. Second base queued. Digest held; tests 195 pass.
+
+### Glow lichen early stop, base 2 (order reversed): +0.4%; rejected
+
+pipeline-b8 = pipeline-b7 + sculk round 2 (= branch head 8d1ba38 merged with datapath **464c8d4**);
+pipeline-gs8 adds ee0ce0d.
+
+| | run 1 | run 2 | run 3 | mean |
+|---|---|---|---|---|
+| stop decorate_ms (run first) | 8164 | 8470 | 7591 | 8075 |
+| base decorate_ms | 7932 | 8492 | 7715 | 8046 |
+| stop / base cpu_user_s | 24.66 / 23.06 | 25.12 / 24.94 | 23.27 / 23.85 | 24.35 / 23.95 |
+| java_cpu_s_per_10s | 0.32 / 0.21 | 0.26 / 0.29 | 0.21 / 0.28 | |
+
++0.4% decorate, +1.7% user CPU. Over both bases the change is inside noise: the repeated pass is
+rarely reached (most searches break on a non-air neighbour first). **Rejected**; patch at
+`docs/perf/rejected-lichen-early-stop.patch`. Digest held.

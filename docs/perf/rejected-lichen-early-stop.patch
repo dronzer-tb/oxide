@@ -1,0 +1,51 @@
+From ee0ce0da3903ddac24f8bc03eb7a6c9b79e56070 Mon Sep 17 00:00:00 2001
+From: Kasniya <36neelansh@gmail.com>
+Date: Mon, 16 Nov 2026 06:18:53 +0000
+Subject: [PATCH] perf(lichen): stop the repeated search pass once a pass fails
+ quietly
+
+---
+ crates/oxide-chunkgen/src/decorator/context.rs             | 5 +++++
+ .../oxide-chunkgen/src/decorator/vegetation/multiface.rs   | 7 +++++++
+ 2 files changed, 12 insertions(+)
+
+diff --git a/crates/oxide-chunkgen/src/decorator/context.rs b/crates/oxide-chunkgen/src/decorator/context.rs
+index 833be6d..c8a5ae5 100644
+--- a/crates/oxide-chunkgen/src/decorator/context.rs
++++ b/crates/oxide-chunkgen/src/decorator/context.rs
+@@ -57,6 +57,11 @@ impl UnsupportedTally {
+         *self.0.entry(format!("{category}:{detail}")).or_insert(0) += 1;
+     }
+ 
++    /// How many records have been made, over every key.
++    pub fn records(&self) -> u64 {
++        self.0.values().sum()
++    }
++
+     pub fn merge(&mut self, other: &UnsupportedTally) {
+         for (key, count) in &other.0 {
+             *self.0.entry(key.clone()).or_insert(0) += count;
+diff --git a/crates/oxide-chunkgen/src/decorator/vegetation/multiface.rs b/crates/oxide-chunkgen/src/decorator/vegetation/multiface.rs
+index 563518b..5fe68e6 100644
+--- a/crates/oxide-chunkgen/src/decorator/vegetation/multiface.rs
++++ b/crates/oxide-chunkgen/src/decorator/vegetation/multiface.rs
+@@ -136,9 +136,16 @@ impl MultifaceFeature {
+                 if !self.air_or_water(cx, pos) && !self.is_block(&state) {
+                     break;
+                 }
++                let records = cx.unsupported.records();
+                 if self.place_growth(cx, pos, &state, &placement) {
+                     return true;
+                 }
++                // A failed growth wrote and drew nothing. Unless it also tallied, the next pass
++                // reads the same cell with the same directions and fails the same way, so every
++                // remaining pass is a no-op.
++                if cx.unsupported.records() == records {
++                    break;
++                }
+             }
+         }
+         false
+-- 
+2.43.0
+
