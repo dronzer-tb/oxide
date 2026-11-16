@@ -866,3 +866,48 @@ So ~70-87% of each vein grid is never read. But the unread corners were already 
 - **Phase 3:** already packed across lanes, but `grad_dot`'s selection compiled to an emulated gather (40 `vpextrb`, 43 `vmovsd`, 24 `vmovhps`, 21 `vinsertf128`). 22a removed that gather entirely (`vpsllvd`/`vpsrad`, 36 `vmulpd`, 24 `vaddpd`), and it bought nothing measurable. On Zen 1 the 256-bit integer shifts cost about what the scalar loads did, and phase 3 is not the bottleneck.
 
 **Remaining leads in the kernel:** phase 1's scalar saturating casts. A packed `vcvttpd2dq` is exact wherever every lane is finite and inside the i32 range, which wrapped coordinates plus offsets always are, with a scalar fallback otherwise. It is small and likely below hold resolution.
+
+### 23: larger corner-column cache: no effect on misses (deterministic count, no hold needed)
+
+The question was whether the 22,220 evictions per radius-16 run (1 thread) are capacity misses. On
+the shipping tree, `COLUMN_SETS` 128 → 512 (4x capacity), 1 thread, `OXIDE_CORNER_STATS=1`,
+untimed under the shared lock:
+
+| | hits | misses | evictions |
+|---|---|---|---|
+| r16, 128 sets (every hold so far) | 63,296 | 53,728 | 22,220 |
+| r16, 512 sets | 63,302 | **53,722** | 1,073 |
+| r12, 128 sets | 37,101 | 31,907 | 5,881 |
+| r12, 512 sets | 37,101 | **31,907** | 113 |
+
+The evictions nearly vanish but the misses don't move, so every evicted column was already dead.
+The 54% hit rate is the compulsory limit of this generation order (each edge column is shared by
+at most 2 or 4 chunks). Cache capacity offers nothing; the patch is not kept. Digests
+`a977961a58122047` / `582147091732a06d`. The only way to fewer corner evaluations is evaluating
+fewer columns or layers per chunk, i.e. 22b's finding: the unread corners are already cheap.
+
+## Handover, session 5 (end of round 3)
+
+`perf/noise` code head: **ac68e26**. This session landed:
+- b889079 (scratch pool);
+- 07a6727 (block noise kernel, 20a);
+- ac68e26 (bundle 21: per-block cell path, vein memo hits, pooled 2D cache).
+
+All are exact, and all have the harness digest and the pregen digest on a pipeline-merged tree.
+Rejected, with patches in wip: 17, 22a, 22b, 23. The shipping tree for holds is datapath's head
+c34e27b plus `oxide-noise` ac68e26, with bases `ab-bin/shipc1`/`shipc2` on the box.
+
+The noise share is 41.9% of generation, and the rest of it is below hold resolution item by item:
+- **Kernel leaf math:** the coordinate and dot phases already pack. The remaining scalar part is
+  the saturating casts, est. <1%.
+- **Corner-cache sharing:** at its compulsory limit (23).
+- **Vein builds:** ceiling 2.2% (22b).
+- **Per-block cell path and vein hits:** landed in 21.
+
+**Next, if continued:** structural work, not micro-optimisation:
+1. Measure the noodle grids' laziness trade (22b's pointer: ~456 of 1,225 corners read, ~27 ms
+   per grid) with shared columns kept for the read layers.
+2. Find out why `run_lanes`/`run_subset` interpreter overhead shows in the grid (`[ext]` 2.5%,
+   the `[i32; 3]` memo compare 0.4%); a per-program specialised lane loop might cut it.
+3. Datapath's own areas (surface 16-20%, aquifer, carvers) are now the larger share of
+   generation.
