@@ -1135,3 +1135,20 @@ pipeline-b4 = this branch at b793819 (overlay + trees) merged with origin/perf/d
 
 +1.4% decorate, +0.7% user CPU, behind 2/3; base 1 was -8.4% ahead 3/3. The bases disagree, so a
 repeat hold on base 2 decides. Digest held; tests 194 pass.
+
+## Profile of the branch head (overlay + trees; datapath f52ccea), split timers + ore cell counts
+
+Lite split profile (feature wall time; no call counting), 1 thread r16, digest df701ee858e2bdd3:
+decorate CPU **7344 ms** (was 9328 at the first lite profile). Top: sculk 906 (12.3%), ore_clay 530,
+ore_tuff 380, ore_diorite_lower 373, dark_forest_vegetation 372, ore_granite_lower 370,
+ore_andesite_lower 349, glow_lichen 347, lush ceiling 346, ore_gravel 260, geode 239. The ores
+together are about 2.6 s, roughly 35%, all in the feature body.
+
+Ore cell counters (temporary, in `place_blob`), whole run:
+
+    blobs=130258 box_cells=66365335 in_sphere=36832030 fresh=10144191 written=7988750
+
+- Ores write 8.0M cells = ~6500 per region, most of the ~7500 decoration writes per region.
+- The box loop visits 66M cells (one f64 division each); 36.8M fall inside a sphere; only 10.1M are
+  new to the bitset. The z-run change (the ore.rs half of b6141b6) was held before the dense overlay,
+  when hashing hid the loop cost; it is held again on the current base.
