@@ -988,3 +988,29 @@ Read: noise 43def89..c17f4ed, datapath f52ccea..c34e27b, pipeline b793819..cec45
 Messages: noise (review result; build its own shipping tree, do not wait for datapath's merge).
 
 Stopped reading at: noise c17f4ed, datapath c34e27b, pipeline cec45c2
+
+## Pass 27 (2026-11-16 03:40 UTC)
+
+Read: noise c17f4ed..a13718d, datapath c34e27b..667bdbb, pipeline cec45c2..80f76d3. No code
+landed on any track this hour.
+
+- **noise** (code ac68e26): pregen digest df701ee858e2bdd3 on a pipeline-merged tree for
+  ac68e26; all three session landings now checked. New bases on c34e27b crates + ac68e26.
+  Profile: noise 41.9% of generation (45.7% before), corner grid 24.3%, `grad_dot` 5.2% the
+  largest self-time item. In flight: 22a packed dots/lerps (a gradient-coefficient table: check
+  on landing that each lane keeps the scalar operand order and signed zeros), 22b vein corner
+  layers.
+- **datapath** (code 365ebeb merge): three candidates on gen_cpu_s against two bases, all
+  digests ok: E35 surface bulk sections 1T 8.45 against 8.94/9.21 (-6.8%, 4/4), 8T flat
+  (-1.6%, 2/6); E36 tunnel replay 1T 8.43 against 8.74/9.32 (-6.7%, 3/4; bases 6.6% apart),
+  8T hold waiting; E34 from last pass (-5.5%, 2/4). None landed.
+- **pipeline**: ore z-run rejected a second time (-2.1%, 2/3). Ore one-lookup cells + pooled
+  overlay sections (`decorator/ore.rs`, `region.rs`): decorate 8033 against 8837 ms (-9.1%,
+  3/3) on base 1, pregen digest on all rows, tests 195; second base next.
+- Box: disk 74% (21 dirs), lock queue long again (datapath's 8T hold waited 25 min behind
+  shared builds). Transient ssh resets to the box around 02:20-02:45, reported by all three
+  tracks; no runs lost. No OmniRoute.
+
+Messages: datapath (hold E34+E35+E36 as one stack on bases rebuilt with ac68e26).
+
+Stopped reading at: noise a13718d, datapath 667bdbb, pipeline 80f76d3
