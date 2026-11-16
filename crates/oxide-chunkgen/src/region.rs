@@ -21,7 +21,7 @@ const WINDOW: usize = 48;
 /// `written_top` for a column decoration has not written.
 const NEVER_WRITTEN: i32 = i32::MIN;
 /// Writes to reserve room for up front: a region averages about 7.5k at radius 16.
-const RESERVED_WRITES: usize = 8000;
+const RESERVED_WRITES: usize = 8192;
 /// Cells in one 16x16x16 section.
 const SECTION_CELLS: usize = 4096;
 
@@ -122,6 +122,34 @@ impl StateKey {
     }
 }
 
+/// `writes` with its reserved room mapped up front. The write lists outlive their regions (the
+/// decoration cache keeps them), so each region's list is fresh memory, and a store to a page
+/// not yet touched traps into the kernel: one fault per 256 writes, about 30 per region. Asking
+/// for all of them in one `madvise(MADV_POPULATE_WRITE)` call costs one trap instead. Kernels
+/// without it refuse the call, and the pages then fault in on first use as before.
+#[allow(unused_mut)]
+fn prefaulted<T>(mut list: Vec<T>) -> Vec<T> {
+    #[cfg(target_os = "linux")]
+    {
+        extern "C" {
+            fn madvise(addr: *mut u8, len: usize, advice: i32) -> i32;
+        }
+        const MADV_POPULATE_WRITE: i32 = 23;
+        const PAGE: usize = 4096;
+        let base = list.as_mut_ptr() as usize;
+        let start = (base + PAGE - 1) & !(PAGE - 1);
+        let end = (base + list.capacity() * std::mem::size_of::<T>()) & !(PAGE - 1);
+        if end > start {
+            // SAFETY: the range lies inside `list`'s allocation, and populating pages leaves
+            // their contents (none yet initialised) as they are.
+            unsafe {
+                madvise(start as *mut u8, end - start, MADV_POPULATE_WRITE);
+            }
+        }
+    }
+    list
+}
+
 /// The last [`DecorationRegion::serial`] handed out.
 static REGION_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -182,7 +210,7 @@ impl<'a> DecorationRegion<'a> {
             overlay: (0..9 * ((middle.height + 15) >> 4) as usize)
                 .map(|_| None)
                 .collect(),
-            writes: Vec::with_capacity(RESERVED_WRITES),
+            writes: prefaulted(Vec::with_capacity(RESERVED_WRITES)),
             states: Vec::new(),
             state_ids: AHashMap::default(),
             state_facts: Vec::new(),
