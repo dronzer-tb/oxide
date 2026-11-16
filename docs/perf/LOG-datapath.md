@@ -2030,3 +2030,24 @@ E36 lost all six of its own 8-thread rounds, so landing all three on the 1-threa
 land a cut at 1 thread that costs at 8. One more hold splits it: E34 + E35 without E36, against the same
 two bases, 4 rounds at 1 thread and 6 at 8. If that holds at 1 thread and is not worse at 8, E34 + E35 land
 after the pregen digest, and E36 stays parked for a smaller or cross-thread cache.
+
+### E34 + E35 without E36: -8.6% at 1 thread (4 of 4), -10.2% at 8 threads (5 of 6)
+
+Tests: chunkgen 193 passed. The same two new bases; generation-only CPU-s; java at most 0.25 CPU-s per run.
+All `digest=a977961a58122047`.
+
+| | r1 | r2 | r3 | r4 | r5 | r6 | mean | cps |
+|---|---|---|---|---|---|---|---|---|
+| 1 thread: base A | 7.83 | 8.16 | 7.91 | 7.80 | | | 7.93 | 137.4 |
+| 1 thread: base B | 8.37 | 8.34 | 8.14 | 8.30 | | | 8.29 | 131.3 |
+| 1 thread: E34+E35 | 7.62 | 7.06 | 7.37 | 7.57 | | | **7.41** | **147.2** |
+| 8 threads: base A | 8.97 | 10.45 | 8.69 | 9.62 | 9.48 | 10.58 | 9.63 | 871.9 |
+| 8 threads: base B | 10.04 | 8.80 | 11.34 | 10.78 | 9.72 | 9.55 | 10.04 | 814.7 |
+| 8 threads: E34+E35 | 7.84 | 8.44 | 8.41 | 9.40 | 9.16 | 9.75 | **8.83** | **940.3** |
+
+- 1 thread: below both bases in **all 4** rounds, -8.6%.
+- 8 threads: below both in **5 of 6**, -10.2% generation CPU, +11% cps against the bases' mean.
+- So E36 was what flattened the stack at 8 threads.
+
+**E34 + E35 land**, after the pregen NBT digest on a pipeline-merged tree. E36 stays parked
+(`pending-E36-...` becomes `parked-E36-...`), to retry with a bounded or shared cache.
