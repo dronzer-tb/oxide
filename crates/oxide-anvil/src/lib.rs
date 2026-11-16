@@ -13,6 +13,7 @@
 
 pub mod error;
 pub mod lock;
+pub mod lz4;
 pub mod nbt;
 pub mod provenance;
 pub mod region;

@@ -172,9 +172,36 @@ pub fn update_chunk_in_place(
 /// scheme the chunk was actually stored with) is handled by `fastanvil::Region::read_chunk`.
 pub fn read_chunk(path: &Path, pos: &ChunkPos) -> Result<Option<Vec<u8>>, AnvilError> {
     let (x, z) = local_coords(pos);
-    let file = File::open(path)?;
+    let mut file = File::open(path)?;
+    if let Some(bytes) = read_lz4_chunk(&mut file, x, z)? {
+        return Ok(Some(bytes));
+    }
+    file.seek(SeekFrom::Start(0))?;
     let mut region = fastanvil::Region::from_stream(file)?;
     Ok(region.read_chunk(x, z)?)
+}
+
+/// The chunk's NBT if it is stored with scheme 4 (LZ4), which `fastanvil` cannot read;
+/// `None` for an absent chunk or any other scheme, left to `fastanvil`.
+fn read_lz4_chunk(file: &mut File, x: usize, z: usize) -> Result<Option<Vec<u8>>, AnvilError> {
+    use std::io::Read;
+    let mut location = [0u8; 4];
+    file.seek(SeekFrom::Start(4 * (x + z * 32) as u64))?;
+    file.read_exact(&mut location)?;
+    let sector = u32::from_be_bytes([0, location[0], location[1], location[2]]) as u64;
+    if sector == 0 {
+        return Ok(None);
+    }
+    let mut header = [0u8; 5];
+    file.seek(SeekFrom::Start(sector * 4096))?;
+    file.read_exact(&mut header)?;
+    if header[4] != 4 {
+        return Ok(None);
+    }
+    let length = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
+    let mut body = vec![0u8; length.saturating_sub(1)];
+    file.read_exact(&mut body)?;
+    Ok(Some(crate::lz4::decode_block_stream(&body)?))
 }
 
 /// Convenience: read a chunk and parse it straight into [`crate::nbt::ChunkNbtRoot`] — what the
