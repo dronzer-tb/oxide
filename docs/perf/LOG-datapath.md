@@ -1987,3 +1987,22 @@ with its bundle 21:
   once, 4 rounds at 1 thread and 6 at 8, on `gen_cpu_s`.
 - **Rule:** if the stack is below both bases in every 1-thread round, run the pregen digest on a pipeline-merged
   tree and land all three. Split them only if the stack disappoints.
+
+### E36 at 8 threads: worse, below both bases in 0 of 6
+
+Generation-only CPU-s, 6 rounds; java at most 0.17 CPU-s per run. All `digest=a977961a58122047`.
+
+| | r1 | r2 | r3 | r4 | r5 | r6 | mean |
+|---|---|---|---|---|---|---|---|
+| base 1 | 11.20 | 10.39 | 9.80 | 10.28 | 10.40 | 11.83 | 10.65 |
+| base 2 | 10.27 | 10.34 | 11.46 | 10.02 | 10.37 | 10.71 | 10.53 |
+| E36 | 10.28 | 10.75 | 10.07 | 11.63 | 10.74 | 12.29 | **10.96** |
+
++3.5% against the bases' mean, and 751.6 cps against 780.7 / 787.8. That is the opposite of its 1-thread -6.7%.
+Likely cause: each rayon thread records its own copy of every tunnel it meets (up to ~12 MB per thread),
+competing with the per-thread memos for Zen 1's 512 KiB L2 and the 8 MiB L3 per CCX.
+
+The stack hold proceeds as planned, all three together. But the plan's gates are 8-thread
+numbers, so **E36 is not landed on a 1-thread result**: if the stack wins at 1 thread but not clearly at
+8, E36 is split out before anything lands. A smaller cache, or one shared across threads, would be the
+retry for E36.
