@@ -1,0 +1,232 @@
+diff --git a/crates/oxide-noise/src/improved_noise.rs b/crates/oxide-noise/src/improved_noise.rs
+index c64e46c..cfa4ea1 100644
+--- a/crates/oxide-noise/src/improved_noise.rs
++++ b/crates/oxide-noise/src/improved_noise.rs
+@@ -233,15 +233,17 @@ impl ImprovedNoise {
+             hash_stats::record(memo.kind, reused);
+             lanes.hashes[j] = memo.hashes;
+         }
++        let (hashes, fx, fy, fz) = (&lanes.hashes[..n], &lanes.fx[..n], &lanes.fy[..n], &lanes.fz[..n]);
++        let (t, u, v, out) = (&lanes.t[..n], &lanes.u[..n], &lanes.v[..n], &mut out[..n]);
+         for j in 0..n {
+-            out[j] = lerp_corners_faded(
+-                &lanes.hashes[j],
+-                lanes.fx[j],
+-                lanes.fy[j],
+-                lanes.fz[j],
+-                lanes.t[j],
+-                lanes.u[j],
+-                lanes.v[j],
++            out[j] = lerp_corners_faded_bits(
++                u64::from_le_bytes(hashes[j]),
++                fx[j],
++                fy[j],
++                fz[j],
++                t[j],
++                u[j],
++                v[j],
+             );
+         }
+     }
+@@ -420,19 +422,44 @@ fn lerp_corners(h: &[u8; 8], dx: f64, dy: f64, dz: f64, fade_dy: f64) -> f64 {
+     lerp(v, f0, f1)
+ }
+ 
++/// `GRADIENT` packed per axis as sixteen 2-bit two's-complement fields (`+1 = 0b01`,
++/// `0 = 0b00`, `-1 = 0b11`), field `h` at bits `2h..2h+2`. Pinned to the table by a unit test.
++const GRAD_PACKED: [u32; 3] = [0x3100_dddd, 0xdddd_00f5, 0xc4f5_f500];
++
++/// Component `axis` of `GRADIENT[h & 15]`, built with a shift pair and an `i32 -> f64`
++/// conversion rather than a table load, so a loop over lanes needs no gather: exactly
++/// `+1.0`, `-1.0` or `+0.0`, as the table holds them.
++#[inline(always)]
++fn grad_component(h: u64, axis: usize) -> f64 {
++    // Moves field `h` to the top two bits; the arithmetic shift sign-extends it.
++    let shift = 30 - 2 * (h as u32 & 15);
++    f64::from(((GRAD_PACKED[axis] << shift) as i32) >> 30)
++}
++
++/// [`grad_dot`] with the gradient taken from `h`'s low 4 bits by [`grad_component`]: the same
++/// three products of the same coefficient values and the same two adds, in the same order.
++#[inline(always)]
++fn grad_dot_bits(h: u64, x: f64, y: f64, z: f64) -> f64 {
++    grad_component(h, 0) * x + grad_component(h, 1) * y + grad_component(h, 2) * z
++}
++
+ /// [`lerp_corners`] with its three smoothsteps already taken (`t = smoothstep(dx)`,
+-/// `u = smoothstep(fade_dy)`, `v = smoothstep(dz)`): the same dots and lerps, in the same order.
++/// `u = smoothstep(fade_dy)`, `v = smoothstep(dz)`), the eight corner hashes packed
++/// little-endian in `h` (corner `c` in byte `c`) and the gradients from [`grad_dot_bits`]: the
++/// same dots and lerps on the same operands, in the same order, with no table load, so a loop
++/// of it over lanes vectorizes.
+ #[inline(always)]
+ #[allow(clippy::too_many_arguments)]
+-fn lerp_corners_faded(h: &[u8; 8], dx: f64, dy: f64, dz: f64, t: f64, u: f64, v: f64) -> f64 {
+-    let d0 = grad_dot(h[0], dx, dy, dz);
+-    let d1 = grad_dot(h[1], dx - 1.0, dy, dz);
+-    let d2 = grad_dot(h[2], dx, dy - 1.0, dz);
+-    let d3 = grad_dot(h[3], dx - 1.0, dy - 1.0, dz);
+-    let d4 = grad_dot(h[4], dx, dy, dz - 1.0);
+-    let d5 = grad_dot(h[5], dx - 1.0, dy, dz - 1.0);
+-    let d6 = grad_dot(h[6], dx, dy - 1.0, dz - 1.0);
+-    let d7 = grad_dot(h[7], dx - 1.0, dy - 1.0, dz - 1.0);
++fn lerp_corners_faded_bits(h: u64, dx: f64, dy: f64, dz: f64, t: f64, u: f64, v: f64) -> f64 {
++    let (x1, y1, z1) = (dx - 1.0, dy - 1.0, dz - 1.0);
++    let d0 = grad_dot_bits(h, dx, dy, dz);
++    let d1 = grad_dot_bits(h >> 8, x1, dy, dz);
++    let d2 = grad_dot_bits(h >> 16, dx, y1, dz);
++    let d3 = grad_dot_bits(h >> 24, x1, y1, dz);
++    let d4 = grad_dot_bits(h >> 32, dx, dy, z1);
++    let d5 = grad_dot_bits(h >> 40, x1, dy, z1);
++    let d6 = grad_dot_bits(h >> 48, dx, y1, z1);
++    let d7 = grad_dot_bits(h >> 56, x1, y1, z1);
+ 
+     let e0 = lerp(t, d0, d1);
+     let e1 = lerp(t, d2, d3);
+@@ -918,6 +945,146 @@ mod tests {
+     /// algorithm chain (decompiled from the real Minecraft 26.2 server jar's `ImprovedNoise`/
+     /// `XoroshiroRandomSource`/`RandomSupport`) run on real OpenJDK 25 — see the session's
+     /// scratchpad `decomp/NoiseRef.java`.
++    /// The bitmask gradients are the table's values, bit for bit, for every hash byte.
++    #[test]
++    fn grad_bitmasks_match_gradient_table() {
++        for h in 0..=255u8 {
++            let g = GRADIENT[(h & 15) as usize];
++            for (axis, &want) in g.iter().enumerate() {
++                assert_eq!(
++                    grad_component(u64::from(h), axis).to_bits(),
++                    want.to_bits(),
++                    "hash {h} axis {axis}"
++                );
++                // Higher bytes of a packed word must not leak into the low 4 bits.
++                let packed = u64::from(h) | 0xFFFF_FFFF_FFFF_FF00;
++                assert_eq!(grad_component(packed, axis).to_bits(), want.to_bits());
++            }
++        }
++    }
++
++    /// Adversarial offsets for the corner kernel: signed zeros, lattice points (0, 1 and their
++    /// `- 1.0` images), tiny and near-1 fractions, and values whose products round.
++    const CORNER_SPECIALS: [f64; 14] = [
++        0.0,
++        -0.0,
++        1.0,
++        -1.0,
++        0.5,
++        1.0e-300,
++        -1.0e-300,
++        f64::MIN_POSITIVE,
++        5.0e-324,
++        0.999_999_999_999_999_9,
++        1.0 - f64::EPSILON,
++        f64::EPSILON,
++        0.1,
++        0.7,
++    ];
++
++    #[test]
++    fn grad_dot_bits_is_bit_identical_to_grad_dot() {
++        let mut rng = LegacyRandom::new(0x9d07);
++        let pick = |rng: &mut LegacyRandom| {
++            if rng.next_double() < 0.5 {
++                CORNER_SPECIALS[(rng.next_double() * CORNER_SPECIALS.len() as f64) as usize]
++            } else {
++                rng.next_double() * 2.0 - 1.0
++            }
++        };
++        for h in 0..=255u8 {
++            for _ in 0..400 {
++                let (x, y, z) = (pick(&mut rng), pick(&mut rng), pick(&mut rng));
++                assert_eq!(
++                    grad_dot_bits(u64::from(h), x, y, z).to_bits(),
++                    grad_dot(h, x, y, z).to_bits(),
++                    "hash {h} at ({x:e}, {y:e}, {z:e})"
++                );
++            }
++        }
++    }
++
++    /// The packed-hash corner kernel against the scalar `lerp_corners`, bit for bit, over
++    /// random hashes and adversarial fractions (including `-0.0`, which `d - floor(d)` yields
++    /// at `d == -0.0`) and smeared `dy`.
++    #[test]
++    fn packed_corner_kernel_is_bit_identical_to_lerp_corners() {
++        let mut rng = LegacyRandom::new(0xc0de);
++        let frac = |rng: &mut LegacyRandom| {
++            if rng.next_double() < 0.4 {
++                CORNER_SPECIALS[(rng.next_double() * CORNER_SPECIALS.len() as f64) as usize]
++                    .abs()
++                    .min(1.0 - f64::EPSILON)
++                    * if rng.next_double() < 0.1 { -1.0 } else { 1.0 }
++            } else {
++                rng.next_double()
++            }
++        };
++        for case in 0..200_000 {
++            let mut h = [0u8; 8];
++            for b in &mut h {
++                *b = (rng.next_double() * 256.0) as u8;
++            }
++            let (dx, fade_dy, dz) = (frac(&mut rng), frac(&mut rng), frac(&mut rng));
++            let dy = if case % 3 == 0 {
++                fade_dy - (rng.next_double() * 4.0).floor() * 0.25
++            } else {
++                fade_dy
++            };
++            let want = lerp_corners(&h, dx, dy, dz, fade_dy);
++            let got = lerp_corners_faded_bits(
++                u64::from_le_bytes(h),
++                dx,
++                dy,
++                dz,
++                smoothstep(dx),
++                smoothstep(fade_dy),
++                smoothstep(dz),
++            );
++            assert_eq!(
++                got.to_bits(),
++                want.to_bits(),
++                "hashes {h:?} at ({dx:e}, {dy:e}, {dz:e}) fade_dy {fade_dy:e}"
++            );
++        }
++    }
++
++    /// The block kernel on lanes that land exactly on lattice points after the offset
++    /// (`x == -xo` and friends, so the fractions are exact zeros) and on half-way points.
++    #[test]
++    fn block_kernel_matches_scalar_at_lattice_points() {
++        use oxide_core::Xoroshiro128PlusPlus;
++        for seed in 0..32u64 {
++            let mut r = Xoroshiro128PlusPlus::new(seed as i64);
++            let noise = ImprovedNoise::new(&mut r);
++            let (xo, yo, zo) = (noise.xo, noise.yo, noise.zo);
++            let pts = |o: f64| [-o, -o + 1.0, -o - 1.0, 0.0, -0.0, o.floor() - o, -o + 0.5, 3.0 - o];
++            let (px, py, pz) = (pts(xo), pts(yo), pts(zo));
++            let n = NOISE_BLOCK;
++            let (mut xs, mut ys, mut zs) = ([0.0; NOISE_BLOCK], [0.0; NOISE_BLOCK], [0.0; NOISE_BLOCK]);
++            for j in 0..n {
++                xs[j] = px[j % 8];
++                ys[j] = py[(j / 8) % 8];
++                zs[j] = pz[(j * 3 + seed as usize) % 8];
++            }
++            for (y_scale, y_max) in [(0.0, Some(0.0)), (0.25, None), (0.5, Some(0.3))] {
++                let mut memo = noise.cell_hashes(HashKind::Perlin);
++                let mut out = [f64::NAN; NOISE_BLOCK];
++                noise.noise_block_reusing(&xs, &ys, &zs, 1.0, y_scale, y_max, &mut memo, &mut out);
++                for j in 0..n {
++                    let expected = noise.noise_with_scale(
++                        wrap(xs[j]),
++                        wrap(ys[j]),
++                        wrap(zs[j]),
++                        y_scale,
++                        y_max.unwrap_or(ys[j]),
++                    );
++                    assert_eq!(out[j].to_bits(), expected.to_bits(), "seed {seed} lane {j}");
++                }
++            }
++        }
++    }
++
+     #[test]
+     fn noise_matches_real_java_xoroshiro_seed_1234() {
+         use oxide_core::Xoroshiro128PlusPlus;
