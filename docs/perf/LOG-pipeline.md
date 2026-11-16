@@ -2009,3 +2009,25 @@ environment setting, not code).
 Note for anyone rerunning numbers: `~/oxide-perf/pipeline` holds the branch alone (no datapath merge),
 whose generation is ~5x slower (generate ~10 s at 8 threads); merged-tree numbers come from the
 pipeline-<x> bench dirs.
+
+## Status: pipeline-side leads exhausted at hold resolution (base pipeline-d1, abfb474 + datapath 323b9d4)
+
+Decorated, byte-exact pregen at 8 threads on the merged head: ~366-370 cps (r16), digest
+df701ee858e2bdd3; PumpkinMC terrain-only ~404 cps on this box. Kept since the 335 cps headline:
+allocator cut (-11.2% decorate), hash cut (-4.7%), apply_writes palette index + heightmap stop
+(-18.2%), write-list pool (-6.7% at 1 thread), dependency-driven chunk finishing (-14..-25% decorate at
+8 threads), up-front arena reserve (+40% cps at 8 threads; removed our own mprotect contention),
+per-write allocation cut (-7.1% at 1 thread).
+
+What is left in this track's files, each below what a hold here resolves (~5% of decoration, ~2-3% of
+a run): serialise oxide-anvil side (0.5-1% of run CPU), driver and placement chains (3.5%, spread
+thin, no frame above 0.5%), region build/intern (<0.5% each), apply_writes per-write check (<=0.4%),
+start-up (1.7% at r16, fixed per run). Ores, sculk and overlapping stages are closed (logged above).
+
+Leads outside this track, for their owners or the user:
+- oxide-core: `pack_bits` (serialise) and palette/section-index allocation and `index_of_or_insert`
+  clones (apply_writes, 1.18M allocations per r16 run), ~2% of run CPU.
+- Generation is ~62% of run CPU at 8 threads (noise/datapath tracks).
+- mimalloc cut decoration ~25% at 8 threads but slowed generation and the 1-thread run; a per-stage
+  allocator is not something this track should build.
+- PGO is waiting on the user's decision.
