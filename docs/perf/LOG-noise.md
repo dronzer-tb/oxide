@@ -717,3 +717,36 @@ check was required. Tests: noise 40, chunkgen 190 + 1 + 1 + 1.
 since then (its base is also ~0.8 s faster per run). I have not traced which callers allocate
 more there. It shows when `perf/noise` is merged with datapath; on `perf/noise` alone,
 expect no change.
+
+## Session 5, continued: measuring over the shipping tree (auditor)
+
+From now on, every hold is measured over **the shipping tree**: datapath's head with this crate
+merged in. Datapath merged `perf/noise` at ef9a35f, so that is ef9a35f itself. (My `/tmp/ship`,
+80add17 plus b889079's `crates/oxide-noise`, has crates identical to ef9a35f.) fd4bfe2 on its own
+behaves differently (see 18). Two shared base binaries, `ab-bin/shipb1` and `ab-bin/shipb2`, are
+separate builds of that code. `ab.sh` now takes `label=@` for a prebuilt binary and `0` rounds
+to build only. Holds are 4 rounds at **radius 12**: 625 chunks, ~21 s per run, so a 3-label
+hold is ~4 min. The radius-16 digest is checked separately under the shared lock.
+
+**Profile of the shipping tree** (`profile-tree.sh`, frame pointers, radius 12, 8 threads,
+2,947 generation samples). Noise is **45.7%** of generation:
+
+| Share of generation | Where |
+|---|---|
+| 24.0% | corner grid. Self time: `grad_dot` 3.9%, `lerp` 2.4%, `smoothstep` 1.2%, `noise_with_scale_reusing` ~1.6%, `floor` 0.5%, `get_values`/`compute_chunk` ~1.8% |
+| 7.5% | per-block `run_cell` excluding the grid. `fill_cell_interpolated` ~2.6% (1.5% of it in range iterators), `[ext]` libc 1.5% |
+| 4.2% | ore veins through noise: `sample_in_chunk` from ore_veins.rs:224 (1.8%), :197 (1.4%), :105 (0.9%) |
+| 4.9% + 1.7% | the aquifer's `preliminary_surface_level` / `surface_level` samples (datapath's callers) |
+
+Also in self time: `atomic_load::u32` 2.6% (to identify: the `CornerColumns` mutexes or
+thread-local access) and `[ext]` 16% overall.
+
+**In flight:** three Opus sub-agents, one exact experiment each. They share a brief
+(`scratchpad/subagent-brief.md`) and are judged on `gen_cpu_s` at 1 thread against shipb1/shipb2,
+4 rounds. The corner-path one also runs an 8-thread hold.
+- **20a (n20a):** the corner grid's Perlin math, vectorized *across lanes* in phases (coordinates
+  and smoothstep, hash gathers, gradient dots and lerps), with the same per-lane IEEE expression.
+- **20b (n20b):** per-block `run_cell` / `fill_cell_interpolated`: bounds-check-free,
+  vectorizable lane loops, and fewer copies.
+- **20c (n20c):** ore-vein sampling, a cheaper `sample_via_cell` hit path. If that falls short,
+  a cell-batch API with a minimal call-site change in `ore_veins.rs`.
