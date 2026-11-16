@@ -1,0 +1,515 @@
+diff --git a/crates/oxide-chunkgen/src/fill.rs b/crates/oxide-chunkgen/src/fill.rs
+index 297c142..5e6532a 100644
+--- a/crates/oxide-chunkgen/src/fill.rs
++++ b/crates/oxide-chunkgen/src/fill.rs
+@@ -179,9 +179,6 @@ pub fn fill_chunk_culling(
+     // palette on first use (so palettes hold exactly what the section contains, in the order
+     // it was first written) and written by index after that -- no `BlockState` is built,
+     // hashed or dropped per block.
+-    const DEFAULT: usize = 0;
+-    const SEA: usize = 1;
+-    const LAVA: usize = 2;
+     let lava = BlockState::new(ResourceLocation::minecraft("lava"));
+     let placeable: [&BlockState; 3] = [&settings.default_block, &settings.default_fluid, &lava];
+     // A fluid that *is* air needs no write: air is every section's palette default.
+@@ -198,6 +195,25 @@ pub fn fill_chunk_culling(
+     let mut cell_values = vec![0.0f64; cells_xz * cells_xz * cell_len];
+     let mut cell_state = vec![0u8; cells_xz * cells_xz];
+     let mut loaded_cell_y = i32::MIN;
++    // Whether a row of 16 blocks is exactly `cells_xz` whole cells, which the cell-run path
++    // in the loop below relies on (and `sample_cell` declines every cell otherwise anyway).
++    let cells_tile_row = cells_xz * cell_w == 16 && cell_len == cell_w * cell_w * cell_height as usize;
++
++    let sea_level = settings.sea_level;
++    // `kind`'s palette index in `section`, interned on the section's first write of it -- the
++    // same place the per-block `set` would have added it, so palette order is first-write order.
++    let intern = |section: &mut ChunkSection, palette_index: &mut [Option<u32>; 3], kind: usize| {
++        match palette_index[kind] {
++            Some(index) => index,
++            None => {
++                let index = section
++                    .block_states
++                    .index_of_or_insert(placeable[kind].clone());
++                palette_index[kind] = Some(index);
++                index
++            }
++        }
++    };
+ 
+     for i in 0..section_count {
+         let section_y = min_y / 16 + i as i32;
+@@ -242,6 +258,101 @@ pub fn fill_chunk_culling(
+                 };
+                 let row_cells = row_in_cells && cell_z < cells_xz;
+                 let row_index = local_index(0, local_y as usize, local_z);
++
++                // Cell-run path: the row is walked one cell at a time, `cell_w` blocks per
++                // cell, in the same x order as the per-block loop below. Every block gets the
++                // same density, the same classification and the same write (or skip) in the
++                // same order, so palettes and every `compute_kind` call are unchanged; only
++                // the per-block bookkeeping is hoisted to once per cell. Needs the cells to
++                // tile the row exactly.
++                if row_cells && cells_tile_row {
++                    for cell_x in 0..cells_xz {
++                        if let Some(row) = air_row {
++                            if row[cell_x] {
++                                continue;
++                            }
++                        }
++                        let cell_index = cell_z * cells_xz + cell_x;
++                        if cell_state[cell_index] == 0 {
++                            let values = &mut cell_values
++                                [cell_index * cell_len..(cell_index + 1) * cell_len];
++                            cell_state[cell_index] = if router.sample_cell(
++                                caches,
++                                RouterSlot::FinalDensity,
++                                cell_x as i32,
++                                cell_y,
++                                cell_z as i32,
++                                values,
++                            ) {
++                                1
++                            } else {
++                                2
++                            };
++                        }
++                        let first_x = cell_x * cell_w;
++                        if cell_state[cell_index] == 1 {
++                            let start = cell_index * cell_len + lane_row;
++                            let run = &cell_values[start..start + cell_w];
++                            // A run that is solid throughout is `DEFAULT` at every block on
++                            // both arms below (`density > 0` answers before the aquifer is
++                            // asked), so it is written without classifying each block. The
++                            // first of these writes interns `DEFAULT` exactly where the
++                            // per-block loop's first solid block would have.
++                            if run.iter().all(|&density| density > 0.0) {
++                                let index = intern(&mut section, &mut palette_index, DEFAULT);
++                                for lx in 0..cell_w {
++                                    section
++                                        .block_states
++                                        .set_index(row_index + first_x + lx, index);
++                                }
++                                continue;
++                            }
++                            for (lx, &density) in run.iter().enumerate() {
++                                let local_x = first_x + lx;
++                                let block_x = pos.min_block_x() + local_x as i32;
++                                if let Some(kind) = classify(
++                                    aquifer.as_deref_mut(),
++                                    sea_level,
++                                    block_x,
++                                    y,
++                                    block_z,
++                                    density,
++                                ) {
++                                    if !skip[kind] {
++                                        let index = intern(&mut section, &mut palette_index, kind);
++                                        section.block_states.set_index(row_index + local_x, index);
++                                    }
++                                }
++                            }
++                        } else {
++                            for local_x in first_x..first_x + cell_w {
++                                let block_x = pos.min_block_x() + local_x as i32;
++                                let density = router.sample_in_chunk(
++                                    caches,
++                                    RouterSlot::FinalDensity,
++                                    block_x,
++                                    y,
++                                    block_z,
++                                );
++                                if let Some(kind) = classify(
++                                    aquifer.as_deref_mut(),
++                                    sea_level,
++                                    block_x,
++                                    y,
++                                    block_z,
++                                    density,
++                                ) {
++                                    if !skip[kind] {
++                                        let index = intern(&mut section, &mut palette_index, kind);
++                                        section.block_states.set_index(row_index + local_x, index);
++                                    }
++                                }
++                            }
++                        }
++                    }
++                    continue;
++                }
++
+                 for local_x in 0..16usize {
+                     let block_x = pos.min_block_x() + local_x as i32;
+                     let cell_x = cell_of[local_x];
+@@ -293,46 +404,14 @@ pub fn fill_chunk_culling(
+                             block_z,
+                         )
+                     };
+-                    // The aquifer decides what a non-solid position holds -- air, water or
+-                    // lava, at a level that varies per underground body. Vanilla runs exactly
+-                    // this as the first filler in its noise fill.
+-                    //
+-                    // A solid density is answered here: `compute_kind` returns `None` for
+-                    // `density > 0` before touching any state, and ~3 in 4 calls were that.
+-                    let kind = match aquifer.as_deref_mut() {
+-                        Some(_) if density > 0.0 => DEFAULT,
+-                        Some(aquifer) => match aquifer.compute_kind(block_x, y, block_z, density) {
+-                            None => DEFAULT,
+-                            Some(crate::aquifer::FluidKind::Air) => continue,
+-                            Some(crate::aquifer::FluidKind::Sea) => SEA,
+-                            Some(crate::aquifer::FluidKind::Lava) => LAVA,
+-                        },
+-                        // Aquifers disabled by the settings: solid below the surface, the
+-                        // dimension's fluid up to sea level, air above.
+-                        None => {
+-                            if density > 0.0 {
+-                                DEFAULT
+-                            } else if y <= settings.sea_level {
+-                                SEA
+-                            } else {
+-                                continue;
+-                            }
++                    if let Some(kind) =
++                        classify(aquifer.as_deref_mut(), sea_level, block_x, y, block_z, density)
++                    {
++                        if !skip[kind] {
++                            let index = intern(&mut section, &mut palette_index, kind);
++                            section.block_states.set_index(row_index + local_x, index);
+                         }
+-                    };
+-                    if skip[kind] {
+-                        continue;
+                     }
+-                    let index = match palette_index[kind] {
+-                        Some(index) => index,
+-                        None => {
+-                            let index = section
+-                                .block_states
+-                                .index_of_or_insert(placeable[kind].clone());
+-                            palette_index[kind] = Some(index);
+-                            index
+-                        }
+-                    };
+-                    section.block_states.set_index(row_index + local_x, index);
+                 }
+             }
+         }
+@@ -350,6 +429,49 @@ pub fn fill_chunk_culling(
+     chunk
+ }
+ 
++/// Fill kinds besides air: the default block, the dimension's fluid, and lava.
++const DEFAULT: usize = 0;
++const SEA: usize = 1;
++const LAVA: usize = 2;
++
++/// What a position holds given its density: `None` for nothing to write (air, the section's
++/// palette default), else one of [`DEFAULT`], [`SEA`], [`LAVA`].
++///
++/// The aquifer decides what a non-solid position holds -- air, water or lava, at a level that
++/// varies per underground body. Vanilla runs exactly this as the first filler in its noise
++/// fill. A solid density is answered here: `compute_kind` returns `None` for `density > 0`
++/// before touching any state, and ~3 in 4 calls were that.
++#[inline(always)]
++fn classify(
++    aquifer: Option<&mut crate::aquifer::Aquifer<'_>>,
++    sea_level: i32,
++    block_x: i32,
++    y: i32,
++    block_z: i32,
++    density: f64,
++) -> Option<usize> {
++    match aquifer {
++        Some(_) if density > 0.0 => Some(DEFAULT),
++        Some(aquifer) => match aquifer.compute_kind(block_x, y, block_z, density) {
++            None => Some(DEFAULT),
++            Some(crate::aquifer::FluidKind::Air) => None,
++            Some(crate::aquifer::FluidKind::Sea) => Some(SEA),
++            Some(crate::aquifer::FluidKind::Lava) => Some(LAVA),
++        },
++        // Aquifers disabled by the settings: solid below the surface, the dimension's fluid up
++        // to sea level, air above.
++        None => {
++            if density > 0.0 {
++                Some(DEFAULT)
++            } else if y <= sea_level {
++                Some(SEA)
++            } else {
++                None
++            }
++        }
++    }
++}
++
+ /// The height a structure would sit at in the column `(x, z)`, as vanilla's
+ /// `ChunkGenerator#getBaseHeight`.
+ ///
+diff --git a/crates/oxide-chunkgen/src/ore_veins.rs b/crates/oxide-chunkgen/src/ore_veins.rs
+index 2247acc..1645414 100644
+--- a/crates/oxide-chunkgen/src/ore_veins.rs
++++ b/crates/oxide-chunkgen/src/ore_veins.rs
+@@ -91,30 +91,59 @@ pub fn apply_ore_veins(
+         })
+         .collect();
+ 
+-    // Cells that provably hold no vein. `vein_state` gives up when
+-    // `|vein_toggle| + edge_roundoff < VEININESS_THRESHOLD`, and `edge_roundoff` is never
+-    // positive, so a cell whose `vein_toggle` stays strictly inside +-threshold cannot place
+-    // anything -- and veins are rare, so that is most cells. The bounds must clear the
+-    // threshold by [`CELL_BOUND_MARGIN`]; see there for why. The bounds come from the
+-    // slot's cell-corner grid, which exists once the slot has been sampled in this chunk;
+-    // where none can be proven the cell is evaluated block by block as before.
+     let cell_width = caches.cell_width();
+     let cell_height = caches.cell_height();
+     let cells_xz = (16 / cell_width).max(1) as usize;
+     let cells_y = (height / cell_height).max(0) as usize;
++    let y_lo = band_min.max(min_y);
++    let y_hi = band_max.min(min_y + height - 1);
++
++    // Per y, the `edge_roundoff` each vein type would use there, or `None` where y is outside
++    // that type's band. These are `vein_state`'s own first steps, which depend on y alone:
++    // `vein_toggle > 0` picks copper, else iron; a y outside the picked band gives up; and so
++    // does `|vein_toggle| + edge_roundoff < VEININESS_THRESHOLD`. Each value is computed by the
++    // same `edge_roundoff` call `vein_state` makes, so a test against it is bit-for-bit that
++    // test. Between the bands (y -7..=-1) both are `None` and the whole row is skipped.
++    let band_len = (y_hi - y_lo + 1).max(0) as usize;
++    let copper_roundoff: Vec<Option<f64>> =
++        (0..band_len).map(|i| edge_roundoff(&COPPER, y_lo + i as i32)).collect();
++    let iron_roundoff: Vec<Option<f64>> =
++        (0..band_len).map(|i| edge_roundoff(&IRON, y_lo + i as i32)).collect();
++
++    // Cells that provably hold no vein. A block can only place something when its type's
++    // `|vein_toggle| + edge_roundoff` reaches `VEININESS_THRESHOLD`: a positive toggle is copper
++    // and needs `toggle + copper_roundoff >= threshold` at a y in the copper band; a
++    // non-positive one is iron and needs `-toggle + iron_roundoff >= threshold` in the iron
++    // band. So a cell is veinless when, over its layer's y, neither side can get there:
++    // `hi + max(copper_roundoff) < threshold` (or no y of the layer is in the copper band), and
++    // the same for `-lo` and iron. Float addition rounds monotonically, so the block's own sum
++    // is at most the bound's sum; the bounds must clear the threshold by
++    // [`CELL_BOUND_MARGIN`] (see there for why). This contains the old test
++    // (`-threshold < lo`, `hi < threshold`), since a roundoff is never positive. The bounds
++    // come from the slot's cell-corner grid, which exists once the slot has been sampled in
++    // this chunk; where none can be proven the cell is evaluated block by block.
+     let _ = router.sample_in_chunk(
+         caches,
+         RouterSlot::VeinToggle,
+         pos.min_block_x(),
+-        band_min.max(min_y),
++        y_lo,
+         pos.min_block_z(),
+     );
++    let layer_max = |table: &[Option<f64>], cell_y: usize| -> Option<f64> {
++        let layer_min_y = min_y + cell_y as i32 * cell_height;
++        (layer_min_y..layer_min_y + cell_height)
++            .filter(|y| (y_lo..=y_hi).contains(y))
++            .filter_map(|y| table[(y - y_lo) as usize])
++            .reduce(f64::max)
++    };
+     let mut veinless = vec![false; cells_xz * cells_xz * cells_y];
+     for cell_y in 0..cells_y {
+         let cell_min_y = min_y + cell_y as i32 * cell_height;
+         if cell_min_y > band_max || cell_min_y + cell_height <= band_min {
+             continue;
+         }
++        let copper_max = layer_max(&copper_roundoff, cell_y);
++        let iron_max = layer_max(&iron_roundoff, cell_y);
+         for cell_z in 0..cells_xz {
+             for cell_x in 0..cells_xz {
+                 veinless[(cell_y * cells_xz + cell_z) * cells_xz + cell_x] = router
+@@ -126,8 +155,11 @@ pub fn apply_ore_veins(
+                         cell_z as i32,
+                     )
+                     .is_some_and(|(lo, hi)| {
+-                        lo > -VEININESS_THRESHOLD + CELL_BOUND_MARGIN
+-                            && hi < VEININESS_THRESHOLD - CELL_BOUND_MARGIN
++                        copper_max.map_or(true, |er| {
++                            hi + er < VEININESS_THRESHOLD - CELL_BOUND_MARGIN
++                        }) && iron_max.map_or(true, |er| {
++                            -lo + er < VEININESS_THRESHOLD - CELL_BOUND_MARGIN
++                        })
+                     });
+             }
+         }
+@@ -142,21 +174,67 @@ pub fn apply_ore_veins(
+         .collect();
+     let mut palette_index = vec![u32::MAX; chunk.sections.len() * VEIN_BLOCKS.len()];
+ 
+-    for y in band_min.max(min_y)..=band_max.min(min_y + height - 1) {
++    // Per-column cell coordinates, resolved once instead of a `div_euclid` per block.
++    let cell_of: [usize; 16] =
++        std::array::from_fn(|local| (local as i32).div_euclid(cell_width) as usize);
++    let in_cell: [usize; 16] = std::array::from_fn(|local| {
++        local.wrapping_sub(cell_of[local].wrapping_mul(cell_width as usize))
++    });
++
++    // `vein_toggle` a whole cell at a time through `sample_cell` (bit-identical to
++    // `sample_in_chunk` at each block), into a buffer for one layer of cells, evaluated on a
++    // cell's first use. `toggle_state` per cell: 0 not yet asked, 1 in `toggle_values`, 2
++    // declined (that cell's blocks go through `sample_in_chunk`).
++    let cell_w = cell_width as usize;
++    let cell_len = router.cell_len(caches);
++    let mut toggle_values = vec![0.0f64; cells_xz * cells_xz * cell_len];
++    let mut toggle_state = vec![0u8; cells_xz * cells_xz];
++    let mut loaded_cell_y = usize::MAX;
++
++    for y in y_lo..=y_hi {
+         let Some(section_index) = section_of(settings, y) else {
+             continue;
+         };
++        let band_row = (y - y_lo) as usize;
++        let copper_er = copper_roundoff[band_row];
++        let iron_er = iron_roundoff[band_row];
++        if copper_er.is_none() && iron_er.is_none() {
++            continue;
++        }
+         let cell_y = ((y - min_y).div_euclid(cell_height)) as usize;
+         let Some(Some(default_index)) = default_index.get(section_index).copied() else {
+             continue;
+         };
++        if cell_y != loaded_cell_y {
++            toggle_state.fill(0);
++            loaded_cell_y = cell_y;
++        }
++        let cell_local_y = ((y - min_y) - cell_y as i32 * cell_height) as usize;
+         let local_y = (y - min_y).rem_euclid(16) as usize;
+         for local_z in 0..16usize {
+             let block_z = pos.min_block_z() + local_z as i32;
+-            let cell_z = (local_z as i32).div_euclid(cell_width) as usize;
++            let cell_z = cell_of[local_z];
++            let row_index = local_index(0, local_y, local_z);
++            // Which blocks of this row hold the default block. Read once per row: a vein
++            // write only changes its own position, and each position is read before its own
++            // write, so this is what the per-block read saw.
++            let mut row_default = 0u32;
++            {
++                let indices = &chunk.sections[section_index].block_states.indices()
++                    [row_index..row_index + 16];
++                for (local_x, &index) in indices.iter().enumerate() {
++                    row_default |= ((index == default_index) as u32) << local_x;
++                }
++            }
++            if row_default == 0 {
++                continue;
++            }
++            let lane_row = (cell_local_y * cell_w + in_cell[local_z]) * cell_w;
+             for local_x in 0..16usize {
+-                let block_x = pos.min_block_x() + local_x as i32;
+-                let cell_x = (local_x as i32).div_euclid(cell_width) as usize;
++                if row_default & (1 << local_x) == 0 {
++                    continue;
++                }
++                let cell_x = cell_of[local_x];
+                 if veinless
+                     .get((cell_y * cells_xz + cell_z) * cells_xz + cell_x)
+                     .copied()
+@@ -164,13 +242,44 @@ pub fn apply_ore_veins(
+                 {
+                     continue;
+                 }
+-                if chunk.sections[section_index].block_states.indices()
+-                    [local_index(local_x, local_y, local_z)]
+-                    != default_index
+-                {
++                let block_x = pos.min_block_x() + local_x as i32;
++                let cell_index = cell_z * cells_xz + cell_x;
++                let in_grid = cell_x < cells_xz && cell_z < cells_xz && cell_y < cells_y;
++                let veininess = if in_grid {
++                    if toggle_state[cell_index] == 0 {
++                        let values =
++                            &mut toggle_values[cell_index * cell_len..(cell_index + 1) * cell_len];
++                        toggle_state[cell_index] = if router.sample_cell(
++                            caches,
++                            RouterSlot::VeinToggle,
++                            cell_x as i32,
++                            cell_y as i32,
++                            cell_z as i32,
++                            values,
++                        ) {
++                            1
++                        } else {
++                            2
++                        };
++                    }
++                    if toggle_state[cell_index] == 1 {
++                        toggle_values[cell_index * cell_len + lane_row + in_cell[local_x]]
++                    } else {
++                        router.sample_in_chunk(caches, RouterSlot::VeinToggle, block_x, y, block_z)
++                    }
++                } else {
++                    router.sample_in_chunk(caches, RouterSlot::VeinToggle, block_x, y, block_z)
++                };
++                // `vein_state`'s own early outs, against the per-y tables.
++                let Some(er) = (if veininess > 0.0 { copper_er } else { iron_er }) else {
++                    continue;
++                };
++                if veininess.abs() + er < VEININESS_THRESHOLD {
+                     continue;
+                 }
+-                if let Some(name) = vein_state(router, caches, &ore_factory, block_x, y, block_z) {
++                if let Some(name) =
++                    vein_state(router, caches, &ore_factory, block_x, y, block_z, veininess)
++                {
+                     let id = vein_block_id(name);
+                     let cached = &mut palette_index[section_index * VEIN_BLOCKS.len() + id];
+                     let block_states = &mut chunk.sections[section_index].block_states;
+@@ -179,40 +288,45 @@ pub fn apply_ore_veins(
+                     if *cached == u32::MAX {
+                         *cached = block_states.index_of_or_insert(states[id].clone());
+                     }
+-                    block_states.set_index(local_index(local_x, local_y, local_z), *cached);
++                    block_states.set_index(row_index + local_x, *cached);
+                 }
+             }
+         }
+     }
+ }
+ 
+-fn vein_state(
+-    router: &NoiseRouterEvaluator,
+-    caches: &ChunkCaches,
+-    ore_factory: &oxide_noise::WorldPositionalFactory,
+-    x: i32,
+-    y: i32,
+-    z: i32,
+-) -> Option<&'static str> {
+-    let veininess = router.sample_in_chunk(caches, RouterSlot::VeinToggle, x, y, z);
+-    let vein = if veininess > 0.0 { &COPPER } else { &IRON };
+-
++/// `vein`'s `edge_roundoff` at `y`, or `None` when y is outside its band -- exactly the values
++/// `vein_state` computes and gives up on.
++fn edge_roundoff(vein: &VeinType, y: i32) -> Option<f64> {
+     let distance_from_top = vein.max_y - y;
+     let distance_from_bottom = y - vein.min_y;
+     if distance_from_bottom < 0 || distance_from_top < 0 {
+         return None;
+     }
+-
+-    let veininess_ridged = veininess.abs();
+     let distance_from_edge = distance_from_top.min(distance_from_bottom);
+     // Fades veins out over the last 20 blocks before a band's edge.
+-    let edge_roundoff = clamped_map(
++    Some(clamped_map(
+         distance_from_edge as f64,
+         0.0,
+         EDGE_ROUNDOFF_BEGIN,
+         MAX_EDGE_ROUNDOFF,
+         0.0,
+-    );
++    ))
++}
++
++/// Vanilla's `OreVeinifier` filler at one position, given `vein_toggle` there.
++fn vein_state(
++    router: &NoiseRouterEvaluator,
++    caches: &ChunkCaches,
++    ore_factory: &oxide_noise::WorldPositionalFactory,
++    x: i32,
++    y: i32,
++    z: i32,
++    veininess: f64,
++) -> Option<&'static str> {
++    let vein = if veininess > 0.0 { &COPPER } else { &IRON };
++    let edge_roundoff = edge_roundoff(vein, y)?;
++    let veininess_ridged = veininess.abs();
+     if veininess_ridged + edge_roundoff < VEININESS_THRESHOLD {
+         return None;
+     }

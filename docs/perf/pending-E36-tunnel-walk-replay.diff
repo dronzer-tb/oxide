@@ -1,0 +1,842 @@
+diff --git a/crates/oxide-chunkgen/src/carver.rs b/crates/oxide-chunkgen/src/carver.rs
+index 2d30322..e54eaab 100644
+--- a/crates/oxide-chunkgen/src/carver.rs
++++ b/crates/oxide-chunkgen/src/carver.rs
+@@ -104,11 +104,31 @@ impl CarverWorld<'_> {
+ /// `carvers_at` returns the carvers configured for the biome at a source chunk, in the order the
+ /// biome lists them -- the index is part of the per-chunk seed, so order is load-bearing.
+ pub fn apply_carvers(
++    chunk: &mut ChunkData,
++    pos: ChunkPos,
++    world: &CarverWorld,
++    carvers_at: &dyn Fn(ChunkPos) -> Vec<ConfiguredCarver>,
++    aquifer: Option<&mut crate::aquifer::Aquifer>,
++) {
++    TUNNEL_CACHE.with(|cache| {
++        apply_carvers_with(
++            chunk,
++            pos,
++            world,
++            carvers_at,
++            aquifer,
++            &mut cache.borrow_mut(),
++        )
++    });
++}
++
++fn apply_carvers_with(
+     chunk: &mut ChunkData,
+     pos: ChunkPos,
+     world: &CarverWorld,
+     carvers_at: &dyn Fn(ChunkPos) -> Vec<ConfiguredCarver>,
+     mut aquifer: Option<&mut crate::aquifer::Aquifer>,
++    cache: &mut TunnelCache,
+ ) {
+     let mut mask = CarvingMask::new(world.min_y(), world.height());
+     let mut random = LegacyRandom::new(0);
+@@ -133,6 +153,7 @@ pub fn apply_carvers(
+                                 pos,
+                                 world,
+                                 config,
++                                cache,
+                                 &mut random,
+                                 source,
+                                 &mut mask,
+@@ -167,6 +188,7 @@ fn carve_cave(
+     pos: ChunkPos,
+     world: &CarverWorld,
+     config: &CaveCarverConfig,
++    cache: &mut TunnelCache,
+     random: &mut LegacyRandom,
+     source: ChunkPos,
+     mask: &mut CarvingMask,
+@@ -216,23 +238,27 @@ fn carve_cave(
+             let thickness = cave_thickness(random);
+             let distance = max_distance - random.next_int_bounded(max_distance / 4);
+             let tunnel_seed = random.next_long();
+-            carve_tunnel(
+-                chunk,
+-                pos,
+-                world,
+-                &config.base,
++            let key = TunnelKey::new(
+                 tunnel_seed,
+                 x,
+                 y,
+                 z,
+-                horizontal_multiplier,
+-                vertical_multiplier,
+                 thickness,
+                 horizontal_rotation,
+                 vertical_rotation,
+                 0,
+                 distance,
+                 1.0,
++            );
++            carve_tunnel(
++                chunk,
++                pos,
++                world,
++                &config.base,
++                cache,
++                key,
++                horizontal_multiplier,
++                vertical_multiplier,
+                 floor_level,
+                 mask,
+                 aquifer.as_deref_mut(),
+@@ -288,44 +314,163 @@ fn carve_room(
+     );
+ }
+ 
+-/// `CaveWorldCarver#createTunnel`.
++/// `CaveWorldCarver#createTunnel`, through the thread's [`TunnelCache`].
++///
++/// A tunnel's walk -- every position, radius term and split -- depends only on the arguments
++/// below that go into [`TunnelKey`] and on the tunnel's own generator, seeded from
++/// `tunnel_seed`. It reads nothing from the target chunk, the carver config or the outer random.
++/// Only where the walk stops (`can_reach`) and which steps carve depend on the target. Yet each
++/// of the up to 289 chunks within range used to re-walk the same tunnel. So the walk is recorded
++/// once per thread ([`record_segment`], the vanilla loop with the target-dependent parts taken
++/// out) and each chunk replays it ([`replay_segment`]): the same `can_reach` tests, the same
++/// pre-check and the same `carve_ellipsoid` calls with the same operands, in the same order.
+ #[allow(clippy::too_many_arguments)]
+ fn carve_tunnel(
+     chunk: &mut Target,
+     pos: ChunkPos,
+     world: &CarverWorld,
+     config: &CarverConfig,
++    cache: &mut TunnelCache,
++    key: TunnelKey,
++    horizontal_multiplier: f64,
++    vertical_multiplier: f64,
++    floor_level: f64,
++    mask: &mut CarvingMask,
++    mut aquifer: Option<&mut crate::aquifer::Aquifer>,
++) {
++    let walk = cache.walk(key);
++    let center_x = pos.min_block_x() as f64 + 8.0;
++    let center_z = pos.min_block_z() as f64 + 8.0;
++    // The pre-check's limit is non-decreasing in `|thickness|`, so a tree whose every step
++    // misses the widest limit of any of its segments misses each step's own: nothing would
++    // reach `carve_ellipsoid`, and the tunnel is skipped whole. Where `can_reach` would have
++    // ended it does not matter then, since ending it only drops calls.
++    let widest = reach_limit(walk.max_abs_thickness, horizontal_multiplier);
++    if walk.bounds.misses(center_x, center_z, widest) {
++        return;
++    }
++    replay_segment(
++        walk,
++        0,
++        pos,
++        horizontal_multiplier,
++        &mut |x, y, z, horizontal_radius, vertical_radius| {
++            carve_ellipsoid(
++                chunk,
++                pos,
++                world,
++                config,
++                x,
++                y,
++                z,
++                horizontal_radius,
++                vertical_radius * vertical_multiplier,
++                floor_level,
++                mask,
++                aquifer.as_deref_mut(),
++            )
++        },
++    );
++}
++
++/// An upper bound on `16 + 2 * |horizontal_radius * horizontal_multiplier|` over every step of
++/// a tunnel of this thickness: the table sine is at most 1 in magnitude, so
++/// `|sin * thickness| <= |thickness|` after rounding, and every later operation rounds
++/// monotonically. With it, `carve_ellipsoid`'s own first test (`|x - center| > 16 + 2r`) can be
++/// decided without the step's radius; the pre-check only ever skips a call that would have
++/// returned at that test.
++#[inline]
++fn reach_limit(thickness: f32, horizontal_multiplier: f64) -> f64 {
++    16.0 + ((1.5 + thickness.abs() as f64) * horizontal_multiplier.abs()) * 2.0
++}
++
++/// Replays one segment of a recorded walk against the target chunk, then (if it was not ended
++/// by `can_reach`) the two tunnels it splits into. `carve` gets each surviving step's centre,
++/// its horizontal radius already multiplied by the carver's multiplier, and its vertical radius
++/// before the vertical multiplier -- exactly the operands the unrecorded walk computed.
++fn replay_segment(
++    walk: &TunnelWalk,
++    segment: usize,
++    pos: ChunkPos,
++    horizontal_multiplier: f64,
++    carve: &mut impl FnMut(f64, f64, f64, f64, f64),
++) {
++    let seg = &walk.segments[segment];
++    let thickness = seg.thickness;
++    let distance = walk.distance;
++    let limit = reach_limit(thickness, horizontal_multiplier);
++    let center_x = pos.min_block_x() as f64 + 8.0;
++    let center_z = pos.min_block_z() as f64 + 8.0;
++    let blocks = &walk.blocks[seg.blocks.0 as usize..seg.blocks.1 as usize];
++    for (b, block) in blocks.iter().enumerate() {
++        // Every step of the block passes `can_reach` and is skipped by the pre-check: the block
++        // has no effect and the walk goes on past it, as it would step by step.
++        if block.bounds.misses(center_x, center_z, limit)
++            && block
++                .bounds
++                .can_reach_all(pos, block.last_step, distance, thickness)
++        {
++            continue;
++        }
++        let first = seg.steps.0 as usize + b * BLOCK_STEPS;
++        let last = (first + BLOCK_STEPS).min(seg.steps.1 as usize);
++        for step in &walk.steps[first..last] {
++            if !can_reach(pos, step.x, step.z, step.current_step, distance, thickness) {
++                return;
++            }
++            if (step.x - center_x).abs() > limit || (step.z - center_z).abs() > limit {
++                continue;
++            }
++            let horizontal_radius = 1.5 + step.radius_term as f64;
++            let vertical_radius = horizontal_radius * seg.y_scale;
++            carve(
++                step.x,
++                step.y,
++                step.z,
++                horizontal_radius * horizontal_multiplier,
++                vertical_radius,
++            );
++        }
++    }
++    if let Some([a, b]) = seg.split {
++        replay_segment(walk, a as usize, pos, horizontal_multiplier, carve);
++        replay_segment(walk, b as usize, pos, horizontal_multiplier, carve);
++    }
++}
++
++/// Records the vanilla `createTunnel` loop from these arguments into `walk`, keeping every step
++/// that passes its `nextInt(4)` and recursing into the split. Same draws, same float operations
++/// in the same order; the only things left out are `can_reach`, the pre-check and the carving,
++/// none of which touches the walk's state. Returns the new segment's index.
++#[allow(clippy::too_many_arguments)]
++fn record_segment(
++    walk: &mut TunnelWalk,
+     tunnel_seed: i64,
+     mut x: f64,
+     mut y: f64,
+     mut z: f64,
+-    horizontal_multiplier: f64,
+-    vertical_multiplier: f64,
+     thickness: f32,
+     mut horizontal_rotation: f32,
+     mut vertical_rotation: f32,
+     step: i32,
+     distance: i32,
+     y_scale: f64,
+-    floor_level: f64,
+-    mask: &mut CarvingMask,
+-    mut aquifer: Option<&mut crate::aquifer::Aquifer>,
+-) {
++) -> usize {
++    let index = walk.segments.len();
++    let start = walk.steps.len() as u32;
++    walk.segments.push(Segment {
++        thickness,
++        y_scale,
++        steps: (start, start),
++        blocks: (0, 0),
++        split: None,
++    });
+     let mut random = WalkRandom::new(tunnel_seed);
+     let split_point = random.next_int_bounded(distance / 2) + distance / 4;
+     let steep = random.next_int_bounded(6) == 0;
+     let mut y_rota = 0.0f32;
+     let mut x_rota = 0.0f32;
+ 
+-    // An upper bound on `|horizontal_radius * horizontal_multiplier|` over every step: the table
+-    // sine is at most 1 in magnitude, so `|sin * thickness| <= |thickness|` after rounding, and
+-    // every later operation rounds monotonically. With it, `carve_ellipsoid`'s own first test
+-    // (`|x - center| > 16 + 2r`) can be decided without computing the step's radius; it only
+-    // ever skips a call that would have returned at that test.
+-    let reach_limit = 16.0 + ((1.5 + thickness.abs() as f64) * horizontal_multiplier.abs()) * 2.0;
+-    let center_x = pos.min_block_x() as f64 + 8.0;
+-    let center_z = pos.min_block_z() as f64 + 8.0;
+-
+     for current_step in step..distance {
+         let cos_pitch = oxide_core::mth::cos(vertical_rotation as f64);
+         x += (oxide_core::mth::cos(horizontal_rotation as f64) * cos_pitch) as f64;
+@@ -343,85 +488,357 @@ fn carve_tunnel(
+ 
+         if current_step == split_point && thickness > 1.0 {
+             // Splits into two tunnels at right angles and stops walking this one.
++            walk.segments[index].steps.1 = walk.steps.len() as u32;
+             let seed_a = random.next_long();
+             let thickness_a = random.next_float() * 0.5 + 0.5;
+             let seed_b = random.next_long();
+             let thickness_b = random.next_float() * 0.5 + 0.5;
+-            carve_tunnel(
+-                chunk,
+-                pos,
+-                world,
+-                config,
++            let a = record_segment(
++                walk,
+                 seed_a,
+                 x,
+                 y,
+                 z,
+-                horizontal_multiplier,
+-                vertical_multiplier,
+                 thickness_a,
+                 horizontal_rotation - std::f32::consts::FRAC_PI_2,
+                 vertical_rotation / 3.0,
+                 current_step,
+                 distance,
+                 1.0,
+-                floor_level,
+-                mask,
+-                aquifer.as_deref_mut(),
+             );
+-            carve_tunnel(
+-                chunk,
+-                pos,
+-                world,
+-                config,
++            let b = record_segment(
++                walk,
+                 seed_b,
+                 x,
+                 y,
+                 z,
+-                horizontal_multiplier,
+-                vertical_multiplier,
+                 thickness_b,
+                 horizontal_rotation + std::f32::consts::FRAC_PI_2,
+                 vertical_rotation / 3.0,
+                 current_step,
+                 distance,
+                 1.0,
+-                floor_level,
+-                mask,
+-                aquifer.as_deref_mut(),
+             );
+-            return;
++            walk.segments[index].split = Some([a as u32, b as u32]);
++            return index;
+         }
+         if random.commit_bound_4(int_seed) == 0 {
+             continue;
+         }
+-        if !can_reach(pos, x, z, current_step, distance, thickness) {
+-            return;
+-        }
+-        if (x - center_x).abs() > reach_limit || (z - center_z).abs() > reach_limit {
+-            continue;
+-        }
+-        let horizontal_radius = 1.5
+-            + (oxide_core::mth::sin(
+-                (std::f32::consts::PI * current_step as f32 / distance as f32) as f64,
+-            ) * thickness) as f64;
+-        let vertical_radius = horizontal_radius * y_scale;
+-        carve_ellipsoid(
+-            chunk,
+-            pos,
+-            world,
+-            config,
++        let radius_term = oxide_core::mth::sin(
++            (std::f32::consts::PI * current_step as f32 / distance as f32) as f64,
++        ) * thickness;
++        walk.steps.push(WalkStep {
+             x,
+             y,
+             z,
+-            horizontal_radius * horizontal_multiplier,
+-            vertical_radius * vertical_multiplier,
+-            floor_level,
+-            mask,
+-            aquifer.as_deref_mut(),
++            radius_term,
++            current_step,
++        });
++    }
++    walk.segments[index].steps.1 = walk.steps.len() as u32;
++    index
++}
++
++/// Committed steps per [`StepBlock`].
++const BLOCK_STEPS: usize = 8;
++
++/// Walks each thread's [`TunnelCache`] holds before it is emptied and starts over. A chunk draws
++/// on a few hundred tunnels, and neighbouring chunks share most of them.
++const TUNNEL_CACHE_WALKS: usize = 2048;
++
++/// Open-addressing slots in the [`TunnelCache`] index: a power of two, four per walk, so probe
++/// runs stay short even when the cache is full.
++const TUNNEL_CACHE_SLOTS: usize = 4 * TUNNEL_CACHE_WALKS;
++
++/// Every input of a tunnel walk, bit for bit: equal keys walk identically.
++#[derive(Clone, Copy, PartialEq, Eq)]
++struct TunnelKey {
++    tunnel_seed: i64,
++    position: [u64; 3],
++    y_scale: u64,
++    /// Thickness, horizontal rotation, vertical rotation.
++    floats: [u32; 3],
++    step: i32,
++    distance: i32,
++}
++
++impl TunnelKey {
++    #[allow(clippy::too_many_arguments)]
++    fn new(
++        tunnel_seed: i64,
++        x: f64,
++        y: f64,
++        z: f64,
++        thickness: f32,
++        horizontal_rotation: f32,
++        vertical_rotation: f32,
++        step: i32,
++        distance: i32,
++        y_scale: f64,
++    ) -> Self {
++        Self {
++            tunnel_seed,
++            position: [x.to_bits(), y.to_bits(), z.to_bits()],
++            y_scale: y_scale.to_bits(),
++            floats: [
++                thickness.to_bits(),
++                horizontal_rotation.to_bits(),
++                vertical_rotation.to_bits(),
++            ],
++            step,
++            distance,
++        }
++    }
++
++    fn slot(&self) -> usize {
++        let h = (self.tunnel_seed as u64 ^ self.position[0].rotate_left(17) ^ self.position[2])
++            .wrapping_mul(0x9E37_79B9_7F4A_7C15);
++        (h >> 32) as usize & (TUNNEL_CACHE_SLOTS - 1)
++    }
++}
++
++/// One step of a walk that passed its `nextInt(4)`, so reaches `can_reach` and the carve.
++struct WalkStep {
++    x: f64,
++    y: f64,
++    z: f64,
++    /// `mth::sin(..) * thickness`, the f32 term of this step's horizontal radius.
++    radius_term: f32,
++    current_step: i32,
++}
++
++/// The x and z range of a run of steps. `finite` is false if any of them is NaN or infinite;
++/// such a range never vouches for anything.
++#[derive(Clone, Copy)]
++struct Bounds {
++    min_x: f64,
++    max_x: f64,
++    min_z: f64,
++    max_z: f64,
++    finite: bool,
++}
++
++impl Bounds {
++    /// Covers no step: misses everything, which is right for a run that carves nothing.
++    const EMPTY: Self = Self {
++        min_x: f64::INFINITY,
++        max_x: f64::NEG_INFINITY,
++        min_z: f64::INFINITY,
++        max_z: f64::NEG_INFINITY,
++        finite: true,
++    };
++
++    fn add(&mut self, x: f64, z: f64) {
++        if !(x.is_finite() && z.is_finite()) {
++            self.finite = false;
++            return;
++        }
++        self.min_x = self.min_x.min(x);
++        self.max_x = self.max_x.max(x);
++        self.min_z = self.min_z.min(z);
++        self.max_z = self.max_z.max(z);
++    }
++
++    fn merge(&mut self, other: &Self) {
++        self.finite &= other.finite;
++        self.min_x = self.min_x.min(other.min_x);
++        self.max_x = self.max_x.max(other.max_x);
++        self.min_z = self.min_z.min(other.min_z);
++        self.max_z = self.max_z.max(other.max_z);
++    }
++
++    /// True only if every covered step fails the pre-check `|x - cx| > limit || |z - cz| >
++    /// limit`. Rounded subtraction is monotone, so for every `x <= max_x < cx`,
++    /// `|x - cx| >= |max_x - cx|`, and the same on the other side and in z.
++    fn misses(&self, center_x: f64, center_z: f64, limit: f64) -> bool {
++        if !self.finite {
++            return false;
++        }
++        if self.min_x > self.max_x {
++            return true; // no steps at all
++        }
++        (self.max_x < center_x && (self.max_x - center_x).abs() > limit)
++            || (self.min_x > center_x && (self.min_x - center_x).abs() > limit)
++            || (self.max_z < center_z && (self.max_z - center_z).abs() > limit)
++            || (self.min_z > center_z && (self.min_z - center_z).abs() > limit)
++    }
++
++    /// True only if every covered step, none later than `last_step`, passes [`can_reach`]:
++    /// the same expression on the largest `|dx|`, `|dz|` and the smallest remaining count.
++    /// Each operation in it rounds monotonically, so no step's own value exceeds this one.
++    fn can_reach_all(
++        &self,
++        pos: ChunkPos,
++        last_step: i32,
++        total_steps: i32,
++        thickness: f32,
++    ) -> bool {
++        if !self.finite {
++            return false;
++        }
++        let middle_x = pos.min_block_x() as f64 + 8.0;
++        let middle_z = pos.min_block_z() as f64 + 8.0;
++        let dx = (self.min_x - middle_x)
++            .abs()
++            .max((self.max_x - middle_x).abs());
++        let dz = (self.min_z - middle_z)
++            .abs()
++            .max((self.max_z - middle_z).abs());
++        let remaining = (total_steps - last_step) as f64;
++        let reach = (thickness + 2.0 + 16.0) as f64;
++        dx * dx + dz * dz - remaining * remaining <= reach * reach
++    }
++}
++
++/// Up to [`BLOCK_STEPS`] consecutive steps of one segment.
++struct StepBlock {
++    bounds: Bounds,
++    /// The latest `current_step` in the block (steps increase along a segment).
++    last_step: i32,
++}
++
++/// One tunnel's own run of steps within a [`TunnelWalk`].
++struct Segment {
++    thickness: f32,
++    y_scale: f64,
++    /// Range into [`TunnelWalk::steps`].
++    steps: (u32, u32),
++    /// Range into [`TunnelWalk::blocks`].
++    blocks: (u32, u32),
++    /// The two segments this one splits into after its last step.
++    split: Option<[u32; 2]>,
++}
++
++/// A tunnel's whole walk, independent of the chunk being carved. Segment 0 is the tunnel itself.
++struct TunnelWalk {
++    key: Option<TunnelKey>,
++    distance: i32,
++    steps: Vec<WalkStep>,
++    blocks: Vec<StepBlock>,
++    segments: Vec<Segment>,
++    /// Over every step of every segment.
++    bounds: Bounds,
++    max_abs_thickness: f32,
++}
++
++impl TunnelWalk {
++    const fn empty() -> Self {
++        Self {
++            key: None,
++            distance: 0,
++            steps: Vec::new(),
++            blocks: Vec::new(),
++            segments: Vec::new(),
++            bounds: Bounds::EMPTY,
++            max_abs_thickness: 0.0,
++        }
++    }
++
++    /// Re-records this slot for `key`, reusing its buffers.
++    fn record(&mut self, key: TunnelKey) {
++        self.key = None;
++        self.steps.clear();
++        self.blocks.clear();
++        self.segments.clear();
++        self.distance = key.distance;
++        record_segment(
++            self,
++            key.tunnel_seed,
++            f64::from_bits(key.position[0]),
++            f64::from_bits(key.position[1]),
++            f64::from_bits(key.position[2]),
++            f32::from_bits(key.floats[0]),
++            f32::from_bits(key.floats[1]),
++            f32::from_bits(key.floats[2]),
++            key.step,
++            key.distance,
++            f64::from_bits(key.y_scale),
+         );
++        let mut all = Bounds::EMPTY;
++        let mut max_abs_thickness = 0.0f32;
++        for segment in &mut self.segments {
++            let first_block = self.blocks.len() as u32;
++            let steps = &self.steps[segment.steps.0 as usize..segment.steps.1 as usize];
++            for run in steps.chunks(BLOCK_STEPS) {
++                let mut bounds = Bounds::EMPTY;
++                for step in run {
++                    bounds.add(step.x, step.z);
++                }
++                all.merge(&bounds);
++                self.blocks.push(StepBlock {
++                    bounds,
++                    last_step: run[run.len() - 1].current_step,
++                });
++            }
++            segment.blocks = (first_block, self.blocks.len() as u32);
++            // NaN thickness: no finite limit to vouch with.
++            if segment.thickness.is_nan() {
++                all.finite = false;
++            }
++            max_abs_thickness = max_abs_thickness.max(segment.thickness.abs());
++        }
++        self.bounds = all;
++        self.max_abs_thickness = max_abs_thickness;
++        self.key = Some(key);
++    }
++}
++
++/// A thread's recorded tunnel walks: an open-addressing index (linear probing) over a pool of
++/// walks, the full key compared on every hit. When the pool is full, everything is dropped at
++/// once and recording starts over, reusing the buffers. (A direct-mapped table loses here: two
++/// tunnels that share a slot and are both in range of a chunk re-record each other every chunk.)
++/// Holds nothing but pure functions of keys.
++struct TunnelCache {
++    /// `0` for an empty slot, else an index into `walks` plus one.
++    index: Vec<u32>,
++    walks: Vec<TunnelWalk>,
++    /// Walks in `walks[..live]` are current; the rest are spare buffers.
++    live: usize,
++}
++
++impl TunnelCache {
++    fn new() -> Self {
++        Self {
++            index: vec![0; TUNNEL_CACHE_SLOTS],
++            walks: Vec::new(),
++            live: 0,
++        }
++    }
++
++    fn walk(&mut self, key: TunnelKey) -> &TunnelWalk {
++        let mut slot = key.slot();
++        loop {
++            match self.index[slot] {
++                0 => break,
++                n if self.walks[n as usize - 1].key == Some(key) => {
++                    return &self.walks[n as usize - 1];
++                }
++                _ => slot = (slot + 1) & (TUNNEL_CACHE_SLOTS - 1),
++            }
++        }
++        if self.live == TUNNEL_CACHE_WALKS {
++            self.index.fill(0);
++            self.live = 0;
++            slot = key.slot();
++        }
++        if self.live == self.walks.len() {
++            self.walks.push(TunnelWalk::empty());
++        }
++        let n = self.live;
++        self.live += 1;
++        self.index[slot] = n as u32 + 1;
++        let walk = &mut self.walks[n];
++        walk.record(key);
++        walk
+     }
+ }
+ 
++thread_local! {
++    static TUNNEL_CACHE: std::cell::RefCell<TunnelCache> =
++        std::cell::RefCell::new(TunnelCache::new());
++}
++
+ /// `CanyonWorldCarver#carve` plus `doCarve`, minus the per-height width factors, which shape a
+ /// ravine's walls. PARITY-CHECK: `initWidthFactors` is not ported yet, so ravines come out with
+ /// straight walls instead of vanilla's rippled ones.
+@@ -920,4 +1337,174 @@ mod tests {
+             assert_eq!(walk.next_long(), legacy.next_long());
+         }
+     }
++
++    /// The vanilla `createTunnel` loop as it stood before the walk was recorded (E22's form):
++    /// `carve` gets each call's operands, after the pre-check, before the vertical multiplier.
++    #[allow(clippy::too_many_arguments)]
++    fn reference_tunnel(
++        pos: ChunkPos,
++        tunnel_seed: i64,
++        mut x: f64,
++        mut y: f64,
++        mut z: f64,
++        horizontal_multiplier: f64,
++        thickness: f32,
++        mut horizontal_rotation: f32,
++        mut vertical_rotation: f32,
++        step: i32,
++        distance: i32,
++        y_scale: f64,
++        carve: &mut impl FnMut(f64, f64, f64, f64, f64),
++    ) {
++        let mut random = LegacyRandom::new(tunnel_seed);
++        let split_point = random.next_int_bounded(distance / 2) + distance / 4;
++        let steep = random.next_int_bounded(6) == 0;
++        let mut y_rota = 0.0f32;
++        let mut x_rota = 0.0f32;
++        let limit = reach_limit(thickness, horizontal_multiplier);
++        let center_x = pos.min_block_x() as f64 + 8.0;
++        let center_z = pos.min_block_z() as f64 + 8.0;
++        for current_step in step..distance {
++            let cos_pitch = oxide_core::mth::cos(vertical_rotation as f64);
++            x += (oxide_core::mth::cos(horizontal_rotation as f64) * cos_pitch) as f64;
++            y += oxide_core::mth::sin(vertical_rotation as f64) as f64;
++            z += (oxide_core::mth::sin(horizontal_rotation as f64) * cos_pitch) as f64;
++            vertical_rotation *= if steep { 0.92 } else { 0.7 };
++            vertical_rotation += x_rota * 0.1;
++            horizontal_rotation += y_rota * 0.1;
++            x_rota *= 0.9;
++            y_rota *= 0.75;
++            x_rota += (random.next_float() - random.next_float()) * random.next_float() * 2.0;
++            y_rota += (random.next_float() - random.next_float()) * random.next_float() * 4.0;
++            if current_step == split_point && thickness > 1.0 {
++                let seed_a = random.next_long();
++                let thickness_a = random.next_float() * 0.5 + 0.5;
++                let seed_b = random.next_long();
++                let thickness_b = random.next_float() * 0.5 + 0.5;
++                for (seed, t, turn) in [
++                    (seed_a, thickness_a, -std::f32::consts::FRAC_PI_2),
++                    (seed_b, thickness_b, std::f32::consts::FRAC_PI_2),
++                ] {
++                    reference_tunnel(
++                        pos,
++                        seed,
++                        x,
++                        y,
++                        z,
++                        horizontal_multiplier,
++                        t,
++                        horizontal_rotation + turn,
++                        vertical_rotation / 3.0,
++                        current_step,
++                        distance,
++                        1.0,
++                        carve,
++                    );
++                }
++                return;
++            }
++            if random.next_int_bounded(4) == 0 {
++                continue;
++            }
++            if !can_reach(pos, x, z, current_step, distance, thickness) {
++                return;
++            }
++            if (x - center_x).abs() > limit || (z - center_z).abs() > limit {
++                continue;
++            }
++            let horizontal_radius = 1.5
++                + (oxide_core::mth::sin(
++                    (std::f32::consts::PI * current_step as f32 / distance as f32) as f64,
++                ) * thickness) as f64;
++            let vertical_radius = horizontal_radius * y_scale;
++            carve(
++                x,
++                y,
++                z,
++                horizontal_radius * horizontal_multiplier,
++                vertical_radius,
++            );
++        }
++    }
++
++    /// A recorded walk replays exactly the calls the walk itself makes, for targets all around
++    /// the tunnel's start, through the whole-tree skip and the block skips.
++    #[test]
++    fn replayed_walk_matches_the_walk() {
++        let mut outer = LegacyRandom::new(987_654_321);
++        let mut cache = TunnelCache::new();
++        let mut calls = 0usize;
++        for n in 0..300 {
++            let x = (outer.next_int_bounded(16) + 3) as f64;
++            let y = (outer.next_int_bounded(120) - 40) as f64;
++            let z = (outer.next_int_bounded(16) - 21) as f64;
++            let thickness = if n % 3 == 0 {
++                cave_thickness(&mut outer) * 2.0
++            } else {
++                cave_thickness(&mut outer)
++            };
++            let horizontal_rotation = outer.next_float() * std::f32::consts::TAU;
++            let vertical_rotation = (outer.next_float() - 0.5) / 4.0;
++            let distance = 112 - outer.next_int_bounded(28);
++            let tunnel_seed = outer.next_long();
++            let horizontal_multiplier = 0.7 + outer.next_float() as f64 * 0.7;
++            let key = TunnelKey::new(
++                tunnel_seed,
++                x,
++                y,
++                z,
++                thickness,
++                horizontal_rotation,
++                vertical_rotation,
++                0,
++                distance,
++                1.0,
++            );
++            for cx in -9..=9 {
++                for cz in -10..=8 {
++                    let pos = ChunkPos::new(cx, cz);
++                    let mut expected = Vec::new();
++                    reference_tunnel(
++                        pos,
++                        tunnel_seed,
++                        x,
++                        y,
++                        z,
++                        horizontal_multiplier,
++                        thickness,
++                        horizontal_rotation,
++                        vertical_rotation,
++                        0,
++                        distance,
++                        1.0,
++                        &mut |a: f64, b: f64, c: f64, d: f64, e: f64| {
++                            expected.push([a, b, c, d, e].map(f64::to_bits))
++                        },
++                    );
++                    let mut got = Vec::new();
++                    let walk = cache.walk(key);
++                    let center_x = pos.min_block_x() as f64 + 8.0;
++                    let center_z = pos.min_block_z() as f64 + 8.0;
++                    let widest = reach_limit(walk.max_abs_thickness, horizontal_multiplier);
++                    if !walk.bounds.misses(center_x, center_z, widest) {
++                        replay_segment(
++                            walk,
++                            0,
++                            pos,
++                            horizontal_multiplier,
++                            &mut |a: f64, b: f64, c: f64, d: f64, e: f64| {
++                                got.push([a, b, c, d, e].map(f64::to_bits))
++                            },
++                        );
++                    }
++                    assert_eq!(got, expected, "tunnel {n} at chunk {cx},{cz}");
++                    calls += expected.len();
++                }
++            }
++        }
++        assert!(
++            calls > 1000,
++            "too few carve calls ({calls}) to mean anything"
++        );
++    }
+ }

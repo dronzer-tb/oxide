@@ -1855,3 +1855,47 @@ The three holds queued back to back (E30, E34, E35, each 6 rounds of 3 binaries 
 min exclusive) are cancelled. One of them had just taken the lock when its waiting `flock` was
 killed, and was stopped within a minute; nothing from it counts. They now run one at a time,
 with a 90-second gap after each, so another holder can take the lock.
+
+### Round 8 results so far (diffs kept as `docs/perf/pending-*.diff` until their holds decide)
+
+**E34, fill loop and ore veins** (`datapath-34`; `fill.rs`, `ore_veins.rs`):
+- Fill: when the cells tile the row, it is walked one cell at a time. A cell row segment that is all
+  `density > 0` is written `DEFAULT` straight away. Both old arms gave `DEFAULT` there before the aquifer was asked,
+  and `DEFAULT` is interned at the same first solid write. Mixed segments are classified per block in the same x order.
+- Solid-cell skips need a lower bound on `final_density`. `Program::cell_bounds` gives none, because the
+  noodle-cave `RangeChoice` is unbounded. Interval rules for `RangeChoice`, `Abs` and `Max` would be a noise-crate change.
+- Ore: per-y `edge_roundoff` tables (the same function), so each early out is bit-identical; the band gap
+  skipped; a stronger veinless test (copper only for a positive toggle, iron only for a non-positive one; per-layer
+  max roundoff, `CELL_BOUND_MARGIN`); `vein_toggle` via whole-cell `sample_cell`; a per-row default-block mask.
+- Tests: chunkgen 192. Radius 16 `a977961a58122047`. One profile: own cost 13.4% down to 9.2% of generation.
+
+**E35, surface: bulk sections below every preliminary surface** (`datapath-32`; `surface.rs`):
+- The split profile (inline(never)) shows below-surface work is about as large as the
+  above-surface interpreter. In 26.2 every below-surface band begins with `biome[sulfur_caves]`, which is
+  why the Const-band ideas of E19 and E25 never fired. `vertical_gradient` draws are only 0.17%.
+- Change: all 256 column states up front (pure). The bottom sections whose top y is below the chunk's
+  lowest preliminary surface are handled per section, and the column walk stops above them. Guarded by
+  `reads_run_state` checked at `new`. Each band program is re-folded per chunk biome (the same mask table).
+- Palette first-write order: writes stay within a section. A uniform single-result section is written layer by
+  layer, where order cannot show; otherwise positions are visited in the old walk's order.
+- New test: palettes (in order) and indices against the old walk on 7 reference chunks. Tests: chunkgen 193.
+  `a977961a58122047`. One profile: `apply` 19.15% down to 13.71% of generation.
+
+**E36, carvers: each cave tunnel's walk recorded once per thread and replayed** (`datapath-33`; `carver.rs`):
+- Counters per chunk: 340 `carve_tunnel` calls, 5,527 walk steps, of which 698 pass the reach pre-check and 193
+  give non-empty ellipsoids. The cost is re-walking tunnels that never carve this chunk, not trig.
+- `record_segment` is the vanilla loop with `can_reach`, the pre-check and carving taken out, keyed bit for
+  bit on every walk input. `replay_segment` makes the same `can_reach` checks and the same `carve_ellipsoid`
+  calls with bit-identical operands, in order.
+- Exact skips: a whole tunnel whose bounding box misses; a block of 8 steps that all miss the pre-check
+  and all pass `can_reach`, tested with vanilla's own expressions on the box extremes. NaN disables both.
+- The cache is open-addressed, 8192 slots over 2048 walks, full-key compare, and cleared when full. A first
+  direct-mapped version thrashed. Up to ~12 MB per thread.
+- New test `replayed_walk_matches_the_walk`: 300 tunnels times 361 target chunks, every carve call bit for bit
+  against the old walk on `LegacyRandom`. Tests: chunkgen 193. `a977961a58122047`.
+- Wall-cycle counters on a loaded box: carvers 15-23% cheaper, ~1.5-2% of generation.
+
+**E30 retry** (`datapath-35`): tests chunkgen 192, built.
+
+Holds run one at a time, each 4 rounds at 1 thread and 6 at 8 against the two bases on `gen_cpu_s`:
+E30, then E34, then E35; E36 after them.
