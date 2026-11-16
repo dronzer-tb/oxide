@@ -1120,3 +1120,18 @@ reads are cheap; glow lichen's early stop alone may still be worth a separate sm
 
 -8.4% decorate, -4.0% user CPU, ahead 3/3 on both. Java quiet; df701ee858e2bdd3 on every row; tests
 194 pass. Second base (branch head with trees, merged with current datapath) next.
+
+### Lush patch bodies, base 2: +1.4% (inconclusive with base 1)
+
+pipeline-b4 = this branch at b793819 (overlay + trees) merged with origin/perf/datapath **f52ccea**
+(scratch merge c8eb303); pipeline-lb4 adds eb548dc.
+
+| | run 1 | run 2 | run 3 | mean |
+|---|---|---|---|---|
+| base decorate_ms | 9152 | 8303 | 8255 | 8570 |
+| lush decorate_ms | 8401 | 9301 | 8370 | 8691 |
+| base / lush cpu_user_s | 25.31 / 24.98 | 25.27 / 25.67 | 24.74 / 25.19 | 25.11 / 25.28 |
+| java_cpu_s_per_10s | 0.25 / 0.24 | 0.26 / 0.41 | 0.29 / 0.27 | |
+
++1.4% decorate, +0.7% user CPU, behind 2/3; base 1 was -8.4% ahead 3/3. The bases disagree, so a
+repeat hold on base 2 decides. Digest held; tests 194 pass.
