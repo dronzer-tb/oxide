@@ -928,3 +928,33 @@ Read: noise ebd7526..c09255b, datapath 80add17..f52ccea, pipeline b84621e..8ab74
 Messages: none.
 
 Stopped reading at: noise c09255b, datapath f52ccea, pipeline 8ab747b
+
+## Pass 25 (2026-11-16 01:40 UTC)
+
+Read: noise c09255b..43def89, pipeline 8ab747b..b793819; datapath no commit since f52ccea (00:16).
+
+- **noise** landed 07a6727 (block kernel for Perlin and Blended octaves, up to 64 lanes in
+  three phases). Reviewed against `noise_with_scale_reusing`: same scale/wrap/offset/floor,
+  same smear expression with the mode fixed per block, `u = smoothstep(dy)` on the un-smeared
+  dy, `lerp_corners_faded` = same 8 dots and 7 lerps; Blended limit stacks compacted by the same
+  `!(f >= 1)` / `!(f <= 0)` tests, sums from 0.0 in octave order (old accumulators also started
+  at 0.0); Perlin `get_values` passes `0.0 * freq` so no smear, as before. No reassociation, no
+  FMA (its disassembly check). Evidence over ef9a35f at radius 12, 1T gen_cpu_s 5.17 against
+  5.46/5.42 (-5.3%/-4.5%, below both bases in 4/4 rounds); 8T inside the spread (7.47 against
+  6.87/7.82). r16 digest ok; tests noise 42, chunkgen 190+3. One hold only; datapath's rebuild
+  on it serves as the repeat. Rows: 7.64-8.04 ms/chunk 1T at r12.
+  Not landed: 20b cell lerp + register reuse (-5.9%/-3.0%), 20c vein memo hit path
+  (-2.0%/-3.8%); bundled with 2D-cache pooling as exp 21, hold queued. No merged pregen digest
+  for b889079 or 07a6727 yet.
+- **pipeline** landed 95ae585 (tree per-state info cache + interned writes): -12.3% (3/3) on
+  base 1, -3.8% (3/3) on base 2 (which already has the overlay); pregen digest on all rows,
+  tests 194. Lichen/geode rejected on two bases (+6.8%, +1.2%). Pending: lush patch bodies
+  -8.4% (3/3) on base 1. Decoration ~8.9 s at r16 1T on the latest base. All inside decorator/.
+- **datapath**: no result logged for E30 although its hold started ~00:30; E34 hold waiting
+  19 min; session idle between waits.
+- Box: disk 73% (17 dirs, tracks cleaned up), Java ~17% of a core. No OmniRoute.
+
+Messages: datapath (log E30, push per hold, merge 07a6727 after this sequence); noise (review
+result, merged pregen digest owed for both landings).
+
+Stopped reading at: noise 43def89, datapath f52ccea, pipeline b793819
