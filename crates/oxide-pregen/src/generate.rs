@@ -16,6 +16,8 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::{anyhow, Context, Result};
@@ -168,6 +170,11 @@ impl Generator {
     }
 }
 
+/// The nine chunks of the 3x3 around `center`.
+fn neighbours(center: ChunkPos) -> impl Iterator<Item = ChunkPos> {
+    (-1..=1).flat_map(move |dz| (-1..=1).map(move |dx| ChunkPos::new(center.x + dx, center.z + dz)))
+}
+
 /// A square of chunks: every position with `|x - cx| <= radius` and `|z - cz| <= radius`,
 /// z-major.
 fn square(center: ChunkPos, radius: i32) -> Vec<ChunkPos> {
@@ -262,7 +269,7 @@ pub fn run(generator: &Generator, opts: &Options<'_>) -> Result<Outcome> {
 
     // 1. Terrain.
     let started = Instant::now();
-    let mut terrain: Vec<ChunkData> = square(opts.center, terrain_radius)
+    let terrain: Vec<ChunkData> = square(opts.center, terrain_radius)
         .par_iter()
         .map(|&pos| generator.terrain(pos))
         .collect();
@@ -270,98 +277,117 @@ pub fn run(generator: &Generator, opts: &Options<'_>) -> Result<Outcome> {
     // 2. Decoration: each chunk's writes, then each finished chunk from its nine neighbours',
     // in `oxide_chunkgen::decorate::decorated_chunk`'s order.
     //
-    // Row by row of chunks (z), so a region's write list is handed back for reuse as soon as
-    // the last chunk reading it is finished: batch `k` decorates the regions of row `k` and, in
-    // the same parallel step, finishes chunk row `k - 3`, whose nine regions (rows `k - 3` to
-    // `k - 1`) are all done. Each region reads only terrain, and each chunk its base and its
-    // nine regions' complete write lists, applied in the same order, so every chunk comes out as
-    // when all regions were decorated first; the finished chunks are collected in row order.
+    // Driven by dependencies rather than in lockstep: regions are queued in row order, and a
+    // chunk is finished as soon as its own nine regions are done. Each region reads only
+    // terrain, and each chunk its base and its nine regions' complete write lists, applied in
+    // the same order, so every chunk comes out as when all regions were decorated first. A
+    // region's write list goes back to the pool once every chunk reading it is finished, and
+    // the finished chunks are collected in row order.
     let started = Instant::now();
-    let (min_y, height) = (terrain[0].min_y, terrain[0].height);
     let regions = square(opts.center, writes_radius);
     let inner = square(opts.center, opts.radius);
-    let region_side = (2 * writes_radius + 1) as usize;
-    let chunk_side = (2 * opts.radius + 1) as usize;
     let facts = generator.facts();
-    let mut writes: Vec<Option<InternedWrites>> = regions.iter().map(|_| None).collect();
-    let mut finished: Vec<ChunkData> = Vec::with_capacity(inner.len());
-    for batch in 0..chunk_side + 3 {
-        // Chunk row `batch - 3` (z = center.z - radius + row) reads region rows `row` to
-        // `row + 2`, all decorated in earlier batches. Its bases are terrain no region still to
-        // come reads (regions read terrain one row around them), so they move out.
-        let row = batch.checked_sub(3).filter(|&row| row < chunk_side);
-        let bases: Vec<ChunkData> = row.map_or_else(Vec::new, |row| {
-            inner[row * chunk_side..(row + 1) * chunk_side]
-                .iter()
-                .map(|&pos| {
-                    let i = index(pos, terrain_radius).expect("inside the terrain square");
-                    std::mem::replace(&mut terrain[i], ChunkData::new(pos, min_y, height))
-                })
-                .collect()
-        });
-        let region_row: &[ChunkPos] = if batch < region_side {
-            &regions[batch * region_side..(batch + 1) * region_side]
-        } else {
-            &[]
-        };
-        let terrain = &terrain;
-        let made = &writes;
-        let (new_writes, done): (Vec<InternedWrites>, Vec<ChunkData>) = rayon::join(
-            || {
-                region_row
-                    .par_iter()
-                    .map(|&c| {
-                        let refs: [&ChunkData; 9] = std::array::from_fn(|i| {
-                            let pos =
-                                ChunkPos::new(c.x + (i % 3) as i32 - 1, c.z + (i / 3) as i32 - 1);
-                            &terrain[index(pos, terrain_radius).expect("inside the terrain square")]
-                        });
-                        generator.decoration_writes(refs)
-                    })
-                    .collect()
-            },
-            || {
-                bases
-                    .into_par_iter()
-                    .map(|mut chunk| {
-                        let pos = chunk.pos;
-                        for dx in -1..=1 {
-                            for dz in -1..=1 {
-                                let source = ChunkPos::new(pos.x + dx, pos.z + dz);
-                                let i =
-                                    index(source, writes_radius).expect("inside the writes square");
-                                let source_writes = made[i].as_ref().expect("a decorated region");
-                                apply_writes(&mut chunk, source_writes);
-                            }
-                        }
-                        chunk.heightmaps = heightmaps(&chunk, facts);
-                        chunk.status = ChunkStatus::Features;
-                        chunk
-                    })
-                    .collect()
-            },
-        );
-        finished.extend(done);
-        if batch < region_side {
-            for (slot, made) in writes[batch * region_side..(batch + 1) * region_side]
-                .iter_mut()
-                .zip(new_writes)
-            {
-                *slot = Some(made);
+    // Terrain chunks, shared by the regions reading them. A chunk's base is read only by its
+    // nine regions, so once they are done (and have dropped their handles) it moves out.
+    let terrain: Vec<Mutex<Option<Arc<ChunkData>>>> = terrain
+        .into_iter()
+        .map(|chunk| Mutex::new(Some(Arc::new(chunk))))
+        .collect();
+    let terrain_at = |pos: ChunkPos| -> Arc<ChunkData> {
+        let i = index(pos, terrain_radius).expect("inside the terrain square");
+        terrain[i]
+            .lock()
+            .expect("terrain slot poisoned")
+            .clone()
+            .expect("terrain still in place")
+    };
+    let writes: Vec<Mutex<Option<Arc<InternedWrites>>>> =
+        regions.iter().map(|_| Mutex::new(None)).collect();
+    // Per inner chunk, its regions still to decorate; per region, its chunks still to finish.
+    let waiting: Vec<AtomicUsize> = inner.iter().map(|_| AtomicUsize::new(9)).collect();
+    let readers: Vec<AtomicUsize> = regions
+        .iter()
+        .map(|&c| {
+            let near = neighbours(c)
+                .filter(|&pos| index(pos, opts.radius).is_some())
+                .count();
+            AtomicUsize::new(near)
+        })
+        .collect();
+    let finished: Vec<Mutex<Option<ChunkData>>> = inner.iter().map(|_| Mutex::new(None)).collect();
+
+    let finish_chunk = |pos: ChunkPos| {
+        let slot = index(pos, terrain_radius).expect("inside the terrain square");
+        let base = terrain[slot]
+            .lock()
+            .expect("terrain slot poisoned")
+            .take()
+            .expect("a chunk is finished once");
+        let mut chunk = Arc::try_unwrap(base).unwrap_or_else(|shared| (*shared).clone());
+        let mut sources = Vec::with_capacity(9);
+        for dx in -1..=1 {
+            for dz in -1..=1 {
+                let source = ChunkPos::new(pos.x + dx, pos.z + dz);
+                let i = index(source, writes_radius).expect("inside the writes square");
+                let made = writes[i]
+                    .lock()
+                    .expect("write slot poisoned")
+                    .clone()
+                    .expect("a decorated region");
+                apply_writes(&mut chunk, &made);
+                sources.push(i);
             }
         }
-        // Region row `row` is read by chunk rows `row - 2` to `row`, now all finished.
-        if let Some(row) = row {
-            for slot in &mut writes[row * region_side..(row + 1) * region_side] {
-                if let Some(done) = slot.take() {
+        chunk.heightmaps = heightmaps(&chunk, facts);
+        chunk.status = ChunkStatus::Features;
+        *finished[index(pos, opts.radius).expect("an inner chunk")]
+            .lock()
+            .expect("finished slot poisoned") = Some(chunk);
+        // This chunk's handles on the lists are dropped; the last reader of a list returns it.
+        for i in sources {
+            if readers[i].fetch_sub(1, Ordering::AcqRel) == 1 {
+                let done = writes[i].lock().expect("write slot poisoned").take();
+                if let Some(done) = done.and_then(|done| Arc::try_unwrap(done).ok()) {
                     done.recycle();
                 }
             }
         }
-    }
-    for done in writes.into_iter().flatten() {
-        done.recycle();
-    }
+    };
+    rayon::scope_fifo(|scope| {
+        for (i, &c) in regions.iter().enumerate() {
+            let (terrain_at, writes, waiting, finish_chunk) =
+                (&terrain_at, &writes, &waiting, &finish_chunk);
+            scope.spawn_fifo(move |scope| {
+                let around: [Arc<ChunkData>; 9] = std::array::from_fn(|k| {
+                    terrain_at(ChunkPos::new(
+                        c.x + (k % 3) as i32 - 1,
+                        c.z + (k / 3) as i32 - 1,
+                    ))
+                });
+                let refs: [&ChunkData; 9] = std::array::from_fn(|k| around[k].as_ref());
+                let made = generator.decoration_writes(refs);
+                drop(around);
+                *writes[i].lock().expect("write slot poisoned") = Some(Arc::new(made));
+                // Each inner chunk around this region that now has all nine is ready.
+                for pos in neighbours(c) {
+                    let Some(j) = index(pos, opts.radius) else {
+                        continue;
+                    };
+                    if waiting[j].fetch_sub(1, Ordering::AcqRel) == 1 {
+                        scope.spawn_fifo(move |_| finish_chunk(pos));
+                    }
+                }
+            });
+        }
+    });
+    let finished: Vec<ChunkData> = finished
+        .into_iter()
+        .map(|slot| {
+            slot.into_inner()
+                .expect("finished slot poisoned")
+                .expect("every chunk finished")
+        })
+        .collect();
     drop(terrain);
     times.decorate = started.elapsed().as_secs_f64();
 
