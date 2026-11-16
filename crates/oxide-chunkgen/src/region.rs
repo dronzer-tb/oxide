@@ -20,8 +20,12 @@ use crate::fill::local_index;
 const WINDOW: usize = 48;
 /// `written_top` for a column decoration has not written.
 const NEVER_WRITTEN: i32 = i32::MIN;
-/// Writes to reserve room for up front: a region averages about 7.5k at radius 16.
-const RESERVED_WRITES: usize = 8192;
+/// Writes to reserve room for up front. A region averages about 7.5k at radius 16, and many
+/// go past 8k, where growing the list meant copying it; pages of the reservation that no write
+/// reaches are never touched, so they cost address space only.
+const RESERVED_WRITES: usize = 16384;
+/// Writes whose pages are mapped up front (see [`prefaulted`]).
+const PREFAULTED_WRITES: usize = 8192;
 /// Distinct written states to reserve room for up front: a region writes a few dozen.
 const RESERVED_STATES: usize = 64;
 /// Cells in one 16x16x16 section.
@@ -124,13 +128,13 @@ impl StateKey {
     }
 }
 
-/// `writes` with its reserved room mapped up front. The write lists outlive their regions (the
+/// `list` with the pages of its first `entries` entries mapped up front. The write lists outlive their regions (the
 /// decoration cache keeps them), so each region's list is fresh memory, and a store to a page
 /// not yet touched traps into the kernel: one fault per 256 writes, about 30 per region. Asking
 /// for all of them in one `madvise(MADV_POPULATE_WRITE)` call costs one trap instead. Kernels
 /// without it refuse the call, and the pages then fault in on first use as before.
 #[allow(unused_mut)]
-fn prefaulted<T>(mut list: Vec<T>) -> Vec<T> {
+fn prefaulted<T>(mut list: Vec<T>, entries: usize) -> Vec<T> {
     #[cfg(target_os = "linux")]
     {
         extern "C" {
@@ -140,7 +144,7 @@ fn prefaulted<T>(mut list: Vec<T>) -> Vec<T> {
         const PAGE: usize = 4096;
         let base = list.as_mut_ptr() as usize;
         let start = (base + PAGE - 1) & !(PAGE - 1);
-        let end = (base + list.capacity() * std::mem::size_of::<T>()) & !(PAGE - 1);
+        let end = (base + entries.min(list.capacity()) * std::mem::size_of::<T>()) & !(PAGE - 1);
         if end > start {
             // SAFETY: the range lies inside `list`'s allocation, and populating pages leaves
             // their contents (none yet initialised) as they are.
@@ -212,7 +216,7 @@ impl<'a> DecorationRegion<'a> {
             overlay: (0..9 * ((middle.height + 15) >> 4) as usize)
                 .map(|_| None)
                 .collect(),
-            writes: prefaulted(Vec::with_capacity(RESERVED_WRITES)),
+            writes: prefaulted(Vec::with_capacity(RESERVED_WRITES), PREFAULTED_WRITES),
             states: Vec::with_capacity(RESERVED_STATES),
             state_ids: StateIds::with_capacity(RESERVED_STATES),
             state_facts: Vec::with_capacity(RESERVED_STATES),
@@ -506,11 +510,11 @@ impl<'a> DecorationRegion<'a> {
         } else {
             cells[at + 1] = self.writes.len() as u32;
             if self.writes.len() == self.writes.capacity() {
-                // Past the reserved room: double it in one step and map the new pages up front
-                // too, rather than let `push` grow it and fault them in one by one.
+                // Past the reserved room: double it in one step and map its pages up front.
                 let mut grown = std::mem::take(&mut self.writes);
                 grown.reserve_exact(grown.capacity().max(RESERVED_WRITES));
-                self.writes = prefaulted(grown);
+                let entries = grown.capacity();
+                self.writes = prefaulted(grown, entries);
             }
             self.writes.push((pos, id));
         }
