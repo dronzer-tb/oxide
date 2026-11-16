@@ -30,6 +30,7 @@
 use std::cell::Cell;
 use std::collections::HashSet;
 use std::ops::Deref;
+use std::sync::OnceLock;
 
 use anyhow::{bail, Result};
 use oxide_core::{BlockPos, BlockState, RandomSource, ResourceLocation};
@@ -126,6 +127,9 @@ pub struct SculkPatchFeature {
     sculk: BlockState,
     /// The default vein: every key of [`VEIN_KEYS`] and nothing else, all `false`.
     vein: BlockState,
+    /// Per vein named by its faces and waterlogging (as `Ids::veins`), its state, built on
+    /// first use and kept from run to run.
+    veins: Box<[OnceLock<BlockState>]>,
     catalyst: BlockState,
     /// `shrieker` and `sensor`, then each waterlogged when it has the property.
     growths: [(BlockState, Option<BlockState>); 2],
@@ -182,6 +186,7 @@ impl SculkPatchFeature {
             catalyst_chance: config.catalyst_chance,
             sculk: default_of("sculk", facts)?,
             vein,
+            veins: (0..128).map(|_| OnceLock::new()).collect(),
             catalyst: default_of("sculk_catalyst", facts)?,
             growths: [
                 growth(default_of("sculk_shrieker", facts)?.with_property("can_summon", "true")),
@@ -209,6 +214,7 @@ impl SculkPatchFeature {
             infos: (0..INFO_SLOTS).map(|_| Cell::new(None)).collect(),
             outside: Info::default(),
             ids: Ids::default(),
+            seen: Seen::take(origin),
         };
         let void = spreader.describe(cx.region.facts(), &VOID_AIR);
         spreader.outside = Info {
@@ -216,7 +222,9 @@ impl SculkPatchFeature {
             is: 0,
             fact_in: void.fact_in,
         };
-        spreader.place(cx)
+        let placed = spreader.place(cx);
+        spreader.seen.give_back();
+        placed
     }
 
     fn behaviour(&self, state: &BlockState) -> Behaviour {
@@ -276,6 +284,79 @@ const INFO_SLOTS: usize = 256;
 /// the next section's first ones); a multiplicative mix spreads them over the slots.
 fn info_slot(key: StateKey) -> usize {
     ((key.slot() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 56) as usize & (INFO_SLOTS - 1)
+}
+
+/// Half the edge of the cube around a run's origin whose blocks [`Seen`] remembers: every
+/// cursor stays within 12 blocks of the origin across, and reads a few blocks round it.
+const SEEN_HALF: i32 = 16;
+/// `log2` of the cube's edge, `2 * SEEN_HALF`.
+const SEEN_BITS: u32 = 6 - 1;
+
+/// The `Info` of each block one run has read in the cube round its origin, until the run writes
+/// there. The run is the only writer while it lasts, and it forgets each block it writes, so a
+/// remembered `Info` is the block's. The cells are kept per thread from run to run, each stamped
+/// with its run, so a run starts with nothing remembered without clearing them.
+struct Seen {
+    origin: BlockPos,
+    /// This run's stamp; never 0, which marks a forgotten cell.
+    run: u32,
+    cells: Box<[Cell<(u32, Info)>]>,
+}
+
+thread_local! {
+    static SEEN: Cell<Option<Seen>> = const { Cell::new(None) };
+}
+
+impl Seen {
+    /// The thread's cells, for a new run round `origin`.
+    fn take(origin: BlockPos) -> Self {
+        let mut seen = SEEN.with(Cell::take).unwrap_or_else(|| Seen {
+            origin,
+            run: 0,
+            cells: (0..1 << (3 * SEEN_BITS))
+                .map(|_| Cell::new((0, Info::default())))
+                .collect(),
+        });
+        seen.origin = origin;
+        seen.run = seen.run.wrapping_add(1);
+        if seen.run == 0 {
+            for cell in seen.cells.iter() {
+                cell.set((0, Info::default()));
+            }
+            seen.run = 1;
+        }
+        seen
+    }
+
+    fn give_back(self) {
+        SEEN.with(|seen| seen.set(Some(self)));
+    }
+
+    fn index(&self, pos: BlockPos) -> Option<usize> {
+        let at = |c: i32, o: i32| c.wrapping_sub(o).wrapping_add(SEEN_HALF) as u32;
+        let (x, y, z) = (
+            at(pos.x, self.origin.x),
+            at(pos.y, self.origin.y),
+            at(pos.z, self.origin.z),
+        );
+        ((x | y | z) >> SEEN_BITS == 0)
+            .then(|| (y << (2 * SEEN_BITS) | z << SEEN_BITS | x) as usize)
+    }
+
+    fn get(&self, index: usize) -> Option<Info> {
+        let (run, info) = self.cells[index].get();
+        (run == self.run).then_some(info)
+    }
+
+    fn set(&self, index: usize, info: Info) {
+        self.cells[index].set((self.run, info));
+    }
+
+    fn forget(&self, pos: BlockPos) {
+        if let Some(index) = self.index(pos) {
+            self.cells[index].set((0, Info::default()));
+        }
+    }
 }
 
 /// One block as the spreader reads it.
@@ -392,6 +473,7 @@ struct Spreader<'s, 'e> {
     /// The `Info` outside the window.
     outside: Info,
     ids: Ids,
+    seen: Seen,
 }
 
 impl Deref for Spreader<'_, '_> {
@@ -425,6 +507,17 @@ const fn coords(at: Local) -> [i32; 3] {
     let at = at as i32;
     [at % 3 - 1, at / 3 % 3 - 1, at / 9 - 1]
 }
+
+/// [`coords`] per [`Local`].
+const COORDS: [[i32; 3]; 27] = {
+    let mut table = [[0; 3]; 27];
+    let mut at = 0;
+    while at < 27 {
+        table[at] = coords(at);
+        at += 1;
+    }
+    table
+};
 
 /// Per [`Local`], its Manhattan distance from the source.
 const MANHATTAN: [u8; 27] = {
@@ -482,7 +575,7 @@ impl Near {
     }
 
     fn pos(&self, at: Local) -> BlockPos {
-        let [x, y, z] = coords(at);
+        let [x, y, z] = COORDS[at];
         offset(self.source, x, y, z)
     }
 
@@ -574,8 +667,21 @@ impl Spreader<'_, '_> {
         }
     }
 
-    /// The block at `pos`, described once per state key.
+    /// The block at `pos`, remembered by [`Seen`] near the origin.
     fn info(&self, cx: &FeatureContext<'_, '_, '_>, pos: BlockPos) -> Info {
+        let Some(index) = self.seen.index(pos) else {
+            return self.region_info(cx, pos);
+        };
+        if let Some(info) = self.seen.get(index) {
+            return info;
+        }
+        let info = self.region_info(cx, pos);
+        self.seen.set(index, info);
+        info
+    }
+
+    /// The block at `pos` read from the region, described once per state key.
+    fn region_info(&self, cx: &FeatureContext<'_, '_, '_>, pos: BlockPos) -> Info {
         let Some((key, state)) = cx.region.block_keyed(pos) else {
             return self.outside;
         };
@@ -610,24 +716,34 @@ impl Spreader<'_, '_> {
 
     /// The default vein with the faces in `faces` set, waterlogged if `wet`.
     fn vein_id(&self, cx: &mut FeatureContext<'_, '_, '_>, faces: u8, wet: bool) -> u32 {
-        let slot = &self.ids.veins[usize::from(faces) | usize::from(wet) << 6];
+        let index = usize::from(faces) | usize::from(wet) << 6;
+        let slot = &self.ids.veins[index];
         if slot.get() != NO_ID {
             return slot.get();
         }
-        let mut state = self.vein.clone();
-        for face in Dir::ALL {
-            if faces & face_bit(face) != 0 {
-                state = Self::with_face(state, face, true);
+        let state = self.veins[index].get_or_init(|| {
+            let mut state = self.vein.clone();
+            for face in Dir::ALL {
+                if faces & face_bit(face) != 0 {
+                    state = Self::with_face(state, face, true);
+                }
             }
-        }
-        if wet {
-            state = waterlogged(state, true);
-        }
-        Self::id(cx, slot, &state)
+            if wet {
+                state = waterlogged(state, true);
+            }
+            state
+        });
+        Self::id(cx, slot, state)
     }
 
-    fn write_id(cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos, id: u32) -> bool {
+    fn write_id(&self, cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos, id: u32) -> bool {
+        self.seen.forget(pos);
         cx.region.set_block_id(pos, id)
+    }
+
+    fn write(&self, cx: &mut FeatureContext<'_, '_, '_>, pos: BlockPos, state: BlockState) -> bool {
+        self.seen.forget(pos);
+        cx.region.set_block(pos, state)
     }
 
     fn has_face(state: &BlockState, face: Dir) -> bool {
@@ -678,6 +794,7 @@ impl Spreader<'_, '_> {
         if cx.random.next_float() <= self.catalyst_chance
             && has(cx, below, BlockFact::FullCollision)
         {
+            self.seen.forget(origin);
             cx.region.set_block_ref(origin, &self.catalyst);
         }
         let extra = sample_int(&self.extra_rare_growths, cx.random);
@@ -687,6 +804,7 @@ impl Spreader<'_, '_> {
             let pos = offset(origin, dx, 0, dz);
             let below = offset(pos, 0, -1, 0);
             if has(cx, pos, BlockFact::Air) && face_full(cx, below, Dir::Up, false) {
+                self.seen.forget(pos);
                 cx.region.set_block_ref(pos, &self.growths[0].0);
             }
         }
@@ -822,7 +940,7 @@ impl Spreader<'_, '_> {
         }
         // The block at `pos` is still the one the cursor read.
         let id = self.vein_id(cx, attached, here.any_fluid());
-        Self::write_id(cx, pos, id);
+        self.write_id(cx, pos, id);
         true
     }
 
@@ -937,7 +1055,9 @@ impl Spreader<'_, '_> {
                         continue;
                     }
                     Spread::SamePlane => (step(SOURCE, direction), face),
-                    Spread::WrapAround => (step(step(SOURCE, direction), face), opposite(direction)),
+                    Spread::WrapAround => {
+                        (step(step(SOURCE, direction), face), opposite(direction))
+                    }
                 };
                 if self.can_spread_into(cx, &mut near, candidate.0, candidate.1) {
                     target = Some(candidate);
@@ -950,8 +1070,8 @@ impl Spreader<'_, '_> {
             let new = self.state_for_placement(cx, &mut near, target, Dir::ALL[face_to]);
             let at = near.pos(target);
             let written = match new {
-                Placement::Id(id) => Self::write_id(cx, at, id),
-                Placement::State(state) => cx.region.set_block(at, state),
+                Placement::Id(id) => self.write_id(cx, at, id),
+                Placement::State(state) => self.write(cx, at, state),
             };
             near.forget(target);
             if written {
@@ -1103,7 +1223,7 @@ impl Spreader<'_, '_> {
                             }
                             _ => Self::id(cx, &slots[0], dry),
                         };
-                        Self::write_id(cx, above, id);
+                        self.write_id(cx, above, id);
                     }
                     return 0.max(charge - GROWTH_SPAWN_COST);
                 }
@@ -1164,7 +1284,7 @@ impl Spreader<'_, '_> {
                 continue;
             }
             let sculk = Self::id(cx, &self.ids.sculk, &self.sculk);
-            Self::write_id(cx, support_pos, sculk);
+            self.write_id(cx, support_pos, sculk);
             self.spread_all(cx, None, support_pos, &ALL_SPREADS);
             let skip = support.opposite();
             for direction in Dir::ALL {
@@ -1214,7 +1334,7 @@ impl Spreader<'_, '_> {
         } else {
             self.vein_id(cx, faces, read.info.has(I_WATERLOGGED))
         };
-        Self::write_id(cx, pos, id);
+        self.write_id(cx, pos, id);
     }
 
     /// [`Self::on_discharged`] for a vein that is not canonical, worked on its state.
@@ -1242,7 +1362,7 @@ impl Spreader<'_, '_> {
                 self.air.clone()
             };
         }
-        cx.region.set_block(pos, state);
+        self.write(cx, pos, state);
     }
 
     /// `ChargeCursor.getValidMovementPos`.
