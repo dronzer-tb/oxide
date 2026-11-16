@@ -1092,3 +1092,31 @@ Same base (pipeline-b3, datapath 80add17); pipeline-gl3 adds the change.
 **Rejected**; patch at `docs/perf/rejected-lichen-geode.patch`. Digest held throughout. A likely
 reason: the per-call caches and extra branches cost more than the repeated reads they save now that
 reads are cheap; glow lichen's early stop alone may still be worth a separate small try.
+
+## Lush cave patch bodies: fewer reads, no state copies; base 1 -8.4%
+
+**Change** (sub-agent commit eb548dc; under `decorator/`):
+- `vegetation/patch.rs`: each column cell read once (the step back after an air walk reuses the
+  cell already seen; the block under the ground reuses the last solid read for the sturdy-face check
+  and the first ground step); a ground step that finds the ground block already there stops at once
+  instead of asking the same question `depth` times with nothing changed in between.
+- `vegetation/geometry.rs`: `PosSet` stops hashing (patch positions come from distinct columns).
+- `state_provider.rs`: `state_ref` (same draws, returns the configured state by reference);
+  `randomized_int_state_provider` over a fixed/weighted source precomputes every rolled state and its
+  table membership at compile time.
+- `feature.rs`, `ground/block_column.rs`: simple_block and block_column write by reference; block
+  column's allowed-placement test answered once per `StateKey` per call when it is local.
+- `survival.rs`: survival-rule tag sets are `AHashSet` (lookup only, never iterated).
+- Draws, write order, written states and state-table order unchanged; `region.rs` untouched.
+
+**Hold, base 1** (pipeline-b3 = branch 69984c6 + datapath **80add17**; pipeline-lb3 adds 5c61f04):
+
+| | run 1 | run 2 | run 3 | mean |
+|---|---|---|---|---|
+| base decorate_ms | 10569 | 10232 | 10305 | 10369 |
+| lush decorate_ms | 9423 | 9689 | 9387 | 9500 |
+| base / lush cpu_user_s | 28.04 / 26.54 | 27.43 / 26.75 | 27.52 / 26.35 | 27.66 / 26.55 |
+| java_cpu_s_per_10s | 0.39 / 0.45 | 0.35 / 0.29 | 0.30 / 0.29 | |
+
+-8.4% decorate, -4.0% user CPU, ahead 3/3 on both. Java quiet; df701ee858e2bdd3 on every row; tests
+194 pass. Second base (branch head with trees, merged with current datapath) next.
