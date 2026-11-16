@@ -1289,3 +1289,25 @@ the first lite profile). Branch-head tests: chunkgen 192 pass (1 ignored), prege
 
 Ores remain the largest group at ~230 ns per fresh cell (10.1M fresh cells); next round needs a
 sampled view of the ore body rather than wall timers.
+
+## Glow lichen: stop the repeated search pass after a quiet failure; base 1 -4.2% (mixed)
+
+**Change** (ee0ce0d, 12 lines; `vegetation/multiface.rs`, plus an additive
+`UnsupportedTally::records()` in `context.rs`): vanilla's search re-tests the same neighbour
+`search_range` (20) times per direction. A failed `place_growth` writes and draws nothing; if it also
+tallied nothing (`face_full` can tally an unknown shape, so tallies are compared before/after), the
+next pass reads the same cell with the same directions and fails the same way, so the loop breaks.
+A pass that tallied keeps looping as vanilla does. This is only the early stop from the rejected
+lichen/geode patch, without its caches.
+
+**Hold, base 1** (pipeline-b7 = branch 2979ec0 + datapath **464c8d4**; pipeline-gs adds ee0ce0d):
+
+| | run 1 | run 2 | run 3 | mean |
+|---|---|---|---|---|
+| base decorate_ms | 8648 | 7678 | 8557 | 8294 |
+| stop decorate_ms | 8273 | 8068 | 7498 | 7946 |
+| base / stop cpu_user_s | 24.05 / 24.15 | 23.22 / 23.34 | 24.66 / 22.28 | 23.98 / 23.26 |
+| java_cpu_s_per_10s | 0.22 / 0.28 | 0.28 / 0.33 | 0.26 / 0.19 | |
+
+-4.2% decorate ahead 2/3; user CPU -3.0% but ahead only 1/3. Glow lichen is ~4.4% of decorate CPU, so
+the true effect is at most that; this hold cannot tell. Second base queued. Digest held; tests 195 pass.
