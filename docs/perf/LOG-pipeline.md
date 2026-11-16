@@ -1651,3 +1651,46 @@ df701ee858e2bdd3 on every row; tests pass.
 Branch head (fb) at 8 threads: 323.9 / 356.7 / 314.6, mean 332 cps, about the 335 headline. The
 1-thread decorate cut (-18% since h1, about -25% since the headline base) doesn't show at 8 threads:
 8-thread spread is about +/-10% here, and generate (~1.85 s, not ours) is now the larger stage.
+
+### Decoration 8-thread scaling: diagnosis, and 8-byte packed writes (sub-agent 19d5a20) rejected
+
+Instrumented build (per-worker busy time per phase, `getrusage` faults and sys; reverted), base
+4d750ec, r16:
+
+| phase | threads | wall s | busy s (all workers) | idle s | minor faults | sys s |
+|---|---|---|---|---|---|---|
+| make region writes | 1 | 5.45 | 5.45 | 0.00 | 54k | 0.48 |
+| make region writes | 8 | 1.18 / 1.53 | 9.4 / 12.2 | 0.06 / 0.07 | 60k | 1.7 / 3.0 |
+| apply writes + heightmaps | 1 | 0.92 | 0.92 | 0.00 | 32k | 0.35 |
+| apply writes + heightmaps | 8 | 0.61 / 0.30 | 4.8 / 2.4 | 0.04 / 0.03 | 32k | 1.6 / 0.9 |
+
+- Not imbalance or a serial tail: idle under 1% of thread time; the step between phases is ~15 ms.
+- Per-work inflation at 8 threads: 1.7-2.2x CPU in the region phase, 2.6-5x in the apply phase.
+- Faults barely change with threads (~92k) but sys per fault goes ~9 us -> 28-50 us: faults on fresh
+  memory contend in the kernel. Memory is always fresh because the stage keeps every terrain chunk,
+  write list and finished chunk until it ends. Region phase: ~39k faults from the prefaulted write
+  lists (128 KB per region), ~20k other region allocations. Apply phase: ~31k mostly from finished
+  sections expanding to full 16 KB index arrays on first write (oxide-core, not ours).
+- The rest is user-time inflation: 8 cores share one 8 MB L3; decoration is memory and cache bound.
+- Locks and false sharing are unlikely (one relaxed atomic per region; pools and caches per
+  thread) but were not measured separately.
+
+Fix tried: each write in 8 bytes instead of 16 (position packed in 32 bits relative to the region's
+48x48 window, beside the state id; same order, positions and states). Instrumented 8 threads: region
+phase faults ~60k -> ~40k, wall 1.05/0.93/0.81 s.
+
+Holds:
+- 8 threads, 6 rounds: undecidable. Five of twelve rows had cpu_sys_s 15-37 s (earlier 8-thread holds
+  2-3 s), on both trees; java quiet (0.15-0.54); box had 17 GB free afterwards. Cause outside the lock,
+  untraced. Medians fb 235 cps / 2124 ms, t1 260 cps / 1892 ms.
+- 1 thread, 4 rounds: decorate fb 6161 6077 6510 5947 = 6174, t1 6636 6305 6505 6153 = 6400
+  (**+3.7%**, t1 behind 3/4); sys 1.45 -> 1.70 s. Possibly the write list now sits at exactly 128 KB,
+  glibc's default mmap threshold (untested).
+
+**Rejected**; patch at `docs/perf/rejected-packed-writes.patch`. Digest df701ee858e2bdd3 on every
+row; tests pass.
+
+Next: the stage holds every region's write list and every finished chunk until it ends, so memory is
+never reused. Free each region's writes once its nine readers are finished, and reuse those buffers,
+or overlap the phases so peak memory falls. Fresh 16 KB section arrays (oxide-core) are noted but not
+ours.

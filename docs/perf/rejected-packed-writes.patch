@@ -1,0 +1,184 @@
+From 19d5a2022c5446fee6f98916e4656df9dc2d4ff3 Mon Sep 17 00:00:00 2001
+From: Kasniya <36neelansh@gmail.com>
+Date: Mon, 16 Nov 2026 14:55:56 +0000
+Subject: [PATCH] perf(region): keep each write in eight bytes
+
+The decoration stage keeps every region's write list until the end, so the
+lists are fresh memory, and at eight threads the page faults mapping them in
+contend in the kernel: per fault sys time rises several fold over one thread.
+A write's position now packs into 32 bits relative to its region's window
+(x and z offsets and the height above min_y) beside its state id, halving the
+lists and the pages they fault in. Write order, positions and states are
+unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ crates/oxide-chunkgen/src/region.rs | 82 ++++++++++++++++++++++++++---
+ crates/oxide-pregen/src/generate.rs |  2 +-
+ 2 files changed, 76 insertions(+), 8 deletions(-)
+
+diff --git a/crates/oxide-chunkgen/src/region.rs b/crates/oxide-chunkgen/src/region.rs
+index 190de43..f35c658 100644
+--- a/crates/oxide-chunkgen/src/region.rs
++++ b/crates/oxide-chunkgen/src/region.rs
+@@ -99,8 +99,10 @@ pub type BlockWrite = (BlockPos, BlockState);
+ /// Prefer it wherever the writes are only read: cloning a `BlockState` per write (two heap
+ /// strings each, into memory that stays live) is about a quarter of a region's CPU.
+ pub struct InternedWrites {
+-    /// Each write's position and its state's index into `states`, in first-write order.
+-    pub writes: Vec<(BlockPos, u32)>,
++    /// Each write's position (packed, see [`Window`]) and its state's index into `states`, in
++    /// first-write order.
++    writes: Vec<PackedWrite>,
++    window: Window,
+     /// Every state some write names (and possibly a few none does), in first-seen order.
+     pub states: Vec<BlockState>,
+ }
+@@ -108,9 +110,60 @@ pub struct InternedWrites {
+ impl InternedWrites {
+     /// The writes in order, each with its state.
+     pub fn iter(&self) -> impl Iterator<Item = (BlockPos, &BlockState)> + '_ {
++        self.entries()
++            .map(|(pos, id)| (pos, &self.states[id as usize]))
++    }
++
++    /// The writes in order, each with its state's index into `states`.
++    pub fn entries(&self) -> impl Iterator<Item = (BlockPos, u32)> + '_ {
+         self.writes
+             .iter()
+-            .map(|&(pos, id)| (pos, &self.states[id as usize]))
++            .map(|write| (self.window.unpack(write.at), write.id))
++    }
++
++    pub fn len(&self) -> usize {
++        self.writes.len()
++    }
++
++    pub fn is_empty(&self) -> bool {
++        self.writes.is_empty()
++    }
++}
++
++/// One write as a region keeps it: eight bytes rather than sixteen. A region keeps thousands
++/// and the decoration stage keeps every region's until the end, so at eight threads the page
++/// faults that map the lists in contend with each other; half the size is half the faults.
++#[derive(Clone, Copy)]
++struct PackedWrite {
++    /// The position relative to the window's low corner (see [`Window::pack`]).
++    at: u32,
++    id: u32,
++}
++
++/// A region's 48x48 window and vertical range, for packing a position inside it into 32 bits:
++/// x and z offsets in the low 6 bits each, the height above `min_y` above them.
++#[derive(Clone, Copy)]
++struct Window {
++    min_x: i32,
++    min_y: i32,
++    min_z: i32,
++}
++
++impl Window {
++    fn pack(self, pos: BlockPos) -> u32 {
++        let x = (pos.x - self.min_x) as u32;
++        let y = (pos.y - self.min_y) as u32;
++        let z = (pos.z - self.min_z) as u32;
++        debug_assert!(x < 64 && z < 64 && y < 1 << 20);
++        y << 12 | z << 6 | x
++    }
++
++    fn unpack(self, at: u32) -> BlockPos {
++        BlockPos::new(
++            self.min_x + (at & 63) as i32,
++            self.min_y + (at >> 12) as i32,
++            self.min_z + (at >> 6 & 63) as i32,
++        )
+     }
+ }
+ 
+@@ -175,7 +228,7 @@ pub struct DecorationRegion<'a> {
+     overlay: Vec<Option<SectionWrites>>,
+     /// Every write in the order its position was first written, each with the id (into
+     /// `states`) of its latest state: `into_writes` hands this list back with the ids resolved.
+-    writes: Vec<(BlockPos, u32)>,
++    writes: Vec<PackedWrite>,
+     /// Every distinct state written so far, in first-written order. A region writes a few dozen
+     /// distinct states thousands of times, so writes keep a `u32` instead of an owned
+     /// `BlockState` (two heap strings and a map) each.
+@@ -230,6 +283,15 @@ impl<'a> DecorationRegion<'a> {
+         }
+     }
+ 
++    /// The window for [`PackedWrite`]s.
++    fn window(&self) -> Window {
++        Window {
++            min_x: (self.center.x - 1) * 16,
++            min_y: self.min_y,
++            min_z: (self.center.z - 1) * 16,
++        }
++    }
++
+     /// `written_top`'s index for a column inside the window.
+     fn column(&self, x: i32, z: i32) -> usize {
+         let dx = x - (self.center.x - 1) * 16;
+@@ -534,11 +596,12 @@ impl<'a> DecorationRegion<'a> {
+     /// position written before keeps its place in `writes` and takes the new state.
+     fn write_id(&mut self, pos: BlockPos, cell: (usize, usize, usize), id: u32) {
+         let (chunk_index, section_index, slot) = cell;
++        let window = self.window();
+         let at = 2 * (slot & (SECTION_CELLS - 1));
+         let cells = self.overlay[chunk_index * self.sections + section_index]
+             .get_or_insert_with(take_section);
+         if cells[at] != 0 {
+-            self.writes[cells[at + 1] as usize].1 = id;
++            self.writes[cells[at + 1] as usize].id = id;
+         } else {
+             cells[at + 1] = self.writes.len() as u32;
+             if self.writes.len() == self.writes.capacity() {
+@@ -548,7 +611,10 @@ impl<'a> DecorationRegion<'a> {
+                 let entries = grown.capacity();
+                 self.writes = prefaulted(grown, entries);
+             }
+-            self.writes.push((pos, id));
++            self.writes.push(PackedWrite {
++                at: window.pack(pos),
++                id,
++            });
+         }
+         cells[at] = id + 1;
+         let column = self.column(pos.x, pos.z);
+@@ -678,6 +744,7 @@ impl<'a> DecorationRegion<'a> {
+         self.recycle_overlay();
+         InternedWrites {
+             writes: std::mem::take(&mut self.writes),
++            window: self.window(),
+             states: std::mem::take(&mut self.states),
+         }
+     }
+@@ -685,8 +752,9 @@ impl<'a> DecorationRegion<'a> {
+     /// Hands the overlay's sections back to the thread's pool, clearing just the id entries
+     /// `writes` names (every nonzero id entry is one of them). Leaves the overlay empty.
+     fn recycle_overlay(&mut self) {
++        let window = self.window();
+         for index in 0..self.writes.len() {
+-            let pos = self.writes[index].0;
++            let pos = window.unpack(self.writes[index].at);
+             let Some((chunk_index, section_index, slot)) = self.locate(pos) else {
+                 continue;
+             };
+diff --git a/crates/oxide-pregen/src/generate.rs b/crates/oxide-pregen/src/generate.rs
+index d5a3289..dbc73fa 100644
+--- a/crates/oxide-pregen/src/generate.rs
++++ b/crates/oxide-pregen/src/generate.rs
+@@ -190,7 +190,7 @@ fn apply_writes(chunk: &mut ChunkData, writes: &InternedWrites) {
+     let (min_y, height) = (chunk.min_y, chunk.height);
+     let states = writes.states.len();
+     let mut known = vec![UNKNOWN; chunk.sections.len() * states];
+-    for &(at, id) in &writes.writes {
++    for (at, id) in writes.entries() {
+         if at.chunk_pos() != chunk.pos || at.y < min_y || at.y >= min_y + height {
+             continue;
+         }
+-- 
+2.43.0
+
