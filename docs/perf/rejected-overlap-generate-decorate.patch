@@ -1,0 +1,195 @@
+From 8fac5b9f616514ce677fd461934d528f532c407a Mon Sep 17 00:00:00 2001
+From: Kasniya <36neelansh@gmail.com>
+Date: Mon, 16 Nov 2026 17:17:01 +0000
+Subject: [PATCH] perf(pregen): overlap terrain generation with decoration
+
+Terrain chunks are now queued in row order on the same FIFO scope as the
+decoration tasks: a region runs as soon as the nine terrain chunks it reads
+are generated, and a chunk is finished as soon as its nine regions are done.
+Each terrain chunk is generated on its own as before, and each region and
+chunk reads the same inputs, so the output is unchanged. Terrain no chunk is
+built on is dropped once its last region is done with it. With the stages
+overlapped, generate_ms is the time until the last terrain chunk is generated
+and decorate_ms the time from then until the last chunk is finished.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ crates/oxide-pregen/src/generate.rs | 128 +++++++++++++++++++---------
+ 1 file changed, 88 insertions(+), 40 deletions(-)
+
+diff --git a/crates/oxide-pregen/src/generate.rs b/crates/oxide-pregen/src/generate.rs
+index 301019e..b8e09ed 100644
+--- a/crates/oxide-pregen/src/generate.rs
++++ b/crates/oxide-pregen/src/generate.rs
+@@ -267,43 +267,55 @@ pub fn run(generator: &Generator, opts: &Options<'_>) -> Result<Outcome> {
+         (x >= 0 && z >= 0 && x < width && z < width).then(|| (z * width + x) as usize)
+     };
+ 
+-    // 1. Terrain.
+-    let started = Instant::now();
+-    let terrain: Vec<ChunkData> = square(opts.center, terrain_radius)
+-        .par_iter()
+-        .map(|&pos| generator.terrain(pos))
+-        .collect();
+-    times.generate = started.elapsed().as_secs_f64();
+-    // 2. Decoration: each chunk's writes, then each finished chunk from its nine neighbours',
+-    // in `oxide_chunkgen::decorate::decorated_chunk`'s order.
++    // 1 and 2. Terrain and decoration, overlapped and driven by dependencies: terrain is
++    // queued in row order, a region (a chunk's decoration writes) runs as soon as the nine
++    // terrain chunks it reads are generated, and a chunk is finished (its nine regions' writes
++    // applied) as soon as those regions are done.
++    //
++    // Each terrain chunk is generated on its own, as before; each region reads the same nine
++    // terrain chunks, and each chunk its base and its nine regions' complete write lists,
++    // applied in the same order, so every chunk comes out as when the stages ran one after the
++    // other. A region's write list goes back to the pool once every chunk reading it is
++    // finished, terrain no chunk is built on is dropped once every region reading it is done,
++    // and the finished chunks are collected in row order.
+     //
+-    // Driven by dependencies rather than in lockstep: regions are queued in row order, and a
+-    // chunk is finished as soon as its own nine regions are done. Each region reads only
+-    // terrain, and each chunk its base and its nine regions' complete write lists, applied in
+-    // the same order, so every chunk comes out as when all regions were decorated first. A
+-    // region's write list goes back to the pool once every chunk reading it is finished, and
+-    // the finished chunks are collected in row order.
++    // With the stages overlapped, `generate` is the time until the last terrain chunk is
++    // generated and `decorate` the time from then until the last chunk is finished.
+     let started = Instant::now();
++    let fields = square(opts.center, terrain_radius);
+     let regions = square(opts.center, writes_radius);
+     let inner = square(opts.center, opts.radius);
+     let facts = generator.facts();
+     // Terrain chunks, shared by the regions reading them. A chunk's base is read only by its
+     // nine regions, so once they are done (and have dropped their handles) it moves out.
+-    let terrain: Vec<Mutex<Option<Arc<ChunkData>>>> = terrain
+-        .into_iter()
+-        .map(|chunk| Mutex::new(Some(Arc::new(chunk))))
+-        .collect();
++    let terrain: Vec<Mutex<Option<Arc<ChunkData>>>> =
++        fields.iter().map(|_| Mutex::new(None)).collect();
+     let terrain_at = |pos: ChunkPos| -> Arc<ChunkData> {
+         let i = index(pos, terrain_radius).expect("inside the terrain square");
+         terrain[i]
+             .lock()
+             .expect("terrain slot poisoned")
+             .clone()
+-            .expect("terrain still in place")
++            .expect("terrain generated and still in place")
+     };
++    // Per terrain chunk, the regions still to read it.
++    let terrain_readers: Vec<AtomicUsize> = fields
++        .iter()
++        .map(|&pos| {
++            AtomicUsize::new(
++                neighbours(pos)
++                    .filter(|&c| index(c, writes_radius).is_some())
++                    .count(),
++            )
++        })
++        .collect();
++    let terrain_left = AtomicUsize::new(fields.len());
++    let terrain_done: Mutex<Option<Instant>> = Mutex::new(None);
+     let writes: Vec<Mutex<Option<Arc<InternedWrites>>>> =
+         regions.iter().map(|_| Mutex::new(None)).collect();
+-    // Per inner chunk, its regions still to decorate; per region, its chunks still to finish.
++    // Per region, its terrain chunks still to generate; per inner chunk, its regions still to
++    // decorate; per region, its chunks still to finish.
++    let region_waiting: Vec<AtomicUsize> = regions.iter().map(|_| AtomicUsize::new(9)).collect();
+     let waiting: Vec<AtomicUsize> = inner.iter().map(|_| AtomicUsize::new(9)).collect();
+     let readers: Vec<AtomicUsize> = regions
+         .iter()
+@@ -353,28 +365,59 @@ pub fn run(generator: &Generator, opts: &Options<'_>) -> Result<Outcome> {
+             }
+         }
+     };
++    let decorate_region = |c: ChunkPos| -> Vec<ChunkPos> {
++        let i = index(c, writes_radius).expect("inside the writes square");
++        let around: [Arc<ChunkData>; 9] = std::array::from_fn(|k| {
++            terrain_at(ChunkPos::new(
++                c.x + (k % 3) as i32 - 1,
++                c.z + (k / 3) as i32 - 1,
++            ))
++        });
++        let refs: [&ChunkData; 9] = std::array::from_fn(|k| around[k].as_ref());
++        let made = generator.decoration_writes(refs);
++        drop(around);
++        *writes[i].lock().expect("write slot poisoned") = Some(Arc::new(made));
++        // Terrain no chunk is built on goes once its last region is done with it.
++        for pos in neighbours(c) {
++            let t = index(pos, terrain_radius).expect("inside the terrain square");
++            if terrain_readers[t].fetch_sub(1, Ordering::AcqRel) == 1
++                && index(pos, opts.radius).is_none()
++            {
++                drop(terrain[t].lock().expect("terrain slot poisoned").take());
++            }
++        }
++        // The inner chunks around this region that now have all nine are ready.
++        neighbours(c)
++            .filter(|&pos| {
++                index(pos, opts.radius)
++                    .is_some_and(|j| waiting[j].fetch_sub(1, Ordering::AcqRel) == 1)
++            })
++            .collect()
++    };
+     rayon::scope_fifo(|scope| {
+-        for (i, &c) in regions.iter().enumerate() {
+-            let (terrain_at, writes, waiting, finish_chunk) =
+-                (&terrain_at, &writes, &waiting, &finish_chunk);
++        for &pos in &fields {
++            let (terrain, terrain_left, terrain_done, region_waiting) =
++                (&terrain, &terrain_left, &terrain_done, &region_waiting);
++            let (decorate_region, finish_chunk) = (&decorate_region, &finish_chunk);
+             scope.spawn_fifo(move |scope| {
+-                let around: [Arc<ChunkData>; 9] = std::array::from_fn(|k| {
+-                    terrain_at(ChunkPos::new(
+-                        c.x + (k % 3) as i32 - 1,
+-                        c.z + (k / 3) as i32 - 1,
+-                    ))
+-                });
+-                let refs: [&ChunkData; 9] = std::array::from_fn(|k| around[k].as_ref());
+-                let made = generator.decoration_writes(refs);
+-                drop(around);
+-                *writes[i].lock().expect("write slot poisoned") = Some(Arc::new(made));
+-                // Each inner chunk around this region that now has all nine is ready.
+-                for pos in neighbours(c) {
+-                    let Some(j) = index(pos, opts.radius) else {
++                let made = generator.terrain(pos);
++                *terrain[index(pos, terrain_radius).expect("inside the terrain square")]
++                    .lock()
++                    .expect("terrain slot poisoned") = Some(Arc::new(made));
++                if terrain_left.fetch_sub(1, Ordering::AcqRel) == 1 {
++                    *terrain_done.lock().expect("timing slot poisoned") = Some(Instant::now());
++                }
++                // Each region around this chunk that now has all nine is ready.
++                for c in neighbours(pos) {
++                    let Some(r) = index(c, writes_radius) else {
+                         continue;
+                     };
+-                    if waiting[j].fetch_sub(1, Ordering::AcqRel) == 1 {
+-                        scope.spawn_fifo(move |_| finish_chunk(pos));
++                    if region_waiting[r].fetch_sub(1, Ordering::AcqRel) == 1 {
++                        scope.spawn_fifo(move |scope| {
++                            for ready in decorate_region(c) {
++                                scope.spawn_fifo(move |_| finish_chunk(ready));
++                            }
++                        });
+                     }
+                 }
+             });
+@@ -389,7 +432,12 @@ pub fn run(generator: &Generator, opts: &Options<'_>) -> Result<Outcome> {
+         })
+         .collect();
+     drop(terrain);
+-    times.decorate = started.elapsed().as_secs_f64();
++    let terrain_done = terrain_done
++        .into_inner()
++        .expect("timing slot poisoned")
++        .unwrap_or(started);
++    times.generate = terrain_done.duration_since(started).as_secs_f64();
++    times.decorate = terrain_done.elapsed().as_secs_f64();
+ 
+     // 3. NBT.
+     let write_opts = ChunkNbtWriteOptions {
+-- 
+2.43.0
+

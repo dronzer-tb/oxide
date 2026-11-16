@@ -1820,3 +1820,31 @@ on every hold row. New base: pipeline-k1 (0b56ce5).
 **Against PumpkinMC:** decorated, byte-exact pregen at 8 threads is now 368 cps mean (325-393) on this
 box, vs PumpkinMC terrain-only ~404 cps (not byte exact). Earlier 8-thread figures (335 cps headline,
 332 on fb) were taken with this contention present and are not directly comparable.
+
+### Overlap generation with decoration (sub-agent 8fac5b9): neutral, rejected
+
+`generate.rs`: terrain chunks queued in row order on the same `scope_fifo` as regions and chunks; a
+region starts once its nine terrain chunks exist (counter per region); terrain no finished chunk is
+built on is dropped after its last region. Same inputs, write-list order and row-ordered output; r7
+byte check vs k1 passes (dea822a7b8517773, .mca identical outside the timestamp table). Max RSS at 8
+threads 675/661 MB -> 662/662 MB. (`generate_ms`/`decorate_ms` lose their meaning when overlapped.)
+
+Instrumented busy time at 8 threads: terrain 16.1/17.7 s (vs ~14.6 s when run alone), regions
+6.4/6.9 s, chunks 1.4/1.7 s, idle per worker 0.06-0.11 s, wall 3.08/3.37 s. Workers are now busy
+almost all the time: the box is compute-bound, and terrain work costs ~10-20% more CPU when it shares
+cores with decoration (likely cache), cancelling the idle gap the overlap removed.
+
+| hold | k1 | g1 | change | g1 ahead |
+|---|---|---|---|---|
+| 8 threads, 6 rounds: cps mean | 310.8 | 308.0 | -0.9% | 3/6 |
+| 8 threads: cpu_user_s mean | 26.5 | 26.9 | | |
+| 1 thread, 4 rounds: secs mean | 21.64 | 21.71 | +0.3% | 2/4 |
+
+Round 1 of the 8-thread hold was slow on both trees (user ~35 s, java 0.90-1.04 CPU-s per 10 s).
+**Rejected** (no gain, more scheduling code); patch at
+`docs/perf/rejected-overlap-generate-decorate.patch`. Digest df701ee858e2bdd3 on every row; tests pass.
+
+Takeaway: at 8 threads the run is CPU-bound, so further gains must cut CPU, not reschedule. Per r16
+run at 1 thread: generate ~13.9 s (other tracks), decorate ~6.0 s, serialise ~0.65 s, compress
+~0.6 s. Reaching PumpkinMC's ~404 cps from ~368 needs roughly 10% less total CPU; within this track
+that means decoration (ores still ~37% of it) or serialise/compress.
