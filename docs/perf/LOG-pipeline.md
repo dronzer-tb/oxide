@@ -1989,3 +1989,23 @@ Halving mallocs did not reproduce mimalloc's ~25% 8-thread decorate gain, so tha
 mimalloc's per-thread heaps and free-list locality, not call counts. Branch head: tests pass; digest
 df701ee858e2bdd3 at 1 and 8 threads; r7 digest dea822a7b8517773 and .mca identical to k1's outside the
 timestamp table; digest held on every hold row. New base: pipeline-d1 (845de28).
+
+### glibc tcache depth (measurement only, no code): does not explain mimalloc's decorate gain
+
+Branch-head merged binary (pipeline-d1 = abfb474 + datapath 323b9d4), r16, 8 threads, 6 ABBA rounds
+under one `flock -x`, `GLIBC_TUNABLES=glibc.malloc.tcache_count=1000` vs default (7 per bin):
+
+| | default | tcache 1000 |
+|---|---|---|
+| cps | 369.5 266.7 338.0 355.9 322.5 362.3 (mean 335.8, median 347.0) | 388.3 359.8 349.1 358.8 330.4 348.0 (mean 355.7, median 353.4) |
+| decorate_ms mean | 979 | 935 (-4.5%) |
+| ahead | | 5/6 |
+
+Digest df701ee858e2bdd3 on every row; one java process present (java_n=1 again), low CPU. Default
+round 2 (266.7 cps, user 29.9 s) is an outlier. Median +1.9%, decorate -4.5%: within hold noise and far
+from mimalloc's ~25% decorate cut, so free-list depth is not the cause. Not pursued (it would be an
+environment setting, not code).
+
+Note for anyone rerunning numbers: `~/oxide-perf/pipeline` holds the branch alone (no datapath merge),
+whose generation is ~5x slower (generate ~10 s at 8 threads); merged-tree numbers come from the
+pipeline-<x> bench dirs.
