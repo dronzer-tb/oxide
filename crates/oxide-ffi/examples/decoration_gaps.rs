@@ -23,6 +23,7 @@ fn main() -> Result<()> {
     let coords: Vec<(i32, i32)> = (-radius..=radius)
         .flat_map(|x| (-radius..=radius).map(move |z| (x, z)))
         .collect();
+    let started = std::time::Instant::now();
     let generated: Vec<(Vec<u16>, String)> = coords
         .par_iter()
         .map(|&(x, z)| -> Result<(Vec<u16>, String)> {
@@ -32,6 +33,11 @@ fn main() -> Result<()> {
             Ok((blocks, generator.chunk_extras(x, z)?))
         })
         .collect::<Result<_>>()?;
+    println!(
+        "generated {} chunks in {:.3} s",
+        coords.len(),
+        started.elapsed().as_secs_f64()
+    );
     let chunks: Vec<&Vec<u16>> = generated.iter().map(|(blocks, _)| blocks).collect();
 
     // FNV-1a over each block's state name, chunk by chunk in `coords` order.
