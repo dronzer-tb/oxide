@@ -1880,3 +1880,25 @@ Next: one more ore attempt with a formulation not yet tried: evaluate the inside
 whole x row at once (same per-element float operations, no reordering or FMA) into a bit mask, then
 visit set bits in the original order, so the branchy per-cell loop control (~55% of `place_blob`)
 shrinks.
+
+### Ore row-mask sphere test: -4% place_blob in samples, stopped before holds (bar was -25%)
+
+`ore.rs`: `dz*dz` once per z of each sphere's box (vanilla's expression), and for each (x, y) row that
+passes vanilla's row test, every z cell's test `!((dx*dx + dy*dy) + dz*dz >= 1.0)` (same left-to-right
+sum, NaN treated as inside as before) into a u64 mask in one branch-free loop; set bits walked in
+ascending z (vanilla's inner axis) with visited bit, block read, rule match and draws unchanged.
+`.cargo/config.toml` builds with `-C target-cpu=native`; `objdump` finds 0 `vfmadd` in base and new.
+
+| place_blob samples (two runs each) | base 0b56ce5 | row mask |
+|---|---|---|
+| total | 887 / 951 | 887 / 878 |
+| sphere math and loop | 512 / 513 | 411 / 392 |
+| block reads | 188 / 251 | 209 / 237 |
+| visited set | 32 / 25 | 87 / 77 |
+
+-21% sphere math, but the visited test rose by ~50 samples: the time moves to the next memory access,
+as with z-run bounds and visited-first. **Not held, not kept**; patch at
+`docs/perf/rejected-ore-row-mask.patch`. Digest df701ee858e2bdd3 on all sampled runs.
+
+**Ores are closed.** Three in-loop formulations end the same way: once the arithmetic goes, ore cost is
+cache-missing reads of the visited set and block data, which the loop structure cannot remove.

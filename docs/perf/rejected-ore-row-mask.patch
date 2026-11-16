@@ -1,0 +1,78 @@
+diff --git a/crates/oxide-chunkgen/src/decorator/ore.rs b/crates/oxide-chunkgen/src/decorator/ore.rs
+index 90eab35..ce62f5f 100644
+--- a/crates/oxide-chunkgen/src/decorator/ore.rs
++++ b/crates/oxide-chunkgen/src/decorator/ore.rs
+@@ -340,6 +340,9 @@ impl OreFeature {
+         }
+         let OreMemo { ids, matches, .. } = &mut memo;
+         // Masks hold one bit per target; more than 64 targets falls back to the plain path.
++        // Per sphere, `dz * dz` for each z of its box, worked out once: vanilla divides per cell,
++        // but the quotient depends on z alone.
++        let mut dz_squared = [0f64; 64];
+         for [sx, sy, sz, radius] in spheres {
+             if radius < 0.0 {
+                 continue;
+@@ -350,6 +353,16 @@ impl OreFeature {
+             let x_hi = ((sx + radius).floor() as i32).max(x_lo);
+             let y_hi = ((sy + radius).floor() as i32).max(y_lo);
+             let z_hi = ((sz + radius).floor() as i32).max(z_lo);
++            // A sphere's radius stays under 5, so its row of z fits a 64-bit mask; a longer one
++            // (never seen) is tested cell by cell.
++            let span = (i64::from(z_hi) - i64::from(z_lo) + 1) as usize;
++            let masked = span <= 64;
++            if masked {
++                for (k, slot) in dz_squared[..span].iter_mut().enumerate() {
++                    let dz = (f64::from(z_lo + k as i32) + 0.5 - sz) / radius;
++                    *slot = dz * dz;
++                }
++            }
+             for x in x_lo..=x_hi {
+                 let dx = (f64::from(x) + 0.5 - sx) / radius;
+                 if dx * dx >= 1.0 {
+@@ -359,14 +372,41 @@ impl OreFeature {
+                     let dy = (f64::from(y) + 0.5 - sy) / radius;
+                     // A row outside the build height skips every cell, as the per-cell test
+                     // vanilla makes would; nothing in the row draws or marks `tested` first.
+-                    if dx * dx + dy * dy >= 1.0 || cx.outside_build_height(y) {
++                    let dxy = dx * dx + dy * dy;
++                    if dxy >= 1.0 || cx.outside_build_height(y) {
+                         continue;
+                     }
+-                    for z in z_lo..=z_hi {
+-                        let dz = (f64::from(z) + 0.5 - sz) / radius;
+-                        if dx * dx + dy * dy + dz * dz >= 1.0 {
+-                            continue;
++                    // Vanilla's cell test `dx * dx + dy * dy + dz * dz >= 1.0` adds left to
++                    // right, so `dxy + dz * dz` is the same double; it has no side effects, so
++                    // the whole row is tested first, without branches, into a mask whose set
++                    // bits are then visited in ascending z, the order vanilla visits them.
++                    let mut row = if masked {
++                        let mut mask = 0u64;
++                        for (k, &dz2) in dz_squared[..span].iter().enumerate() {
++                            mask |= u64::from(!(dxy + dz2 >= 1.0)) << k;
++                        }
++                        mask
++                    } else {
++                        u64::MAX
++                    };
++                    let mut z = z_lo;
++                    while z <= z_hi {
++                        if masked {
++                            if row == 0 {
++                                break;
++                            }
++                            z = z_lo + row.trailing_zeros() as i32;
++                            row &= row - 1;
++                        } else {
++                            let dz = (f64::from(z) + 0.5 - sz) / radius;
++                            if dxy + dz * dz >= 1.0 {
++                                z += 1;
++                                continue;
++                            }
+                         }
++                        let cell = z;
++                        z += 1;
++                        let z = cell;
+                         // Vanilla's index, collisions included: it strides by the box size,
+                         // not by the box size plus one, so distinct cells can share a bit.
+                         let index = i64::from(x.wrapping_sub(x_start))
