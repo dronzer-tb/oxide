@@ -750,3 +750,15 @@ thread-local access) and `[ext]` 16% overall.
   vectorizable lane loops, and fewer copies.
 - **20c (n20c):** ore-vein sampling, a cheaper `sample_via_cell` hit path. If that falls short,
   a cell-batch API with a minimal call-site change in `ore_veins.rs`.
+
+**Two smaller findings from the same profile:**
+- **For datapath / oxide-core:** the 2.6% `atomic_load::u32` self time is `Once::is_completed`
+  inside `LazyLock<[f32; 65536]>::force`. That is `SIN_TABLE` in
+  `crates/oxide-core/src/mth.rs:18`, forced on every `mth::sin`/`cos` call from the carvers. It is
+  exact to deref it once per hot loop (`let table = &*SIN_TABLE;`) or to make the table a plain
+  `static` filled at build time. Not this crate's; reported only.
+- **Noise crate, bundling candidate:** 1.8% of generation is allocation under
+  `ChunkCaches::column_cached` (cache.rs:585). That is `vec![None; COLUMNS]` (289 `Option<f64>`)
+  per 2D slot per `ChunkCaches`, and the aquifer builds one per neighbouring chunk
+  (aquifer.rs:976). It is exact to take those vectors from the scratch pool. At 1.8% it cannot
+  clear the 5% bar alone; bundle it with the next landing in the same area.
