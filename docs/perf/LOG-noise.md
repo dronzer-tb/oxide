@@ -845,3 +845,16 @@ generation samples, so ~±1 point per row). Noise is **41.9%** of generation (45
 
 Over all of generation, `grad_dot` (5.2%) is now the largest named self-time item, ahead of the
 aquifer's `compute_kind` (3.9%). That is 22a's target.
+
+| # | What | Holds | Bases | Patched | Digest | Verdict |
+|---|---|---|---|---|---|---|
+| 22b (n22b) | Vein slots' corner grids built lazily per layer. At router build, a slot reached only from `vein_toggle`/`vein_ridged`/`vein_gap` is marked lazy, and builds one 25-corner layer (one `run_lanes` batch) when a cell or `cell_bounds` first needs it, with a bitmask of built layers. Lazy slots skip the shared `CornerColumns`; every other slot is unchanged. `Program::cell_bounds` gets a `RunCtx`. Exact: the same program at the same positions, only fewer computed. Tests: noise 46 (new `lazy_vein_corner_layers_are_bit_identical`: sparse, out-of-order per-block / per-cell / bounds reads against an eager cache, `to_bits`), chunkgen 192 + 1 + 1 + 1 | 4 rounds, radius 12, 1 thread and 8 threads, against shipc1/shipc2 | 1 t gen_cpu_s 5.05, 5.15; 8 t 6.13, 6.88 | 1 t 5.25; 8 t 5.54 | r12 x24; r16 `a977961a58122047` | **rejected**: 1 thread +3.8% (2/4) / +1.9% (1/4). 8 threads -9.7% / -19.5%, but the bases have outlier rounds (7.40, 9.16), so this only shows no regression. Patch at `wip/noise-22b-lazy-vein-layers.patch` |
+
+**What 22b's counters showed** (radius 8, 1 thread, 289 chunks, counters since removed):
+- **`vein_toggle`:** reads 400 of its 1,225 corners per chunk (corner layers 0-15 in every column, fixed by `ore_veins.rs` running `cell_bounds` over the band). Its build took 26.4 ms in total.
+- **`vein_ridged`:** two grids, built in 166 chunks, ~155 corners read per build (layers 0-12). ~25.5 ms for both.
+- **`vein_gap`:** has no interpolated node.
+
+So ~70-87% of each vein grid is never read. But the unread corners were already cheap, because `run_lanes` only runs noise for in-range lanes. The whole area's ceiling is ~52 ms of 2.37 s (2.2%), and a hold whose rounds swing ~18% cannot resolve it. It is not worth re-holding.
+
+**Pointer:** the only larger build-side waste is the three noodle grids inside `final_density`, ~27 ms each with ~456 of 1,225 corners read. Making those lazy would give up their shared-column hits across chunks, so it is a trade to measure, not a clear win.
