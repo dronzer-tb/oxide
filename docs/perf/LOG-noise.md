@@ -781,3 +781,18 @@ thread-local access) and `[ext]` 16% overall.
 
 **Next:** 20b and 20c are both exact, in different parts of the per-block path, and each is about 3-4% in a consistent direction. Bundle them (plus the 2D-cache allocation from the pool) and hold the bundle against the same bases.
 | 20a (n20a) | Corner-grid Perlin leaf math, vectorized across lanes. New `ImprovedNoise::noise_block_reusing` (up to 64 lanes) in three phases: (1) coordinates as straight-line SoA f64 code (scale, wrap, offset, floor, fractions, y-smear, the three smoothsteps), with the smear mode fixed by const generics; (2) hashes through the same `CellHashes` memo, in lane order; (3) `lerp_corners_faded`, the same 8 `grad_dot`s and 7 lerps. `PerlinNoise::get_values` runs it in 64-lane blocks. `BlendedNoise::compute_chunk` runs it for the main stack, and for each limit stack over its active lanes (the same `!(factor >= 1)` / `!(factor <= 0)` tests), each sum written back to its lane. Disassembly shows `vmulpd/vaddpd/vsubpd/vroundpd` with no FMA. **Reviewed by me against the scalar path:** the same per-lane expressions, `u = smoothstep(dy)` on the un-smeared dy, `y_max` as the same `y * pow` product. Tests: noise 42 (2 new `to_bits` tests: 48 seeds x 40 blocks, every block length, all smear modes, coordinates up to `f64::MAX` and the wrap half-period, signed zeros; saturating selectors). On perf/noise: chunkgen 190 + 1 + 1 + 1 | 4 rounds, radius 12, rotating, against shipb1/shipb2 (ef9a35f), 1 thread and 8 threads | 1 t gen_cpu_s 5.46, 5.42; 8 t 6.87, 7.82 | 1 t **5.17**; 8 t 7.47 | r12 `582147091732a06d` x24; r16 `a977961a58122047` | **landed (07a6727)**: 1 thread -5.3% / -4.5%, **lower than both bases in 4/4 rounds** (per round n20a 5.10/5.08/5.33/5.18 against shipb1 5.52/5.35/5.59/5.39 and shipb2 5.34/5.68/5.42/5.23). 8 threads (regression check): +8.8% (2/4) against shipb1, -4.4% (3/4) against shipb2, cps +5.7% / +10.4%; shipb2 alone ranged 6.23-9.09, so no regression is visible above the 8-thread spread |
+
+### Pregen digest of b889079 + 07a6727 on a tree merged with pipeline (auditor's gap)
+
+Scratch merge: `origin/perf/pipeline` b793819 plus `perf/noise` 07a6727, which carries both
+b889079 (scratch pool) and 07a6727 (block noise kernel). Its noise crate is identical to 07a6727.
+The only conflict was `scripts/bench-vps.sh`, resolved to pipeline's side; pregen does not use
+it. Built and run under the shared lock at nice 10:
+`oxide-pregen --datapack reference --seed 12345 --world out/pregen-world --center-x 0 --center-z 0 --radius 16 --threads 8 --no-write --bench`
+
+    BENCH chunks=1089 threads=8 secs=3.753 cps=290.2 ms_per_chunk_core=27.57 digest=df701ee858e2bdd3 generate_ms=2264 decorate_ms=1275 serialise_ms=120 compress_ms=93 write_ms=0 compression=zlib6 mb_disk=0.0
+
+**digest=df701ee858e2bdd3: matches**, so palettes, biomes and heightmaps are unchanged by
+both landings. (Not a timing: shared lock, box not quiet.) A first attempt without
+`--world/--center-x/--center-z` stopped at argument parsing and generated nothing. The
+scratch worktree `/tmp/pgm` and box dir `noise-pgm` are removed.
