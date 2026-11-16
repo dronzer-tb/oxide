@@ -1918,7 +1918,7 @@ track's kept code. `bench-ab-pregen-vps.sh 16 8 6 pipeline-k1` (single tree, exc
 | 6 | 362.7 | 1801 | 984 | 98 | 119 | 22.56 | 1.42 |
 
 Mean **366 cps** (342-384), digest df701ee858e2bdd3 on every row, sys 1.4-2.1 s on every row (no
-spikes since the arena fix), java_cpu_s_per_10s 0.00 (no Java CPU during the hold). Previous
+spikes since the arena fix), java_n=0 on every row: no Java process was running on the box during the hold. Previous
 headline 335 cps (b2bdac5) was measured with the mprotect contention present.
 
 Stage split: generate ~1.83 s (62%, other tracks), decorate ~0.90 s (31%), serialise + compress
