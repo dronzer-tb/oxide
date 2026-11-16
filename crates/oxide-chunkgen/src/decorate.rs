@@ -189,13 +189,21 @@ pub fn heightmaps(chunk: &ChunkData, facts: &BlockFacts) -> HashMap<HeightmapTyp
         HeightmapType::MotionBlockingNoLeaves,
     ];
     let mut maps: Vec<Heightmap> = KINDS.iter().map(|_| Heightmap::new(chunk.height)).collect();
-    for (section_index, section) in chunk.sections.iter().enumerate().rev() {
-        // Per palette entry, which kinds count it: a section has a handful of distinct states.
+    let bits = KINDS.map(|kind| height_fact(kind) as u32);
+    // Columns of all six maps still unset. A column takes the first counted block from the top
+    // and never changes after, so once every one is set the scan below has nothing to do.
+    let mut unset = KINDS.len() * 256;
+    'sections: for (section_index, section) in chunk.sections.iter().enumerate().rev() {
+        // Per palette entry, which kinds count it: a section has a handful of distinct states,
+        // each looked up once for all six kinds.
         let counted: Vec<[bool; 6]> = section
             .block_states
             .palette()
             .iter()
-            .map(|state| KINDS.map(|kind| facts.is(state, height_fact(kind))))
+            .map(|state| {
+                let facts = facts.bits(state);
+                bits.map(|bit| facts & bit != 0)
+            })
             .collect();
         if counted
             .iter()
@@ -212,9 +220,13 @@ pub fn heightmaps(chunk: &ChunkData, facts: &BlockFacts) -> HashMap<HeightmapTyp
                     for (kind, map) in maps.iter_mut().enumerate() {
                         if counted[entry][kind] && map.get(local_x, local_z) == 0 {
                             map.set(local_x, local_z, above);
+                            unset -= 1;
                         }
                     }
                 }
+            }
+            if unset == 0 {
+                break 'sections;
             }
         }
     }
