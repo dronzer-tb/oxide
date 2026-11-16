@@ -1,0 +1,169 @@
+From 6122eafee53b0a88685296d9e56083352bfe22e9 Mon Sep 17 00:00:00 2001
+From: Kasniya <36neelansh@gmail.com>
+Date: Mon, 16 Nov 2026 10:35:35 +0000
+Subject: [PATCH] perf(sculk): keep described states and interned ids per
+ region across runs
+
+A region sees about three sculk runs that get past can_spread_from, and each
+described its states and interned its write states afresh. The per-StateKey
+Info cache and the write ids now live in a per-feature memo tagged with the
+region's serial; interning order is unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../src/decorator/cave/sculk.rs               | 76 ++++++++++++++++---
+ 1 file changed, 64 insertions(+), 12 deletions(-)
+
+diff --git a/crates/oxide-chunkgen/src/decorator/cave/sculk.rs b/crates/oxide-chunkgen/src/decorator/cave/sculk.rs
+index 10c30da..ea9aba7 100644
+--- a/crates/oxide-chunkgen/src/decorator/cave/sculk.rs
++++ b/crates/oxide-chunkgen/src/decorator/cave/sculk.rs
+@@ -27,7 +27,7 @@
+ //! named by its faces and waterlogging and written by a pre-interned id, never built as a
+ //! `BlockState` per write.
+ 
+-use std::cell::Cell;
++use std::cell::{Cell, RefCell};
+ use std::collections::HashSet;
+ use std::ops::Deref;
+ use std::sync::OnceLock;
+@@ -211,9 +211,8 @@ impl SculkPatchFeature {
+             replaceable: tag("sculk_replaceable"),
+             replaceable_world_gen: tag("sculk_replaceable_world_gen"),
+             inhibitors: tag("sculk_growth_inhibitors"),
+-            infos: (0..INFO_SLOTS).map(|_| Cell::new(None)).collect(),
++            memo: Memo::take(self, cx.region.serial()),
+             outside: Info::default(),
+-            ids: Ids::default(),
+             seen: Seen::take(origin),
+         };
+         let void = spreader.describe(cx.region.facts(), &VOID_AIR);
+@@ -224,6 +223,7 @@ impl SculkPatchFeature {
+         };
+         let placed = spreader.place(cx);
+         spreader.seen.give_back();
++        spreader.memo.give_back();
+         placed
+     }
+ 
+@@ -468,14 +468,66 @@ struct Spreader<'s, 'e> {
+     replaceable_world_gen: Option<&'e HashSet<ResourceLocation>>,
+     /// `None` when the pack has no `sculk_growth_inhibitors` tag (see the module doc).
+     inhibitors: Option<&'e HashSet<ResourceLocation>>,
+-    /// Per `StateKey::slot`, the last state described there.
+-    infos: Box<[Cell<Option<(StateKey, Info)>>]>,
++    /// What earlier runs of this feature in the same region worked out.
++    memo: Memo,
+     /// The `Info` outside the window.
+     outside: Info,
+-    ids: Ids,
+     seen: Seen,
+ }
+ 
++/// What one sculk feature remembers from run to run within one region: per [`StateKey`] slot
++/// the last state it described, and the region ids of the states it writes. A region sees about
++/// three runs that get past `can_spread_from`, and each run used to describe and intern its
++/// states afresh. Keys and ids name states only within one region, so the memo is tagged with
++/// the region's serial and starts over in a new region. Interning order is unchanged: a run
++/// that finds an id here would have interned a state the region already holds.
++struct Memo {
++    /// The feature's address: features live for the whole of decoration.
++    feature: usize,
++    /// [`DecorationRegion::serial`] of the region `infos` and `ids` belong to.
++    ///
++    /// [`DecorationRegion::serial`]: crate::region::DecorationRegion::serial
++    serial: u64,
++    /// Per `StateKey::slot`, the last state described there.
++    infos: Box<[Cell<Option<(StateKey, Info)>>]>,
++    ids: Ids,
++}
++
++thread_local! {
++    /// The memos of the sculk features this thread has placed, at most one per feature.
++    static MEMOS: RefCell<Vec<Memo>> = const { RefCell::new(Vec::new()) };
++}
++
++impl Memo {
++    /// `feature`'s memo for the region with serial `serial`.
++    fn take(feature: &SculkPatchFeature, serial: u64) -> Self {
++        let feature = feature as *const SculkPatchFeature as usize;
++        let found = MEMOS.with(|memos| {
++            let mut memos = memos.borrow_mut();
++            let index = memos.iter().position(|memo| memo.feature == feature)?;
++            Some(memos.swap_remove(index))
++        });
++        let mut memo = found.unwrap_or_else(|| Memo {
++            feature,
++            serial,
++            infos: (0..INFO_SLOTS).map(|_| Cell::new(None)).collect(),
++            ids: Ids::default(),
++        });
++        if memo.serial != serial {
++            memo.serial = serial;
++            for slot in memo.infos.iter() {
++                slot.set(None);
++            }
++            memo.ids = Ids::default();
++        }
++        memo
++    }
++
++    fn give_back(self) {
++        MEMOS.with(|memos| memos.borrow_mut().push(self));
++    }
++}
++
+ impl Deref for Spreader<'_, '_> {
+     type Target = SculkPatchFeature;
+ 
+@@ -685,7 +737,7 @@ impl Spreader<'_, '_> {
+         let Some((key, state)) = cx.region.block_keyed(pos) else {
+             return self.outside;
+         };
+-        let slot = &self.infos[info_slot(key)];
++        let slot = &self.memo.infos[info_slot(key)];
+         if let Some((known, info)) = slot.get() {
+             if known == key {
+                 return info;
+@@ -717,7 +769,7 @@ impl Spreader<'_, '_> {
+     /// The default vein with the faces in `faces` set, waterlogged if `wet`.
+     fn vein_id(&self, cx: &mut FeatureContext<'_, '_, '_>, faces: u8, wet: bool) -> u32 {
+         let index = usize::from(faces) | usize::from(wet) << 6;
+-        let slot = &self.ids.veins[index];
++        let slot = &self.memo.ids.veins[index];
+         if slot.get() != NO_ID {
+             return slot.get();
+         }
+@@ -1216,7 +1268,7 @@ impl Spreader<'_, '_> {
+                             1
+                         };
+                         let (dry, wet) = &self.growths[which];
+-                        let slots = &self.ids.growths[which];
++                        let slots = &self.memo.ids.growths[which];
+                         let id = match wet {
+                             Some(wet) if self.info(cx, above).any_fluid() => {
+                                 Self::id(cx, &slots[1], wet)
+@@ -1283,7 +1335,7 @@ impl Spreader<'_, '_> {
+             if !self.info(cx, support_pos).has(I_REPLACEABLE_WORLD_GEN) {
+                 continue;
+             }
+-            let sculk = Self::id(cx, &self.ids.sculk, &self.sculk);
++            let sculk = Self::id(cx, &self.memo.ids.sculk, &self.sculk);
+             self.write_id(cx, support_pos, sculk);
+             self.spread_all(cx, None, support_pos, &ALL_SPREADS);
+             let skip = support.opposite();
+@@ -1327,9 +1379,9 @@ impl Spreader<'_, '_> {
+         }
+         let id = if faces == 0 {
+             if self.info(cx, pos).any_fluid() {
+-                Self::id(cx, &self.ids.water, &self.water)
++                Self::id(cx, &self.memo.ids.water, &self.water)
+             } else {
+-                Self::id(cx, &self.ids.air, &self.air)
++                Self::id(cx, &self.memo.ids.air, &self.air)
+             }
+         } else {
+             self.vein_id(cx, faces, read.info.has(I_WATERLOGGED))
+-- 
+2.43.0
+

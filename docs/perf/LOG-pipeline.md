@@ -1459,3 +1459,31 @@ a slot advantage cancels. Use an even number of rounds (4 rounds at r16, 1 threa
 Earlier 3-round holds gave the first-listed tree (usually the base) two first slots; the kept changes
 won as the second tree, i.e. against that bias, and the ore round 3 and lush rejections already used
 both orders.
+
+### Sculk region memo (sub-agent 6122eaf): -2.4% decorate, -0.5% secs; rejected on ceiling
+
+Sculk's per-state description cache and its interned write ids moved from per-run to a per-feature
+memo keyed by `DecorationRegion::serial()` (614 sculk runs over ~204 regions, ~3 per region; 53k
+descriptions and 17.6k interns were rebuilt per run). RNG, floats, write order unchanged.
+
+Sampling (frame pointers, r16 1 thread): `update_cursors` 310 -> 295 / 299 samples (2.61% -> 2.43% of
+all samples), within about the +/-5% run spread.
+
+| | round 1 | round 2 | round 3 | round 4 | mean |
+|---|---|---|---|---|---|
+| base decorate_ms | 7673 | 8392 | 7657 | 8411 | 8033 |
+| memo decorate_ms | 7786 | 7940 | 7571 | 8063 | 7840 |
+| base / memo secs | 22.17 / 22.65 | 23.83 / 23.02 | 22.37 / 22.41 | 23.60 / 23.44 | 22.99 / 22.88 |
+| java_cpu_s_per_10s | 0.26 / 0.23 | 0.23 / 0.33 | 0.22 / 0.26 | 0.21 / 0.24 | |
+
+The hold ran ABAB, not ABBA: the sub-agent's tree (5238497) predates the script fix, so the base had
+the first slot every round (the bias the kept changes have been winning against). Decorate -2.4%
+(ahead 3/4), secs -0.5%. Sculk `update_cursors` is now ~2.5% of the run, so a 7% cut is worth at most
+~0.2% overall, below what any hold here can resolve. **Rejected** (no measurable gain, more state);
+patch at `docs/perf/rejected-sculk-region-memo.patch`. Tests 196 pass; digest held on every row. TSV
+rows carry only the fields the sub-agent reported (it reverted its appended rows).
+
+Also tried and dropped by the sub-agent, all within noise or worse: skipping repeated no-op spreads
+(241k spreads made 217k writes, so it almost never applies), 4-byte remembered-block cells, reading
+the whole 3x3x3 up front (310 -> 360 samples). What's left in `update_cursors` is the first
+region read of each block and the region writes. Sculk is done for now.
