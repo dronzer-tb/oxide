@@ -2031,3 +2031,36 @@ Leads outside this track, for their owners or the user:
 - mimalloc cut decoration ~25% at 8 threads but slowed generation and the 1-thread run; a per-stage
   allocator is not something this track should build.
 - PGO is waiting on the user's decision.
+
+## PGO on the decorated pregen (merged head): +7% at 8 threads, -6.7% at 1 thread, byte exact
+
+Earlier PGO runs (above) timed only the terrain harness, and on the older datapath merge they were a
+wash. This run times the full decorated `oxide-pregen` on the current merged head. pipeline-pg uses the
+same sources as pipeline-d1 (845de28 = abfb474 + datapath 323b9d4). It was built with
+`scripts/build-pgo-pregen-vps.sh pipeline-d1 pipeline-pg` and trained on decorated pregen at seed 999,
+r8, 8 threads, `--no-write`. The timed runs use seed 12345 at r16, so the profile is not fitted to the
+measured workload. Plain pipeline-d1 binary vs PGO, same rustc, `-C target-cpu=native` on both.
+
+Byte checks on the PGO binary: digest df701ee858e2bdd3 at 1 and 8 threads; the r7 off-centre run gives
+dea822a7b8517773; and both .mca files match pipeline-d1's outside the timestamp table. The digest held
+on every hold row. PGO changes only code layout, inlining and branch weights, not float semantics.
+
+| hold | d1 (plain) | pg (PGO) | change | pg ahead |
+|---|---|---|---|---|
+| 8 threads #1 (d1 first): cps mean / median | 265.3 / 286.5 | 308.7 / 327.3 | +16.4% / +14.2% | 5/6 (rounds 4-6 noisy, user 30-40 s) |
+| 8 threads #2 (pg first): cps mean / median | 307.6 / 305.0 | 314.6 / 324.6 | +2.3% / +6.4% | 3/6 |
+| 8 threads both: cps median | 304.0 | 326.0 | **+7.2%** | 8/12 |
+| 1 thread #1 (d1 first): secs / decorate_ms | 21.98 / 6298 | 20.55 / 5903 | -6.5% / -6.3% | 3/4 |
+| 1 thread #2 (pg first): secs / decorate_ms | 22.86 / 6505 | 21.30 / 6348 | -6.8% / -2.4% | 4/4 |
+| 1 thread both: secs | 22.42 | 20.92 | **-6.7%** | 7/8 |
+
+At 1 thread both stages gain (generate about -6%, decorate -2..-6%). The box was noisier than usual
+during these holds: 8-thread plain rounds ran 184-364 cps against the ~366 headline, with user time
+inflated to 23-40 s and no java load (java_cpu_s_per_10s <= 1.33, one process). So the 8-thread figure
+is the less certain one. Every hold had pg ahead or level, and neither ordering reversed the result.
+
+**Result: PGO helps the decorated pregen on the merged head, and the output is unchanged.** That differs
+from the terrain-only wash above: decoration is branchy and shows up in the training profile. It is a
+build mode, not a code change, so nothing in the crates changes. Whether PGO rows count as the
+headline, and whether release builds adopt it, is still the user's call (as before). The script is
+committed so the build can be repeated. pipeline-pg (613 MB) stays on the box until that decision.
