@@ -180,23 +180,32 @@ fn square(center: ChunkPos, radius: i32) -> Vec<ChunkPos> {
 
 /// Applies `writes` (all from one source chunk) that land inside `chunk`.
 ///
-/// A section's palette is small, so a write's palette index is found by comparing against it
-/// by reference; the state is cloned (and hashed) only when it is new to the section, which is
-/// exactly when `PalettedContainer::set` would insert it, so palette order is unchanged.
+/// Each interned state's palette index is worked out once per section, the first time a write
+/// of it lands there, exactly as before: the first palette entry equal to it, or a new entry
+/// (cloned and hashed only then, which is when `PalettedContainer::set` would insert it, so
+/// palette order is unchanged). A palette only grows, so the index found stays the first equal
+/// entry for every later write of that state to that section.
 fn apply_writes(chunk: &mut ChunkData, writes: &InternedWrites) {
+    const UNKNOWN: u32 = u32::MAX;
     let (min_y, height) = (chunk.min_y, chunk.height);
-    for (at, state) in writes.iter() {
+    let states = writes.states.len();
+    let mut known = vec![UNKNOWN; chunk.sections.len() * states];
+    for &(at, id) in &writes.writes {
         if at.chunk_pos() != chunk.pos || at.y < min_y || at.y >= min_y + height {
             continue;
         }
         let y = (at.y - min_y) as usize;
         let slot = ((y & 15) * 16 + (at.z & 15) as usize) * 16 + (at.x & 15) as usize;
-        let states = &mut chunk.sections[y >> 4].block_states;
-        let index = match states.palette().iter().position(|p| p == state) {
-            Some(i) => i as u32,
-            None => states.index_of_or_insert(state.clone()),
-        };
-        states.set_index(slot, index);
+        let section = &mut chunk.sections[y >> 4].block_states;
+        let cached = &mut known[(y >> 4) * states + id as usize];
+        if *cached == UNKNOWN {
+            let state = &writes.states[id as usize];
+            *cached = match section.palette().iter().position(|p| p == state) {
+                Some(i) => i as u32,
+                None => section.index_of_or_insert(state.clone()),
+            };
+        }
+        section.set_index(slot, *cached);
     }
 }
 
