@@ -1255,3 +1255,19 @@ i.e. the branch head; pipeline-sc6 adds the two sculk commits):
 
 -9.6% decorate, -4.5% user CPU, ahead 3/3 on both. Java quiet; df701ee858e2bdd3 on every row; tests
 195 pass. Second base next.
+
+### Sculk round 2, base 2: -3.9%; kept
+
+pipeline-b7 = this branch at 2979ec0 merged with origin/perf/datapath **464c8d4** (scratch merge
+2bb5364); pipeline-sc7 adds the two sculk commits. Tests 195 pass.
+
+| | run 1 | run 2 | run 3 | mean |
+|---|---|---|---|---|
+| base decorate_ms | 8262 | 7961 | 7770 | 7998 |
+| sculk decorate_ms | 7474 | 8306 | 7272 | 7684 |
+| base / sculk cpu_user_s | 22.78 / 22.99 | 24.39 / 23.69 | 23.08 / 22.12 | 23.42 / 22.93 |
+| java_cpu_s_per_10s | 0.21 / 0.21 | 0.24 / 0.23 | 0.25 / 0.22 | |
+
+-3.9% decorate, -2.1% user CPU, ahead 2/3 on each. With base 1 (-9.6%, 3/3) it is ahead in 5 of 6
+rounds on both measures over two bases. Java quiet; df701ee858e2bdd3 on every row. **Kept**,
+cherry-picked onto the branch.
