@@ -15,8 +15,9 @@
 //! 2. **A finished chunk.** Chunk `C` is its terrain plus, from each of the nine chunks around
 //!    it, the writes that land inside `C`, applied in one fixed order.
 //!
-//! Both steps are memoised ([`DecorationCache`]); evicting an entry or racing two threads into
-//! the same computation costs work and cannot change output.
+//! Both steps are memoised ([`DecorationCache`]), each value computed once while it is cached (a
+//! second thread asking waits for the first); evicting an entry costs work and cannot change
+//! output.
 //!
 //! PARITY-CHECK: this is deliberately not vanilla's result wherever two chunks' features touch
 //! the same blocks. A feature never sees a neighbour's decoration (a tree does not grow around
@@ -25,7 +26,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use oxide_core::{
     BlockPos, BlockState, ChunkData, ChunkPos, ChunkStatus, Heightmap, HeightmapType,
@@ -73,10 +74,51 @@ impl<K: Hash + Eq + Clone, V: Clone> Bounded<K, V> {
     }
 }
 
+/// Lock shards per memo: neighbouring chunks land in different shards, so threads finishing
+/// adjacent chunks rarely meet on one lock.
+const SHARDS: usize = 16;
+
+/// A sharded, bounded memo of one value per chunk that computes each value once.
+///
+/// A thread asking for a value another thread is still computing waits for it instead of
+/// computing it again: the slot is a `OnceLock` handed out under the shard's lock and filled
+/// outside it.
+struct Memo<V> {
+    shards: Vec<Mutex<Bounded<ChunkPos, Arc<OnceLock<Arc<V>>>>>>,
+}
+
+impl<V> Memo<V> {
+    fn new(capacity: usize) -> Self {
+        Self {
+            shards: (0..SHARDS)
+                .map(|_| Mutex::new(Bounded::new(capacity.div_ceil(SHARDS))))
+                .collect(),
+        }
+    }
+
+    fn get_or_compute(&self, pos: ChunkPos, compute: impl FnOnce() -> V) -> Arc<V> {
+        let shard = (pos.x.wrapping_mul(31).wrapping_add(pos.z)).rem_euclid(SHARDS as i32);
+        let slot = {
+            let mut map = self.shards[shard as usize]
+                .lock()
+                .expect("decoration cache poisoned");
+            match map.get(&pos) {
+                Some(slot) => slot,
+                None => {
+                    let slot = Arc::new(OnceLock::new());
+                    map.insert(pos, slot.clone());
+                    slot
+                }
+            }
+        };
+        slot.get_or_init(|| Arc::new(compute())).clone()
+    }
+}
+
 /// Memoised terrain and decoration writes, shared by every thread generating one world.
 pub struct DecorationCache {
-    terrain: Mutex<Bounded<ChunkPos, Arc<ChunkData>>>,
-    writes: Mutex<Bounded<ChunkPos, Arc<SourceOutput>>>,
+    terrain: Memo<ChunkData>,
+    writes: Memo<SourceOutput>,
 }
 
 /// One chunk's features' output: block writes and the extras that came with them.
@@ -87,8 +129,8 @@ impl DecorationCache {
     /// finishing one chunk touches the 5x5 around it.
     pub fn new(terrain_chunks: usize, write_lists: usize) -> Self {
         Self {
-            terrain: Mutex::new(Bounded::new(terrain_chunks.max(25))),
-            writes: Mutex::new(Bounded::new(write_lists.max(9))),
+            terrain: Memo::new(terrain_chunks.max(25)),
+            writes: Memo::new(write_lists.max(9)),
         }
     }
 
@@ -97,22 +139,7 @@ impl DecorationCache {
         pos: ChunkPos,
         generate: &(dyn Fn(ChunkPos) -> ChunkData + Sync),
     ) -> Arc<ChunkData> {
-        if let Some(found) = self
-            .terrain
-            .lock()
-            .expect("terrain cache poisoned")
-            .get(&pos)
-        {
-            return found;
-        }
-        // Outside the lock: generation is slow, and two threads racing here produce the same
-        // chunk -- the loser's copy is dropped.
-        let made = Arc::new(generate(pos));
-        self.terrain
-            .lock()
-            .expect("terrain cache poisoned")
-            .insert(pos, made.clone());
-        made
+        self.terrain.get_or_compute(pos, || generate(pos))
     }
 
     fn writes(
@@ -122,24 +149,18 @@ impl DecorationCache {
         decorator: &dyn Decorator,
         facts: &BlockFacts,
     ) -> Arc<SourceOutput> {
-        if let Some(found) = self.writes.lock().expect("write cache poisoned").get(&pos) {
-            return found;
-        }
-        let mut ring = Vec::with_capacity(9);
-        for dz in -1..=1 {
-            for dx in -1..=1 {
-                ring.push(self.terrain(ChunkPos::new(pos.x + dx, pos.z + dz), generate));
+        self.writes.get_or_compute(pos, || {
+            let mut ring = Vec::with_capacity(9);
+            for dz in -1..=1 {
+                for dx in -1..=1 {
+                    ring.push(self.terrain(ChunkPos::new(pos.x + dx, pos.z + dz), generate));
+                }
             }
-        }
-        let chunks: [&ChunkData; 9] = std::array::from_fn(|index| ring[index].as_ref());
-        let mut region = DecorationRegion::new(pos, chunks, facts);
-        decorator.decorate(&mut region);
-        let made = Arc::new(region.into_parts());
-        self.writes
-            .lock()
-            .expect("write cache poisoned")
-            .insert(pos, made.clone());
-        made
+            let chunks: [&ChunkData; 9] = std::array::from_fn(|index| ring[index].as_ref());
+            let mut region = DecorationRegion::new(pos, chunks, facts);
+            decorator.decorate(&mut region);
+            region.into_parts()
+        })
     }
 }
 
