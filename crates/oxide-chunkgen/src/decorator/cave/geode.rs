@@ -8,9 +8,8 @@
 //! The geode is refused when more than `invalid_blocks_threshold` of its points sit in air or in
 //! an invalid block (water, lava, ice, bedrock).
 //!
-//! Vanilla schedules a fluid tick next to every crack cell it opens. The region records block
-//! writes only, so those ticks are not reproduced; the written blocks are the same. A layer
-//! provider that cannot give a state is tallied and stops the geode where it is.
+//! Vanilla schedules a fluid tick at every fluid next to a crack cell it opens; those go to the
+//! region's scheduled fluid ticks. A layer provider that cannot give a state is tallied and stops the geode where it is.
 //!
 //! PARITY-CHECK: the noise is sampled in doubles (`NormalNoise.getValue`); the reference
 //! implementation targets 26.3 and narrows it to a float first. Check against a real 26.2 geode.
@@ -28,7 +27,7 @@ use oxide_datapack::{BlockFact, BlockFacts};
 use oxide_noise::{NormalNoise, WorldRandom};
 
 use super::support::{int_bounds, is_block, offset, relative, state_has, waterlogged, Dir};
-use crate::decorator::context::{block_in, FeatureContext};
+use crate::decorator::context::{block_in, fluid_id_at, FeatureContext};
 use crate::decorator::predicate::IdSet;
 use crate::decorator::provider::{next_bounded, sample_int};
 use crate::decorator::state_provider::{state_from_spec, StateProvider, Unsupported};
@@ -253,6 +252,12 @@ impl GeodeFeature {
                     }
                     if crack && crack_sum >= crack_size {
                         self.safe_set(cx, pos, self.air.clone());
+                        for direction in Dir::ALL {
+                            let adjacent = relative(pos, direction, 1);
+                            if let Some(fluid) = fluid_id_at(cx, adjacent) {
+                                cx.region.schedule_fluid_tick(adjacent, fluid);
+                            }
+                        }
                     } else if shell >= innermost {
                         let alternate = f64::from(cx.random.next_float()) < self.alternate_chance;
                         let provider = if alternate {

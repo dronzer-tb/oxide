@@ -7,7 +7,8 @@
 //! surface, spill into a hole or fail `can_place_feature` is abandoned whole -- then the shell is
 //! laid, and a water lake under a cold biome gets a skin of ice.
 //!
-//! Vanilla's scheduled tick on the new air is not recorded (see the module doc of `ground`).
+//! The new air gets a block tick (`cave_air`, as vanilla schedules it) and, like each barrier
+//! block, marks the blocks above it for post-processing.
 //!
 //! PARITY-CHECK: the ice pass tests the layer at the placement height, which the pool itself
 //! leaves as air, so it only ever freezes open water that already stood there beside the lake.
@@ -137,12 +138,18 @@ impl LakeFeature {
                 for y in layers(grid[(x * 16 + z) as usize]) {
                     let pos = offset(origin, x, y, z);
                     if self.can_replace_with_air_or_fluid.test(cx, pos) {
-                        let state = if y >= 4 {
+                        let place_air = y >= 4;
+                        let state = if place_air {
                             self.cave_air.clone()
                         } else {
                             fluid.clone()
                         };
                         cx.region.set_block(pos, state);
+                        if place_air {
+                            cx.region
+                                .schedule_block_tick(pos, self.cave_air.name.clone());
+                            cx.region.mark_above_for_post_processing(pos);
+                        }
                     }
                 }
             }
@@ -159,6 +166,7 @@ impl LakeFeature {
                             let solid = cx.region.is(pos, BlockFact::Solid);
                             if solid && self.can_replace_with_barrier.test(cx, pos) {
                                 cx.region.set_block(pos, barrier.clone());
+                                cx.region.mark_above_for_post_processing(pos);
                             }
                         }
                     }

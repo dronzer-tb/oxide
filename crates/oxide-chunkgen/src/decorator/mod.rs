@@ -18,6 +18,7 @@
 //! unknown. See [`BiomeDecorator::unsupported`].
 
 mod biome_decorator;
+pub mod block_entity;
 mod cave;
 mod context;
 mod end;

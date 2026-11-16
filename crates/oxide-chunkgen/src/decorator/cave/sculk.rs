@@ -7,8 +7,8 @@
 //! support block to sculk, on sculk it decays, and on sculk with room above it spends charge to
 //! grow a sensor or shrieker. The first `spread_rounds` rounds also let veins spread.
 //!
-//! Vanilla marks every written block for post-processing and schedules block ticks. The region
-//! keeps block writes only, so neither is reproduced; the written states are the same.
+//! Vanilla marks every block a vein spreads into for post-processing (the spreader runs with
+//! `isWorldGeneration`); those marks go to the region. Nothing on this path schedules a tick.
 //!
 //! The reference implementation ends after the rounds. The catalyst and the extra rare shriekers
 //! (`catalyst_chance`, `extra_rare_growths`, which every 26.2 sculk patch configures) follow
@@ -439,6 +439,8 @@ impl SculkPatchFeature {
                 let Some(new) = self.state_for_placement(cx, &old, target, face_to) else {
                     continue;
                 };
+                // `SpreadConfig.placeBlock` with `postProcess` = `isWorldGeneration()`, true here.
+                cx.region.mark_post_process(target);
                 if Self::write(cx, target, new) {
                     count += 1;
                 }

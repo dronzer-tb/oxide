@@ -12,7 +12,7 @@ use oxide_datapack::{load_tags, Biome, BlockFacts, Registry, TagSet};
 use super::super::*;
 use super::BiomeClimate;
 use crate::region::testutil::{block, flat_ring, refs};
-use crate::region::{BlockWrite, DecorationRegion};
+use crate::region::{BlockWrite, ChunkExtras, DecorationRegion};
 
 struct AlwaysSurvives;
 
@@ -132,6 +132,7 @@ fn plain_env(tag_entries: &[(&str, &[&str])]) -> Environment {
 
 struct Outcome {
     writes: Vec<BlockWrite>,
+    extras: ChunkExtras,
     tally: UnsupportedTally,
     placed: bool,
 }
@@ -185,8 +186,10 @@ fn place(
         };
         place_placed(&placed, &mut cx, origin, None)
     };
+    let (writes, extras) = region.into_parts();
     Outcome {
-        writes: region.into_writes(),
+        writes,
+        extras,
         tally,
         placed: did_place,
     }
@@ -257,6 +260,39 @@ fn a_disk_replaces_only_target_blocks_inside_its_circle() {
     }
     assert_eq!(outcome.count("dirt"), 16 * 16 * 2 - 29 * 2);
     assert!(inside_window(&outcome));
+}
+
+#[test]
+fn a_disk_marks_the_two_blocks_above_the_top_of_each_run() {
+    let env = plain_env(&[]);
+    let config = format!(
+        r#"{{"type":"minecraft:disk","config":{{"half_height":2,"radius":3,
+        "state_provider":{},"target":{{"type":"minecraft:matching_blocks","blocks":["minecraft:dirt"]}}}}}}"#,
+        simple("sand")
+    );
+    let underwater = place(&env, &config, 5, BlockPos::new(8, 64, 8), |region| {
+        fill(region, (0, 16), (62, 64), (0, 16), "dirt");
+        fill(region, (0, 16), (64, 66), (0, 16), "water");
+    });
+    let mut marks = underwater.extras.post_process.clone();
+    marks.sort();
+    let mut expected = Vec::new();
+    for (pos, _) in underwater
+        .writes
+        .iter()
+        .filter(|(p, s)| s.name.path() == "sand" && p.y == 63)
+    {
+        expected.push(BlockPos::new(pos.x, 64, pos.z));
+        expected.push(BlockPos::new(pos.x, 65, pos.z));
+    }
+    expected.sort();
+    assert_eq!(expected.len(), 29 * 2);
+    assert_eq!(marks, expected);
+    // Air right above the run stops the marking.
+    let dry = place(&env, &config, 5, BlockPos::new(8, 64, 8), |region| {
+        fill(region, (0, 16), (62, 64), (0, 16), "dirt")
+    });
+    assert!(dry.extras.post_process.is_empty());
 }
 
 #[test]
@@ -490,6 +526,28 @@ fn a_lake_fills_the_lower_four_layers_and_opens_the_upper_four() {
         }
     }
     assert!(inside_window(&outcome));
+    // Every new air cell gets a `cave_air` block tick, as `LakeFeature` schedules it.
+    let air: Vec<BlockPos> = outcome
+        .writes
+        .iter()
+        .filter(|(_, state)| state.name.path() == "cave_air")
+        .map(|(pos, _)| *pos)
+        .collect();
+    let ticked: Vec<BlockPos> = outcome
+        .extras
+        .block_ticks
+        .iter()
+        .map(|(pos, _)| *pos)
+        .collect();
+    assert_eq!(ticked, air);
+    assert!(outcome
+        .extras
+        .block_ticks
+        .iter()
+        .all(|(_, block)| block.path() == "cave_air"));
+    // A barrier block below the surface has stone above it: marked.
+    assert!(!outcome.extras.post_process.is_empty());
+    assert!(outcome.extras.post_process.iter().all(|pos| pos.y < 64));
 }
 
 #[test]
@@ -811,12 +869,44 @@ fn a_monster_room_is_hollowed_floored_and_given_a_spawner() {
     assert_eq!(outcome.writes, run(40).writes);
     assert_eq!(outcome.at(8, 40, 8), Some("spawner"));
     assert!(outcome.count("cobblestone") + outcome.count("mossy_cobblestone") > 0);
-    assert_eq!(outcome.tally.get("block_entity:minecraft:mob_spawner"), 1);
-    assert_eq!(
-        outcome.tally.get("block_entity:minecraft:chest") as usize,
-        outcome.count("chest")
-    );
+    assert!(outcome.tally.is_empty(), "{:?}", outcome.tally);
+    // One block entity per chest and one for the spawner, each at its block.
+    let entities = &outcome.extras.block_entities;
+    assert_eq!(entities.len(), outcome.count("chest") + 1);
     assert!(outcome.count("chest") <= 2);
+    let spawner = entities
+        .iter()
+        .find(|e| e.block.path() == "spawner")
+        .expect("spawner entity");
+    assert_eq!(spawner.pos, BlockPos::new(8, 40, 8));
+    let mob = ["skeleton", "zombie", "spider"]
+        .into_iter()
+        .find(|mob| {
+            spawner
+                .snbt
+                .contains(&format!("SpawnData:{{entity:{{id:\"minecraft:{mob}\"}}}}"))
+        })
+        .expect("a dungeon mob");
+    assert!(spawner
+        .snbt
+        .starts_with("{id:\"minecraft:mob_spawner\",x:8,y:40,z:8,Delay:20s,MinSpawnDelay:200s,"));
+    assert!(
+        spawner.snbt.ends_with("SpawnPotentials:[]}"),
+        "{} {mob}",
+        spawner.snbt
+    );
+    for chest in entities.iter().filter(|e| e.block.path() == "chest") {
+        let (x, y, z) = (chest.pos.x, chest.pos.y, chest.pos.z);
+        assert_eq!(outcome.at(x, y, z), Some("chest"));
+        let head = format!(
+            "{{id:\"minecraft:chest\",x:{x},y:{y},z:{z},LootTable:\"minecraft:chests/simple_dungeon\",LootTableSeed:"
+        );
+        assert!(
+            chest.snbt.starts_with(&head) && chest.snbt.ends_with("L}"),
+            "{}",
+            chest.snbt
+        );
+    }
     assert!(outcome.count("cave_air") > 0);
     // The interior is open between the floor and the ceiling.
     assert_eq!(outcome.at(8, 41, 8), Some("cave_air"));

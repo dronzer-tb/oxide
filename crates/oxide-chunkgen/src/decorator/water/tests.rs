@@ -13,7 +13,7 @@ use oxide_datapack::{load_tags, BlockFacts, Registry, TagSet};
 
 use super::super::*;
 use crate::region::testutil::{flat_ring, refs};
-use crate::region::{BlockWrite, DecorationRegion};
+use crate::region::{BlockWrite, ChunkExtras, DecorationRegion};
 
 const FLOOR_TOP: i32 = 64;
 const WATER_TOP: i32 = 80;
@@ -121,6 +121,7 @@ fn env() -> Environment {
 
 struct Outcome {
     writes: Vec<BlockWrite>,
+    extras: ChunkExtras,
     tally: UnsupportedTally,
     placed: bool,
 }
@@ -176,8 +177,10 @@ fn place(
         };
         place_placed(&placed, &mut cx, origin, None)
     };
+    let (writes, extras) = region.into_parts();
     Outcome {
-        writes: region.into_writes(),
+        writes,
+        extras,
         tally,
         placed: did_place,
     }
@@ -484,11 +487,28 @@ fn the_desert_well_is_built_on_sand() {
         }
         assert_eq!(outcome.count("sandstone_slab"), 12);
         assert_eq!(outcome.count("suspicious_sand"), 2);
-        assert_eq!(
-            outcome.tally.get("block_entity:minecraft:brushable_block"),
-            2
-        );
+        assert!(outcome.tally.is_empty(), "{:?}", outcome.tally);
         let sus = outcome.matching(|p| p == "suspicious_sand");
+        // Each suspicious sand gets the well's archaeology loot table, seeded with its
+        // `BlockPos.asLong()`.
+        let mut entities = outcome.extras.block_entities.clone();
+        entities.sort_by_key(|e| e.pos);
+        let mut sus_at: Vec<BlockPos> = sus.iter().map(|(pos, _)| *pos).collect();
+        sus_at.sort();
+        assert_eq!(entities.len(), 2);
+        for (pos, entity) in sus_at.iter().zip(&entities) {
+            assert_eq!(entity.pos, *pos);
+            let seed = ((i64::from(pos.x) & 0x3FF_FFFF) << 38)
+                | ((i64::from(pos.z) & 0x3FF_FFFF) << 12)
+                | (i64::from(pos.y) & 0xFFF);
+            assert_eq!(
+                entity.snbt,
+                format!(
+                    "{{id:\"minecraft:brushable_block\",x:{},y:{},z:{},LootTable:\"minecraft:archaeology/desert_well\",LootTableSeed:{seed}L}}",
+                    pos.x, pos.y, pos.z
+                )
+            );
+        }
         assert_eq!(sus.iter().filter(|(p, _)| p.y == center.y - 1).count(), 1);
         assert_eq!(sus.iter().filter(|(p, _)| p.y == center.y - 2).count(), 1);
         assert!(inside_window(&outcome.matching(|_| true)));

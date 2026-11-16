@@ -37,8 +37,8 @@ impl DiskFeature {
 
     /// `DiskFeature.place`. The radius is drawn first; no other draw is its own.
     ///
-    /// Vanilla also marks the two blocks above the first replaced block of each run for
-    /// post-processing; that is not recorded here (see the module doc of `ground`).
+    /// Each column also marks the blocks above the first replaced block of each run for
+    /// post-processing (`placeColumn`).
     pub fn place(&self, cx: &mut FeatureContext<'_, '_, '_>) -> bool {
         let origin = cx.origin;
         let top = origin.y + self.half_height;
@@ -58,13 +58,18 @@ impl DiskFeature {
                 continue;
             }
             let mut y = top;
+            let mut placed_above = false;
             while y > bottom {
                 let pos = BlockPos::new(x, y, z);
                 if self.target.test(cx, pos) {
                     match self.provider.state(cx, pos) {
                         Ok(Some(state)) => {
                             cx.region.set_block(pos, state);
+                            if !placed_above {
+                                cx.region.mark_above_for_post_processing(pos);
+                            }
                             placed = true;
+                            placed_above = true;
                         }
                         Ok(None) => {}
                         Err(Unsupported(why)) => {
@@ -72,6 +77,8 @@ impl DiskFeature {
                             return placed;
                         }
                     }
+                } else {
+                    placed_above = false;
                 }
                 y -= 1;
             }

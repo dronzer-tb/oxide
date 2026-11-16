@@ -300,7 +300,10 @@ impl OreFeature {
             }
         }
         match chosen {
-            Some(index) => cx.region.set_block(pos, self.targets[index].state.clone()),
+            // `BulkSectionAccess`: straight into the section, never through `setBlock`.
+            Some(index) => cx
+                .region
+                .set_block_known_shape(pos, self.targets[index].state.clone()),
             None => false,
         }
     }

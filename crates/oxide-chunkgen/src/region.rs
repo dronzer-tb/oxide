@@ -9,13 +9,67 @@
 
 use std::collections::HashMap;
 
-use oxide_core::{BiomeId, BlockPos, BlockState, ChunkData, ChunkPos, HeightmapType};
+use oxide_core::{
+    BiomeId, BlockPos, BlockState, ChunkData, ChunkPos, HeightmapType, ResourceLocation,
+};
 use oxide_datapack::{BlockFact, BlockFacts};
 
 use crate::fill::local_index;
 
 /// One block write a decoration made, in world coordinates.
 pub type BlockWrite = (BlockPos, BlockState);
+
+/// A block entity a feature filled in, as the block-entity SNBT vanilla would save
+/// (`id`, `x`, `y`, `z` and the type's own fields).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockEntityData {
+    pub pos: BlockPos,
+    /// The block it belongs to. Vanilla drops a block entity when its block is replaced by a
+    /// different block, so this is checked against the block finally standing at `pos`.
+    pub block: ResourceLocation,
+    pub snbt: String,
+}
+
+/// What vanilla's feature pass leaves in a chunk besides block states.
+///
+/// From one region this holds everything its features left anywhere in the 3x3 window; for a
+/// finished chunk (`crate::decorate::decorated_chunk_with_extras`) only what lands in it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChunkExtras {
+    /// Block entities with data. In a finished chunk this also lists every other block-entity
+    /// block decoration wrote, as vanilla's `{id:"DUMMY",x,y,z}` placeholder.
+    pub block_entities: Vec<BlockEntityData>,
+    /// `scheduleTick(pos, fluid, ..)`: position and fluid id (`minecraft:water`,
+    /// `minecraft:flowing_lava`, ..).
+    pub fluid_ticks: Vec<(BlockPos, ResourceLocation)>,
+    /// `scheduleTick(pos, block, ..)`: position and block id.
+    pub block_ticks: Vec<(BlockPos, ResourceLocation)>,
+    /// `ChunkAccess.markPosForPostProcessing` positions.
+    pub post_process: Vec<BlockPos>,
+}
+
+impl ChunkExtras {
+    pub fn is_empty(&self) -> bool {
+        self.block_entities.is_empty()
+            && self.fluid_ticks.is_empty()
+            && self.block_ticks.is_empty()
+            && self.post_process.is_empty()
+    }
+}
+
+/// `BlockBehaviour.Properties.postProcess` as 26.2 registers it: the position `setBlock` marks
+/// for post-processing when it writes `state` without `UPDATE_KNOWN_SHAPE`. Only four blocks
+/// set it (`Blocks.postProcessSelf` / `postProcessAbove`), none copied by `ofFullCopy`.
+fn post_process_pos(state: &BlockState, pos: BlockPos) -> Option<BlockPos> {
+    if state.name.namespace() != "minecraft" {
+        return None;
+    }
+    match state.name.path() {
+        "brown_mushroom" | "red_mushroom" => Some(pos),
+        "soul_sand" | "magma_block" => Some(BlockPos::new(pos.x, pos.y + 1, pos.z)),
+        _ => None,
+    }
+}
 
 pub struct DecorationRegion<'a> {
     center: ChunkPos,
@@ -29,6 +83,7 @@ pub struct DecorationRegion<'a> {
     order: Vec<BlockPos>,
     /// Highest written Y per column: a column with no entry still has its terrain heights.
     written_top: HashMap<(i32, i32), i32>,
+    extras: ChunkExtras,
 }
 
 impl<'a> DecorationRegion<'a> {
@@ -46,6 +101,7 @@ impl<'a> DecorationRegion<'a> {
             overlay: HashMap::new(),
             order: Vec::new(),
             written_top: HashMap::new(),
+            extras: ChunkExtras::default(),
         }
     }
 
@@ -110,16 +166,87 @@ impl<'a> DecorationRegion<'a> {
 
     /// Writes `state` at `pos`. Returns `false`, writing nothing, outside the window -- the
     /// same refusal vanilla's region gives a feature that reaches past its write radius.
+    ///
+    /// This is `WorldGenRegion.setBlock` without `UPDATE_KNOWN_SHAPE`, the flags nearly every
+    /// feature uses: a block with a post-process rule ([`post_process_pos`]) is marked.
     pub fn set_block(&mut self, pos: BlockPos, state: BlockState) -> bool {
+        let mark = post_process_pos(&state, pos);
+        if !self.write(pos, state) {
+            return false;
+        }
+        if let Some(mark) = mark {
+            self.mark_post_process(mark);
+        }
+        true
+    }
+
+    /// [`Self::set_block`] for writes vanilla makes with `UPDATE_KNOWN_SHAPE` (trees) or straight
+    /// into the section (`OreFeature`'s `BulkSectionAccess`): nothing is marked.
+    pub fn set_block_known_shape(&mut self, pos: BlockPos, state: BlockState) -> bool {
+        self.write(pos, state)
+    }
+
+    fn write(&mut self, pos: BlockPos, state: BlockState) -> bool {
         if !self.contains(pos) {
             return false;
         }
+        // Vanilla (Paper's `WorldGenRegion.setBlock`, as `LevelChunk.setBlockState`) drops the
+        // block entity when its block changes to another block.
+        let block = &state.name;
+        self.extras
+            .block_entities
+            .retain(|entity| entity.pos != pos || entity.block == *block);
         if self.overlay.insert(pos, state).is_none() {
             self.order.push(pos);
         }
         let top = self.written_top.entry((pos.x, pos.z)).or_insert(pos.y);
         *top = (*top).max(pos.y);
         true
+    }
+
+    /// Fills in the block entity of the block now at `pos` with `snbt` (see
+    /// [`BlockEntityData::snbt`]), replacing what an earlier call left there. Outside the window
+    /// nothing is kept.
+    pub fn put_block_entity(&mut self, pos: BlockPos, snbt: String) {
+        let Some(block) = self.block(pos).map(|state| state.name.clone()) else {
+            return;
+        };
+        self.extras
+            .block_entities
+            .retain(|entity| entity.pos != pos);
+        self.extras
+            .block_entities
+            .push(BlockEntityData { pos, block, snbt });
+    }
+
+    /// `LevelAccessor.scheduleTick(pos, fluid, ..)`.
+    pub fn schedule_fluid_tick(&mut self, pos: BlockPos, fluid: ResourceLocation) {
+        self.extras.fluid_ticks.push((pos, fluid));
+    }
+
+    /// `LevelAccessor.scheduleTick(pos, block, ..)`.
+    pub fn schedule_block_tick(&mut self, pos: BlockPos, block: ResourceLocation) {
+        self.extras.block_ticks.push((pos, block));
+    }
+
+    /// `ChunkAccess.markPosForPostProcessing`; `ProtoChunk` ignores a position outside the
+    /// build height.
+    pub fn mark_post_process(&mut self, pos: BlockPos) {
+        if self.contains(pos) {
+            self.extras.post_process.push(pos);
+        }
+    }
+
+    /// `Feature.markAboveForPostProcessing`: marks up to two blocks above `pos`, stopping at the
+    /// first air (`void_air` outside the window counts as air).
+    pub fn mark_above_for_post_processing(&mut self, pos: BlockPos) {
+        for dy in 1..=2 {
+            let above = BlockPos::new(pos.x, pos.y + dy, pos.z);
+            if !self.contains(above) || self.is(above, BlockFact::Air) {
+                return;
+            }
+            self.extras.post_process.push(above);
+        }
     }
 
     /// The first free Y above the highest block `kind` counts in the column at `(x, z)`: what
@@ -192,14 +319,19 @@ impl<'a> DecorationRegion<'a> {
     }
 
     /// Every write, in the order positions were first written, each with its final state.
-    pub fn into_writes(mut self) -> Vec<BlockWrite> {
+    pub fn into_writes(self) -> Vec<BlockWrite> {
+        self.into_parts().0
+    }
+
+    /// [`Self::into_writes`] and everything else the features left, in the order they left it.
+    pub fn into_parts(mut self) -> (Vec<BlockWrite>, ChunkExtras) {
         let mut writes = Vec::with_capacity(self.order.len());
         for pos in self.order {
             if let Some(state) = self.overlay.remove(&pos) {
                 writes.push((pos, state));
             }
         }
-        writes
+        (writes, self.extras)
     }
 }
 
@@ -244,7 +376,9 @@ pub(crate) mod testutil {
              minecraft:deepslate\tDsmoudf1234\n\
              minecraft:coal_ore\tDsmoudf1234\n\
              minecraft:water[level=0]\tDlWS\n\
-             minecraft:water[level=8]\tlWS\n",
+             minecraft:water[level=8]\tlWS\n\
+             minecraft:chest\tDe\n\
+             minecraft:spawner\tDsmoudf1234e\n",
         )
         .unwrap();
         let facts = BlockFacts::load(Path::new(&dir)).unwrap();
@@ -375,5 +509,62 @@ mod tests {
         region.set_block(BlockPos::new(8, 63, 8), block("air"));
         assert_eq!(region.height(HeightmapType::OceanFloor, 8, 8), Some(63));
         assert_eq!(region.height(HeightmapType::WorldSurface, 99, 0), None);
+    }
+
+    #[test]
+    fn post_processing_marks_follow_the_blocks_rule_and_the_write_flags() {
+        let facts = facts();
+        let chunks = flat_ring(ChunkPos::new(0, 0), 64);
+        let mut region = DecorationRegion::new(ChunkPos::new(0, 0), refs(&chunks), &facts);
+        region.set_block(BlockPos::new(1, 64, 1), block("brown_mushroom"));
+        region.set_block(BlockPos::new(2, 63, 2), block("magma_block"));
+        region.set_block(BlockPos::new(3, 63, 3), block("soul_sand"));
+        region.set_block(BlockPos::new(4, 64, 4), block("oak_log"));
+        // An ore's bulk section write and a tree's known-shape write mark nothing.
+        region.set_block_known_shape(BlockPos::new(5, 40, 5), block("magma_block"));
+        // Outside the window: no write, no mark.
+        assert!(!region.set_block(BlockPos::new(99, 64, 0), block("red_mushroom")));
+        // Stone above stone is marked twice; air right above stops it.
+        region.mark_above_for_post_processing(BlockPos::new(6, 50, 6));
+        region.mark_above_for_post_processing(BlockPos::new(7, 63, 7));
+        let (_, extras) = region.into_parts();
+        assert_eq!(
+            extras.post_process,
+            vec![
+                BlockPos::new(1, 64, 1),
+                BlockPos::new(2, 64, 2),
+                BlockPos::new(3, 64, 3),
+                BlockPos::new(6, 51, 6),
+                BlockPos::new(6, 52, 6),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_block_entity_goes_with_its_block() {
+        let facts = facts();
+        let chunks = flat_ring(ChunkPos::new(0, 0), 64);
+        let mut region = DecorationRegion::new(ChunkPos::new(0, 0), refs(&chunks), &facts);
+        let (kept, replaced, same) = (
+            BlockPos::new(1, 64, 1),
+            BlockPos::new(2, 64, 2),
+            BlockPos::new(3, 64, 3),
+        );
+        for pos in [kept, replaced, same] {
+            region.set_block(pos, block("chest"));
+            region.put_block_entity(pos, format!("data {}", pos.x));
+        }
+        region.set_block(replaced, block("stone"));
+        // The same block again keeps its data, as Paper's `setBlock` does.
+        region.set_block(same, block("chest").with_property("waterlogged", "true"));
+        // Nothing is kept outside the window.
+        region.put_block_entity(BlockPos::new(99, 64, 0), "outside".into());
+        let (_, extras) = region.into_parts();
+        let kept_at: Vec<(BlockPos, &str)> = extras
+            .block_entities
+            .iter()
+            .map(|e| (e.pos, e.snbt.as_str()))
+            .collect();
+        assert_eq!(kept_at, vec![(kept, "data 1"), (same, "data 3")]);
     }
 }

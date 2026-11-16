@@ -10,7 +10,7 @@ use oxide_datapack::{load_tags, BlockFacts, Registry, TagSet};
 
 use crate::decorator::*;
 use crate::region::testutil::{block, flat_ring, refs};
-use crate::region::{BlockWrite, DecorationRegion};
+use crate::region::{BlockWrite, ChunkExtras, DecorationRegion};
 
 struct AlwaysSurvives;
 
@@ -33,6 +33,7 @@ fn facts() -> BlockFacts {
     }
     line("minecraft:podzol[snowy=false]", FULL);
     line("minecraft:water[level=0]", "DlWS");
+    line("minecraft:lava[level=0]", "DlrcLS");
     line("minecraft:short_grass", "Drc1");
     line("minecraft:small_dripleaf[waterlogged=false]", "D");
     line("minecraft:hanging_roots[waterlogged=false]", "Dc");
@@ -159,6 +160,7 @@ impl Prep<'_, '_> {
 struct Outcome {
     /// What the feature wrote, by position (last write wins), excluding terrain edits.
     writes: HashMap<BlockPos, BlockState>,
+    extras: ChunkExtras,
     tally: UnsupportedTally,
     placed: bool,
 }
@@ -215,13 +217,14 @@ fn place(
         };
         place_placed(&placed, &mut cx, origin, None)
     };
-    let writes: Vec<BlockWrite> = region.into_writes();
+    let (writes, extras): (Vec<BlockWrite>, ChunkExtras) = region.into_parts();
     let writes = writes
         .into_iter()
         .filter(|(pos, state)| edits.get(pos) != Some(state))
         .collect();
     Outcome {
         writes,
+        extras,
         tally,
         placed: placed_any,
     }
@@ -499,6 +502,8 @@ fn glow_lichen_attaches_to_the_face_that_has_stone() {
     let vein = outcome.at(0, 66, 0).expect("lichen at origin");
     assert_eq!(vein.name.path(), "glow_lichen");
     assert_eq!(faces_set(vein), vec!["up"]);
+    // `MultifaceGrowthFeature` marks what it places for post-processing.
+    assert_eq!(outcome.extras.post_process, vec![BlockPos::new(0, 66, 0)]);
 }
 
 #[test]
@@ -542,6 +547,67 @@ fn sculk_veins_spread_deterministically_and_only_place_veins() {
         prep.fill((-2, 2), (65, 65), (-2, 2), "stone")
     });
     assert_eq!(outcome.writes, again.writes);
+    // Every vein placed or spread into is marked, and nothing else.
+    let mut marked = outcome.extras.post_process.clone();
+    marked.sort();
+    marked.dedup();
+    let mut written: Vec<BlockPos> = outcome.writes.keys().copied().collect();
+    written.sort();
+    assert_eq!(marked, written);
+}
+
+/// The side faces of blocks the facts give only as "neither empty nor a full cube", and the
+/// bare `minecraft:lava` the terrain writes, are answered without a `shape:` gap.
+#[test]
+fn partial_blocks_and_terrain_lava_have_no_full_side_face() {
+    use super::geometry::Dir;
+    use super::support::{face_full, Shape};
+    let env = env(&[], Box::new(AlwaysSurvives));
+    let chunks = flat_ring(ChunkPos::new(0, 0), 64);
+    let mut region = DecorationRegion::new(ChunkPos::new(0, 0), refs(&chunks), &env.facts);
+    let blocks = [
+        state("moss_carpet", &[]),
+        state("azalea", &[]),
+        state("flowering_azalea", &[]),
+        state(
+            "bamboo",
+            &[("age", "0"), ("leaves", "none"), ("stage", "0")],
+        ),
+        state("cocoa", &[("age", "2"), ("facing", "north")]),
+        state(
+            "big_dripleaf",
+            &[
+                ("facing", "north"),
+                ("tilt", "none"),
+                ("waterlogged", "false"),
+            ],
+        ),
+        block("lava"),
+    ];
+    for (i, block) in blocks.iter().enumerate() {
+        region.set_block(BlockPos::new(i as i32, 70, 0), block.clone());
+    }
+    let mut random = WorldgenRandom::new(0);
+    let mut tally = UnsupportedTally::default();
+    let mut cx = FeatureContext {
+        env: &env,
+        region: &mut region,
+        random: &mut random,
+        origin: BlockPos::new(0, 70, 0),
+        unsupported: &mut tally,
+        top_feature: None,
+    };
+    for (i, block) in blocks.iter().enumerate() {
+        for face in [Dir::North, Dir::East, Dir::South, Dir::West] {
+            for shape in [Shape::Support, Shape::Collision] {
+                assert!(
+                    !face_full(&mut cx, BlockPos::new(i as i32, 70, 0), face, shape),
+                    "{block} {face:?} {shape:?}"
+                );
+            }
+        }
+    }
+    assert!(tally.is_empty(), "{tally:?}");
 }
 
 const GRASS_PLACED: &str = r#"{"feature":{"type":"minecraft:simple_block","config":{"to_place":

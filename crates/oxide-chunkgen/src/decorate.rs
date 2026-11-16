@@ -23,15 +23,18 @@
 //! the tree next door, it overlaps it), and overlaps resolve by the fixed order below rather
 //! than by scheduler order. Features that stay inside one chunk's own writes are unaffected.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;
 use std::sync::{Arc, Mutex};
 
-use oxide_core::{ChunkData, ChunkPos, ChunkStatus, Heightmap, HeightmapType};
-use oxide_datapack::BlockFacts;
+use oxide_core::{
+    BlockPos, BlockState, ChunkData, ChunkPos, ChunkStatus, Heightmap, HeightmapType,
+};
+use oxide_datapack::{BlockFact, BlockFacts};
 
+use crate::decorator::block_entity;
 use crate::fill::local_index;
-use crate::region::{height_fact, BlockWrite, DecorationRegion};
+use crate::region::{height_fact, BlockEntityData, BlockWrite, ChunkExtras, DecorationRegion};
 
 /// Runs one chunk's features. The region's centre is the chunk being decorated.
 pub trait Decorator: Sync {
@@ -73,8 +76,11 @@ impl<K: Hash + Eq + Clone, V: Clone> Bounded<K, V> {
 /// Memoised terrain and decoration writes, shared by every thread generating one world.
 pub struct DecorationCache {
     terrain: Mutex<Bounded<ChunkPos, Arc<ChunkData>>>,
-    writes: Mutex<Bounded<ChunkPos, Arc<Vec<BlockWrite>>>>,
+    writes: Mutex<Bounded<ChunkPos, Arc<SourceOutput>>>,
 }
+
+/// One chunk's features' output: block writes and the extras that came with them.
+type SourceOutput = (Vec<BlockWrite>, ChunkExtras);
 
 impl DecorationCache {
     /// `terrain_chunks` bounds memory: an undecorated chunk is a few hundred kilobytes, and
@@ -115,7 +121,7 @@ impl DecorationCache {
         generate: &(dyn Fn(ChunkPos) -> ChunkData + Sync),
         decorator: &dyn Decorator,
         facts: &BlockFacts,
-    ) -> Arc<Vec<BlockWrite>> {
+    ) -> Arc<SourceOutput> {
         if let Some(found) = self.writes.lock().expect("write cache poisoned").get(&pos) {
             return found;
         }
@@ -128,7 +134,7 @@ impl DecorationCache {
         let chunks: [&ChunkData; 9] = std::array::from_fn(|index| ring[index].as_ref());
         let mut region = DecorationRegion::new(pos, chunks, facts);
         decorator.decorate(&mut region);
-        let made = Arc::new(region.into_writes());
+        let made = Arc::new(region.into_parts());
         self.writes
             .lock()
             .expect("write cache poisoned")
@@ -148,34 +154,105 @@ pub fn decorated_chunk(
     facts: &BlockFacts,
     cache: &DecorationCache,
 ) -> ChunkData {
+    decorated_chunk_with_extras(pos, generate, decorator, facts, cache).0
+}
+
+/// [`decorated_chunk`] and the extras that land in it: block entities, scheduled ticks and
+/// post-processing marks, from the same nine chunks' features in the same fixed order.
+///
+/// Block entities follow the blocks: one is listed for every block-entity block decoration left
+/// standing in the chunk, with the data a feature filled in when the block it was filled in for
+/// is still the block there, and vanilla's `{id:"DUMMY",x,y,z}` placeholder otherwise. Ticks are
+/// deduplicated per position and type, first kept, as `ProtoChunkTicks.schedule` does; marks per
+/// position.
+pub fn decorated_chunk_with_extras(
+    pos: ChunkPos,
+    generate: &(dyn Fn(ChunkPos) -> ChunkData + Sync),
+    decorator: &dyn Decorator,
+    facts: &BlockFacts,
+    cache: &DecorationCache,
+) -> (ChunkData, ChunkExtras) {
     let mut chunk = (*cache.terrain(pos, generate)).clone();
+    let inside = |at: &BlockPos| {
+        at.chunk_pos() == pos && at.y >= chunk.min_y && at.y < chunk.min_y + chunk.height
+    };
     // West to east, then north to south within a column of chunks: fixed, so overlapping
     // writes from two neighbours resolve the same way whoever asks.
+    let mut sources = Vec::with_capacity(9);
     for dx in -1..=1 {
         for dz in -1..=1 {
             let source = ChunkPos::new(pos.x + dx, pos.z + dz);
-            let writes = cache.writes(source, generate, decorator, facts);
-            for (at, state) in writes.iter() {
-                if at.chunk_pos() != pos || at.y < chunk.min_y || at.y >= chunk.min_y + chunk.height
-                {
-                    continue;
-                }
-                let Some(section) = chunk.sections.get_mut(((at.y - chunk.min_y) >> 4) as usize)
-                else {
-                    continue;
-                };
-                let slot = local_index(
-                    (at.x & 15) as usize,
-                    ((at.y - chunk.min_y) & 15) as usize,
-                    (at.z & 15) as usize,
-                );
-                section.block_states.set(slot, state.clone());
+            sources.push(cache.writes(source, generate, decorator, facts));
+        }
+    }
+    // The last write to each position, numbered in application order.
+    let mut last_write: HashMap<BlockPos, (usize, &BlockState)> = HashMap::new();
+    let mut sequence = 0;
+    for output in &sources {
+        for (at, state) in output.0.iter() {
+            if !inside(at) {
+                continue;
+            }
+            let Some(section) = chunk.sections.get_mut(((at.y - chunk.min_y) >> 4) as usize) else {
+                continue;
+            };
+            let slot = local_index(
+                (at.x & 15) as usize,
+                ((at.y - chunk.min_y) & 15) as usize,
+                (at.z & 15) as usize,
+            );
+            section.block_states.set(slot, state.clone());
+            last_write.insert(*at, (sequence, state));
+            sequence += 1;
+        }
+    }
+
+    let mut extras = ChunkExtras::default();
+    let mut filled: HashMap<BlockPos, &BlockEntityData> = HashMap::new();
+    for output in &sources {
+        for entity in output.1.block_entities.iter().filter(|e| inside(&e.pos)) {
+            filled.insert(entity.pos, entity);
+        }
+    }
+    let mut standing: Vec<(usize, BlockPos, &BlockState)> = last_write
+        .iter()
+        .filter(|(_, (_, state))| facts.is(state, BlockFact::BlockEntity))
+        .map(|(at, (order, state))| (*order, *at, *state))
+        .collect();
+    standing.sort_unstable_by_key(|(order, _, _)| *order);
+    for (_, at, state) in standing {
+        extras.block_entities.push(match filled.get(&at) {
+            Some(entity) if entity.block == state.name => (*entity).clone(),
+            _ => BlockEntityData {
+                pos: at,
+                block: state.name.clone(),
+                snbt: block_entity::dummy(at),
+            },
+        });
+    }
+    let (mut fluid_seen, mut block_seen, mut mark_seen) =
+        (HashSet::new(), HashSet::new(), HashSet::new());
+    for output in &sources {
+        for tick in output.1.fluid_ticks.iter().filter(|(at, _)| inside(at)) {
+            if fluid_seen.insert(tick) {
+                extras.fluid_ticks.push(tick.clone());
+            }
+        }
+        for tick in output.1.block_ticks.iter().filter(|(at, _)| inside(at)) {
+            if block_seen.insert(tick) {
+                extras.block_ticks.push(tick.clone());
+            }
+        }
+        for at in output.1.post_process.iter().filter(|at| inside(at)) {
+            if mark_seen.insert(at) {
+                extras.post_process.push(*at);
             }
         }
     }
+
     chunk.heightmaps = heightmaps(&chunk, facts);
     chunk.status = ChunkStatus::Features;
-    chunk
+    (chunk, extras)
 }
 
 /// All six heightmaps from the game's own per-state predicates.
@@ -225,7 +302,7 @@ pub fn heightmaps(chunk: &ChunkData, facts: &BlockFacts) -> HashMap<HeightmapTyp
 mod tests {
     use super::*;
     use crate::region::testutil::{block, facts, flat_chunk};
-    use oxide_core::BlockPos;
+    use oxide_core::{BlockPos, ResourceLocation};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Plants a three-block pole at each chunk's own corner and one block across each border.
@@ -244,7 +321,7 @@ mod tests {
         }
     }
 
-    fn block_at(chunk: &ChunkData, x: i32, y: i32, z: i32) -> oxide_core::BlockState {
+    fn block_at(chunk: &ChunkData, x: i32, y: i32, z: i32) -> BlockState {
         let section = &chunk.sections[((y - chunk.min_y) >> 4) as usize];
         section
             .block_states
@@ -314,6 +391,73 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// In each chunk: a filled chest, a spawner with no data, a filled chest the chunk to the
+    /// east overwrites with stone, and ticks and marks every neighbour repeats.
+    struct Entities;
+
+    impl Decorator for Entities {
+        fn decorate(&self, region: &mut DecorationRegion<'_>) {
+            let center = region.center();
+            let (x, z) = (center.min_block_x(), center.min_block_z());
+            let filled = BlockPos::new(x + 1, 64, z + 1);
+            region.set_block(filled, block("chest"));
+            region.put_block_entity(filled, format!("chest {x}"));
+            region.set_block(BlockPos::new(x + 2, 64, z + 2), block("spawner"));
+            let lost = BlockPos::new(x + 3, 64, z + 3);
+            region.set_block(lost, block("chest"));
+            region.put_block_entity(lost, "lost".into());
+            region.set_block(BlockPos::new(x - 13, 64, z + 3), block("stone"));
+            region.schedule_fluid_tick(
+                BlockPos::new(0, 70, 0),
+                ResourceLocation::minecraft("water"),
+            );
+            region.schedule_block_tick(filled, ResourceLocation::minecraft("chest"));
+            region.mark_post_process(BlockPos::new(1, 70, 1));
+        }
+    }
+
+    #[test]
+    fn extras_follow_the_finished_blocks_and_are_deduplicated() {
+        let facts = facts();
+        let cache = DecorationCache::new(64, 64);
+        let terrain = |pos: ChunkPos| flat_chunk(pos, 64);
+        let (chunk, extras) =
+            decorated_chunk_with_extras(ChunkPos::new(0, 0), &terrain, &Entities, &facts, &cache);
+        assert_eq!(block_at(&chunk, 3, 64, 3), block("stone"));
+        let entities: Vec<(BlockPos, &str)> = extras
+            .block_entities
+            .iter()
+            .map(|e| (e.pos, e.snbt.as_str()))
+            .collect();
+        assert_eq!(
+            entities,
+            vec![
+                (BlockPos::new(1, 64, 1), "chest 0"),
+                (BlockPos::new(2, 64, 2), r#"{id:"DUMMY",x:2,y:64,z:2}"#),
+            ]
+        );
+        assert_eq!(
+            extras.fluid_ticks,
+            vec![(
+                BlockPos::new(0, 70, 0),
+                ResourceLocation::minecraft("water")
+            )]
+        );
+        assert_eq!(
+            extras.block_ticks,
+            vec![(
+                BlockPos::new(1, 64, 1),
+                ResourceLocation::minecraft("chest")
+            )]
+        );
+        assert_eq!(extras.post_process, vec![BlockPos::new(1, 70, 1)]);
+        // A chunk the shared tick and mark do not land in gets neither.
+        let (_, east) =
+            decorated_chunk_with_extras(ChunkPos::new(1, 0), &terrain, &Entities, &facts, &cache);
+        assert!(east.fluid_ticks.is_empty() && east.post_process.is_empty());
+        assert_eq!(east.block_entities.len(), 2);
     }
 
     #[test]

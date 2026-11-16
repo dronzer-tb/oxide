@@ -14,12 +14,13 @@ use super::super::context::{Environment, FeatureContext, NoBlockBehaviours, Unsu
 use super::super::feature::Compiler;
 use super::{FallenTreeFeature, TreeFeature};
 use crate::region::testutil::{flat_ring, refs};
-use crate::region::{BlockWrite, DecorationRegion};
+use crate::region::{BlockWrite, ChunkExtras, DecorationRegion};
 
 /// Air, stone, dirt, and oak and spruce logs and leaves with every property combination.
 fn synthetic_facts() -> BlockFacts {
     let mut table = String::from(
-        "minecraft:air\tDarc\nminecraft:void_air\tDarc\nminecraft:stone\tDsmoudf1234\nminecraft:dirt\tDsmoudf1234\n",
+        "minecraft:air\tDarc\nminecraft:void_air\tDarc\nminecraft:stone\tDsmoudf1234\nminecraft:dirt\tDsmoudf1234\n\
+         minecraft:bee_nest[facing=south,honey_level=0]\tDsmoudf1234e\n",
     );
     for wood in ["oak", "spruce"] {
         for axis in ["x", "y", "z"] {
@@ -96,6 +97,7 @@ fn synthetic_env() -> Environment {
 
 struct Placed {
     writes: Vec<BlockWrite>,
+    extras: ChunkExtras,
     tally: UnsupportedTally,
     placed: bool,
 }
@@ -122,8 +124,10 @@ fn run_on_flat(
         };
         place(&mut cx)
     };
+    let (writes, extras) = region.into_parts();
     Placed {
-        writes: region.into_writes(),
+        writes,
+        extras,
         tally,
         placed,
     }
@@ -178,6 +182,49 @@ fn named<'a>(writes: &'a [BlockWrite], suffix: &'a str) -> impl Iterator<Item = 
     writes
         .iter()
         .filter(move |(_, state)| state.name.path().ends_with(suffix))
+}
+
+#[test]
+fn a_bee_nest_gets_its_bees_as_block_entity_data() {
+    let env = synthetic_env();
+    let oak = tree(
+        &env,
+        &OAK.replace(
+            r#""decorators":[]"#,
+            r#""decorators":[{"type":"minecraft:beehive","probability":1.0}]"#,
+        ),
+    );
+    let mut nests = 0;
+    for seed in 0..16 {
+        let outcome = run_on_flat(&env, seed, BlockPos::new(8, 64, 8), |cx| oak.place(cx));
+        assert!(outcome.placed && outcome.tally.is_empty());
+        let nest: Vec<BlockPos> = named(&outcome.writes, "bee_nest")
+            .map(|(p, _)| *p)
+            .collect();
+        assert_eq!(outcome.extras.block_entities.len(), nest.len());
+        // Trees write with `UPDATE_KNOWN_SHAPE`: nothing is marked.
+        assert!(outcome.extras.post_process.is_empty());
+        for (pos, entity) in nest.iter().zip(&outcome.extras.block_entities) {
+            nests += 1;
+            assert_eq!(entity.pos, *pos);
+            assert_eq!(entity.block.path(), "bee_nest");
+            let head = format!(
+                "{{id:\"minecraft:beehive\",x:{},y:{},z:{},bees:[",
+                pos.x, pos.y, pos.z
+            );
+            assert!(entity.snbt.starts_with(&head), "{}", entity.snbt);
+            let bees: Vec<i32> = entity
+                .snbt
+                .split("ticks_in_hive:")
+                .skip(1)
+                .step_by(2)
+                .map(|rest| rest.split(',').next().unwrap().parse().unwrap())
+                .collect();
+            assert!((2..=3).contains(&bees.len()), "{}", entity.snbt);
+            assert!(bees.iter().all(|t| (0..599).contains(t)));
+        }
+    }
+    assert!(nests > 0, "probability 1 must place a nest for some seed");
 }
 
 #[test]

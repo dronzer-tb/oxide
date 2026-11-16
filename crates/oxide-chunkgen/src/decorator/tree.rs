@@ -14,9 +14,6 @@
 //!
 //! - Vanilla's neighbour shape updates at the tree's outer faces (`updateShapeAtEdge`). The region
 //!   stores block states only, and nothing in a freshly generated tree depends on them.
-//! - Bee nest block-entity data (`BeehiveDecorator` stores two or three bees). The nest block and
-//!   every random draw are placed; the occupants are not, since the region carries no block
-//!   entities. The draws are still made so the stream stays aligned.
 //! - A tree whose providers cannot answer ([`Unsupported`]) stops where it is: the blocks already
 //!   written stay, and the gap is tallied under `provider:`. No 26.2 tree uses such a provider.
 //!
@@ -282,7 +279,8 @@ impl<'c, 'e, 'a, 'r> Run<'c, 'e, 'a, 'r> {
                 Layer::Decoration => sets.decorations.insert(p),
             };
         }
-        self.cx.region.set_block(p, state)
+        // `TreeFeature` writes with `UPDATE_KNOWN_SHAPE`.
+        self.cx.region.set_block_known_shape(p, state)
     }
 
     pub fn sample(&mut self, provider: &StateProvider, p: BlockPos) -> Res<BlockState> {
@@ -661,7 +659,7 @@ fn update_leaves(run: &mut Run<'_, '_, '_, '_>, low: BlockPos, high: BlockPos) {
             if smallest != 0 {
                 let updated =
                     with_property(run.state(pos).clone(), "distance", &smallest.to_string());
-                run.cx.region.set_block(pos, updated);
+                run.cx.region.set_block_known_shape(pos, updated);
             }
             shape.fill(local(pos));
             for dir in Dir::ALL {

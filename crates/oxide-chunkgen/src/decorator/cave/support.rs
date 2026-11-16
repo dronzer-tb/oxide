@@ -12,7 +12,7 @@ use oxide_core::{BlockPos, BlockState, RandomSource};
 use oxide_datapack::placement::{IntProvider, TaggedIntProvider};
 use oxide_datapack::BlockFact;
 
-use crate::decorator::context::{block_in, FeatureContext};
+use crate::decorator::context::{block_in, fact_at, sides_never_full, FeatureContext};
 
 /// `net.minecraft.core.Direction`, in the order of `Direction.values()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,7 +160,7 @@ pub(super) fn face_full(
     face: Dir,
     collision: bool,
 ) -> bool {
-    let fact = |cx: &FeatureContext<'_, '_, '_>, fact: BlockFact| cx.region.is(pos, fact);
+    let fact = |cx: &FeatureContext<'_, '_, '_>, fact: BlockFact| fact_at(cx, pos, fact);
     let full_collision = fact(cx, BlockFact::FullCollision);
     match face {
         Dir::Up | Dir::Down => {
@@ -177,6 +177,9 @@ pub(super) fn face_full(
             }
             if full_collision {
                 return collision || fact(cx, BlockFact::SturdyTop);
+            }
+            if sides_never_full(block_in(cx.region, pos)) {
+                return false;
             }
             let name = block_in(cx.region, pos).name.to_string();
             cx.unsupported.record("shape", &name);

@@ -10,9 +10,8 @@
 //! A type that cannot be ported faithfully compiles to `None` and the caller records it as
 //! unsupported. `minecraft:desert_well` is placed by the water family (`water/desert_well.rs`).
 //!
-//! Vanilla's post-processing marks (`markAboveForPostProcessing`) and scheduled block ticks are
-//! not recorded: the region produces block writes only. They affect when a block updates after
-//! the chunk loads, never which block is placed.
+//! Vanilla's post-processing marks (`markAboveForPostProcessing`) and scheduled ticks go to the
+//! region next to the block writes (`DecorationRegion::into_parts`).
 
 mod block_blob;
 mod block_column;

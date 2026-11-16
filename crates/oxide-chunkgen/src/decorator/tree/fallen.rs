@@ -14,7 +14,7 @@ use super::super::context::{block_in, FeatureContext};
 use super::super::state_provider::{StateProvider, Unsupported};
 use super::decorator::{Decorator, Lists};
 use super::pos_set::PosSet;
-use super::{off, rel, Axis, Dir, FeatureLookup, Layer, Res, Run};
+use super::{off, rel, Axis, Dir, FeatureLookup, Res, Run};
 
 #[derive(Debug)]
 pub struct FallenTreeFeature {
@@ -97,7 +97,9 @@ impl FallenTreeFeature {
         if let Some(axis) = axis {
             state = run.with_axis(state, axis);
         }
-        run.set(Layer::Trunk, p, state);
+        // `placeLogBlock`: `UPDATE_ALL` (no known shape), then `markAboveForPostProcessing`.
+        run.cx.region.set_block(p, state);
+        run.cx.region.mark_above_for_post_processing(p);
         Ok(p)
     }
 }

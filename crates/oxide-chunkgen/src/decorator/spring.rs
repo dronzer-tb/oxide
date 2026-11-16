@@ -4,9 +4,8 @@
 //! valid rock and `hole_count` of them to be air; the stock springs want four rocks and one hole,
 //! which is a one-block-wide gap in a cave wall. Ported from vanilla's `SpringFeature`.
 //!
-//! PARITY-CHECK: vanilla also schedules a fluid tick at the new block so the spring starts
-//! flowing. A region holds block writes only and has no tick queue, so the tick is not recorded;
-//! the source block is written, which is the part the chunk stores.
+//! Vanilla also schedules a fluid tick at the new block so the spring starts flowing; it goes to
+//! the region's scheduled fluid ticks.
 //!
 //! PARITY-CHECK: the block written is the liquid block at `level` 0, or 8 when the configured
 //! fluid is falling (`FlowingFluid.createLegacyBlock`). The reference implementation has no
@@ -23,6 +22,9 @@ use super::predicate::IdSet;
 #[derive(Debug, Clone)]
 pub struct SpringFeature {
     state: BlockState,
+    /// The configured fluid's type, the one `scheduleTick` gets: `minecraft:water` or
+    /// `minecraft:lava` (a falling source is still the source fluid).
+    fluid: ResourceLocation,
     requires_block_below: bool,
     rock_count: i32,
     hole_count: i32,
@@ -56,6 +58,7 @@ impl SpringFeature {
         }
         Ok(Some(Self {
             state,
+            fluid: ResourceLocation::minecraft(block),
             requires_block_below: config.requires_block_below,
             rock_count: config.rock_count,
             hole_count: config.hole_count,
@@ -103,6 +106,8 @@ impl SpringFeature {
         if rocks != self.rock_count || holes != self.hole_count {
             return false;
         }
-        cx.region.set_block(pos, self.state.clone())
+        let placed = cx.region.set_block(pos, self.state.clone());
+        cx.region.schedule_fluid_tick(pos, self.fluid.clone());
+        placed
     }
 }

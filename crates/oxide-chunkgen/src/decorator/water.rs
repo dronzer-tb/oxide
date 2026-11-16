@@ -11,10 +11,8 @@
 //! draws an index into the tag's ordered member list), so they read
 //! [`TagSet::ordered`](oxide_datapack::TagSet::ordered) rather than a set.
 //!
-//! What the region cannot carry is tallied, not approximated: the desert well's suspicious sand
-//! gets its archaeology loot table (`minecraft:archaeology/desert_well`) through a block entity,
-//! recorded as `block_entity:minecraft:brushable_block` while the block itself is placed.
-//! Post-processing marks are not recorded, as for the other families.
+//! The desert well's suspicious sand gets its archaeology loot table
+//! (`minecraft:archaeology/desert_well`) as block-entity SNBT next to the block write.
 
 mod coral;
 mod desert_well;

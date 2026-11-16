@@ -13,8 +13,7 @@
 //! engine, neither of which is reconstructed here.
 //!
 //! Vanilla's post-processing marks and scheduled ticks (a crack's fluid ticks, a sculk vein's
-//! settling) are not recorded: the region produces block writes only. They affect when a block
-//! updates after the chunk loads, never which block is placed.
+//! settling) go to the region next to the block writes.
 
 mod cluster;
 mod geode;

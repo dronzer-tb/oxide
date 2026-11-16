@@ -7,8 +7,7 @@
 //! block-state rules of `SculkVeinBlock`'s spreader.
 //!
 //! Vanilla marks every written block for post-processing (so a waterlogged or unsupported vein
-//! settles after the chunk is generated). The decoration region keeps only block writes, so that
-//! scheduled settling is not reproduced; the written states are the same.
+//! settles after the chunk is generated); the marks go to the region with the writes.
 //!
 //! PARITY-CHECK: the three sculk blockers (`sculk`, `sculk_catalyst`, `moving_piston`) are named
 //! blocks in vanilla's spreader, not a tag; confirm the set against 26.2.
@@ -163,6 +162,7 @@ impl MultifaceFeature {
                 return false;
             };
             cx.region.set_block(pos, state.clone());
+            cx.region.mark_post_process(pos);
             if cx.random.next_float() < self.chance_of_spreading {
                 let mut all = Dir::ALL;
                 shuffle(&mut all, &mut *cx.random);
@@ -226,7 +226,7 @@ impl MultifaceFeature {
         Some(state)
     }
 
-    /// `MultifaceSpreader.spreadFromFaceTowardDirection`, post-processing aside.
+    /// `MultifaceSpreader.spreadFromFaceTowardDirection`.
     fn spread(
         &self,
         cx: &mut FeatureContext<'_, '_, '_>,
@@ -256,6 +256,8 @@ impl MultifaceFeature {
                 let Some(new) = self.state_for_placement(cx, &old, target, face) else {
                     return false;
                 };
+                // `SpreadConfig.placeBlock`, called with `postProcess` true.
+                cx.region.mark_post_process(target);
                 return cx.region.set_block(target, new);
             }
         }

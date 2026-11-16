@@ -17,6 +17,7 @@ use oxide_core::{BlockPos, BlockState, HeightmapType, ResourceLocation};
 use oxide_datapack::tree::TreeDecorator;
 use oxide_datapack::{BlockFact, BlockFacts};
 
+use super::super::block_entity;
 use super::super::feature::{place_configured_feature, Feature};
 use super::super::state_provider::StateProvider;
 use super::{off, rel, shuffle, with_property, Dir, FeatureLookup, Layer, Res, Run};
@@ -493,8 +494,7 @@ fn moss_hanger(run: &mut Run<'_, '_, '_, '_>, tip: &BlockState, mut p: BlockPos)
     run.set(Layer::Decoration, p, tip.clone());
 }
 
-/// `BeehiveDecorator.place`. The nest's bees are block-entity data the region does not carry,
-/// so only their random draws are made.
+/// `BeehiveDecorator.place`, with the nest's bees as block-entity SNBT.
 fn beehive(run: &mut Run<'_, '_, '_, '_>, lists: &Lists, probability: f32, nest: &BlockState) {
     let (Some(first_log), Some(last_log)) = (lists.logs.first(), lists.logs.last()) else {
         return;
@@ -520,9 +520,10 @@ fn beehive(run: &mut Run<'_, '_, '_, '_>, lists: &Lists, probability: f32, nest:
         if run.is_air(p) && run.is_air(rel(p, Dir::South, 1)) {
             if run.set(Layer::Decoration, p, nest.clone()) {
                 let count = 2 + run.bounded(2);
-                for _ in 0..count {
-                    run.bounded(599);
-                }
+                let ticks: Vec<i32> = (0..count).map(|_| run.bounded(599)).collect();
+                run.cx
+                    .region
+                    .put_block_entity(p, block_entity::beehive(p, &ticks));
             }
             break;
         }
