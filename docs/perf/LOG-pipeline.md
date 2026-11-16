@@ -1327,3 +1327,43 @@ pipeline-gs8 adds ee0ce0d.
 +0.4% decorate, +1.7% user CPU. Over both bases the change is inside noise: the repeated pass is
 rarely reached (most searches break on a non-air neighbour first). **Rejected**; patch at
 `docs/perf/rejected-lichen-early-stop.patch`. Digest held.
+
+## Ore round 3 (sampled): per-feature match memo, prefaulted write list; base 1 -3.8%
+
+**How it was sampled** (perf is blocked: `perf_event_paranoid=4`): the sub-agent copied the noise
+track's LD_PRELOAD sampler (`~/oxide-perf/noise-prof/prof2.c`, read only; SIGPROF every 2 ms of CPU via
+`setitimer(ITIMER_PROF)`, frame-pointer stack walk, dumps return addresses and `/proc/self/maps` at
+exit) into its own dir, built oxide-pregen with `-C force-frame-pointers=yes` in a separate target dir,
+ran it as `flock -s ~/oxide-perf/.lock nice -n 10 env PROF_OUT=... LD_PRELOAD=.../prof2.so ./pregen-fp
+<r16 1-thread args>`, and symbolised with `noise-prof/sym2.py` (`addr2line -f -C -i`). Page faults
+were counted separately with `getrusage(RUSAGE_THREAD).ru_minflt` in a throwaway build.
+
+**Where the ore samples were** (base 8d1ba38, 1223 samples ~2.45 s): `writes.push` in `write_id`
+~17% (94% of the write list's new pages fault: ~33k faults, ~30 per region, ~13 us each on this VM);
+rule matching 12.8% (`MatchCache` rebuilt per blob, slot = palette entry so sections thrashed);
+block reads ~17% (cache misses: a z step strides 16 cells); sphere test 10-15%; target interning ~3%.
+
+**Change** (sub-agent commits ee17bcc, 7b28512; `ore.rs`, `region.rs`):
+- each ore feature keeps its target ids and a 32-slot match cache with a mixed slot index in a
+  per-thread memo tagged by a new `DecorationRegion::serial()`; a region's first blob still interns
+  the targets in order (later blobs' interning was already a no-op), so interning order is unchanged.
+- a new region's reserved write list (8192 entries, 128 KiB) is populated with one
+  `madvise(MADV_POPULATE_WRITE)` instead of ~30 page faults; a kernel without it refuses the call and
+  pages fault in as before.
+- Draws, visit order (incl. the colliding `tested` index), `writes` order, states, interning order
+  unchanged; no float changes.
+- Side finding: the whole run takes ~265k minor faults and ~3.5 s system time; only ~33k are the
+  write lists, the rest is probably generation-side allocation (not this track's; passed on).
+
+**Hold, base 1** (pipeline-b8 = branch head merged with datapath **464c8d4**; pipeline-o3m adds both):
+
+| | run 1 | run 2 | run 3 | mean |
+|---|---|---|---|---|
+| base decorate_ms | 8612 | 7134 | 8283 | 8010 |
+| ore r3 decorate_ms | 7300 | 7751 | 8067 | 7706 |
+| base / ore cpu_user_s | 24.17 / 22.63 | 22.44 / 23.55 | 23.62 / 23.26 | 23.41 / 23.15 |
+| base / ore cpu_sys_s | 2.32 / 1.51 | 1.40 / 1.56 | 2.11 / 1.44 | 1.94 / 1.50 |
+| java_cpu_s_per_10s | 0.26 / 0.20 | 0.22 / 0.26 | 0.30 / 0.24 | |
+
+-3.8% decorate ahead 2/3; user CPU -1.1%, sys -0.44 s, user+sys -2.8% (ahead 2/3). Tests 195 pass;
+digest held. The base ranged 7134-8612, so a reversed repeat decides.
