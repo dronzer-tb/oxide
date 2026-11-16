@@ -36,7 +36,7 @@ use oxide_datapack::{BlockFact, BlockFacts};
 
 use crate::decorator::block_entity;
 use crate::fill::local_index;
-use crate::region::{height_fact, BlockEntityData, ChunkExtras, DecorationRegion};
+use crate::region::{height_fact, BlockEntityData, Bucket, ChunkExtras, DecorationRegion};
 
 /// Runs one chunk's features. The region's centre is the chunk being decorated.
 pub trait Decorator: Sync {
@@ -85,8 +85,11 @@ const SHARDS: usize = 16;
 /// computing it again: the slot is a `OnceLock` handed out under the shard's lock and filled
 /// outside it.
 struct Memo<V> {
-    shards: Vec<Mutex<Bounded<ChunkPos, Arc<OnceLock<Arc<V>>>>>>,
+    shards: Vec<Mutex<Bounded<ChunkPos, Slot<V>>>>,
 }
+
+/// One memoised value: filled once, by whichever thread asked first.
+type Slot<V> = Arc<OnceLock<Arc<V>>>;
 
 impl<V> Memo<V> {
     fn new(capacity: usize) -> Self {
@@ -126,7 +129,7 @@ pub struct DecorationCache {
 ///
 /// The writes are split by the chunk they land in (index `(dz + 1) * 3 + (dx + 1)` from the
 /// source chunk), each in first-write order with its state's fact bits.
-type SourceOutput = ([Vec<(BlockPos, BlockState, u32)>; 9], ChunkExtras);
+type SourceOutput = ([Bucket; 9], ChunkExtras);
 
 impl DecorationCache {
     /// `terrain_chunks` bounds memory: an undecorated chunk is a few hundred kilobytes, and

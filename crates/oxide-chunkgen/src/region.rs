@@ -18,6 +18,9 @@ use crate::fill::local_index;
 /// One block write a decoration made, in world coordinates.
 pub type BlockWrite = (BlockPos, BlockState);
 
+/// The writes landing in one chunk, each with its state's fact bits.
+pub(crate) type Bucket = Vec<(BlockPos, BlockState, u32)>;
+
 /// A block entity a feature filled in, as the block-entity SNBT vanilla would save
 /// (`id`, `x`, `y`, `z` and the type's own fields).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -418,8 +421,8 @@ impl<'a> DecorationRegion<'a> {
     /// The writes split by the chunk they land in (`[chunk index]`, row-major from the
     /// north-west as [`Self::new`] takes the chunks), each in first-write order with its state's
     /// fact bits, and everything else the features left.
-    pub(crate) fn into_buckets(mut self) -> ([Vec<(BlockPos, BlockState, u32)>; 9], ChunkExtras) {
-        let mut buckets: [Vec<(BlockPos, BlockState, u32)>; 9] = Default::default();
+    pub(crate) fn into_buckets(mut self) -> ([Bucket; 9], ChunkExtras) {
+        let mut buckets: [Bucket; 9] = Default::default();
         for write in std::mem::take(&mut self.writes) {
             if let Some(index) = self.chunk_index(write.0.x, write.0.z) {
                 buckets[index].push(write);
