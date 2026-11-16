@@ -2006,3 +2006,27 @@ The stack hold proceeds as planned, all three together. But the plan's gates are
 numbers, so **E36 is not landed on a 1-thread result**: if the stack wins at 1 thread but not clearly at
 8, E36 is split out before anything lands. A smaller cache, or one shared across threads, would be the
 retry for E36.
+
+### The stack E34 + E35 + E36 on the new base: -13.4% at 1 thread (4 of 4), flat at 8 -- E36 to be split out
+
+Tests: stack chunkgen 194, noise 45; new base chunkgen 192, noise 45; all passed. Two base builds
+(`datapath-nb3a`, `-nb3b`) of head + noise c17f4ed. Generation-only CPU-s; java at most 0.24 CPU-s per run.
+All `digest=a977961a58122047`.
+
+| | r1 | r2 | r3 | r4 | r5 | r6 | mean | cps |
+|---|---|---|---|---|---|---|---|---|
+| 1 thread: base A | 8.02 | 8.66 | 8.44 | 7.82 | | | 8.24 | 132.3 |
+| 1 thread: base B | 8.27 | 7.85 | 8.35 | 8.81 | | | 8.32 | 131.1 |
+| 1 thread: stack | 7.37 | 6.97 | 7.13 | 7.22 | | | **7.17** | **151.9** |
+| 8 threads: base A | 9.49 | 9.17 | 9.42 | 8.42 | 8.81 | 8.86 | 9.03 | 915.9 |
+| 8 threads: base B | 8.23 | 9.21 | 8.98 | 8.52 | 8.67 | 8.26 | 8.65 | 953.4 |
+| 8 threads: stack | 7.99 | 9.46 | 10.51 | 8.78 | 9.08 | 8.36 | 9.03 | 904.5 |
+
+- 1 thread: **-13.4%**, below both bases in all 4 rounds, so it meets the landing rule.
+- 8 threads: +2.2%, below both in 1 of 6. No gain at 8 threads, where the gates are measured.
+- The new noise base alone is at ~916-953 cps at 8 threads.
+
+E36 lost all six of its own 8-thread rounds, so landing all three on the 1-thread result could
+land a cut at 1 thread that costs at 8. One more hold splits it: E34 + E35 without E36, against the same
+two bases, 4 rounds at 1 thread and 6 at 8. If that holds at 1 thread and is not worse at 8, E34 + E35 land
+after the pregen digest, and E36 stays parked for a smaller or cross-thread cache.
