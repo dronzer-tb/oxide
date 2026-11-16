@@ -1166,3 +1166,20 @@ Ahead only in round 1. Over both base-2 holds (6 rounds) the change is -0.5% dec
 mean), i.e. nothing, against -8.4% on base 1 (before the tree change landed). The tree change already
 took the cheap state-reference and fact-cache savings the shared helpers offered. **Rejected**; patch
 at `docs/perf/rejected-lush-patch-bodies.patch`. Digest held on every row.
+
+### Ore z-run retried on the dense-overlay base: -2.1%, 2/3; rejected again
+
+pipeline-zr4 = pipeline-b4 (branch b793819 + datapath **f52ccea**) + the ore.rs half of b6141b6.
+Tests 195 pass. (The first attempt to start this hold failed: ssh to the box was reset for a few
+minutes around 02:20 UTC; it accepted connections again at 02:25.)
+
+| | run 1 | run 2 | run 3 | mean |
+|---|---|---|---|---|
+| base decorate_ms | 9029 | 8283 | 7954 | 8422 |
+| z-run decorate_ms | 8059 | 8225 | 8463 | 8249 |
+| base / z-run cpu_user_s | 24.81 / 23.45 | 23.21 / 23.97 | 23.86 / 23.56 | 23.96 / 23.66 |
+| java_cpu_s_per_10s | 0.26 / 0.24 | 0.21 / 0.24 | 0.29 / 0.23 | |
+
+-2.1% decorate and -1.3% user CPU, ahead 2/3 on each: inside run-to-run spread, as on the first try
+(-0.7%). **Rejected.** The ore cost is in the 10M fresh cells (read + match + write), not the box
+arithmetic. Digest held.
