@@ -76,10 +76,12 @@ struct Decoration {
 }
 
 /// Undecorated chunks kept for decoration, a few hundred kilobytes each: finishing a chunk
-/// reads the 5x5 around it, and neighbouring requests share most of that.
-const TERRAIN_CACHE_CHUNKS: usize = 256;
+/// reads the 5x5 around it, and neighbouring requests share most of that. Sized for a Chunky
+/// spiral (rings of ~750 chunks at radius 1500): 256 evicted neighbours before their reuse and
+/// regenerated terrain several times per chunk, ~55 cps against 135 with vanilla decoration.
+const TERRAIN_CACHE_CHUNKS: usize = 2048;
 /// Per-chunk decoration write lists kept. Small next to terrain.
-const WRITE_CACHE_CHUNKS: usize = 1024;
+const WRITE_CACHE_CHUNKS: usize = 8192;
 
 /// Append-only string interner behind the u16 indices crossing the FFI boundary.
 #[derive(Default)]
