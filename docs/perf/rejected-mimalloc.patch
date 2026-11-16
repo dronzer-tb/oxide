@@ -1,0 +1,111 @@
+From 9d96ad56e692a45dfd10597a52d666c2eb98da4b Mon Sep 17 00:00:00 2001
+From: Kasniya <36neelansh@gmail.com>
+Date: Mon, 16 Nov 2026 18:16:02 +0000
+Subject: [PATCH] perf(pregen): use mimalloc as the pregen binary's global
+ allocator
+
+The oxide-pregen binary now allocates through mimalloc 0.1.43 (with
+libmimalloc-sys 0.1.39 pinned in the lockfile; default features off).
+reserve_arena stays: it matters for builds on the system allocator and is a
+short, harmless burst of allocations under mimalloc. Only the binary changes;
+the output is identical. The lockfile also picks up ahash entries for
+oxide-chunkgen and oxide-datapack that their manifests already declared.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Cargo.lock                      | 22 ++++++++++++++++++++++
+ crates/oxide-pregen/Cargo.toml  |  1 +
+ crates/oxide-pregen/src/main.rs |  7 +++++++
+ 3 files changed, 30 insertions(+)
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 8fcf0d7..c711ada 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -640,6 +640,16 @@ version = "0.2.189"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
+ 
++[[package]]
++name = "libmimalloc-sys"
++version = "0.1.39"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "23aa6811d3bd4deb8a84dde645f943476d13b248d818edcf8ce0b2f37f036b44"
++dependencies = [
++ "cc",
++ "libc",
++]
++
+ [[package]]
+ name = "linux-raw-sys"
+ version = "0.12.1"
+@@ -695,6 +705,15 @@ dependencies = [
+  "libc",
+ ]
+ 
++[[package]]
++name = "mimalloc"
++version = "0.1.43"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "68914350ae34959d83f732418d51e2427a794055d0b9529f48259ac07af65633"
++dependencies = [
++ "libmimalloc-sys",
++]
++
+ [[package]]
+ name = "miniz_oxide"
+ version = "0.8.9"
+@@ -843,6 +862,7 @@ dependencies = [
+ name = "oxide-chunkgen"
+ version = "0.1.0"
+ dependencies = [
++ "ahash",
+  "anyhow",
+  "oxide-biome",
+  "oxide-core",
+@@ -865,6 +885,7 @@ dependencies = [
+ name = "oxide-datapack"
+ version = "0.1.0"
+ dependencies = [
++ "ahash",
+  "anyhow",
+  "fastnbt",
+  "flate2",
+@@ -928,6 +949,7 @@ dependencies = [
+  "anyhow",
+  "blake3",
+  "clap",
++ "mimalloc",
+  "oxide-anvil",
+  "oxide-biome",
+  "oxide-chunkgen",
+diff --git a/crates/oxide-pregen/Cargo.toml b/crates/oxide-pregen/Cargo.toml
+index 1462cd8..c0654f0 100644
+--- a/crates/oxide-pregen/Cargo.toml
++++ b/crates/oxide-pregen/Cargo.toml
+@@ -17,3 +17,4 @@ anyhow.workspace = true
+ tracing.workspace = true
+ tracing-subscriber.workspace = true
+ rayon.workspace = true
++mimalloc = { version = "=0.1.43", default-features = false }
+diff --git a/crates/oxide-pregen/src/main.rs b/crates/oxide-pregen/src/main.rs
+index 015217b..d25c94e 100644
+--- a/crates/oxide-pregen/src/main.rs
++++ b/crates/oxide-pregen/src/main.rs
+@@ -166,6 +166,13 @@ fn reserve_arena() {
+ /// One region's worth of already-serialized chunks, keyed by region coordinates.
+ type ChunksByRegion = BTreeMap<(i32, i32), Vec<(ChunkPos, Vec<u8>)>>;
+ 
++/// mimalloc rather than the system allocator: its per-thread heaps reuse freed memory locally,
++/// where glibc's arenas grow and trim through `mprotect` and `madvise` under the memory-map
++/// lock (see [`reserve_arena`], kept for runs built with the system allocator; under mimalloc
++/// it is a short, harmless burst of allocations and frees).
++#[global_allocator]
++static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
++
+ fn main() -> Result<()> {
+     tracing_subscriber::fmt::init();
+ 
+-- 
+2.43.0
+

@@ -1926,3 +1926,27 @@ Stage split: generate ~1.83 s (62%, other tracks), decorate ~0.90 s (31%), seria
 pipeline is ~9% short. Our track's remaining levers are each under 1% of run CPU (profile above), so
 the rest of the gap sits mainly in generation and in oxide-core (`pack_bits`, palette/index arrays,
 ~2%), both outside this track's files.
+
+### mimalloc as oxide-pregen's global allocator (sub-agent 9d96ad5): +2.0% at 8 threads, -4.5% at 1 thread, rejected
+
+`#[global_allocator] mimalloc::MiMalloc` in `oxide-pregen/src/main.rs` (new dependency `mimalloc =0.1.43`,
+libmimalloc-sys pinned 0.1.39; `reserve_arena` kept). Address dependence checked: the ore memo is keyed
+by feature address but only looked up, never iterated; `ptr::eq` in the biome grid is a shortcut
+before value comparison; content-keyed hash maps only. Digest df701ee858e2bdd3 on every row, r7 byte
+check vs k1 passes, tests pass. Max RSS: 1 thread 651 -> 617/624 MB, 8 threads 673/680 -> 665/675 MB.
+
+| hold | k1 | a1 | change | a1 ahead |
+|---|---|---|---|---|
+| 1 thread, 4 rounds (k1 first): secs | 20.87 | 21.80 | +4.5% | 0/4 |
+| 8 threads #1 (k1 first): cps | 349.3 | 373.0 | +6.8% | 4/6 |
+| 8 threads #2 (a1 first): cps | 350.1 | 340.2 | -2.8% | 2/6 |
+| 8 threads both: cps | 349.7 | 356.6 | +2.0% | 6/12 |
+| 8 threads both: decorate_ms | ~1030 | ~770 | ~-25% | 12/12 |
+
+Decoration is faster under mimalloc in every 8-thread row, but generation and sys time rise (a1 sys up
+to 4.92 s in hold 2), and the 1-thread run is slower in every round. **Rejected**; patch at
+`docs/perf/rejected-mimalloc.patch`.
+
+Lead: decoration still pays ~25% of its 8-thread time for glibc allocation. A decoration-local fix
+(per-thread reuse of the remaining per-region and per-feature allocations, or an arena for region
+build) could capture that without changing the allocator for generation.
