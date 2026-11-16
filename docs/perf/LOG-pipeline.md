@@ -1152,3 +1152,17 @@ Ore cell counters (temporary, in `place_blob`), whole run:
 - The box loop visits 66M cells (one f64 division each); 36.8M fall inside a sphere; only 10.1M are
   new to the bitset. The z-run change (the ore.rs half of b6141b6) was held before the dense overlay,
   when hashing hid the loop cost; it is held again on the current base.
+
+### Lush patch bodies, base 2 repeat (order reversed): -2.5%, 1/3; rejected
+
+| | run 1 | run 2 | run 3 | mean |
+|---|---|---|---|---|
+| lush decorate_ms (run first) | 7971 | 8087 | 7840 | 7966 |
+| base decorate_ms | 8908 | 7786 | 7806 | 8167 |
+| lush / base cpu_user_s | 22.33 / 23.72 | 23.03 / 22.44 | 23.34 / 23.01 | 22.90 / 23.06 |
+| java_cpu_s_per_10s | 0.21 / 0.22 | 0.22 / 0.20 | 0.21 / 0.25 | |
+
+Ahead only in round 1. Over both base-2 holds (6 rounds) the change is -0.5% decorate (8368 vs 8329
+mean), i.e. nothing, against -8.4% on base 1 (before the tree change landed). The tree change already
+took the cheap state-reference and fact-cache savings the shared helpers offered. **Rejected**; patch
+at `docs/perf/rejected-lush-patch-bodies.patch`. Digest held on every row.

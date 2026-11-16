@@ -1,0 +1,815 @@
+From 11391ba54c52971f40dd6d858dd046393c390d9e Mon Sep 17 00:00:00 2001
+From: Kasniya <36neelansh@gmail.com>
+Date: Mon, 16 Nov 2026 00:23:04 +0000
+Subject: [PATCH] perf(decorate): fewer reads and no state copies in lush cave
+ patches
+
+- vegetation_patch column walk: each position is read once (the outward
+  walk's first step reuses the air the inward walk left, `below` reuses
+  the last solid read for the sturdy face and the first ground step), and
+  a ground step that finds the ground's own block returns at once instead
+  of re-asking the same question `depth` times. PosSet no longer hashes:
+  every patch inserts positions of distinct columns.
+- StateProvider::state_ref: the same draws as `state`, handing back the
+  configured state by reference; randomized_int providers over a
+  Simple/Weighted source precompute every rolled state (with its
+  `knows` answer) at compile time.
+- simple_block and block_column write configured states by reference
+  (set_block_ref) instead of cloning; the two-block plant writes its lower
+  half by reference unless its waterlogging changes.
+- block_column: a local, quiet allowed_placement predicate is answered
+  once per state key per call.
+- Survival rule tags use AHashSet (lookups only).
+
+Random draws, write order, written states and state interning order are
+unchanged; pregen digest df701ee858e2bdd3.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../oxide-chunkgen/src/decorator/feature.rs   |  38 +++-
+ crates/oxide-chunkgen/src/decorator/ground.rs |  19 ++
+ .../src/decorator/ground/block_column.rs      |  61 +++++-
+ .../src/decorator/state_provider.rs           | 199 +++++++++++++++++-
+ .../oxide-chunkgen/src/decorator/survival.rs  |   9 +-
+ .../src/decorator/vegetation/geometry.rs      |  14 +-
+ .../src/decorator/vegetation/patch.rs         | 171 ++++++++++-----
+ 7 files changed, 424 insertions(+), 87 deletions(-)
+
+diff --git a/crates/oxide-chunkgen/src/decorator/feature.rs b/crates/oxide-chunkgen/src/decorator/feature.rs
+index a0de1a2..ba315f4 100644
+--- a/crates/oxide-chunkgen/src/decorator/feature.rs
++++ b/crates/oxide-chunkgen/src/decorator/feature.rs
+@@ -21,7 +21,7 @@ use std::collections::HashMap;
+ use std::sync::Arc;
+ 
+ use anyhow::{anyhow, bail, Context, Result};
+-use oxide_core::{BlockPos, BlockState, RandomSource, ResourceLocation};
++use oxide_core::{BlockPos, RandomSource, ResourceLocation};
+ use oxide_datapack::feature::Holder;
+ use oxide_datapack::feature::{ConfiguredFeature, HolderList};
+ use oxide_datapack::placement::PlacedFeature as PlacedFeatureIr;
+@@ -35,7 +35,7 @@ use super::nether::NetherFeature;
+ use super::ore::OreFeature;
+ use super::placement::{biome_gate, run, Gate, Modifier};
+ use super::spring::SpringFeature;
+-use super::state_provider::{StateProvider, Unsupported};
++use super::state_provider::{Provided, StateProvider, Unsupported};
+ use super::templated::{TemplateLibrary, TemplatedFeature};
+ use super::tree::{FallenTreeFeature, TreeFeature};
+ use super::vegetation::VegetationFeature;
+@@ -498,7 +498,7 @@ pub fn place_configured_feature(feature: &Feature, cx: &mut FeatureContext<'_, '
+ /// not placed rather than guessed. Vanilla's scheduled tick is not recorded.
+ fn place_simple_block(provider: &StateProvider, cx: &mut FeatureContext<'_, '_, '_>) -> bool {
+     let pos = cx.origin;
+-    let state = match provider.state(cx, pos) {
++    let state = match provider.state_ref(cx, pos) {
+         Ok(Some(state)) => state,
+         Ok(None) => return false,
+         Err(Unsupported(why)) => {
+@@ -521,26 +521,42 @@ fn place_simple_block(provider: &StateProvider, cx: &mut FeatureContext<'_, '_,
+     {
+         return place_two_block_plant(cx, state, pos);
+     }
+-    cx.region.set_block(pos, state)
++    match state {
++        Provided::Config(state) => cx.region.set_block_ref(pos, state),
++        Provided::Made(state) => cx.region.set_block(pos, state),
++    }
+ }
+ 
+ /// `DoublePlantBlock.placeAt`, behind `SimpleBlockFeature`'s check that the cell above is empty.
+ fn place_two_block_plant(
+     cx: &mut FeatureContext<'_, '_, '_>,
+-    state: BlockState,
++    state: Provided<'_>,
+     pos: BlockPos,
+ ) -> bool {
+     let above = BlockPos::new(pos.x, pos.y + 1, pos.z);
+     if !crate::decorator::context::fact_in(cx.region, above, BlockFact::Air) {
+         return false;
+     }
+-    for (at, half) in [(pos, "lower"), (above, "upper")] {
+-        let mut half_state = state.clone().with_property("half", half);
+-        if half_state.properties.contains_key("waterlogged") {
+-            let in_water = crate::decorator::context::fact_in(cx.region, at, BlockFact::Water);
+-            half_state = half_state.with_property("waterlogged", in_water.to_string());
++    // `state` already has `half=lower`, so the lower half is `state` itself unless its
++    // waterlogging has to change.
++    let waterlogged_for = |cx: &FeatureContext<'_, '_, '_>, at: BlockPos| {
++        crate::decorator::context::fact_in(cx.region, at, BlockFact::Water).to_string()
++    };
++    match state.properties.get("waterlogged") {
++        Some(current) if *current != waterlogged_for(cx, pos) => {
++            let lower = state
++                .clone()
++                .with_property("waterlogged", waterlogged_for(cx, pos));
++            cx.region.set_block(pos, lower);
+         }
+-        cx.region.set_block(at, half_state);
++        _ => {
++            cx.region.set_block_ref(pos, &state);
++        }
++    }
++    let mut upper = state.into_owned().with_property("half", "upper");
++    if upper.properties.contains_key("waterlogged") {
++        upper = upper.with_property("waterlogged", waterlogged_for(cx, above));
+     }
++    cx.region.set_block(above, upper);
+     true
+ }
+diff --git a/crates/oxide-chunkgen/src/decorator/ground.rs b/crates/oxide-chunkgen/src/decorator/ground.rs
+index ab7ec6f..3dc22b2 100644
+--- a/crates/oxide-chunkgen/src/decorator/ground.rs
++++ b/crates/oxide-chunkgen/src/decorator/ground.rs
+@@ -175,6 +175,25 @@ fn provide(
+     }
+ }
+ 
++/// [`provide`] without copying a configured state.
++fn provide_ref<'s>(
++    cx: &mut FeatureContext<'_, '_, '_>,
++    provider: &'s StateProvider,
++    pos: BlockPos,
++) -> Option<crate::decorator::state_provider::Provided<'s>> {
++    match provider.state_ref(cx, pos) {
++        Ok(Some(state)) => Some(state),
++        Ok(None) => {
++            cx.unsupported.record("provider", "no state for position");
++            None
++        }
++        Err(Unsupported(why)) => {
++            cx.unsupported.record("provider", why);
++            None
++        }
++    }
++}
++
+ fn offset(pos: BlockPos, dx: i32, dy: i32, dz: i32) -> BlockPos {
+     BlockPos::new(pos.x + dx, pos.y + dy, pos.z + dz)
+ }
+diff --git a/crates/oxide-chunkgen/src/decorator/ground/block_column.rs b/crates/oxide-chunkgen/src/decorator/ground/block_column.rs
+index 7f0d78b..71987f9 100644
+--- a/crates/oxide-chunkgen/src/decorator/ground/block_column.rs
++++ b/crates/oxide-chunkgen/src/decorator/ground/block_column.rs
+@@ -14,8 +14,9 @@ use oxide_datapack::BlockFacts;
+ use super::super::context::FeatureContext;
+ use super::super::predicate::Predicate;
+ use super::super::provider::sample_int;
+-use super::super::state_provider::StateProvider;
+-use super::provide;
++use super::super::state_provider::{Provided, StateProvider};
++use super::provide_ref;
++use crate::region::StateKey;
+ 
+ #[derive(Debug)]
+ struct Layer {
+@@ -28,6 +29,9 @@ pub struct BlockColumnFeature {
+     layers: Vec<Layer>,
+     step: [i32; 3],
+     allowed_placement: Predicate,
++    /// `allowed_placement` reads only the tested state and never tallies, so inside the window
++    /// its answer is a function of the state's key.
++    local: bool,
+     prioritize_tip: bool,
+ }
+ 
+@@ -53,11 +57,13 @@ impl BlockColumnFeature {
+             "east" => [1, 0, 0],
+             other => bail!("unknown block column direction {other:?}"),
+         };
++        let allowed_placement = Predicate::compile(&config.allowed_placement, facts)
++            .context("block column allowed_placement")?;
+         Ok(Self {
+             layers,
+             step,
+-            allowed_placement: Predicate::compile(&config.allowed_placement, facts)
+-                .context("block column allowed_placement")?,
++            local: allowed_placement.is_local() && allowed_placement.is_quiet(),
++            allowed_placement,
+             prioritize_tip: config.prioritize_tip,
+         })
+     }
+@@ -87,8 +93,9 @@ impl BlockColumnFeature {
+             )
+         };
+         let mut query = advance(origin);
++        let mut answers = AllowedCache::default();
+         for index in 0..total {
+-            if !self.allowed_placement.test(cx, query) {
++            if !self.allowed(cx, query, &mut answers) {
+                 truncate(&mut heights, total, index, self.prioritize_tip);
+                 break;
+             }
+@@ -97,17 +104,57 @@ impl BlockColumnFeature {
+         let mut pos = origin;
+         for (layer, height) in self.layers.iter().zip(heights) {
+             for _ in 0..height {
+-                let Some(state) = provide(cx, &layer.provider, pos) else {
++                let Some(state) = provide_ref(cx, &layer.provider, pos) else {
+                     return false;
+                 };
+-                cx.region.set_block(pos, state);
++                match state {
++                    Provided::Config(state) => cx.region.set_block_ref(pos, state),
++                    Provided::Made(state) => cx.region.set_block(pos, state),
++                };
+                 pos = advance(pos);
+             }
+         }
+         true
+     }
++
++    /// `allowed_placement` at `pos`, answered per state key when the predicate is local.
++    fn allowed(
++        &self,
++        cx: &mut FeatureContext<'_, '_, '_>,
++        pos: BlockPos,
++        answers: &mut AllowedCache,
++    ) -> bool {
++        if self.local {
++            if let Some(probe) = cx.region.probe(pos) {
++                let slot = &mut answers.0[probe.key.slot() & (ALLOWED_SLOTS - 1)];
++                if let Some((key, answer)) = *slot {
++                    if key == probe.key {
++                        return answer;
++                    }
++                }
++                // Inside the window `pos` is inside the world's height, which is all a local
++                // predicate asks of the position itself.
++                let answer = self.allowed_placement.test_probe(
++                    cx.env,
++                    &probe,
++                    pos,
++                    cx.region.min_y(),
++                    cx.region.max_y(),
++                );
++                *slot = Some((probe.key, answer));
++                return answer;
++            }
++        }
++        self.allowed_placement.test(cx, pos)
++    }
+ }
+ 
++const ALLOWED_SLOTS: usize = 4;
++
++/// Per [`BlockColumnFeature::place`] call: the allowed-placement answer per state key.
++#[derive(Default)]
++struct AllowedCache([Option<(StateKey, bool)>; ALLOWED_SLOTS]);
++
+ /// `BlockColumnFeature.truncate`: removes `total - allowed` blocks from the layers, starting
+ /// from the first layer when the tip is prioritised and from the last otherwise.
+ fn truncate(heights: &mut [i32], total: i32, allowed: i32, prioritize_tip: bool) {
+diff --git a/crates/oxide-chunkgen/src/decorator/state_provider.rs b/crates/oxide-chunkgen/src/decorator/state_provider.rs
+index 1a366ac..0ea0ea1 100644
+--- a/crates/oxide-chunkgen/src/decorator/state_provider.rs
++++ b/crates/oxide-chunkgen/src/decorator/state_provider.rs
+@@ -102,6 +102,9 @@ pub enum StateProvider {
+         source: Box<StateProvider>,
+         property: String,
+         values: IntProvider,
++        /// Per state a `Simple`/`Weighted` source can give (in its entry order), the states
++        /// rolling `values` makes of it, built once: see [`Rolled`].
++        rolled: Vec<Option<Rolled>>,
+     },
+     RuleBased {
+         fallback: Option<Box<StateProvider>>,
+@@ -156,11 +159,16 @@ impl StateProvider {
+                 source,
+                 property,
+                 values,
+-            } => Self::RandomizedInt {
+-                source: Box::new(Self::compile(source, facts)?),
+-                property: property.clone(),
+-                values: values.clone(),
+-            },
++            } => {
++                let source = Self::compile(source, facts)?;
++                let rolled = Rolled::table(&source, property, values, facts);
++                Self::RandomizedInt {
++                    source: Box::new(source),
++                    property: property.clone(),
++                    values: values.clone(),
++                    rolled,
++                }
++            }
+             BlockStateProvider::RuleBased { fallback, rules } => Self::RuleBased {
+                 fallback: fallback
+                     .as_ref()
+@@ -248,6 +256,7 @@ impl StateProvider {
+                 source,
+                 property,
+                 values,
++                ..
+             } => {
+                 let Some(mut state) = source.state(cx, pos)? else {
+                     return Ok(None);
+@@ -347,3 +356,183 @@ impl StateProvider {
+         })
+     }
+ }
++
++/// A state a provider gave: one of its configured states, or one it built.
++pub enum Provided<'s> {
++    Config(&'s BlockState),
++    Made(BlockState),
++}
++
++impl std::ops::Deref for Provided<'_> {
++    type Target = BlockState;
++
++    fn deref(&self) -> &BlockState {
++        match self {
++            Self::Config(state) => state,
++            Self::Made(state) => state,
++        }
++    }
++}
++
++impl Provided<'_> {
++    pub fn into_owned(self) -> BlockState {
++        match self {
++            Self::Config(state) => state.clone(),
++            Self::Made(state) => state,
++        }
++    }
++}
++
++/// The states a `randomized_int_state_provider` makes of one integer-valued source state, for
++/// every value of the range its `values` provider draws from: `states[value - min]`, `None`
++/// for a value the block facts do not know.
++#[derive(Debug, Clone)]
++pub struct Rolled {
++    min: i32,
++    states: Vec<Option<BlockState>>,
++}
++
++/// Larger ranges are rolled at placement time.
++const MAX_ROLLED: i32 = 64;
++
++impl Rolled {
++    fn table(
++        source: &StateProvider,
++        property: &str,
++        values: &IntProvider,
++        facts: &BlockFacts,
++    ) -> Vec<Option<Self>> {
++        let Some((min, max)) = int_range(values) else {
++            return Vec::new();
++        };
++        if max < min || max.wrapping_sub(min) >= MAX_ROLLED {
++            return Vec::new();
++        }
++        let sources: Vec<&BlockState> = match source {
++            StateProvider::Simple(state) => vec![state],
++            StateProvider::Weighted { entries, .. } => entries.iter().map(|(s, _)| s).collect(),
++            _ => return Vec::new(),
++        };
++        sources
++            .into_iter()
++            .map(|state| {
++                let is_integer = state
++                    .properties
++                    .get(property)
++                    .is_some_and(|value| value.parse::<i32>().is_ok());
++                is_integer.then(|| Self {
++                    min,
++                    states: (min..=max)
++                        .map(|value| {
++                            let mut rolled = state.clone();
++                            rolled
++                                .properties
++                                .insert(property.to_string(), value.to_string());
++                            facts.knows(&rolled).then_some(rolled)
++                        })
++                        .collect(),
++                })
++            })
++            .collect()
++    }
++}
++
++/// The inclusive range a constant or uniform int provider draws from.
++fn int_range(values: &IntProvider) -> Option<(i32, i32)> {
++    use oxide_datapack::placement::TaggedIntProvider;
++    match values {
++        IntProvider::Constant(value) => Some((*value, *value)),
++        IntProvider::Tagged(tagged) => match &**tagged {
++            TaggedIntProvider::Constant { value } => Some((*value, *value)),
++            TaggedIntProvider::Uniform {
++                min_inclusive,
++                max_inclusive,
++            } => Some((*min_inclusive, *max_inclusive)),
++            _ => None,
++        },
++    }
++}
++
++impl StateProvider {
++    /// [`Self::state`] without copying a configured state: the same draws in the same order,
++    /// and a state equal to the one [`Self::state`] gives.
++    pub fn state_ref(
++        &self,
++        cx: &mut FeatureContext<'_, '_, '_>,
++        pos: BlockPos,
++    ) -> Result<Option<Provided<'_>>, Unsupported> {
++        Ok(match self {
++            Self::Simple(state) => Some(Provided::Config(state)),
++            Self::Weighted { entries, total } => {
++                if *total <= 0 {
++                    return Ok(None);
++                }
++                let mut remaining = cx.random.next_int_bounded(*total);
++                let mut chosen = None;
++                for (state, weight) in entries {
++                    remaining -= weight;
++                    if remaining < 0 {
++                        chosen = Some(Provided::Config(state));
++                        break;
++                    }
++                }
++                chosen
++            }
++            Self::RandomizedInt {
++                source,
++                property,
++                values,
++                rolled,
++            } => {
++                let Some(state) = source.state_ref(cx, pos)? else {
++                    return Ok(None);
++                };
++                let index = match (&**source, &state) {
++                    (Self::Simple(_), Provided::Config(_)) => Some(0),
++                    (Self::Weighted { entries, .. }, Provided::Config(picked)) => entries
++                        .iter()
++                        .position(|(entry, _)| std::ptr::eq(entry, *picked)),
++                    _ => None,
++                };
++                if let Some(table) = index.and_then(|index| rolled.get(index)) {
++                    let Some(table) = table else {
++                        // Not an integer property: left alone, nothing drawn.
++                        return Ok(Some(state));
++                    };
++                    let value = sample_int(values, cx.random);
++                    return match table.states.get(value.wrapping_sub(table.min) as usize) {
++                        Some(Some(rolled)) => Ok(Some(Provided::Config(rolled))),
++                        _ => Err(Unsupported(
++                            "randomized_int_state_provider value out of range",
++                        )),
++                    };
++                }
++                let mut state = state.into_owned();
++                let is_integer = state
++                    .properties
++                    .get(property)
++                    .is_some_and(|value| value.parse::<i32>().is_ok());
++                if is_integer {
++                    let value = sample_int(values, cx.random);
++                    state.properties.insert(property.clone(), value.to_string());
++                    if !cx.env.facts.knows(&state) {
++                        return Err(Unsupported(
++                            "randomized_int_state_provider value out of range",
++                        ));
++                    }
++                }
++                Some(Provided::Made(state))
++            }
++            Self::Noise { source, states } => {
++                if states.is_empty() {
++                    return Err(Unsupported("noise_provider without states"));
++                }
++                Some(Provided::Config(
++                    &states[pick_by_noise(states.len(), source.value(pos))],
++                ))
++            }
++            // The rest are rare; they give what `state` gives.
++            _ => self.state(cx, pos)?.map(Provided::Made),
++        })
++    }
++}
+diff --git a/crates/oxide-chunkgen/src/decorator/survival.rs b/crates/oxide-chunkgen/src/decorator/survival.rs
+index 86e32a3..6cb034c 100644
+--- a/crates/oxide-chunkgen/src/decorator/survival.rs
++++ b/crates/oxide-chunkgen/src/decorator/survival.rs
+@@ -21,8 +21,7 @@ mod rules;
+ #[cfg(test)]
+ mod tests;
+ 
+-use std::collections::HashSet;
+-
++use ahash::AHashSet;
+ use oxide_core::{BlockPos, BlockState, ResourceLocation};
+ use oxide_datapack::TagSet;
+ 
+@@ -142,8 +141,8 @@ impl Tag {
+ /// The survival rules of vanilla's blocks, backed by the block tags they consult.
+ pub struct SurvivalRules {
+     /// The members of each tag in [`Tag::ALL`] order, copied out of the tag set so a lookup
+-    /// is one hash probe with no id built.
+-    members: Vec<HashSet<ResourceLocation>>,
++    /// is one hash probe with no id built. ahash: nothing iterates them.
++    members: Vec<AHashSet<ResourceLocation>>,
+ }
+ 
+ impl SurvivalRules {
+@@ -155,7 +154,7 @@ impl SurvivalRules {
+             .map(|tag| {
+                 block_tags
+                     .get(&ResourceLocation::minecraft(tag.path()))
+-                    .cloned()
++                    .map(|members| members.iter().cloned().collect())
+                     .unwrap_or_default()
+             })
+             .collect();
+diff --git a/crates/oxide-chunkgen/src/decorator/vegetation/geometry.rs b/crates/oxide-chunkgen/src/decorator/vegetation/geometry.rs
+index 7ecf385..afb5e4f 100644
+--- a/crates/oxide-chunkgen/src/decorator/vegetation/geometry.rs
++++ b/crates/oxide-chunkgen/src/decorator/vegetation/geometry.rs
+@@ -4,8 +4,6 @@
+ //! the *order* of iteration is part of the output. Vanilla's sets are `java.util.HashSet`, whose
+ //! order is a function of `BlockPos.hashCode`; [`PosSet`] reproduces it.
+ 
+-use std::collections::HashSet;
+-
+ use oxide_core::{BlockPos, RandomSource};
+ 
+ /// `net.minecraft.core.Direction`, in the order of `Direction.values()`.
+@@ -123,17 +121,15 @@ pub(super) fn shuffle<T>(values: &mut [T], random: &mut impl RandomSource) {
+ /// is not expected to occur; confirm against a real run if a patch ever disagrees.
+ #[derive(Debug, Default)]
+ pub(super) struct PosSet {
+-    seen: HashSet<BlockPos>,
+     order: Vec<BlockPos>,
+ }
+ 
+ impl PosSet {
+-    pub fn insert(&mut self, pos: BlockPos) -> bool {
+-        let added = self.seen.insert(pos);
+-        if added {
+-            self.order.push(pos);
+-        }
+-        added
++    /// Adds `pos`, which the caller knows is not in the set yet (every user adds positions of
++    /// distinct columns), so nothing is hashed.
++    pub fn insert_distinct(&mut self, pos: BlockPos) {
++        debug_assert!(!self.order.contains(&pos));
++        self.order.push(pos);
+     }
+ 
+     pub fn is_empty(&self) -> bool {
+diff --git a/crates/oxide-chunkgen/src/decorator/vegetation/patch.rs b/crates/oxide-chunkgen/src/decorator/vegetation/patch.rs
+index 5a2942a..14b3839 100644
+--- a/crates/oxide-chunkgen/src/decorator/vegetation/patch.rs
++++ b/crates/oxide-chunkgen/src/decorator/vegetation/patch.rs
+@@ -15,7 +15,7 @@ use oxide_core::{BlockPos, BlockState, RandomSource, ResourceLocation};
+ use oxide_datapack::feature::Holder;
+ use oxide_datapack::placement::{IntProvider, PlacedFeature};
+ use oxide_datapack::vegetation_feature::{CaveSurface, VegetationPatchConfig};
+-use oxide_datapack::BlockFacts;
++use oxide_datapack::{BlockFact, BlockFacts};
+ 
+ use super::geometry::{offset, relative, Dir, PosSet};
+ use super::support::{face_full, is_air, place_nested, Shape};
+@@ -98,7 +98,7 @@ impl PatchFeature {
+                     !face_full(cx, neighbour, dir.opposite(), Shape::Support)
+                 });
+             if !exposed {
+-                sealed.insert(pos);
++                sealed.insert_distinct(pos);
+             }
+         }
+         let mut water = None;
+@@ -163,30 +163,45 @@ impl PatchFeature {
+                         || (self.extra_edge_column_chance != 0.0
+                             && cx.random.next_float() <= self.extra_edge_column_chance))
+                 {
+-                    // Vanilla asks `isAir` of the position each loop ends on once more in the
+-                    // next test; the answer is pure, so each position is read once.
++                    // Vanilla asks `isAir` of every position the two walks visit. Reads are
++                    // pure until the ground is placed, so a position read once is not read
++                    // again: the outward walk's first step after an inward walk lands on the
++                    // air the inward walk just left, and `below` is the last solid read.
+                     let mut pos = offset(origin, dx, 0, dz);
+-                    let mut air = is_air(cx, pos);
++                    let mut cell = self.look(cx, pos);
+                     let mut walked = 0;
+-                    while air && walked < self.vertical_range {
++                    let mut previous = None;
++                    while cell.air && walked < self.vertical_range {
+                         pos = relative(pos, inwards, 1);
+                         walked += 1;
+-                        air = is_air(cx, pos);
++                        previous = Some(cell);
++                        cell = self.look(cx, pos);
+                     }
++                    let mut below = None;
+                     let mut walked = 0;
+-                    while !air && walked < self.vertical_range {
++                    while !cell.air && walked < self.vertical_range {
+                         pos = relative(pos, outwards, 1);
+                         walked += 1;
+-                        air = is_air(cx, pos);
++                        below = Some(cell);
++                        cell = match previous.take() {
++                            Some(known) => known,
++                            None => self.look(cx, pos),
++                        };
+                     }
+-                    let below = relative(pos, inwards, 1);
+-                    if air && face_full(cx, below, outwards, Shape::Support) {
+-                        let extra = self.extra_bottom_block_chance > 0.0
+-                            && cx.random.next_float() < self.extra_bottom_block_chance;
+-                        let depth =
+-                            sample_int(&self.depth, &mut *cx.random).wrapping_add(i32::from(extra));
+-                        if self.place_ground(cx, below, depth, ground) {
+-                            surface.insert(below);
++                    if cell.air {
++                        let below_pos = relative(pos, inwards, 1);
++                        let below = match below {
++                            Some(known) => known,
++                            None => self.look(cx, below_pos),
++                        };
++                        if below.sturdy {
++                            let extra = self.extra_bottom_block_chance > 0.0
++                                && cx.random.next_float() < self.extra_bottom_block_chance;
++                            let depth = sample_int(&self.depth, &mut *cx.random)
++                                .wrapping_add(i32::from(extra));
++                            if self.place_ground(cx, below_pos, depth, below.key, ground) {
++                                surface.insert_distinct(below_pos);
++                            }
+                         }
+                     }
+                 }
+@@ -197,6 +212,32 @@ impl PatchFeature {
+         surface
+     }
+ 
++    /// One read of `pos` for the column walk: whether it is air, whether the face the ground
++    /// rests on (`outwards`) is sturdy, and the state's key.
++    fn look(&self, cx: &FeatureContext<'_, '_, '_>, pos: BlockPos) -> Look {
++        match cx.region.probe(pos) {
++            Some(probe) => {
++                let air = probe.is(BlockFact::Air);
++                Look {
++                    air,
++                    // `face_full(.., outwards, Shape::Support)` for an up or down face.
++                    sturdy: probe.is(if self.inwards == Dir::Down {
++                        BlockFact::SturdyTop
++                    } else {
++                        BlockFact::SturdyBottom
++                    }),
++                    key: Some(probe.key),
++                }
++            }
++            // `void_air`, of which no face is full.
++            None => Look {
++                air: is_air(cx, pos),
++                sturdy: false,
++                key: None,
++            },
++        }
++    }
++
+     /// `VegetationPatchFeature.placeGround`: stacks up to `depth` ground blocks inwards from
+     /// `below`, stopping at the first block that may not be replaced.
+     fn place_ground(
+@@ -204,10 +245,11 @@ impl PatchFeature {
+         cx: &mut FeatureContext<'_, '_, '_>,
+         mut below: BlockPos,
+         depth: i32,
++        key: Option<StateKey>,
+         ground: &mut GroundCache,
+     ) -> bool {
+         if let StateProvider::Simple(state) = &self.ground {
+-            return self.place_simple_ground(cx, below, depth, state, ground);
++            return self.place_simple_ground(cx, below, depth, key, state, ground);
+         }
+         for step in 0..depth {
+             let state = match self.ground.state(cx, below) {
+@@ -232,55 +274,71 @@ impl PatchFeature {
+ 
+     /// [`Self::place_ground`] for a constant ground state, which draws nothing: the name and
+     /// `replaceable` tests are pure in the existing state, so they are cached by its key, and
+-    /// the state is interned once instead of cloned and hashed per write.
++    /// the state is interned once instead of cloned and hashed per write. `key` is the key of
++    /// the state at `below`, when the column walk already read it.
+     fn place_simple_ground(
+         &self,
+         cx: &mut FeatureContext<'_, '_, '_>,
+         mut below: BlockPos,
+         depth: i32,
++        mut key: Option<StateKey>,
+         state: &BlockState,
+         ground: &mut GroundCache,
+     ) -> bool {
+         for step in 0..depth {
+-            let (same, replaceable) = match cx.region.probe(below) {
+-                Some(probe) => {
+-                    let slot = &mut ground.slots[probe.key.slot() & (GROUND_SLOTS - 1)];
+-                    match *slot {
+-                        Some((key, same, replaceable)) if key == probe.key => (same, replaceable),
+-                        _ => {
+-                            let same = state.name == probe.state.name;
+-                            let replaceable =
+-                                self.replaceable.contains_block(cx.env, &probe.state.name);
+-                            *slot = Some((probe.key, same, replaceable));
+-                            (same, replaceable)
++            let (same, replaceable) = match key.take().and_then(|key| ground.lookup(key)) {
++                Some(answers) => answers,
++                None => match cx.region.probe(below) {
++                    Some(probe) => match ground.lookup(probe.key) {
++                        Some(answers) => answers,
++                        None => {
++                            let answers = (
++                                state.name == probe.state.name,
++                                self.replaceable.contains_block(cx.env, &probe.state.name),
++                            );
++                            ground.store(probe.key, answers);
++                            answers
+                         }
++                    },
++                    None => {
++                        let existing = block_in(cx.region, below);
++                        (
++                            state.name == existing.name,
++                            self.replaceable.contains_block(cx.env, &existing.name),
++                        )
+                     }
+-                }
+-                None => {
+-                    let existing = block_in(cx.region, below);
+-                    (
+-                        state.name == existing.name,
+-                        self.replaceable.contains_block(cx.env, &existing.name),
+-                    )
+-                }
++                },
+             };
+-            if !same {
+-                if !replaceable {
+-                    return step != 0;
+-                }
+-                // `set_block` writes nothing outside the window; intern only on a write that
+-                // lands, so the region's state table fills in the same order.
+-                if cx.region.contains(below) {
+-                    let id = *ground.id.get_or_insert_with(|| cx.region.intern(state));
+-                    cx.region.set_block_id(below, id);
+-                }
+-                below = relative(below, self.inwards, 1);
++            if same {
++                // Nothing is written and `below` stays, so every later step asks the same
++                // question of the same state and gets the same answer.
++                return true;
++            }
++            if !replaceable {
++                return step != 0;
++            }
++            // `set_block` writes nothing outside the window; intern only on a write that
++            // lands, so the region's state table fills in the same order.
++            if cx.region.contains(below) {
++                let id = *ground.id.get_or_insert_with(|| cx.region.intern(state));
++                cx.region.set_block_id(below, id);
+             }
++            below = relative(below, self.inwards, 1);
+         }
+         true
+     }
+ }
+ 
++/// What [`PatchFeature::look`] read at one position of a column walk.
++#[derive(Clone, Copy)]
++struct Look {
++    air: bool,
++    /// The face towards the patch's open side is full.
++    sturdy: bool,
++    /// `None` outside the window.
++    key: Option<StateKey>,
++}
++
+ const GROUND_SLOTS: usize = 8;
+ 
+ /// Per `place` call: the ground state's interned id once written, and per existing state key
+@@ -288,5 +346,18 @@ const GROUND_SLOTS: usize = 8;
+ #[derive(Default)]
+ struct GroundCache {
+     id: Option<u32>,
+-    slots: [Option<(StateKey, bool, bool)>; GROUND_SLOTS],
++    slots: [Option<(StateKey, (bool, bool))>; GROUND_SLOTS],
++}
++
++impl GroundCache {
++    fn lookup(&self, key: StateKey) -> Option<(bool, bool)> {
++        match self.slots[key.slot() & (GROUND_SLOTS - 1)] {
++            Some((cached, answers)) if cached == key => Some(answers),
++            _ => None,
++        }
++    }
++
++    fn store(&mut self, key: StateKey, answers: (bool, bool)) {
++        self.slots[key.slot() & (GROUND_SLOTS - 1)] = Some((key, answers));
++    }
+ }
+-- 
+2.43.0
+
