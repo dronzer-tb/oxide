@@ -52,6 +52,7 @@ public final class OxideNative implements AutoCloseable {
     private final MethodHandle hDefaultFluidName;
     private final MethodHandle hGenerateChunk;
     private final MethodHandle hPackSections;
+    private final MethodHandle hTakeChunkExtras;
     private final MethodHandle hBlockPaletteLen;
     private final MethodHandle hBlockPaletteName;
     private final MethodHandle hBiomePaletteLen;
@@ -85,6 +86,9 @@ public final class OxideNative implements AutoCloseable {
         this.hPackSections = downcall(lookup, "oxide_pack_sections", FunctionDescriptor.of(
                 ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
                 ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.hTakeChunkExtras = downcall(lookup, "oxide_take_chunk_extras", FunctionDescriptor.of(
+                ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+                ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
         this.hBlockPaletteLen = downcall(lookup, "oxide_block_palette_len",
                 FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
         this.hBlockPaletteName = downcall(lookup, "oxide_block_palette_name", FunctionDescriptor.of(
@@ -191,6 +195,35 @@ public final class OxideNative implements AutoCloseable {
                         "oxide_pack_sections failed (code " + sections + "): " + lastError());
             }
             return (int) sections;
+        }
+
+        /**
+         * What native decoration left in this chunk besides blocks -- block entities, scheduled
+         * ticks, post-processing marks -- as {@code oxide_take_chunk_extras} lines. Must be called
+         * on the thread that just generated the chunk. Empty with decoration off.
+         */
+        public String takeChunkExtras(int chunkX, int chunkZ) {
+            long cap = 4096;
+            while (true) {
+                try (Arena scratch = Arena.ofConfined()) {
+                    MemorySegment out = scratch.allocate(cap);
+                    long needed;
+                    try {
+                        needed = (long) hTakeChunkExtras.invokeExact(ptr, chunkX, chunkZ, out, cap);
+                    } catch (Throwable t) {
+                        throw new RuntimeException("oxide_take_chunk_extras threw across the FFI boundary", t);
+                    }
+                    if (needed < 0) {
+                        throw new IllegalStateException(
+                                "oxide_take_chunk_extras failed (code " + needed + "): " + lastError());
+                    }
+                    if (needed <= cap) {
+                        return new String(out.asSlice(0, needed).toArray(ValueLayout.JAVA_BYTE),
+                                java.nio.charset.StandardCharsets.UTF_8);
+                    }
+                    cap = needed;
+                }
+            }
         }
 
         /** Number of block-state strings interned so far. Grows as generation meets new states. */

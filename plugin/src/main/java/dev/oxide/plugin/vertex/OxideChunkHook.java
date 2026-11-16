@@ -102,7 +102,33 @@ final class OxideChunkHook implements ChunkGenerationHook {
             }
             target.setBiomes(biomePalette(handle), biomes.toArray(ValueLayout.JAVA_SHORT));
         }
+        if (service.nativeDecoration()) {
+            applyExtras(handle.takeChunkExtras(request.chunkX(), request.chunkZ()), target);
+        }
         return HookResult.success();
+    }
+
+    /**
+     * Hands over what decoration left besides blocks; see {@code oxide_take_chunk_extras} for the
+     * line format. Called on the generating thread, right after {@code generateChunk}.
+     */
+    private static void applyExtras(String extras, ChunkTarget target) {
+        for (String line : extras.split("\n")) {
+            if (line.isEmpty()) {
+                continue;
+            }
+            String[] f = line.split(" ", 5);
+            int x = Integer.parseInt(f[1]);
+            int y = Integer.parseInt(f[2]);
+            int z = Integer.parseInt(f[3]);
+            switch (f[0]) {
+                case "be" -> target.addBlockEntity(f[4]);
+                case "ft" -> target.scheduleFluidTick(x, y, z, f[4]);
+                case "bt" -> target.scheduleBlockTick(x, y, z, f[4]);
+                case "pp" -> target.markForPostProcessing(x, y, z);
+                default -> throw new IllegalStateException("unknown chunk extra: " + line);
+            }
+        }
     }
 
     /**

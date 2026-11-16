@@ -48,7 +48,14 @@ public final class OxideVertexModule implements VertexModule {
         // runs createBiomes and recomputes every climate sample -- 37% of generation time on a
         // heavy datapack, and unavoidable on the Bukkit path because CraftBukkit's
         // CustomWorldChunkManager samples the vanilla router before consulting any provider.
-        context.registerChunkGeneration(new OxideChunkHook(this.service, logger),
-                EnumSet.of(ChunkStage.BIOMES, ChunkStage.SURFACE, ChunkStage.CARVERS));
+        //
+        // FEATURES only with native-decoration on: the generated chunk then already carries its
+        // features, and the hook hands over their block entities, ticks and post-processing
+        // marks too. The server still places structures.
+        EnumSet<ChunkStage> stages = EnumSet.of(ChunkStage.BIOMES, ChunkStage.SURFACE, ChunkStage.CARVERS);
+        if (this.service.nativeDecoration()) {
+            stages.add(ChunkStage.FEATURES);
+        }
+        context.registerChunkGeneration(new OxideChunkHook(this.service, logger), stages);
     }
 }
