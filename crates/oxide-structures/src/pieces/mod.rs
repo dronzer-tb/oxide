@@ -15,6 +15,7 @@
 
 pub mod igloo;
 pub mod mineshaft;
+pub mod shipwreck;
 pub mod template_piece;
 
 use std::fmt::Debug;

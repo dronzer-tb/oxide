@@ -10,10 +10,10 @@ use oxide_chunkgen::decorator::{
     BoundingBox as Bounds, PlaceSettings, Processor, Template, TemplateWorld,
 };
 use oxide_core::rotation::{transform, Mirror, Rotation};
-use oxide_core::{BlockPos, BlockState, RandomSource, ResourceLocation};
+use oxide_core::{BlockPos, BlockState, HeightmapType, RandomSource, ResourceLocation};
 use oxide_datapack::{BlockFacts, Datapack, TagSet};
 
-use super::PieceWorld;
+use super::{GenerationContext, PieceWorld};
 use crate::BoundingBox;
 
 /// `StructureTemplateManager.getOrCreate`: a missing template is an empty one.
@@ -72,6 +72,59 @@ pub trait BaseColumns: Sync {
     fn block(&self, x: i32, y: i32, z: i32) -> BlockState;
     /// `Biome.coldEnoughToSnow(pos, seaLevel)` for the noise biome at `pos`.
     fn cold_enough_to_snow(&self, pos: BlockPos) -> bool;
+}
+
+/// `ChunkGenerator.getFirstOccupiedHeight`.
+pub(crate) fn first_occupied(
+    ctx: &GenerationContext<'_>,
+    x: i32,
+    z: i32,
+    kind: HeightmapType,
+) -> i32 {
+    ctx.terrain.base_height(x, z, kind) - 1
+}
+
+/// `Structure.getCornerHeights(context, minX, sizeX, minZ, sizeZ)`, in its order.
+fn corner_heights(
+    ctx: &GenerationContext<'_>,
+    min_x: i32,
+    size_x: i32,
+    min_z: i32,
+    size_z: i32,
+) -> [i32; 4] {
+    let at = |x, z| first_occupied(ctx, x, z, HeightmapType::WorldSurfaceWg);
+    [
+        at(min_x, min_z),
+        at(min_x, min_z + size_z),
+        at(min_x + size_x, min_z),
+        at(min_x + size_x, min_z + size_z),
+    ]
+}
+
+/// `Structure.getLowestY(context, minX, minZ, sizeX, sizeZ)`.
+pub(crate) fn lowest_y(
+    ctx: &GenerationContext<'_>,
+    min_x: i32,
+    min_z: i32,
+    size_x: i32,
+    size_z: i32,
+) -> i32 {
+    let corners = corner_heights(ctx, min_x, size_x, min_z, size_z);
+    corners[0].min(corners[1]).min(corners[2].min(corners[3]))
+}
+
+/// `Structure.getMeanFirstOccupiedHeight(context, minX, sizeX, minZ, sizeZ)`.
+pub(crate) fn mean_first_occupied_height(
+    ctx: &GenerationContext<'_>,
+    min_x: i32,
+    size_x: i32,
+    min_z: i32,
+    size_z: i32,
+) -> i32 {
+    corner_heights(ctx, min_x, size_x, min_z, size_z)
+        .iter()
+        .sum::<i32>()
+        / 4
 }
 
 /// A template, where it goes, and how.
