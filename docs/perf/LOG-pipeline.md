@@ -2097,3 +2097,29 @@ That is the third 1-thread hold with PGO ahead (-6.5%, -6.8%, now -5.2% for the 
 1-thread gain is firm. Training on r16 instead of r8 is within noise (-1.8% at 1 thread, +3% median at
 8 threads, order-dependent), so the default stays r8, which builds faster. pipeline-pg16 is deleted;
 pipeline-pg stays for the user's PGO decision.
+
+### PGO at 8 threads on a quieter box: about +5%, but split by order
+
+Load average was 0.1 before starting. Plain pipeline-d1 vs pipeline-pg (r8 PGO), r16, 8 threads, 6
+ABBA rounds per hold, both orders. Digest df701ee858e2bdd3 on every row; java_cpu_s_per_10s <= 0.57.
+
+| hold | d1 plain: cps mean / median | pg PGO: cps mean / median | pg ahead | cpu_user_s d1 / pg |
+|---|---|---|---|---|
+| #1 (d1 first) | 328.6 / 344.5 | 369.9 / 382.5 | 5/6 | 25.14 / 22.34 |
+| #2 (pg first) | 371.7 / 395.9 | 371.3 / 364.1 | 2/6 | 22.62 / 21.94 |
+| both | 350.2 / 353.3 | 370.6 / 371.4 (**+5.8% / +5.1%**) | 7/12 | 23.88 / 22.14 (-7.3%) |
+
+Most rounds ran at 350-414 cps, the normal range, but plain d1 had two slow rounds (263, 286 cps, user
+28-29 s) in hold #1 and one in hold #2 (272). Hold #2 has PGO behind on median, so this is not a clean
+result either.
+
+All 8-thread PGO holds so far:
+- +7.2% median over two holds (first measurement).
+- Level on a badly loaded box.
+- +5.1% median here.
+
+The user CPU column is less sensitive to wall-clock disturbances, and it is 3-11% lower under PGO in
+both holds. **Best estimate: PGO is worth about +5% at 8 threads and -6% at 1 thread (firm over three
+holds), byte exact.** Every hold at 8 threads straddles the box's noise, so the 8-thread figure is a
+range rather than a single number. Adoption for release builds and the headline is still the user's
+call; pipeline-pg remains on the box for it.
