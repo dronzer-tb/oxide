@@ -16,8 +16,7 @@
 use std::fs::{self, OpenOptions};
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
-use std::thread;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
@@ -130,19 +129,12 @@ fn main() -> Result<()> {
         region_dir.display()
     );
 
-    // Generation fills every core; writing a finished region overlaps with the next one.
-    let (send, receive) = mpsc::sync_channel::<(PathBuf, Vec<(ChunkPos, Vec<u8>)>)>(2);
-    let writer = thread::spawn(move || -> Result<()> {
-        for (path, chunks) in receive {
-            region::write_compressed_region(&path, &chunks)
-                .with_context(|| format!("writing {}", path.display()))?;
-        }
-        Ok(())
-    });
-
+    // Regions run in parallel and so do the chunks inside each, all on one rayon pool: no core
+    // waits at a region boundary, which with one region at a time cost a third of the rate.
+    // Whichever thread finishes a region writes it; regions are separate files.
     let start = Instant::now();
-    let mut done = 0u64;
-    for (rx, rz) in regions {
+    let done = AtomicU64::new(0);
+    regions.par_iter().try_for_each(|&(rx, rz)| -> Result<()> {
         let positions: Vec<ChunkPos> = (0..32 * 32)
             .map(|i| ChunkPos::new(rx * 32 + i % 32, rz * 32 + i / 32))
             .filter(|p| (x0..=x1).contains(&p.x) && (z0..=z1).contains(&p.z))
@@ -158,18 +150,15 @@ fn main() -> Result<()> {
                 ))
             })
             .collect::<Result<Vec<_>>>()?;
-        done += chunks.len() as u64;
-        if send
-            .send((region_dir.join(format!("r.{rx}.{rz}.mca")), chunks))
-            .is_err()
-        {
-            break; // the writer failed; its error is reported below
-        }
+        let path = region_dir.join(format!("r.{rx}.{rz}.mca"));
+        region::write_compressed_region(&path, &chunks)
+            .with_context(|| format!("writing {}", path.display()))?;
+        let n = done.fetch_add(chunks.len() as u64, Ordering::Relaxed) + chunks.len() as u64;
         let secs = start.elapsed().as_secs_f64();
-        println!("{done}/{total} chunks, {:.0} cps", done as f64 / secs);
-    }
-    drop(send);
-    writer.join().expect("writer thread panicked")?;
+        println!("{n}/{total} chunks, {:.0} cps", n as f64 / secs);
+        Ok(())
+    })?;
+    let done = done.into_inner();
 
     let secs = start.elapsed().as_secs_f64();
     println!(

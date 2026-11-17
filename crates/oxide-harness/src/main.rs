@@ -198,7 +198,7 @@ fn main() -> Result<()> {
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
-    let configured: Vec<oxide_datapack::ConfiguredCarver> = carver_ids
+    let configured: std::sync::Arc<[oxide_datapack::ConfiguredCarver]> = carver_ids
         .iter()
         .filter_map(|id| datapack.configured_carvers.get(id).cloned())
         .collect();

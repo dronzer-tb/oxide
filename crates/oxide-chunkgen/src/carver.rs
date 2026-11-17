@@ -107,7 +107,7 @@ pub fn apply_carvers(
     chunk: &mut ChunkData,
     pos: ChunkPos,
     world: &CarverWorld,
-    carvers_at: &dyn Fn(ChunkPos) -> Vec<ConfiguredCarver>,
+    carvers_at: &dyn Fn(ChunkPos) -> std::sync::Arc<[ConfiguredCarver]>,
     mut aquifer: Option<&mut crate::aquifer::Aquifer>,
 ) {
     let mut mask = CarvingMask::new(world.min_y(), world.height());

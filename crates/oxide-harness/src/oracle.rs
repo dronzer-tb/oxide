@@ -164,7 +164,7 @@ struct Oxide {
     router: NoiseRouterEvaluator,
     biome_tree: Option<BiomeSearchTree>,
     biome_temperatures: BiomeTemperatures,
-    biome_carvers: HashMap<ResourceLocation, Vec<oxide_datapack::ConfiguredCarver>>,
+    biome_carvers: HashMap<ResourceLocation, std::sync::Arc<[oxide_datapack::ConfiguredCarver]>>,
     seed: i64,
     decorator: BiomeDecorator,
     /// Per step, per global index: every placed-feature id with that content.
@@ -247,9 +247,9 @@ impl Oxide {
     }
 
     fn terrain(&self, pos: ChunkPos) -> ChunkData {
-        let carvers_at = |source: ChunkPos| -> Vec<oxide_datapack::ConfiguredCarver> {
+        let carvers_at = |source: ChunkPos| -> std::sync::Arc<[oxide_datapack::ConfiguredCarver]> {
             let Some(tree) = self.biome_tree.as_ref() else {
-                return Vec::new();
+                return std::sync::Arc::from([]);
             };
             let sample = oxide_biome::ClimateSample::sample(
                 &self.router,
@@ -258,8 +258,12 @@ impl Oxide {
                 source.min_block_z(),
             );
             match tree.nearest(sample) {
-                Some(biome) => self.biome_carvers.get(biome).cloned().unwrap_or_default(),
-                None => Vec::new(),
+                Some(biome) => self
+                    .biome_carvers
+                    .get(biome)
+                    .cloned()
+                    .unwrap_or_else(|| std::sync::Arc::from([])),
+                None => std::sync::Arc::from([]),
             }
         };
         let setup = CarverSetup {

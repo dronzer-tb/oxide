@@ -88,7 +88,8 @@ pub struct CarverSetup<'a> {
     /// `Sync` so a caller can generate several chunks at once off one setup -- which is how
     /// Folia drives this, one region per thread. Nothing in generation mutates shared state:
     /// the caches and the aquifer are built per chunk inside [`generate_chunk`].
-    pub carvers_at: &'a (dyn Fn(ChunkPos) -> Vec<oxide_datapack::ConfiguredCarver> + Sync),
+    pub carvers_at:
+        &'a (dyn Fn(ChunkPos) -> std::sync::Arc<[oxide_datapack::ConfiguredCarver]> + Sync),
 }
 
 /// Generation must be usable from several threads at once against one shared router and one
