@@ -950,7 +950,7 @@ fn lerp_cell_fixed<const CW: usize>(c: [f64; 8], iw: f64, ih: f64, dst: &mut [f6
         let dy = ly as f64 * ih;
         let y0: [f64; CW] = std::array::from_fn(|lx| lerp(dy, x00[lx], x10[lx]));
         let y1: [f64; CW] = std::array::from_fn(|lx| lerp(dy, x01[lx], x11[lx]));
-        for (lz, row) in layer.chunks_exact_mut(CW).enumerate() {
+        for (lz, row) in layer.as_chunks_mut::<CW>().0.iter_mut().enumerate() {
             // `dz` for row `lz` is the same product `dx` is for lane `lz`.
             let dz = d[lz];
             for lx in 0..CW {
