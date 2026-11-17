@@ -1,213 +1,212 @@
-//! oxide-pregen — v0 smoke test for the Oxide write path.
+//! oxide-pregen: generates a square of chunks with Oxide and writes them straight into a world's
+//! region files, with the server stopped. No server pipeline, so it runs at Oxide's own speed.
 //!
-//! This does **not** generate real terrain: `oxide-noise`, `oxide-biome`, and `oxide-chunkgen`
-//! are still empty stubs (see `docs/ARCHITECTURE.md`). What's under test here is everything
-//! downstream of generation — chunk NBT correctness, `.mca` region writing without corruption,
-//! provenance sidecar marking, and whether a real client/server loads what Oxide wrote. Terrain
-//! comes from `oxide_pregen::stub`, a deliberately fake, deliberately non-vanilla generator
-//! chosen specifically to make the Oxide/Java boundary visible from the air. Do not mistake this
-//! output for parity work, and do not add real generation logic here — that belongs upstream.
+//! What a pregenerated chunk holds, and what the server still does when it first loads one:
+//!
+//! - Default: terrain, biomes and heightmaps, saved at status `carvers`. The server places
+//!   features and lights the chunk on first load, as it would for any half-generated chunk.
+//! - `--decorate`: also Oxide's native decoration, with its block entities, scheduled ticks and
+//!   post-processing marks, saved at status `features`. The server only lights it.
+//!
+//! **No structures** either way. The server places structures before terrain, so a chunk saved
+//! past that point never gets them, and Oxide's own structure placement is not yet at parity.
+//! Pregenerate only where villages, strongholds and the like don't matter, or regenerate those
+//! areas on the server.
 
-use std::collections::BTreeMap;
-use std::fs;
-use std::path::PathBuf;
+use std::fs::{self, OpenOptions};
+use std::os::fd::AsRawFd;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::thread;
+use std::time::Instant;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::Parser;
 use rayon::prelude::*;
 
-use oxide_anvil::{nbt, provenance, region};
+use oxide_anvil::nbt::ChunkNbtWriteOptions;
+use oxide_anvil::region;
 use oxide_core::ChunkPos;
+use oxide_ffi::OxideGeneratorHandle;
 
-use oxide_pregen::stub::{self, Pattern};
-
-/// Write stub (deliberately non-vanilla) terrain chunks into an Anvil region directory.
-///
-/// This is the v0 smoke test for chunk NBT + `.mca` writing + provenance — NOT a terrain
-/// generator. Real generation is unimplemented upstream (`oxide-noise`/`-biome`/`-chunkgen` are
-/// still empty stubs); see `docs/ARCHITECTURE.md`.
 #[derive(Parser, Debug)]
-#[command(name = "oxide-pregen", version, about, long_about = None)]
+#[command(
+    name = "oxide-pregen",
+    version,
+    about = "Pregenerate a world offline with Oxide (no structures; see the crate docs)"
+)]
 struct Cli {
-    /// World directory. Chunks are written into <world>/region/.
+    /// World directory (holds session.lock and dimensions/).
     #[arg(long)]
     world: PathBuf,
-
-    /// Center chunk X coordinate.
-    #[arg(long, allow_hyphen_values = true)]
-    center_x: i32,
-
-    /// Center chunk Z coordinate.
-    #[arg(long, allow_hyphen_values = true)]
-    center_z: i32,
-
-    /// Radius in chunks around the center (inclusive square: side length is 2*radius + 1).
+    /// Datapack directory Oxide reads worldgen from (the server's exported data).
     #[arg(long)]
-    radius: u32,
-
-    /// Chunk-format DataVersion to stamp on every chunk written.
-    ///
-    /// REQUIRED, no default. Per docs/ARCHITECTURE.md, a Minecraft 26.2 DataVersion is never
-    /// hardcoded from memory. Read the real value from your own server's exported data: run its
-    /// data generator with `--reports` and take the integer out of
-    /// `generated/reports/version.json` — see docs/REFERENCE_DATA.md for the exact command. Do
-    /// not guess this number.
+    datapack: PathBuf,
+    #[arg(long, allow_hyphen_values = true)]
+    seed: i64,
+    #[arg(long, default_value = "minecraft:overworld")]
+    dimension: String,
+    /// Center, in chunk coordinates.
+    #[arg(long, allow_hyphen_values = true, default_value_t = 0)]
+    center_x: i32,
+    #[arg(long, allow_hyphen_values = true, default_value_t = 0)]
+    center_z: i32,
+    /// Radius in chunks: a square of side 2*radius+1.
+    #[arg(long)]
+    radius: i32,
+    /// DataVersion to stamp on every chunk; the server's own, from its version.json.
     #[arg(long)]
     data_version: i32,
-
-    /// Report what would be written without touching any files.
+    /// Also run Oxide's native decoration (slower; status `features`).
     #[arg(long)]
-    dry_run: bool,
-
-    /// Stub terrain pattern.
-    #[arg(long, value_enum, default_value = "checkerboard")]
-    pattern: Pattern,
+    decorate: bool,
+    /// Replace region files that already exist. Without it the run refuses to start.
+    #[arg(long)]
+    overwrite: bool,
+    /// Worker threads (default: all cores).
+    #[arg(long)]
+    threads: Option<usize>,
 }
-
-/// Every chunk position in the inclusive square of `radius` chunks around `(center_x, center_z)`.
-fn chunk_positions(center_x: i32, center_z: i32, radius: i32) -> Result<Vec<ChunkPos>> {
-    let x_lo = center_x
-        .checked_sub(radius)
-        .context("center-x - radius overflowed i32")?;
-    let x_hi = center_x
-        .checked_add(radius)
-        .context("center-x + radius overflowed i32")?;
-    let z_lo = center_z
-        .checked_sub(radius)
-        .context("center-z - radius overflowed i32")?;
-    let z_hi = center_z
-        .checked_add(radius)
-        .context("center-z + radius overflowed i32")?;
-
-    let mut positions = Vec::new();
-    for x in x_lo..=x_hi {
-        for z in z_lo..=z_hi {
-            positions.push(ChunkPos::new(x, z));
-        }
-    }
-    Ok(positions)
-}
-
-struct RegionReport {
-    path: PathBuf,
-    chunks_written: usize,
-    sidecar_bits_set: u32,
-    file_bytes: u64,
-}
-
-/// One region's worth of already-serialized chunks, keyed by region coordinates.
-type ChunksByRegion = BTreeMap<(i32, i32), Vec<(ChunkPos, Vec<u8>)>>;
 
 fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
-
     let cli = Cli::parse();
-    let radius = i32::try_from(cli.radius).context("--radius does not fit in i32")?;
-    let positions = chunk_positions(cli.center_x, cli.center_z, radius)?;
-
-    let mut regions_planned: BTreeMap<(i32, i32), usize> = BTreeMap::new();
-    for &pos in &positions {
-        *regions_planned
-            .entry(region::region_coords_for(&pos))
-            .or_default() += 1;
+    if let Some(threads) = cli.threads {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build_global()?;
     }
+    refuse_if_running(&cli.world)?;
 
-    if cli.dry_run {
-        for (rx, rz) in regions_planned.keys() {
-            let path = cli.world.join("region").join(format!("r.{rx}.{rz}.mca"));
-            println!("[dry-run] would touch {}", path.display());
-        }
-        println!(
-            "[dry-run] {} chunk(s) across {} region file(s); pattern={:?}, data-version={}; nothing written.",
-            positions.len(),
-            regions_planned.len(),
-            cli.pattern,
-            cli.data_version
-        );
-        return Ok(());
-    }
-
-    let region_dir = cli.world.join("region");
+    let (namespace, path) = cli
+        .dimension
+        .split_once(':')
+        .unwrap_or(("minecraft", &cli.dimension));
+    let region_dir = cli
+        .world
+        .join("dimensions")
+        .join(namespace)
+        .join(path)
+        .join("region");
     fs::create_dir_all(&region_dir)
-        .with_context(|| format!("creating region directory {}", region_dir.display()))?;
+        .with_context(|| format!("creating {}", region_dir.display()))?;
 
-    let write_opts = nbt::ChunkNbtWriteOptions {
+    let r = cli.radius;
+    let (x0, x1) = (cli.center_x - r, cli.center_x + r);
+    let (z0, z1) = (cli.center_z - r, cli.center_z + r);
+    let mut regions: Vec<(i32, i32)> = Vec::new();
+    for rz in z0.div_euclid(32)..=z1.div_euclid(32) {
+        for rx in x0.div_euclid(32)..=x1.div_euclid(32) {
+            regions.push((rx, rz));
+        }
+    }
+    if !cli.overwrite {
+        let existing: Vec<_> = regions
+            .iter()
+            .map(|(rx, rz)| region_dir.join(format!("r.{rx}.{rz}.mca")))
+            .filter(|p| p.exists())
+            .collect();
+        if !existing.is_empty() {
+            bail!(
+                "{} region file(s) already exist, e.g. {}; pass --overwrite to replace them",
+                existing.len(),
+                existing[0].display()
+            );
+        }
+    }
+
+    let generator = OxideGeneratorHandle::open(&cli.datapack, &cli.dimension, cli.seed)?;
+    if cli.decorate && !generator.set_decoration(true)? {
+        bail!("native decoration is unavailable for {}", cli.dimension);
+    }
+    let opts = ChunkNbtWriteOptions {
         data_version: cli.data_version,
         last_update: 0,
         inhabited_time: 0,
     };
-
-    // Build + serialize every chunk in parallel. The actual region-file write happens below, one
-    // region at a time, each region's chunks written in sequence within its own task, so
-    // `RegionGuard` is never contended against itself for the same file.
-    let built: Vec<(ChunkPos, Vec<u8>)> = positions
-        .par_iter()
-        .map(|&pos| -> Result<(ChunkPos, Vec<u8>)> {
-            let chunk = stub::build_chunk(pos, cli.pattern);
-            let bytes = nbt::serialize_chunk(&chunk, &write_opts)
-                .with_context(|| format!("serializing chunk {pos:?}"))?;
-            Ok((pos, bytes))
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    let mut by_region: ChunksByRegion = BTreeMap::new();
-    for (pos, bytes) in built {
-        by_region
-            .entry(region::region_coords_for(&pos))
-            .or_default()
-            .push((pos, bytes));
-    }
-
-    let reports: Vec<RegionReport> = by_region
-        .into_par_iter()
-        .map(|((rx, rz), chunks)| -> Result<RegionReport> {
-            let path = region_dir.join(format!("r.{rx}.{rz}.mca"));
-            for (pos, bytes) in &chunks {
-                region::update_chunk_in_place(&path, pos, bytes)
-                    .with_context(|| format!("writing chunk {pos:?} into {}", path.display()))?;
-            }
-
-            let sidecar_path = provenance::sidecar_path_for(&path);
-            let sidecar_bits_set = provenance::load(&sidecar_path)
-                .with_context(|| format!("reading provenance sidecar {}", sidecar_path.display()))?
-                .count_set();
-            let file_bytes = fs::metadata(&path)
-                .with_context(|| format!("stat-ing {}", path.display()))?
-                .len();
-
-            tracing::info!(
-                region = %path.display(),
-                chunks_written = chunks.len(),
-                sidecar_bits_set,
-                file_bytes,
-                "region written"
-            );
-
-            Ok(RegionReport {
-                path,
-                chunks_written: chunks.len(),
-                sidecar_bits_set,
-                file_bytes,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    println!("\noxide-pregen: {} region file(s) touched:", reports.len());
-    for r in &reports {
-        println!(
-            "  {} — {} chunk(s), {} provenance bit(s) set, {} bytes",
-            r.path.display(),
-            r.chunks_written,
-            r.sidecar_bits_set,
-            r.file_bytes
-        );
-    }
+    let total = ((2 * r + 1) as u64).pow(2);
     println!(
-        "\nThis is stub terrain (see src/stub.rs) — not generated output. oxide-noise, \
-         oxide-biome, and oxide-chunkgen are still empty stubs. DataVersion {} was supplied by \
-         you on the command line and has NOT been validated against a real server.",
-        cli.data_version
+        "oxide-pregen: {total} chunks in {} regions -> {}",
+        regions.len(),
+        region_dir.display()
     );
 
+    // Generation fills every core; writing a finished region overlaps with the next one.
+    let (send, receive) = mpsc::sync_channel::<(PathBuf, Vec<(ChunkPos, Vec<u8>)>)>(2);
+    let writer = thread::spawn(move || -> Result<()> {
+        for (path, chunks) in receive {
+            region::write_compressed_region(&path, &chunks)
+                .with_context(|| format!("writing {}", path.display()))?;
+        }
+        Ok(())
+    });
+
+    let start = Instant::now();
+    let mut done = 0u64;
+    for (rx, rz) in regions {
+        let positions: Vec<ChunkPos> = (0..32 * 32)
+            .map(|i| ChunkPos::new(rx * 32 + i % 32, rz * 32 + i / 32))
+            .filter(|p| (x0..=x1).contains(&p.x) && (z0..=z1).contains(&p.z))
+            .collect();
+        let chunks = positions
+            .par_iter()
+            .map(|&pos| {
+                let (chunk, extras) = generator.chunk_data(pos.x, pos.z);
+                Ok((
+                    pos,
+                    oxide_pregen::chunk_bytes(&chunk, &extras, &opts)
+                        .with_context(|| format!("chunk {pos:?}"))?,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        done += chunks.len() as u64;
+        if send
+            .send((region_dir.join(format!("r.{rx}.{rz}.mca")), chunks))
+            .is_err()
+        {
+            break; // the writer failed; its error is reported below
+        }
+        let secs = start.elapsed().as_secs_f64();
+        println!("{done}/{total} chunks, {:.0} cps", done as f64 / secs);
+    }
+    drop(send);
+    writer.join().expect("writer thread panicked")?;
+
+    let secs = start.elapsed().as_secs_f64();
+    println!(
+        "done: {done} chunks in {secs:.1} s, {:.0} cps",
+        done as f64 / secs
+    );
+    Ok(())
+}
+
+/// The server holds a POSIX lock on `session.lock` while the world is open; writing region files
+/// under it would be overwritten or corrupt the save.
+fn refuse_if_running(world: &Path) -> Result<()> {
+    let lock = world.join("session.lock");
+    let Ok(file) = OpenOptions::new().read(true).write(true).open(&lock) else {
+        return Ok(()); // a world the server never opened
+    };
+    let mut probe = libc::flock {
+        l_type: libc::F_WRLCK as _,
+        l_whence: libc::SEEK_SET as _,
+        l_start: 0,
+        l_len: 0,
+        l_pid: 0,
+    };
+    // SAFETY: F_GETLK only fills `probe`; the descriptor is open for the call's duration.
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETLK, &mut probe) } != 0 {
+        bail!(
+            "could not check {}: {}",
+            lock.display(),
+            std::io::Error::last_os_error()
+        );
+    }
+    if probe.l_type != libc::F_UNLCK as libc::c_short {
+        bail!(
+            "{} is locked by pid {}: stop the server first",
+            lock.display(),
+            probe.l_pid
+        );
+    }
     Ok(())
 }

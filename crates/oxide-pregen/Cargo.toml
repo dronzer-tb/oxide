@@ -7,8 +7,10 @@ license.workspace = true
 [dependencies]
 oxide-core.workspace = true
 oxide-anvil.workspace = true
+oxide-chunkgen.workspace = true
+oxide-ffi = { path = "../oxide-ffi" }
+fastnbt.workspace = true
 clap.workspace = true
 anyhow.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
 rayon.workspace = true
+libc = "0.2"

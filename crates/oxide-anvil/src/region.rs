@@ -215,3 +215,101 @@ pub fn read_chunk_nbt(
         None => Ok(None),
     }
 }
+
+/// Zlib-compresses uncompressed chunk NBT at the fast level, as a region stores it (scheme 2).
+/// Separate from [`write_compressed_region`] so callers can compress chunks in parallel.
+pub fn compress_chunk(nbt_bytes: &[u8]) -> Result<Vec<u8>, AnvilError> {
+    use flate2::{write::ZlibEncoder, Compression};
+    let mut encoder =
+        ZlibEncoder::new(Vec::with_capacity(nbt_bytes.len() / 4), Compression::fast());
+    encoder.write_all(nbt_bytes)?;
+    Ok(encoder.finish()?)
+}
+
+/// Writes a brand-new region from already-compressed chunks (see [`compress_chunk`]) in one
+/// pass: header, timestamps and sectors built in memory, one atomic write, one provenance store.
+///
+/// For a region nothing else owns. Like [`write_region_file`] it replaces whatever is at `path`.
+/// The difference is cost: that one recompresses serially and rewrites the sidecar once per
+/// chunk, which at pregen rates is most of the time spent.
+pub fn write_compressed_region(
+    path: &Path,
+    chunks: &[(ChunkPos, Vec<u8>)],
+) -> Result<(), AnvilError> {
+    const SECTOR: usize = 4096;
+    let _guard = RegionGuard::acquire(path)?;
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as u32;
+    let body: usize = chunks
+        .iter()
+        .map(|(_, data)| (data.len() + 5).div_ceil(SECTOR) * SECTOR)
+        .sum();
+    let mut bytes = vec![0u8; 2 * SECTOR];
+    bytes.reserve(body);
+
+    for (pos, data) in chunks {
+        let (x, z) = local_coords(pos);
+        let slot = 4 * (x + z * 32);
+        let sector = bytes.len() / SECTOR;
+        let count = (data.len() + 5).div_ceil(SECTOR);
+        if count > 255 {
+            // Vanilla moves chunks this large to a .mcc file; a generated chunk never gets near.
+            return Err(AnvilError::Io(std::io::Error::other(format!(
+                "chunk {pos:?} compresses to {} bytes, over the 1 MiB a region slot holds",
+                data.len()
+            ))));
+        }
+        bytes[slot..slot + 4]
+            .copy_from_slice(&(((sector as u32) << 8) | count as u32).to_be_bytes());
+        bytes[SECTOR + slot..SECTOR + slot + 4].copy_from_slice(&now.to_be_bytes());
+        bytes.extend_from_slice(&((data.len() + 1) as u32).to_be_bytes());
+        bytes.push(2);
+        bytes.extend_from_slice(data);
+        bytes.resize(bytes.len().div_ceil(SECTOR) * SECTOR, 0);
+    }
+    atomic_write(path, &bytes)?;
+
+    let mut map = provenance::ProvenanceMap::new();
+    for (pos, _) in chunks {
+        map.set(*pos, true);
+    }
+    provenance::store(&provenance::sidecar_path_for(path), &map)
+}
+
+#[cfg(test)]
+mod compressed_region_tests {
+    use super::*;
+    use crate::test_support::scratch_dir;
+
+    #[test]
+    fn write_compressed_region_reads_back() {
+        let dir = scratch_dir("compressed-region");
+        let path = dir.join("r.-1.0.mca");
+        // Sizes on both sides of a sector boundary, and one spanning several sectors.
+        let chunks: Vec<(ChunkPos, Vec<u8>)> = [(-32, 0, 10), (-1, 31, 4091), (-17, 5, 9000)]
+            .iter()
+            .map(|&(x, z, n)| {
+                let nbt: Vec<u8> = (0..n).map(|i| (i * 7 % 251) as u8).collect();
+                (ChunkPos::new(x, z), nbt)
+            })
+            .collect();
+        let compressed: Vec<(ChunkPos, Vec<u8>)> = chunks
+            .iter()
+            .map(|(p, nbt)| (*p, compress_chunk(nbt).unwrap()))
+            .collect();
+        write_compressed_region(&path, &compressed).unwrap();
+        for (pos, nbt) in &chunks {
+            assert_eq!(read_chunk(&path, pos).unwrap().as_ref(), Some(nbt));
+        }
+        assert_eq!(read_chunk(&path, &ChunkPos::new(-2, 2)).unwrap(), None);
+        assert_eq!(
+            provenance::load(&provenance::sidecar_path_for(&path))
+                .unwrap()
+                .count_set(),
+            3
+        );
+    }
+}

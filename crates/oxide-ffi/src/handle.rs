@@ -342,15 +342,12 @@ impl OxideGenerator {
         }
     }
 
-    pub fn generate_chunk(
-        &self,
-        chunk_x: i32,
-        chunk_z: i32,
-        out_blocks: &mut [u16],
-        out_biomes: &mut [u16],
-    ) -> Result<()> {
+    /// One chunk as `ChunkData` plus what decoration left besides blocks, for callers in Rust
+    /// that write chunks themselves (the offline pregen) and have no use for the flat arrays.
+    /// Terrain only, status `carvers`, unless decoration is on.
+    pub fn chunk_data(&self, chunk_x: i32, chunk_z: i32) -> (ChunkData, ChunkExtras) {
         let pos = ChunkPos::new(chunk_x, chunk_z);
-        let (chunk, extras) = match &self.decoration {
+        match &self.decoration {
             Ok(decoration) if self.decorate.load(Ordering::Acquire) => decorated_chunk_with_extras(
                 pos,
                 &|at| self.terrain(at),
@@ -359,7 +356,18 @@ impl OxideGenerator {
                 &decoration.cache,
             ),
             _ => (self.terrain(pos), ChunkExtras::default()),
-        };
+        }
+    }
+
+    pub fn generate_chunk(
+        &self,
+        chunk_x: i32,
+        chunk_z: i32,
+        out_blocks: &mut [u16],
+        out_biomes: &mut [u16],
+    ) -> Result<()> {
+        let pos = ChunkPos::new(chunk_x, chunk_z);
+        let (chunk, extras) = self.chunk_data(chunk_x, chunk_z);
         LAST_EXTRAS.with(|slot| *slot.borrow_mut() = Some((self.id, pos, extras_text(&extras))));
         self.write_out(&chunk, out_blocks, out_biomes)
     }
