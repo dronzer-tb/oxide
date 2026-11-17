@@ -12,7 +12,10 @@ use std::path::Path;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let path = Path::new(args.get(1).expect("usage: region_digest <region.mca> [x z]"));
+    let path = Path::new(
+        args.get(1)
+            .expect("usage: region_digest <region.mca> [x z]"),
+    );
     let read = |pos: oxide_core::ChunkPos| -> Option<String> {
         let bytes = oxide_anvil::region::read_chunk(path, &pos).unwrap()?;
         let value: fastnbt::Value = fastnbt::from_bytes(&bytes).unwrap();
@@ -26,7 +29,12 @@ fn main() {
         return;
     }
     let name = path.file_name().unwrap().to_string_lossy().to_string();
-    let parts: Vec<i32> = name.split('.').skip(1).take(2).map(|n| n.parse().unwrap()).collect();
+    let parts: Vec<i32> = name
+        .split('.')
+        .skip(1)
+        .take(2)
+        .map(|n| n.parse().unwrap())
+        .collect();
     for i in 0..1024 {
         let pos = oxide_core::ChunkPos::new(parts[0] * 32 + i % 32, parts[1] * 32 + i / 32);
         if let Some(text) = read(pos) {

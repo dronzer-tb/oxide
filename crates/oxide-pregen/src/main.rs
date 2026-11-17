@@ -191,7 +191,10 @@ fn main() -> Result<()> {
                     .map(|&p| one_chunk(p))
                     .collect::<Result<Vec<_>>>()?;
                 for chunk in finished {
-                    pending.entry(chunk.0.z.div_euclid(32)).or_default().push(chunk);
+                    pending
+                        .entry(chunk.0.z.div_euclid(32))
+                        .or_default()
+                        .push(chunk);
                 }
                 // A region is complete once the band has passed its last row.
                 let complete: Vec<i32> = pending

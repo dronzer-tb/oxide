@@ -26,10 +26,10 @@ use oxide_datapack::{
 };
 
 use crate::blended_noise::{BlendedNoise, BlendedNoiseParams};
-use crate::scratch::Scratch;
 use crate::cache::ChunkCaches;
 use crate::density::{clamped_lerp, lerp_f32, map_rarity, FunctionContext};
 use crate::normal_noise::NormalNoise;
+use crate::scratch::Scratch;
 
 /// A noise id that the `worldgen/noise` registry did not have. Sampling it yields 0.0, which is
 /// what the tree walker did for a missing entry.
@@ -503,7 +503,10 @@ impl Program {
                 Op::Squeeze(a) => format!("Squeeze(r{a})"),
                 Op::Clamp(c) => format!("Clamp(r{}, {}, {})", c.input, c.min, c.max),
                 Op::Spline(s) => {
-                    fn walk<'a>(s: &'a CompiledSpline, nested: &mut Vec<(&'static str, &'a Program)>) {
+                    fn walk<'a>(
+                        s: &'a CompiledSpline,
+                        nested: &mut Vec<(&'static str, &'a Program)>,
+                    ) {
                         nested.push(("coordinate", &s.coordinate));
                         for p in &s.points {
                             if let CompiledSplineValue::Spline(inner) = &p.value {
@@ -597,7 +600,11 @@ impl Program {
         let n = self.ops.len();
         // On the stack for every real program: this runs once per cell row of a chunk fill,
         // and three heap allocations per call were most of its cost.
-        let mut inline = ([0.0f64; INLINE_REGISTERS], [0.0f64; INLINE_REGISTERS], [false; INLINE_REGISTERS]);
+        let mut inline = (
+            [0.0f64; INLINE_REGISTERS],
+            [0.0f64; INLINE_REGISTERS],
+            [false; INLINE_REGISTERS],
+        );
         let mut spilled;
         let (lo, hi, known): (&mut [f64], &mut [f64], &mut [bool]) = if n <= INLINE_REGISTERS {
             (&mut inline.0[..n], &mut inline.1[..n], &mut inline.2[..n])
@@ -732,11 +739,18 @@ impl Program {
     /// See [`quart_invariant_ops`]: through chunk caches, this program's value is the same at
     /// every block of a quart column.
     pub(crate) fn quart_invariant(&self) -> bool {
-        quart_invariant_ops(&self.ops).last().copied().unwrap_or(false)
+        quart_invariant_ops(&self.ops)
+            .last()
+            .copied()
+            .unwrap_or(false)
     }
 
     pub(crate) fn y_independent(&self) -> bool {
-        cache_pure(&self.ops) && y_independent_ops(&self.ops).last().copied().unwrap_or(false)
+        cache_pure(&self.ops)
+            && y_independent_ops(&self.ops)
+                .last()
+                .copied()
+                .unwrap_or(false)
     }
 
     /// Evaluates this program at every block of one cell of `caches`, writing `out` in the
@@ -1517,8 +1531,7 @@ impl<'a> Compiler<'a> {
                 // |v/2 - v^3/24| <= 1/2 + 1/24.
                 Op::Squeeze(x) => r(x).map(|_| 0.6),
                 Op::Clamp(c) => r(&c.input).and_then(|_| {
-                    (c.min.is_finite() && c.max.is_finite())
-                        .then(|| c.min.abs().max(c.max.abs()))
+                    (c.min.is_finite() && c.max.is_finite()).then(|| c.min.abs().max(c.max.abs()))
                 }),
                 Op::Spline(s) => self.spline_max_abs(s),
                 Op::RangeChoice(c) => self
@@ -1531,9 +1544,10 @@ impl<'a> Compiler<'a> {
                     .try_fold(0.0f64, |acc, f| self.max_abs(f).map(|v| acc.max(v))),
                 // A height: an i32 (saturating `floor() as i32` of the bound) or the lower bound.
                 Op::FindTopSurface(_) => Some(COORD),
-                Op::GatedAdd(g) => self.max_abs(&g.body).zip(r(&g.g)).map(|(body, gv)| {
-                    g.c.abs() + gv * body
-                }),
+                Op::GatedAdd(g) => self
+                    .max_abs(&g.body)
+                    .zip(r(&g.g))
+                    .map(|(body, gv)| g.c.abs() + gv * body),
                 // Every cache returns its argument's value at some position (`interpolated`: a
                 // convex blend of such values).
                 Op::Cache { argument, .. } => self.max_abs(argument).map(|v| v * 1.001),
@@ -1785,9 +1799,7 @@ impl<'a> Compiler<'a> {
                 )
             }
 
-            Interpolated { argument } => {
-                self.emit_cache(CacheKind::Interpolated, argument, ops)
-            }
+            Interpolated { argument } => self.emit_cache(CacheKind::Interpolated, argument, ops),
             FlatCache { argument } => self.emit_cache(CacheKind::FlatCache, argument, ops),
             Cache2d { argument } => self.emit_cache(CacheKind::Cache2d, argument, ops),
             CacheOnce { argument } | CacheAllInCell { argument } => {
@@ -1998,9 +2010,7 @@ pub(crate) fn y_independent_ops(ops: &[Op]) -> Vec<bool> {
             // The gradient never qualifies, so in practice this is false; stated in full so a
             // future y-independent gate would still be judged correctly.
             Op::GatedAdd(g) => r(&g.g) && whole(&g.body),
-            Op::Cache { kind, argument, .. } => {
-                *kind != CacheKind::Interpolated && whole(argument)
-            }
+            Op::Cache { kind, argument, .. } => *kind != CacheKind::Interpolated && whole(argument),
             Op::Noise(_)
             | Op::OldBlendedNoise(_)
             | Op::WeirdScaledSampler(_)
@@ -2110,7 +2120,6 @@ pub(crate) fn cache_pure(ops: &[Op]) -> bool {
         _ => true,
     })
 }
-
 
 /// Runs `program` for the lanes `subset` (indices into `lanes`) and scatters the results into
 /// `dst` at those indices.

@@ -172,7 +172,10 @@ pub fn report(chunks: u64) -> String {
             per(nanos)
         );
     };
-    let _ = writeln!(out, "decoration stats ({chunks:.0} finished chunks; thread time, not wall time)");
+    let _ = writeln!(
+        out,
+        "decoration stats ({chunks:.0} finished chunks; thread time, not wall time)"
+    );
     for (name, c) in [
         ("finished chunk, total", &CHUNK),
         ("  clone terrain", &CLONE),

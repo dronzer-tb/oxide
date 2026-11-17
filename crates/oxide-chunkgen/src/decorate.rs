@@ -164,7 +164,11 @@ impl DecorationCache {
     }
 
     /// Computes and caches `pos`'s terrain now, so a later chunk finds it.
-    pub fn prepare_terrain(&self, pos: ChunkPos, generate: &(dyn Fn(ChunkPos) -> ChunkData + Sync)) {
+    pub fn prepare_terrain(
+        &self,
+        pos: ChunkPos,
+        generate: &(dyn Fn(ChunkPos) -> ChunkData + Sync),
+    ) {
         self.terrain(pos, generate);
     }
 
