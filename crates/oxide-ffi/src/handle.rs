@@ -350,6 +350,37 @@ impl OxideGenerator {
         }
     }
 
+    /// Replaces the decoration cache with one of the given sizes, dropping what it held. For a
+    /// caller that knows its working set, such as the offline pregen generating in bands.
+    pub fn resize_decoration_cache(&mut self, terrain_chunks: usize, write_lists: usize) {
+        if let Ok(decoration) = &mut self.decoration {
+            decoration.cache = DecorationCache::new(terrain_chunks, write_lists);
+        }
+    }
+
+    /// Caches the undecorated terrain at `(chunk_x, chunk_z)` for decoration to read. No-op
+    /// without decoration.
+    pub fn prepare_terrain(&self, chunk_x: i32, chunk_z: i32) {
+        if let Ok(decoration) = &self.decoration {
+            decoration
+                .cache
+                .prepare_terrain(ChunkPos::new(chunk_x, chunk_z), &|at| self.terrain(at));
+        }
+    }
+
+    /// Caches the feature writes of the chunk at `(chunk_x, chunk_z)`, generating any of the
+    /// 3x3 terrain around it not yet cached. No-op without decoration.
+    pub fn prepare_writes(&self, chunk_x: i32, chunk_z: i32) {
+        if let Ok(decoration) = &self.decoration {
+            decoration.cache.prepare_writes(
+                ChunkPos::new(chunk_x, chunk_z),
+                &|at| self.terrain(at),
+                &decoration.decorator,
+                decoration.decorator.facts(),
+            );
+        }
+    }
+
     /// One chunk as `ChunkData` plus what decoration left besides blocks, for callers in Rust
     /// that write chunks themselves (the offline pregen) and have no use for the flat arrays.
     /// Terrain only, status `carvers`, unless decoration is on.

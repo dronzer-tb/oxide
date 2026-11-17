@@ -28,6 +28,9 @@ use oxide_anvil::region;
 use oxide_core::ChunkPos;
 use oxide_ffi::OxideGeneratorHandle;
 
+/// Rows of a region decorated per band. The terrain cache must hold (BAND_ROWS + 4) x 36 chunks.
+const BAND_ROWS: usize = 4;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "oxide-pregen",
@@ -113,7 +116,10 @@ fn main() -> Result<()> {
         }
     }
 
-    let generator = OxideGeneratorHandle::open(&cli.datapack, &cli.dimension, cli.seed)?;
+    let mut generator = OxideGeneratorHandle::open(&cli.datapack, &cli.dimension, cli.seed)?;
+    // Holds a band of BAND_ROWS rows plus a 2-chunk border, across a region and its border.
+    generator.resize_decoration_cache(512, 1024);
+    let generator = generator;
     if cli.decorate && !generator.set_decoration(true)? {
         bail!("native decoration is unavailable for {}", cli.dimension);
     }
@@ -137,24 +143,70 @@ fn main() -> Result<()> {
     let done = AtomicU64::new(0);
     // Thread time per stage, in nanoseconds, summed over every worker.
     let (gen_ns, ser_ns, write_ns) = (AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0));
-    regions.par_iter().try_for_each(|&(rx, rz)| -> Result<()> {
-        let positions: Vec<ChunkPos> = (0..32 * 32)
-            .map(|i| ChunkPos::new(rx * 32 + i % 32, rz * 32 + i / 32))
-            .filter(|p| (x0..=x1).contains(&p.x) && (z0..=z1).contains(&p.z))
-            .collect();
-        let chunks = positions
-            .par_iter()
-            .map(|&pos| {
-                let timer = Instant::now();
-                let (chunk, extras) = generator.chunk_data(pos.x, pos.z);
-                let generated = Instant::now();
-                let bytes = oxide_pregen::chunk_bytes(&chunk, &extras, &opts)
-                    .with_context(|| format!("chunk {pos:?}"))?;
-                gen_ns.fetch_add((generated - timer).as_nanos() as u64, Ordering::Relaxed);
-                ser_ns.fetch_add(generated.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                Ok((pos, bytes))
+    let one_chunk = |pos: ChunkPos| -> Result<(ChunkPos, Vec<u8>)> {
+        let timer = Instant::now();
+        let (chunk, extras) = generator.chunk_data(pos.x, pos.z);
+        let generated = Instant::now();
+        let bytes = oxide_pregen::chunk_bytes(&chunk, &extras, &opts)
+            .with_context(|| format!("chunk {pos:?}"))?;
+        gen_ns.fetch_add((generated - timer).as_nanos() as u64, Ordering::Relaxed);
+        ser_ns.fetch_add(generated.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        Ok((pos, bytes))
+    };
+    let region_chunks = |rx: i32, rz: i32| -> Vec<Vec<ChunkPos>> {
+        (0..32)
+            .map(|row| {
+                (0..32)
+                    .map(|col| ChunkPos::new(rx * 32 + col, rz * 32 + row))
+                    .filter(|p| (x0..=x1).contains(&p.x) && (z0..=z1).contains(&p.z))
+                    .collect::<Vec<_>>()
             })
-            .collect::<Result<Vec<_>>>()?;
+            .filter(|row| !row.is_empty())
+            .collect()
+    };
+    // Decorating a chunk reads the terrain of the 5x5 around it from a bounded cache. Every
+    // thread working one row of one region keeps that working set to ~5 rows x 36 chunks, which
+    // fits; regions and rows in parallel spread it over far more and regenerate terrain ~3x.
+    // Terrain alone has no neighbours, so it keeps everything parallel.
+    let region_order: Box<dyn Fn(&(i32, i32)) -> Result<()> + Sync> = Box::new(|&(rx, rz)| {
+        let chunks: Vec<(ChunkPos, Vec<u8>)> = if cli.decorate {
+            // In bands of rows, each in three parallel passes: the terrain the band reads, then
+            // the feature writes of the band and its ring, then the finished chunks. Each pass
+            // only reads what the one before cached, so no worker waits on another's chunk.
+            let rows = region_chunks(rx, rz);
+            let mut chunks = Vec::with_capacity(1024);
+            for band in rows.chunks(BAND_ROWS) {
+                let positions = band.concat();
+                let (zs, ze) = (positions[0].z, positions[positions.len() - 1].z);
+                let (xs, xe) = band.iter().fold((i32::MAX, i32::MIN), |(lo, hi), row| {
+                    (lo.min(row[0].x), hi.max(row[row.len() - 1].x))
+                });
+                let around = |margin: i32| -> Vec<ChunkPos> {
+                    (zs - margin..=ze + margin)
+                        .flat_map(|z| (xs - margin..=xe + margin).map(move |x| ChunkPos::new(x, z)))
+                        .collect()
+                };
+                around(2)
+                    .par_iter()
+                    .for_each(|p| generator.prepare_terrain(p.x, p.z));
+                around(1)
+                    .par_iter()
+                    .for_each(|p| generator.prepare_writes(p.x, p.z));
+                chunks.extend(
+                    positions
+                        .par_iter()
+                        .map(|&p| one_chunk(p))
+                        .collect::<Result<Vec<_>>>()?,
+                );
+            }
+            chunks
+        } else {
+            region_chunks(rx, rz)
+                .concat()
+                .par_iter()
+                .map(|&p| one_chunk(p))
+                .collect::<Result<Vec<_>>>()?
+        };
         let path = region_dir.join(format!("r.{rx}.{rz}.mca"));
         let timer = Instant::now();
         region::write_compressed_region(&path, &chunks)
@@ -164,7 +216,13 @@ fn main() -> Result<()> {
         let secs = start.elapsed().as_secs_f64();
         println!("{n}/{total} chunks, {:.0} cps", n as f64 / secs);
         Ok(())
-    })?;
+    });
+    if cli.decorate {
+        regions.iter().try_for_each(&region_order)?;
+    } else {
+        regions.par_iter().try_for_each(&region_order)?;
+    }
+    drop(region_order);
     let done = done.into_inner();
 
     let secs = start.elapsed().as_secs_f64();

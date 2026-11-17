@@ -163,6 +163,22 @@ impl DecorationCache {
         }
     }
 
+    /// Computes and caches `pos`'s terrain now, so a later chunk finds it.
+    pub fn prepare_terrain(&self, pos: ChunkPos, generate: &(dyn Fn(ChunkPos) -> ChunkData + Sync)) {
+        self.terrain(pos, generate);
+    }
+
+    /// Computes and caches `pos`'s feature writes now, so a later chunk finds them.
+    pub fn prepare_writes(
+        &self,
+        pos: ChunkPos,
+        generate: &(dyn Fn(ChunkPos) -> ChunkData + Sync),
+        decorator: &dyn Decorator,
+        facts: &BlockFacts,
+    ) {
+        self.writes(pos, generate, decorator, facts);
+    }
+
     fn terrain(
         &self,
         pos: ChunkPos,
