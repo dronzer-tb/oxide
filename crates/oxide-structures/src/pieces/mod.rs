@@ -13,7 +13,9 @@
 //! Where structures start, reference bookkeeping, and which decoration step stamps them belong to
 //! the caller; this module answers "what are the pieces" and "what does a piece write here".
 
+pub mod igloo;
 pub mod mineshaft;
+pub mod template_piece;
 
 use std::fmt::Debug;
 
