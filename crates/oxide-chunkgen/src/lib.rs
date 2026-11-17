@@ -16,6 +16,7 @@ pub static CULL_BOUNDED: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomi
 pub static CULL_HI_NEG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 mod biome_grid;
 mod carver;
+pub mod deco_stats;
 pub mod decorate;
 pub mod decoration_seed;
 pub mod decorator;

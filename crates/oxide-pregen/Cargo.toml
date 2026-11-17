@@ -14,3 +14,7 @@ clap.workspace = true
 anyhow.workspace = true
 rayon.workspace = true
 libc = "0.2"
+
+[features]
+# Prints where decoration time goes after a --decorate run.
+deco-stats = ["oxide-ffi/deco-stats", "oxide-chunkgen/deco-stats"]

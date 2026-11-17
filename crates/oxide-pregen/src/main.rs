@@ -133,7 +133,10 @@ fn main() -> Result<()> {
     // waits at a region boundary, which with one region at a time cost a third of the rate.
     // Whichever thread finishes a region writes it; regions are separate files.
     let start = Instant::now();
+    let cpu_start = cpu_seconds();
     let done = AtomicU64::new(0);
+    // Thread time per stage, in nanoseconds, summed over every worker.
+    let (gen_ns, ser_ns, write_ns) = (AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0));
     regions.par_iter().try_for_each(|&(rx, rz)| -> Result<()> {
         let positions: Vec<ChunkPos> = (0..32 * 32)
             .map(|i| ChunkPos::new(rx * 32 + i % 32, rz * 32 + i / 32))
@@ -142,17 +145,21 @@ fn main() -> Result<()> {
         let chunks = positions
             .par_iter()
             .map(|&pos| {
+                let timer = Instant::now();
                 let (chunk, extras) = generator.chunk_data(pos.x, pos.z);
-                Ok((
-                    pos,
-                    oxide_pregen::chunk_bytes(&chunk, &extras, &opts)
-                        .with_context(|| format!("chunk {pos:?}"))?,
-                ))
+                let generated = Instant::now();
+                let bytes = oxide_pregen::chunk_bytes(&chunk, &extras, &opts)
+                    .with_context(|| format!("chunk {pos:?}"))?;
+                gen_ns.fetch_add((generated - timer).as_nanos() as u64, Ordering::Relaxed);
+                ser_ns.fetch_add(generated.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                Ok((pos, bytes))
             })
             .collect::<Result<Vec<_>>>()?;
         let path = region_dir.join(format!("r.{rx}.{rz}.mca"));
+        let timer = Instant::now();
         region::write_compressed_region(&path, &chunks)
             .with_context(|| format!("writing {}", path.display()))?;
+        write_ns.fetch_add(timer.elapsed().as_nanos() as u64, Ordering::Relaxed);
         let n = done.fetch_add(chunks.len() as u64, Ordering::Relaxed) + chunks.len() as u64;
         let secs = start.elapsed().as_secs_f64();
         println!("{n}/{total} chunks, {:.0} cps", n as f64 / secs);
@@ -165,7 +172,29 @@ fn main() -> Result<()> {
         "done: {done} chunks in {secs:.1} s, {:.0} cps",
         done as f64 / secs
     );
+    let cpu = cpu_seconds() - cpu_start;
+    let per_chunk = |ns: &AtomicU64| ns.load(Ordering::Relaxed) as f64 / 1e6 / done.max(1) as f64;
+    println!(
+        "cpu: {cpu:.1} s ({:.2} ms/chunk), {:.2} cores busy on average; per chunk: generate {:.2} ms, serialize+compress {:.2} ms, region write {:.2} ms",
+        cpu * 1e3 / done.max(1) as f64,
+        cpu / secs,
+        per_chunk(&gen_ns),
+        per_chunk(&ser_ns),
+        per_chunk(&write_ns),
+    );
+    if cfg!(feature = "deco-stats") && cli.decorate {
+        print!("{}", oxide_chunkgen::deco_stats::report(done));
+    }
     Ok(())
+}
+
+/// User plus system CPU time this process has used so far.
+fn cpu_seconds() -> f64 {
+    // SAFETY: getrusage only fills the struct it is given.
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+    let secs = |t: libc::timeval| t.tv_sec as f64 + t.tv_usec as f64 / 1e6;
+    secs(usage.ru_utime) + secs(usage.ru_stime)
 }
 
 /// The server holds a POSIX lock on `session.lock` while the world is open; writing region files
