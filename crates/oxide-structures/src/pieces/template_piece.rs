@@ -184,6 +184,10 @@ impl TemplatePiece {
         }
     }
 
+    pub fn block_tags(&self) -> &TagSet {
+        &self.block_tags
+    }
+
     /// `template.getBoundingBox(placeSettings, templatePosition)`.
     pub fn bounding_box(&self) -> BoundingBox {
         self.bounding_box_at(self.position)
