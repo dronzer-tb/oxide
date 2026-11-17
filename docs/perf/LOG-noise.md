@@ -954,3 +954,18 @@ sits at or below the ~2-4% that a 4-round hold can resolve:
 The remaining noise cost is the leaf noise arithmetic itself, at the volume vanilla's algorithm
 requires. Reducing that volume needs evaluating fewer corners, which 22b and 23 showed has no
 headroom in this generation order (see the noodle-grid pointer in 22b).
+
+### 25: repeated noise samples within the router: 1.8%, no lead (deterministic count, no hold needed)
+
+The question was whether the same noise is sampled at the same scaled coordinates more than once
+(e.g. from different slots with no cache marker between them). That would be exact to deduplicate.
+I made a temporary instrumented build of the shipping tree, counting at `sample_noise` (scalar)
+and `noise_lanes` (batch) every evaluation keyed by (noise index, x/y/z bit patterns), over a whole
+radius-4 run at 1 thread (81 chunks, untimed, shared lock):
+
+    DUP total evals=864657 distinct=849357 repeat=15300 repeat_share=0.018 scalar_evals=40582
+
+The repeats are concentrated in a few small noises: #32 9,306 of 14,462; #12 2,545 of 5,147;
+#14 1,375 of 3,286; #1 1,200 of 1,839. Every large stack (e.g. #49-#54, 53k evaluations each;
+#29/#31, 65k each) is 100% distinct. Deduplicating everything would remove 1.8% of noise
+evaluations, so this is not a lead. Not kept. Box dir `n25-t` and worktree `/tmp/n25` are removed.
