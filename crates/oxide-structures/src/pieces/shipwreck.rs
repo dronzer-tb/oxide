@@ -216,7 +216,7 @@ mod tests {
             ("minecraft:shipwreck", false),
             ("minecraft:shipwreck_beached", true),
         ] {
-            oracle::check_layouts(structure, |ctx, assets| {
+            oracle::check_layouts(structure, |ctx, assets, _| {
                 Some(vec![super::piece(ctx, assets, beached).template])
             });
         }

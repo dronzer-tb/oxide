@@ -15,6 +15,7 @@
 
 pub mod igloo;
 pub mod mineshaft;
+pub mod nether_fossil;
 pub mod ocean_ruin;
 pub mod shipwreck;
 pub mod template_piece;

@@ -59,10 +59,12 @@ impl PieceTemplates for DatapackTemplates<'_> {
 }
 
 /// What template structures are generated with besides [`super::GenerationContext`]: the
-/// template manager, and the block tags their processors test the level against.
+/// template manager, the block tags their processors test the level against, and the block facts
+/// generation tests base columns with.
 pub struct TemplateAssets<'a> {
     pub templates: &'a dyn PieceTemplates,
     pub block_tags: Arc<TagSet>,
+    pub facts: &'a BlockFacts,
 }
 
 /// What generation reads of the world beyond heights: `ChunkGenerator.getBaseColumn` (the noise
@@ -182,6 +184,10 @@ impl TemplatePiece {
             block_tags: assets.block_tags.clone(),
             seed,
         }
+    }
+
+    pub fn seed(&self) -> i64 {
+        self.seed
     }
 
     pub fn block_tags(&self) -> &TagSet {
@@ -356,11 +362,14 @@ pub(crate) mod oracle {
     }
 
     /// Flat terrain: what the layouts tested here read of the world besides the random.
-    pub struct Flat(pub i32);
+    pub struct Flat {
+        pub height: i32,
+        pub sea_level: i32,
+    }
 
     impl StructureTerrain for Flat {
         fn sea_level(&self) -> i32 {
-            63
+            self.sea_level
         }
         fn min_y(&self) -> i32 {
             -64
@@ -369,7 +378,7 @@ pub(crate) mod oracle {
             384
         }
         fn base_height(&self, _x: i32, _z: i32, _kind: HeightmapType) -> i32 {
-            self.0
+            self.height
         }
         fn noise_biome(&self, _x: i32, _y: i32, _z: i32) -> BiomeId {
             BiomeId::minecraft("plains")
@@ -443,8 +452,12 @@ pub(crate) mod oracle {
     /// piece's template, position, rotation and box with the game's.
     pub fn check_layouts_at(
         structure: &str,
-        height: i32,
-        generate: impl Fn(&GenerationContext<'_>, &TemplateAssets<'_>) -> Option<Vec<TemplatePiece>>,
+        terrain: Flat,
+        generate: impl Fn(
+            &GenerationContext<'_>,
+            &TemplateAssets<'_>,
+            &[SavedPiece],
+        ) -> Option<Vec<TemplatePiece>>,
     ) {
         let Some(root) = reference() else { return };
         let starts = starts(structure);
@@ -454,15 +467,15 @@ pub(crate) mod oracle {
         let assets = TemplateAssets {
             templates: &templates,
             block_tags: loaded.tags.clone(),
+            facts: &loaded.facts,
         };
-        let terrain = Flat(height);
         for (chunk, saved) in starts {
             let ctx = GenerationContext {
                 seed: SEED,
                 chunk,
                 terrain: &terrain,
             };
-            let generated = generate(&ctx, &assets).expect("vanilla kept this start");
+            let generated = generate(&ctx, &assets, &saved).expect("vanilla kept this start");
             let ours: Vec<_> = generated.iter().map(TemplatePiece::saved).collect();
             assert_eq!(ours, saved, "{structure} at {chunk:?}");
         }
@@ -470,9 +483,17 @@ pub(crate) mod oracle {
 
     pub fn check_layouts(
         structure: &str,
-        generate: impl Fn(&GenerationContext<'_>, &TemplateAssets<'_>) -> Option<Vec<TemplatePiece>>,
+        generate: impl Fn(
+            &GenerationContext<'_>,
+            &TemplateAssets<'_>,
+            &[SavedPiece],
+        ) -> Option<Vec<TemplatePiece>>,
     ) {
-        check_layouts_at(structure, 64, generate);
+        let terrain = Flat {
+            height: 64,
+            sea_level: 63,
+        };
+        check_layouts_at(structure, terrain, generate);
     }
 
     impl TemplatePiece {

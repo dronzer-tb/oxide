@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn layouts_match_vanilla_starts() {
-        oracle::check_layouts("minecraft:igloo", |ctx, assets| {
+        oracle::check_layouts("minecraft:igloo", |ctx, assets, _| {
             Some(
                 super::pieces(ctx, assets)
                     .into_iter()

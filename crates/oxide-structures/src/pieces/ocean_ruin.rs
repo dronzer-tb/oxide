@@ -349,7 +349,7 @@ mod tests {
                 large_probability: 0.3,
                 cluster_probability: 0.9,
             };
-            oracle::check_layouts(structure, |ctx, assets| {
+            oracle::check_layouts(structure, |ctx, assets, _| {
                 Some(
                     super::pieces(ctx, assets, config)
                         .into_iter()
