@@ -843,6 +843,7 @@ name = "oxide-chunkgen"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "fastnbt",
  "oxide-biome",
  "oxide-core",
  "oxide-datapack",

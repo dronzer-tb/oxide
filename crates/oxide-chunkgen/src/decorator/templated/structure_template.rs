@@ -7,30 +7,34 @@
 //! That order is observable, because `block_rot` draws one float per block from the feature's
 //! random stream, so it is built here from the raw file once, when the feature is compiled.
 //!
-//! [`place_in_world`] is `placeInWorld` for the settings decoration uses: mirror `NONE`, pivot
-//! at the origin, liquid settings `APPLY_WATERLOGGING`, entities not ignored, shape not known.
-//! In order it picks a palette, runs the processors (`processBlockInfos`), writes the blocks
-//! inside the bounding box, waterlogs and floods (`LiquidBlockContainer.placeLiquid`), and then
-//! runs the neighbour-shape pass ([`super::shape`]).
+//! [`place_in_world`] is `placeInWorld`. In order it picks a palette, runs the processors
+//! (`processBlockInfos`), writes the blocks inside the bounding box with their block entities,
+//! waterlogs and floods (`LiquidBlockContainer.placeLiquid`), and then runs the neighbour-shape
+//! pass ([`super::shape`]). [`PlaceSettings::new`] is what decoration uses (mirror `NONE`, pivot
+//! at the origin, the feature's random); structure pieces set the rest of
+//! `StructurePlaceSettings` themselves.
 //!
-//! What the region cannot carry is tallied: block entities (`block_entity:<block>`, the block
-//! itself is still placed, as for the desert well) and template entities
-//! (`template_entities:<template>`). A template whose blocks carry block-entity NBT is refused
-//! before anything is written (`template_block_nbt:<template>`): vanilla draws a loot-table seed
-//! from the feature's stream for each one that turns out to be a `RandomizableContainer`, which
-//! the exported data cannot answer, so every draw after the first such block is unknowable.
-//! Scheduled ticks, post-processing marks and POI updates are not recorded, as for every family.
+//! What the region cannot carry is tallied: block entities the template gives no data
+//! (`block_entity:<block>`, the block itself is still placed, as for the desert well) and
+//! template entities (`template_entities:<template>`). Under the feature's random stream a
+//! template whose blocks carry block-entity NBT is refused before anything is written
+//! (`template_block_nbt:<template>`): no decoration template in 26.2 has one, and keeping the
+//! refusal keeps decoration output unchanged. Scheduled ticks, post-processing marks and POI
+//! updates are not recorded, as for every family.
 
 use std::collections::HashSet;
+use std::fmt::Write as _;
 use std::str::FromStr;
 
+use oxide_core::mth::get_seed;
 use oxide_core::rotation::{rotate_block_state, transform, Direction, Mirror, Rotation};
-use oxide_core::{BlockPos, BlockState, RandomSource, ResourceLocation};
+use oxide_core::{BlockPos, BlockState, LegacyRandom, RandomSource, ResourceLocation};
 use oxide_datapack::structure_template::{RawBlockState, RawStructureNbt};
 use oxide_datapack::{BlockFact, BlockFacts};
 
 use super::processor::{process_block_infos, Processor};
 use super::shape::update_shapes;
+use crate::decorator::block_entity::with_loot_table;
 use crate::decorator::context::{block_in, FeatureContext};
 
 /// One block of a template: template-relative before processing, world position after.
@@ -38,8 +42,30 @@ use crate::decorator::context::{block_in, FeatureContext};
 pub struct BlockInfo {
     pub pos: BlockPos,
     pub state: BlockState,
-    /// Whether the template gives this block block-entity NBT.
-    pub has_nbt: bool,
+    pub nbt: Option<BlockNbt>,
+}
+
+/// The block-entity data a [`BlockInfo`] carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlockNbt {
+    /// The template's own, an index into [`Template::nbt`].
+    Template(u32),
+    /// What a rule's `append_loot` modifier leaves: a loot table and the seed it drew.
+    Loot { table: String, seed: i64 },
+}
+
+/// One template block's NBT, read once when the template loads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TemplateNbt {
+    /// The block-entity id the template saved.
+    pub id: String,
+    /// Every field but `id`, `x`, `y` and `z`, as SNBT `key:value` pairs joined by commas.
+    pub fields: String,
+    pub loot_table: Option<String>,
+    /// A structure block in `DATA` mode: its `metadata`.
+    pub data_marker: Option<String>,
+    /// A jigsaw block: the `final_state` it turns into once its piece is placed.
+    pub final_state: Option<String>,
 }
 
 /// A parsed template. [`Template::default`] is what vanilla's `getOrCreate` hands back for an
@@ -49,8 +75,8 @@ pub struct Template {
     size: [i32; 3],
     /// Each palette's blocks in placement order.
     pub(super) palettes: Vec<Vec<BlockInfo>>,
+    nbt: Vec<TemplateNbt>,
     entity_count: usize,
-    has_block_nbt: bool,
 }
 
 /// `BoundingBox`, inclusive on both ends.
@@ -96,8 +122,37 @@ impl BoundingBox {
 #[derive(Debug, Clone, Copy)]
 pub struct PlaceSettings<'p> {
     pub rotation: Rotation,
+    pub mirror: Mirror,
+    pub pivot: BlockPos,
     pub bounding_box: Option<BoundingBox>,
     pub processors: &'p [Processor],
+    /// `settings.getRandom(pos)` with no random set, as for every structure piece: a
+    /// `LegacyRandom` seeded by `Mth.getSeed(pos)` for each call. Otherwise the settings carry
+    /// the feature's stream, the context's random.
+    pub positional_random: bool,
+    /// `LiquidSettings.APPLY_WATERLOGGING`.
+    pub apply_waterlogging: bool,
+    pub ignore_entities: bool,
+}
+
+impl<'p> PlaceSettings<'p> {
+    /// The settings a decoration feature places with.
+    pub fn new(
+        rotation: Rotation,
+        bounding_box: Option<BoundingBox>,
+        processors: &'p [Processor],
+    ) -> Self {
+        Self {
+            rotation,
+            mirror: Mirror::None,
+            pivot: BlockPos::new(0, 0, 0),
+            bounding_box,
+            processors,
+            positional_random: false,
+            apply_waterlogging: true,
+            ignore_entities: false,
+        }
+    }
 }
 
 pub(super) fn offset(pos: BlockPos, dx: i32, dy: i32, dz: i32) -> BlockPos {
@@ -119,6 +174,18 @@ impl Template {
     /// block's defaults), an out-of-range palette index is air, then `buildInfoList`'s order.
     pub fn from_raw(raw: &RawStructureNbt, facts: &BlockFacts) -> Self {
         let air = BlockState::new(ResourceLocation::minecraft("air"));
+        let mut nbt = Vec::new();
+        let nbt_index: Vec<Option<u32>> = raw
+            .blocks
+            .iter()
+            .map(|entry| {
+                let fastnbt::Value::Compound(map) = entry.nbt.as_ref()? else {
+                    return None;
+                };
+                nbt.push(TemplateNbt::read(map));
+                Some(nbt.len() as u32 - 1)
+            })
+            .collect();
         let palettes = raw
             .all_palettes()
             .into_iter()
@@ -128,13 +195,13 @@ impl Template {
                     .map(|entry| read_block_state(entry, facts, &air))
                     .collect();
                 let (mut full, mut other, mut with_nbt) = (Vec::new(), Vec::new(), Vec::new());
-                for entry in &raw.blocks {
+                for (entry, nbt) in raw.blocks.iter().zip(&nbt_index) {
                     let info = BlockInfo {
                         pos: BlockPos::new(entry.pos[0], entry.pos[1], entry.pos[2]),
                         state: states.get(entry.state).unwrap_or(&air).clone(),
-                        has_nbt: entry.nbt.is_some(),
+                        nbt: nbt.map(BlockNbt::Template),
                     };
-                    if info.has_nbt {
+                    if info.nbt.is_some() {
                         with_nbt.push(info);
                     } else if !facts.is(&info.state, BlockFact::DynamicShape)
                         && facts.is(&info.state, BlockFact::FullCollision)
@@ -156,9 +223,65 @@ impl Template {
         Self {
             size: raw.size,
             palettes,
+            nbt,
             entity_count: raw.entities.len(),
-            has_block_nbt: raw.blocks.iter().any(|entry| entry.nbt.is_some()),
         }
+    }
+
+    /// The NBT a [`BlockNbt::Template`] points at.
+    pub fn nbt(&self, index: u32) -> &TemplateNbt {
+        &self.nbt[index as usize]
+    }
+
+    /// `settings.getRandomPalette(palettes, position)` — the index of the palette placed at
+    /// `position`, or `None` for a template with none. Under the feature's stream this draws
+    /// from it even when there is a single palette.
+    fn palette_index(
+        &self,
+        cx: &mut FeatureContext<'_, '_, '_>,
+        position: BlockPos,
+        settings: &PlaceSettings<'_>,
+    ) -> Option<usize> {
+        if self.palettes.is_empty() {
+            return None;
+        }
+        let count = self.palettes.len() as i32;
+        let index = if settings.positional_random {
+            LegacyRandom::new(get_seed(position.x, position.y, position.z)).next_int_bounded(count)
+        } else {
+            cx.random.next_int_bounded(count)
+        };
+        Some(index as usize)
+    }
+
+    /// `filterBlocks(position, settings, block)`: the blocks of `block` in the palette placed at
+    /// `position`, at their world positions, unrotated states, inside the settings' bounding box.
+    /// Positional palettes only: under the feature's stream the palette choice would draw again.
+    pub fn filter_blocks(
+        &self,
+        position: BlockPos,
+        settings: &PlaceSettings<'_>,
+        block: &ResourceLocation,
+    ) -> Vec<(BlockPos, &BlockInfo)> {
+        debug_assert!(settings.positional_random);
+        if self.palettes.is_empty() {
+            return Vec::new();
+        }
+        let count = self.palettes.len() as i32;
+        let index = LegacyRandom::new(get_seed(position.x, position.y, position.z))
+            .next_int_bounded(count) as usize;
+        self.palettes[index]
+            .iter()
+            .filter(|info| info.state.name == *block)
+            .filter_map(|info| {
+                let moved = transform(info.pos, settings.mirror, settings.rotation, settings.pivot);
+                let pos = offset(moved, position.x, position.y, position.z);
+                let inside = settings
+                    .bounding_box
+                    .is_none_or(|bounds| bounds.is_inside(pos));
+                inside.then_some((pos, info))
+            })
+            .collect()
     }
 
     pub fn raw_size(&self) -> [i32; 3] {
@@ -177,10 +300,21 @@ impl Template {
 
     /// `getBoundingBox(settings, position)` with the pivot at the origin and no mirror.
     pub fn bounding_box(&self, position: BlockPos, rotation: Rotation) -> BoundingBox {
+        self.bounding_box_with(position, rotation, Mirror::None, BlockPos::new(0, 0, 0))
+    }
+
+    /// `getBoundingBox(position, rotation, pivot, mirror)`.
+    pub fn bounding_box_with(
+        &self,
+        position: BlockPos,
+        rotation: Rotation,
+        mirror: Mirror,
+        pivot: BlockPos,
+    ) -> BoundingBox {
         let origin = BlockPos::new(0, 0, 0);
         let far = BlockPos::new(self.size[0] - 1, self.size[1] - 1, self.size[2] - 1);
-        let a = transform(origin, Mirror::None, rotation, origin);
-        let b = transform(far, Mirror::None, rotation, origin);
+        let a = transform(origin, mirror, rotation, pivot);
+        let b = transform(far, mirror, rotation, pivot);
         let local = BoundingBox::from_corners(a, b);
         BoundingBox {
             min: offset(local.min, position.x, position.y, position.z),
@@ -222,20 +356,16 @@ pub fn place_in_world(
     position: BlockPos,
     settings: &PlaceSettings<'_>,
 ) -> bool {
-    if template.palettes.is_empty() {
-        return false;
-    }
-    if template.has_block_nbt {
+    if !settings.positional_random && !template.nbt.is_empty() {
         cx.unsupported.record("template_block_nbt", &id.to_string());
         return false;
     }
-    // `settings.getRandomPalette`: the settings carry the feature's random, so this draws from
-    // it even when there is a single palette.
-    let index = cx.random.next_int_bounded(template.palettes.len() as i32) as usize;
+    let Some(index) = template.palette_index(cx, position, settings) else {
+        return false;
+    };
     let blocks = &template.palettes[index];
-    if (blocks.is_empty() && template.entity_count == 0)
-        || template.size.iter().any(|&side| side < 1)
-    {
+    let no_entities = settings.ignore_entities || template.entity_count == 0;
+    if (blocks.is_empty() && no_entities) || template.size.iter().any(|&side| side < 1) {
         return false;
     }
 
@@ -253,20 +383,27 @@ pub fn place_in_world(
             continue;
         }
         let previous = block_in(cx.region, info.pos).clone();
-        // PARITY-CHECK: vanilla mirrors the state before rotating it; decoration's mirror is
-        // always NONE, so only the rotation is applied. `rotate_block_state` covers the
-        // standard directional properties (see its docs); a template block with a per-block
-        // rotation rule would come out unturned. Verify by diffing a placed template against
-        // the game for any template whose palette has more than `axis`/`facing`-style
-        // properties (the 26.2 fossil and sulfur-spring templates do not).
-        let state = rotate_block_state(&info.state, settings.rotation);
+        // PARITY-CHECK: `rotate_block_state` and `mirror_block_state` cover the standard
+        // directional properties (see their docs); a template block with a per-block rotation
+        // rule (rails' `shape`, a stair's `shape` under a mirror) would come out unturned.
+        // Verify by diffing a placed template against the game for any template whose palette
+        // has more than `axis`/`facing`-style properties.
+        let mirrored = mirror_block_state(&info.state, settings.mirror);
+        let state = rotate_block_state(&mirrored, settings.rotation);
         if !cx.region.set_block(info.pos, state.clone()) {
             continue;
         }
         placed.push(info.pos);
         if facts.is(&state, BlockFact::BlockEntity) {
-            cx.unsupported
-                .record("block_entity", &state.name.to_string());
+            match &info.nbt {
+                Some(nbt) => place_block_entity(template, cx, info.pos, &state, nbt),
+                None => cx
+                    .unsupported
+                    .record("block_entity", &state.name.to_string()),
+            }
+        }
+        if !settings.apply_waterlogging {
+            continue;
         }
         if facts.is(&state, BlockFact::FluidSource) {
             locked.insert(info.pos);
@@ -282,10 +419,228 @@ pub fn place_in_world(
     if !placed.is_empty() {
         update_shapes(cx, &placed);
     }
-    if template.entity_count > 0 {
+    if template.entity_count > 0 && !settings.ignore_entities {
         cx.unsupported.record("template_entities", &id.to_string());
     }
     true
+}
+
+/// The block-entity id of a `RandomizableContainer` block: what `placeInWorld` draws a
+/// `LootTableSeed` for, and what `RandomizableContainer.setBlockEntityLootTable` fills in.
+pub fn randomizable_container_id(block: &ResourceLocation) -> Option<&'static str> {
+    if block.namespace() != "minecraft" {
+        return None;
+    }
+    let path = block.path();
+    Some(match path {
+        "chest" => "minecraft:chest",
+        "trapped_chest" => "minecraft:trapped_chest",
+        "barrel" => "minecraft:barrel",
+        "dispenser" => "minecraft:dispenser",
+        "dropper" => "minecraft:dropper",
+        "hopper" => "minecraft:hopper",
+        "crafter" => "minecraft:crafter",
+        "decorated_pot" => "minecraft:decorated_pot",
+        _ if path == "shulker_box" || path.ends_with("_shulker_box") => "minecraft:shulker_box",
+        _ => return None,
+    })
+}
+
+/// The block-entity half of one `placeInWorld` write: the loot seed a container draws from the
+/// placement's random, then the data loaded into the block entity, as the SNBT it saves.
+///
+/// PARITY-CHECK: a block entity is written as the template's fields, not round-tripped through
+/// the block entity's own `saveAdditional`, so a field the type always saves but the template
+/// left out (a furnace's `cooking_time_spent`, say) is missing from the chunk. A container with
+/// a loot table saves exactly `LootTable` and `LootTableSeed`, as vanilla does. Verify by diffing
+/// block-entity NBT of a placed igloo laboratory and an end-city ship against the game.
+fn place_block_entity(
+    template: &Template,
+    cx: &mut FeatureContext<'_, '_, '_>,
+    pos: BlockPos,
+    state: &BlockState,
+    nbt: &BlockNbt,
+) {
+    let container = randomizable_container_id(&state.name);
+    let snbt = match nbt {
+        BlockNbt::Template(index) => {
+            let nbt = template.nbt(*index);
+            // `blockInfo.nbt.putLong("LootTableSeed", random.nextLong())`, which only a loot
+            // table makes observable.
+            let seed = container.map(|_| cx.random.next_long());
+            match (&nbt.loot_table, seed) {
+                (Some(table), Some(seed)) => with_loot_table(&nbt.id, pos, table, seed),
+                _ => {
+                    let mut snbt =
+                        format!("{{id:\"{}\",x:{},y:{},z:{}", nbt.id, pos.x, pos.y, pos.z);
+                    if !nbt.fields.is_empty() {
+                        snbt.push(',');
+                        snbt.push_str(&nbt.fields);
+                    }
+                    snbt.push('}');
+                    snbt
+                }
+            }
+        }
+        // Only suspicious sand and gravel take an `append_loot` rule in 26.2; a container would
+        // redraw its seed here, as above.
+        BlockNbt::Loot { table, seed } => match container {
+            Some(id) => with_loot_table(id, pos, table, cx.random.next_long()),
+            None => with_loot_table("minecraft:brushable_block", pos, table, *seed),
+        },
+    };
+    cx.region.put_block_entity(pos, snbt);
+}
+
+/// `Block.mirror` in the vocabulary of [`rotate_block_state`]: a `facing` on the mirrored axis
+/// turns half round (`Mirror.getRotation`, what directional blocks and chests do), connection
+/// flags across that axis swap (`CrossCollisionBlock`, `WallBlock`), and stairs follow
+/// `StairBlock.mirror`, including its keeping an inner corner's side under `FRONT_BACK`.
+pub fn mirror_block_state(state: &BlockState, mirror: Mirror) -> BlockState {
+    let (a, b) = match mirror {
+        Mirror::None => return state.clone(),
+        Mirror::FrontBack => (Direction::East, Direction::West),
+        Mirror::LeftRight => (Direction::North, Direction::South),
+    };
+    if state.properties.is_empty() {
+        return state.clone();
+    }
+    let mut out = state.clone();
+    if let Some(facing) = state
+        .properties
+        .get("facing")
+        .and_then(|f| Direction::from_name(f))
+    {
+        if facing != a && facing != b {
+            return out;
+        }
+        out = rotate_block_state(&out, Rotation::Clockwise180);
+        if state.name.path().ends_with("_stairs") {
+            let swap_inner = mirror == Mirror::LeftRight;
+            let shape = match state.properties.get("shape").map(String::as_str) {
+                Some("inner_left") if swap_inner => "inner_right",
+                Some("inner_right") if swap_inner => "inner_left",
+                Some("outer_left") => "outer_right",
+                Some("outer_right") => "outer_left",
+                _ => return out,
+            };
+            out.properties.insert("shape".into(), shape.into());
+        }
+        return out;
+    }
+    if let (Some(first), Some(second)) = (
+        state.properties.get(a.name()).cloned(),
+        state.properties.get(b.name()).cloned(),
+    ) {
+        out.properties.insert(a.name().into(), second);
+        out.properties.insert(b.name().into(), first);
+    }
+    out
+}
+
+impl TemplateNbt {
+    fn read(map: &std::collections::HashMap<String, fastnbt::Value>) -> Self {
+        let string = |key: &str| match map.get(key) {
+            Some(fastnbt::Value::String(value)) => Some(value.clone()),
+            _ => None,
+        };
+        let mut keys: Vec<&String> = map
+            .keys()
+            .filter(|key| !matches!(key.as_str(), "id" | "x" | "y" | "z"))
+            .collect();
+        keys.sort();
+        let mut fields = String::new();
+        for key in keys {
+            if !fields.is_empty() {
+                fields.push(',');
+            }
+            write_snbt_key(&mut fields, key);
+            fields.push(':');
+            write_snbt(&mut fields, &map[key]);
+        }
+        let id = string("id").unwrap_or_default();
+        let data_marker = (id == "minecraft:structure_block"
+            && string("mode").as_deref() == Some("DATA"))
+        .then(|| string("metadata").unwrap_or_default());
+        Self {
+            final_state: (id == "minecraft:jigsaw")
+                .then(|| string("final_state").unwrap_or_else(|| "minecraft:air".into())),
+            loot_table: string("LootTable"),
+            data_marker,
+            fields,
+            id,
+        }
+    }
+}
+
+fn write_snbt_key(out: &mut String, key: &str) {
+    let bare = !key.is_empty()
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '+'));
+    if bare {
+        out.push_str(key);
+    } else {
+        write_snbt_string(out, key);
+    }
+}
+
+fn write_snbt_string(out: &mut String, value: &str) {
+    out.push('"');
+    for c in value.chars() {
+        if matches!(c, '"' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('"');
+}
+
+/// `NbtUtils`-style SNBT, compounds with their keys sorted so output is stable.
+fn write_snbt(out: &mut String, value: &fastnbt::Value) {
+    use fastnbt::Value;
+    let list = |out: &mut String, prefix: &str, items: Vec<String>| {
+        out.push('[');
+        out.push_str(prefix);
+        out.push_str(&items.join(","));
+        out.push(']');
+    };
+    match value {
+        Value::Byte(v) => _ = write!(out, "{v}b"),
+        Value::Short(v) => _ = write!(out, "{v}s"),
+        Value::Int(v) => _ = write!(out, "{v}"),
+        Value::Long(v) => _ = write!(out, "{v}L"),
+        Value::Float(v) => _ = write!(out, "{v:?}f"),
+        Value::Double(v) => _ = write!(out, "{v:?}d"),
+        Value::String(v) => write_snbt_string(out, v),
+        Value::ByteArray(v) => list(out, "B;", v.iter().map(|b| format!("{b}B")).collect()),
+        Value::IntArray(v) => list(out, "I;", v.iter().map(|i| i.to_string()).collect()),
+        Value::LongArray(v) => list(out, "L;", v.iter().map(|l| format!("{l}L")).collect()),
+        Value::List(items) => {
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_snbt(out, item);
+            }
+            out.push(']');
+        }
+        Value::Compound(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            out.push('{');
+            for (i, key) in keys.into_iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_snbt_key(out, key);
+                out.push(':');
+                write_snbt(out, &map[key]);
+            }
+            out.push('}');
+        }
+    }
 }
 
 /// Whether `state`'s block is a `LiquidBlockContainer` that can take water.

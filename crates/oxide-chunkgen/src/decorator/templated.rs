@@ -35,8 +35,11 @@ use oxide_datapack::{BlockFacts, Datapack};
 use super::context::FeatureContext;
 
 pub use fossil::FossilFeature;
-pub use processor::Processor;
-pub use structure_template::{place_in_world, BlockInfo, BoundingBox, PlaceSettings, Template};
+pub use processor::{Processor, Rule};
+pub use structure_template::{
+    mirror_block_state, place_in_world, randomizable_container_id, BlockInfo, BlockNbt,
+    BoundingBox, PlaceSettings, Template, TemplateNbt,
+};
 pub use template_feature::TemplateFeature;
 
 /// A compiled `fossil` or `template` feature.

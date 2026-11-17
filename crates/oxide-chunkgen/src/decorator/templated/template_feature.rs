@@ -47,11 +47,7 @@ impl TemplateFeature {
                 turned.step_z() * half,
             );
         }
-        let settings = PlaceSettings {
-            rotation,
-            bounding_box: None,
-            processors: &[],
-        };
+        let settings = PlaceSettings::new(rotation, None, &[]);
         place_in_world(template, &template_ref.id, cx, pos, &settings)
     }
 }

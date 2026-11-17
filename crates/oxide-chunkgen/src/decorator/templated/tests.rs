@@ -220,11 +220,7 @@ fn place(
 }
 
 fn plain(rotation: Rotation) -> PlaceSettings<'static> {
-    PlaceSettings {
-        rotation,
-        bounding_box: None,
-        processors: &[],
-    }
+    PlaceSettings::new(rotation, None, &[])
 }
 
 #[test]

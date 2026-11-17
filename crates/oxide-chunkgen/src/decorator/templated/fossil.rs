@@ -62,11 +62,7 @@ impl FossilFeature {
             return false;
         }
 
-        let mut settings = PlaceSettings {
-            rotation,
-            bounding_box: Some(bounds),
-            processors: &self.fossil_processors,
-        };
+        let mut settings = PlaceSettings::new(rotation, Some(bounds), &self.fossil_processors);
         place_in_world(base, &base_ref.id, cx, target, &settings);
         settings.processors = &self.overlay_processors;
         place_in_world(overlay, &overlay_ref.id, cx, target, &settings);

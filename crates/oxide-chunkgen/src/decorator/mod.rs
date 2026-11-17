@@ -60,8 +60,9 @@ pub use spring::SpringFeature;
 pub use state_provider::{state_from_spec, StateProvider, Unsupported};
 pub use survival::SurvivalRules;
 pub use templated::{
-    place_in_world, BlockInfo, BoundingBox, FossilFeature, PlaceSettings, Processor, Template,
-    TemplateFeature, TemplateLibrary, TemplatedFeature,
+    mirror_block_state, place_in_world, randomizable_container_id, BlockInfo, BlockNbt,
+    BoundingBox, FossilFeature, PlaceSettings, Processor, Rule, Template, TemplateFeature,
+    TemplateLibrary, TemplateNbt, TemplatedFeature,
 };
 pub use tree::{FallenTreeFeature, TreeFeature};
 pub use vegetation::VegetationFeature;
