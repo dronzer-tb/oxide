@@ -2064,3 +2064,36 @@ from the terrain-only wash above: decoration is branchy and shows up in the trai
 build mode, not a code change, so nothing in the crates changes. Whether PGO rows count as the
 headline, and whether release builds adopt it, is still the user's call (as before). The script is
 committed so the build can be repeated. pipeline-pg (613 MB) stays on the box until that decision.
+
+### PGO recheck and training area (r8 vs r16): the 1-thread gain holds; at 8 threads it is unresolved
+
+`scripts/build-pgo-pregen-vps.sh` now takes an optional training radius. pipeline-pg16 is the same
+sources as pipeline-d1, trained on seed 999 at r16, 8 threads (pipeline-pg is trained at r8). Byte
+checks on pg16: digest df701ee858e2bdd3 at 1 thread; the r7 off-centre run gives dea822a7b8517773, with
+.mca files identical to d1's outside the timestamp table. The digest held on every hold row below.
+
+Three-way, r16, 8 threads, 6 ABBA rounds per hold, both orders:
+
+| hold | d1 plain: cps mean / median | pg (r8 PGO) | pg16 (r16 PGO) | best of round |
+|---|---|---|---|---|
+| #1 (d1, pg, pg16) | 251.7 / 248.1 | 251.7 / 250.2 | 232.1 / 229.1 | d1 3, pg 2, pg16 1 |
+| #2 (pg16, pg, d1) | 302.5 / 308.0 | 302.1 / 308.9 | 336.1 / 341.1 | pg16 3, pg 2, d1 1 |
+| both | 277.1 / 295.5 | 276.9 / 293.7 | 284.1 / 303.3 | |
+
+The box was badly loaded during these holds. Rounds ran at 175-353 cps against the ~366 headline, with
+user time 22-42 s for the same work. java_cpu_s_per_10s stayed at or below 1.49 (one process), so
+something other than Java was competing. At 8 threads the three builds are level, and the winner flips
+with the order. This neither confirms nor rules out the +7.2% from the previous two holds; the
+8-thread PGO figure stays unresolved until the box is quiet.
+
+1 thread, 4 ABBA rounds (d1, pg, pg16), one hold:
+
+| | d1 plain | pg (r8 PGO) | pg16 (r16 PGO) |
+|---|---|---|---|
+| secs mean | 23.05 | 21.85 (-5.2%) | 21.45 (-6.9%) |
+| faster than d1 | | 3/4 | 3/4 |
+
+That is the third 1-thread hold with PGO ahead (-6.5%, -6.8%, now -5.2% for the r8 build), so the
+1-thread gain is firm. Training on r16 instead of r8 is within noise (-1.8% at 1 thread, +3% median at
+8 threads, order-dependent), so the default stays r8, which builds faster. pipeline-pg16 is deleted;
+pipeline-pg stays for the user's PGO decision.
