@@ -6,6 +6,14 @@
 //! large vanilla subsystem and are not built yet — see `fill.rs`'s module doc. Surface rules
 //! (grass/dirt/sand/bedrock) *are* evaluated now, with two named gaps — see `surface.rs`.
 
+// Ported loops keep vanilla's index form so each maps to its Java source, and feature enums
+// hold each compiled config once per feature, where boxing would only add an indirection.
+#![allow(
+    clippy::needless_range_loop,
+    clippy::large_enum_variant,
+    clippy::explicit_counter_loop
+)]
+
 pub mod aquifer;
 
 #[cfg(feature = "cull-stats")]

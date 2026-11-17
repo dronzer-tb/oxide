@@ -871,6 +871,9 @@ pub struct WorldMap {
     pub decoration_ms: u64,
 }
 
+/// One region's serialized chunks, keyed by its region coordinates where collected.
+type RegionChunks = Vec<(ChunkPos, Vec<u8>)>;
+
 /// Writes `world` as Anvil regions under `<dir>/region`, for a map renderer to read. Not a
 /// world to load in a server: heightmaps are the undecorated terrain's and there is no light.
 fn save_world(dir: &Path, data_version: i32, world: &[ChunkData]) -> Result<()> {
@@ -881,7 +884,7 @@ fn save_world(dir: &Path, data_version: i32, world: &[ChunkData]) -> Result<()> 
         last_update: 0,
         inhabited_time: 0,
     };
-    let mut regions: BTreeMap<(i32, i32), Vec<(ChunkPos, Vec<u8>)>> = BTreeMap::new();
+    let mut regions: BTreeMap<(i32, i32), RegionChunks> = BTreeMap::new();
     for chunk in world {
         let bytes = oxide_anvil::nbt::serialize_chunk(chunk, &opts)?;
         regions
@@ -1011,6 +1014,7 @@ struct SiteRun<'a> {
 /// `run`, plus `<out>/run_<seed>_<dimension>.json` for the website and a refreshed
 /// `<out>/manifest.json` naming every run file there. A comparison that fails still leaves a
 /// run file, carrying the error and Oxide's map.
+#[allow(clippy::too_many_arguments)]
 pub fn site(
     datapack: &Path,
     root: &Path,
