@@ -62,7 +62,7 @@ pub use survival::SurvivalRules;
 pub use templated::{
     mirror_block_state, place_in_world, randomizable_container_id, BlockInfo, BlockNbt,
     BoundingBox, FossilFeature, PlaceSettings, Processor, Rule, Template, TemplateFeature,
-    TemplateLibrary, TemplateNbt, TemplatedFeature,
+    TemplateLibrary, TemplateNbt, TemplateWorld, TemplatedFeature,
 };
 pub use tree::{FallenTreeFeature, TreeFeature};
 pub use vegetation::VegetationFeature;

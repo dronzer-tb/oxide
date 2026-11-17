@@ -30,12 +30,13 @@ use oxide_core::mth::get_seed;
 use oxide_core::rotation::{rotate_block_state, transform, Direction, Mirror, Rotation};
 use oxide_core::{BlockPos, BlockState, LegacyRandom, RandomSource, ResourceLocation};
 use oxide_datapack::structure_template::{RawBlockState, RawStructureNbt};
-use oxide_datapack::{BlockFact, BlockFacts};
+use oxide_datapack::{BlockFact, BlockFacts, TagSet};
 
 use super::processor::{process_block_infos, Processor};
 use super::shape::update_shapes;
 use crate::decorator::block_entity::with_loot_table;
-use crate::decorator::context::{block_in, FeatureContext};
+use crate::decorator::context::{block_in, FeatureContext, UnsupportedTally};
+use crate::DecorationRegion;
 
 /// One block of a template: template-relative before processing, world position after.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -238,7 +239,7 @@ impl Template {
     /// from it even when there is a single palette.
     fn palette_index(
         &self,
-        cx: &mut FeatureContext<'_, '_, '_>,
+        world: &mut TemplateWorld<'_, '_>,
         position: BlockPos,
         settings: &PlaceSettings<'_>,
     ) -> Option<usize> {
@@ -249,7 +250,7 @@ impl Template {
         let index = if settings.positional_random {
             LegacyRandom::new(get_seed(position.x, position.y, position.z)).next_int_bounded(count)
         } else {
-            cx.random.next_int_bounded(count)
+            world.random.next_int_bounded(count)
         };
         Some(index as usize)
     }
@@ -347,20 +348,51 @@ fn read_block_state(entry: &RawBlockState, facts: &BlockFacts, air: &BlockState)
     })
 }
 
+/// What placing a template reads and writes: the level, the tags and seed processors test
+/// against, and the random `placeInWorld` is handed (decoration's stream, or a piece's).
+pub struct TemplateWorld<'w, 'r> {
+    pub region: &'w mut DecorationRegion<'r>,
+    pub block_tags: &'w TagSet,
+    pub facts: &'w BlockFacts,
+    pub seed: i64,
+    pub random: &'w mut dyn RandomSource,
+    /// Where what the region cannot carry is tallied; structure pieces keep no tally.
+    pub unsupported: Option<&'w mut UnsupportedTally>,
+}
+
+impl<'w, 'r> TemplateWorld<'w, 'r> {
+    pub fn from_feature(cx: &'w mut FeatureContext<'_, '_, 'r>) -> Self {
+        Self {
+            region: &mut *cx.region,
+            block_tags: &cx.env.block_tags,
+            facts: &cx.env.facts,
+            seed: cx.env.seed,
+            random: &mut *cx.random,
+            unsupported: Some(&mut *cx.unsupported),
+        }
+    }
+
+    pub(super) fn record_unsupported(&mut self, category: &str, detail: &str) {
+        if let Some(tally) = self.unsupported.as_deref_mut() {
+            tally.record(category, detail);
+        }
+    }
+}
+
 /// `StructureTemplate.placeInWorld(level, position, position, settings, random, flags)`.
 /// `id` names the template for the tallies. Returns what vanilla returns.
 pub fn place_in_world(
     template: &Template,
     id: &ResourceLocation,
-    cx: &mut FeatureContext<'_, '_, '_>,
+    world: &mut TemplateWorld<'_, '_>,
     position: BlockPos,
     settings: &PlaceSettings<'_>,
 ) -> bool {
     if !settings.positional_random && !template.nbt.is_empty() {
-        cx.unsupported.record("template_block_nbt", &id.to_string());
+        world.record_unsupported("template_block_nbt", &id.to_string());
         return false;
     }
-    let Some(index) = template.palette_index(cx, position, settings) else {
+    let Some(index) = template.palette_index(world, position, settings) else {
         return false;
     };
     let blocks = &template.palettes[index];
@@ -369,9 +401,8 @@ pub fn place_in_world(
         return false;
     }
 
-    let processed = process_block_infos(cx, position, settings, blocks);
-    let env = cx.env;
-    let facts = &env.facts;
+    let processed = process_block_infos(world, position, settings, blocks);
+    let facts = world.facts;
     let mut to_fill: Vec<BlockPos> = Vec::new();
     let mut locked: HashSet<BlockPos> = HashSet::new();
     let mut placed: Vec<BlockPos> = Vec::with_capacity(processed.len());
@@ -382,7 +413,7 @@ pub fn place_in_world(
         {
             continue;
         }
-        let previous = block_in(cx.region, info.pos).clone();
+        let previous = block_in(world.region, info.pos).clone();
         // PARITY-CHECK: `rotate_block_state` and `mirror_block_state` cover the standard
         // directional properties (see their docs); a template block with a per-block rotation
         // rule (rails' `shape`, a stair's `shape` under a mirror) would come out unturned.
@@ -390,16 +421,14 @@ pub fn place_in_world(
         // has more than `axis`/`facing`-style properties.
         let mirrored = mirror_block_state(&info.state, settings.mirror);
         let state = rotate_block_state(&mirrored, settings.rotation);
-        if !cx.region.set_block(info.pos, state.clone()) {
+        if !world.region.set_block(info.pos, state.clone()) {
             continue;
         }
         placed.push(info.pos);
         if facts.is(&state, BlockFact::BlockEntity) {
             match &info.nbt {
-                Some(nbt) => place_block_entity(template, cx, info.pos, &state, nbt),
-                None => cx
-                    .unsupported
-                    .record("block_entity", &state.name.to_string()),
+                Some(nbt) => place_block_entity(template, world, info.pos, &state, nbt),
+                None => world.record_unsupported("block_entity", &state.name.to_string()),
             }
         }
         if !settings.apply_waterlogging {
@@ -408,19 +437,19 @@ pub fn place_in_world(
         if facts.is(&state, BlockFact::FluidSource) {
             locked.insert(info.pos);
         } else if is_liquid_container(&state) {
-            place_liquid(cx, info.pos, &state, &previous);
+            place_liquid(world, info.pos, &state, &previous);
             if !facts.is(&previous, BlockFact::FluidSource) {
                 to_fill.push(info.pos);
             }
         }
     }
 
-    flood(cx, &mut to_fill, &locked);
+    flood(world, &mut to_fill, &locked);
     if !placed.is_empty() {
-        update_shapes(cx, &placed);
+        update_shapes(world, &placed);
     }
     if template.entity_count > 0 && !settings.ignore_entities {
-        cx.unsupported.record("template_entities", &id.to_string());
+        world.record_unsupported("template_entities", &id.to_string());
     }
     true
 }
@@ -456,7 +485,7 @@ pub fn randomizable_container_id(block: &ResourceLocation) -> Option<&'static st
 /// block-entity NBT of a placed igloo laboratory and an end-city ship against the game.
 fn place_block_entity(
     template: &Template,
-    cx: &mut FeatureContext<'_, '_, '_>,
+    world: &mut TemplateWorld<'_, '_>,
     pos: BlockPos,
     state: &BlockState,
     nbt: &BlockNbt,
@@ -467,7 +496,7 @@ fn place_block_entity(
             let nbt = template.nbt(*index);
             // `blockInfo.nbt.putLong("LootTableSeed", random.nextLong())`, which only a loot
             // table makes observable.
-            let seed = container.map(|_| cx.random.next_long());
+            let seed = container.map(|_| world.random.next_long());
             match (&nbt.loot_table, seed) {
                 (Some(table), Some(seed)) => with_loot_table(&nbt.id, pos, table, seed),
                 _ => {
@@ -485,11 +514,11 @@ fn place_block_entity(
         // Only suspicious sand and gravel take an `append_loot` rule in 26.2; a container would
         // redraw its seed here, as above.
         BlockNbt::Loot { table, seed } => match container {
-            Some(id) => with_loot_table(id, pos, table, cx.random.next_long()),
+            Some(id) => with_loot_table(id, pos, table, world.random.next_long()),
             None => with_loot_table("minecraft:brushable_block", pos, table, *seed),
         },
     };
-    cx.region.put_block_entity(pos, snbt);
+    world.region.put_block_entity(pos, snbt);
 }
 
 /// `Block.mirror` in the vocabulary of [`rotate_block_state`]: a `facing` on the mirrored axis
@@ -658,12 +687,12 @@ fn is_liquid_container(state: &BlockState) -> bool {
 /// `SimpleWaterloggedBlock.placeLiquid`: a dry container standing where a water source was
 /// (or next to one, from [`flood`]) becomes waterlogged. Returns whether it took the fluid.
 fn place_liquid(
-    cx: &mut FeatureContext<'_, '_, '_>,
+    world: &mut TemplateWorld<'_, '_>,
     pos: BlockPos,
     state: &BlockState,
     fluid: &BlockState,
 ) -> bool {
-    let facts = &cx.env.facts;
+    let facts = &world.facts;
     let water_source = facts.is(fluid, BlockFact::Water) && facts.is(fluid, BlockFact::FluidSource);
     if state
         .properties
@@ -671,7 +700,8 @@ fn place_liquid(
         .is_some_and(|value| value == "false")
         && water_source
     {
-        cx.region
+        world
+            .region
             .set_block(pos, state.clone().with_property("waterlogged", "true"));
         return true;
     }
@@ -682,7 +712,7 @@ fn place_liquid(
 /// the first unlocked source next to it (up, north, east, south, west), repeated while a pass
 /// fills anything.
 fn flood(
-    cx: &mut FeatureContext<'_, '_, '_>,
+    world: &mut TemplateWorld<'_, '_>,
     to_fill: &mut Vec<BlockPos>,
     locked: &HashSet<BlockPos>,
 ) {
@@ -699,21 +729,21 @@ fn flood(
         let mut index = 0;
         while index < to_fill.len() {
             let pos = to_fill[index];
-            let mut source = block_in(cx.region, pos).clone();
+            let mut source = block_in(world.region, pos).clone();
             for direction in AROUND {
-                if cx.env.facts.is(&source, BlockFact::FluidSource) {
+                if world.facts.is(&source, BlockFact::FluidSource) {
                     break;
                 }
                 let neighbour = step(pos, direction);
-                let state = block_in(cx.region, neighbour);
-                if cx.env.facts.is(state, BlockFact::FluidSource) && !locked.contains(&neighbour) {
+                let state = block_in(world.region, neighbour);
+                if world.facts.is(state, BlockFact::FluidSource) && !locked.contains(&neighbour) {
                     source = state.clone();
                 }
             }
-            if cx.env.facts.is(&source, BlockFact::FluidSource) {
-                let state = block_in(cx.region, pos).clone();
+            if world.facts.is(&source, BlockFact::FluidSource) {
+                let state = block_in(world.region, pos).clone();
                 if is_liquid_container(&state) {
-                    place_liquid(cx, pos, &state, &source);
+                    place_liquid(world, pos, &state, &source);
                     filled = true;
                     to_fill.remove(index);
                     continue;

@@ -28,7 +28,8 @@ use oxide_core::{BlockPos, BlockState, ResourceLocation};
 use oxide_datapack::BlockFact;
 
 use super::structure_template::step;
-use crate::decorator::context::{block_in, FeatureContext};
+use super::structure_template::TemplateWorld;
+use crate::decorator::context::block_in;
 
 /// `BlockBehaviour.UPDATE_SHAPE_ORDER`.
 const UPDATE_SHAPE_ORDER: [Direction; 6] = [
@@ -41,29 +42,29 @@ const UPDATE_SHAPE_ORDER: [Direction; 6] = [
 ];
 
 /// Runs both passes over the positions `placeInWorld` wrote, in the order it wrote them.
-pub(super) fn update_shapes(cx: &mut FeatureContext<'_, '_, '_>, placed: &[BlockPos]) {
+pub(super) fn update_shapes(world: &mut TemplateWorld<'_, '_>, placed: &[BlockPos]) {
     let cells: HashSet<BlockPos> = placed.iter().copied().collect();
     for (direction, pos) in faces(placed, &cells) {
         let neighbour_pos = step(pos, direction);
-        let state = block_in(cx.region, pos).clone();
-        let neighbour = block_in(cx.region, neighbour_pos).clone();
-        let new_state = update_shape(cx, &state, pos, direction);
+        let state = block_in(world.region, pos).clone();
+        let neighbour = block_in(world.region, neighbour_pos).clone();
+        let new_state = update_shape(world, &state, pos, direction);
         if new_state != state {
-            cx.region.set_block(pos, new_state.clone());
+            world.region.set_block(pos, new_state.clone());
         }
-        let new_neighbour = update_shape(cx, &neighbour, neighbour_pos, direction.opposite());
+        let new_neighbour = update_shape(world, &neighbour, neighbour_pos, direction.opposite());
         if new_neighbour != neighbour {
-            cx.region.set_block(neighbour_pos, new_neighbour);
+            world.region.set_block(neighbour_pos, new_neighbour);
         }
     }
     for &pos in placed {
-        let state = block_in(cx.region, pos).clone();
+        let state = block_in(world.region, pos).clone();
         let mut new_state = state.clone();
         for direction in UPDATE_SHAPE_ORDER {
-            new_state = update_shape(cx, &new_state, pos, direction);
+            new_state = update_shape(world, &new_state, pos, direction);
         }
         if new_state != state {
-            cx.region.set_block(pos, new_state);
+            world.region.set_block(pos, new_state);
         }
     }
 }
@@ -121,17 +122,19 @@ fn faces(placed: &[BlockPos], cells: &HashSet<BlockPos>) -> Vec<(Direction, Bloc
 /// itself, tallied. The rules known read the level, which already holds the neighbour vanilla
 /// passes in, so the neighbour is not an argument.
 fn update_shape(
-    cx: &mut FeatureContext<'_, '_, '_>,
+    world: &mut TemplateWorld<'_, '_>,
     state: &BlockState,
     pos: BlockPos,
     direction: Direction,
 ) -> BlockState {
-    let facts = &cx.env.facts;
+    let facts = &world.facts;
     if facts.is(state, BlockFact::ShapeInert) {
         return state.clone();
     }
     match state.name.path() {
-        "potent_sulfur" if state.name.namespace() == "minecraft" => potent_sulfur(cx, state, pos),
+        "potent_sulfur" if state.name.namespace() == "minecraft" => {
+            potent_sulfur(world, state, pos)
+        }
         "sulfur_spike" | "pointed_dripstone"
             if state.name.namespace() == "minecraft"
                 && state
@@ -139,27 +142,26 @@ fn update_shape(
                     .get("vertical_direction")
                     .is_some_and(|tip| tip == "up") =>
         {
-            speleothem_up(cx, state, pos, direction)
+            speleothem_up(world, state, pos, direction)
         }
         _ => {
-            cx.unsupported
-                .record("shape_update", &state.name.to_string());
+            world.record_unsupported("shape_update", &state.name.to_string());
             state.clone()
         }
     }
 }
 
 /// `PotentSulfurBlock.validBlockState`.
-fn potent_sulfur(cx: &FeatureContext<'_, '_, '_>, state: &BlockState, pos: BlockPos) -> BlockState {
-    let facts = &cx.env.facts;
-    let tags = &cx.env.block_tags;
-    let above = block_in(cx.region, step(pos, Direction::Up));
+fn potent_sulfur(world: &TemplateWorld<'_, '_>, state: &BlockState, pos: BlockPos) -> BlockState {
+    let facts = &world.facts;
+    let tags = &world.block_tags;
+    let above = block_in(world.region, step(pos, Direction::Up));
     let water_source = facts.is(above, BlockFact::Water) && facts.is(above, BlockFact::FluidSource);
     let with = |value: &str| state.clone().with_property("potent_sulfur_state", value);
     if !water_source {
         return with("dry");
     }
-    let below = block_in(cx.region, step(pos, Direction::Down));
+    let below = block_in(world.region, step(pos, Direction::Down));
     // `isSourceIfFluid`: no fluid, or a source.
     let source_if_fluid = !(facts.is(below, BlockFact::Water) || facts.is(below, BlockFact::Lava))
         || facts.is(below, BlockFact::FluidSource);
@@ -193,7 +195,7 @@ fn thickness(state: &BlockState) -> &str {
 /// `SpeleothemBlock.updateShape` for a tip pointing up. (Pointing down it first consults the
 /// block's scheduled ticks, which the region does not keep, so those are left to the tally.)
 fn speleothem_up(
-    cx: &FeatureContext<'_, '_, '_>,
+    world: &TemplateWorld<'_, '_>,
     state: &BlockState,
     pos: BlockPos,
     direction: Direction,
@@ -201,8 +203,8 @@ fn speleothem_up(
     if direction != Direction::Up && direction != Direction::Down {
         return state.clone();
     }
-    let facts = &cx.env.facts;
-    let tags = &cx.env.block_tags;
+    let facts = &world.facts;
+    let tags = &world.block_tags;
     let speleothem_pointing = |other: &BlockState, tip: &str| {
         tags.contains(&ResourceLocation::minecraft("speleothems"), &other.name)
             && other
@@ -210,7 +212,7 @@ fn speleothem_up(
                 .get("vertical_direction")
                 .is_some_and(|value| value == tip)
     };
-    let below = block_in(cx.region, step(pos, Direction::Down));
+    let below = block_in(world.region, step(pos, Direction::Down));
     // `canSurvive` = `isValidSpeleothemPlacement(pos, UP)`: a sturdy top below, or the same
     // block pointing up. Failing it on the update from below only schedules a tick.
     let survives = facts.is(below, BlockFact::SturdyTop)
@@ -218,7 +220,7 @@ fn speleothem_up(
     if direction == Direction::Down && !survives {
         return state.clone();
     }
-    let in_front = block_in(cx.region, step(pos, Direction::Up));
+    let in_front = block_in(world.region, step(pos, Direction::Up));
     let merge = thickness(state) == "tip_merge";
     let new_thickness = if speleothem_pointing(in_front, "down") && in_front.name == state.name {
         if !merge && thickness(in_front) != "tip_merge" {

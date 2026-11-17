@@ -38,7 +38,7 @@ pub use fossil::FossilFeature;
 pub use processor::{Processor, Rule};
 pub use structure_template::{
     mirror_block_state, place_in_world, randomizable_container_id, BlockInfo, BlockNbt,
-    BoundingBox, PlaceSettings, Template, TemplateNbt,
+    BoundingBox, PlaceSettings, Template, TemplateNbt, TemplateWorld,
 };
 pub use template_feature::TemplateFeature;
 

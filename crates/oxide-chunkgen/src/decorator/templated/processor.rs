@@ -26,8 +26,9 @@ use oxide_core::{
 use oxide_datapack::template_feature::{Processor as ProcessorIr, ProcessorRule};
 use oxide_datapack::{BlockFact, BlockFacts, TagSet};
 
+use super::structure_template::TemplateWorld;
 use super::structure_template::{offset, BlockInfo, BlockNbt, PlaceSettings};
-use crate::decorator::context::{block_in, FeatureContext};
+use crate::decorator::context::block_in;
 use crate::decorator::ore::RuleTest;
 use crate::decorator::predicate::IdSet;
 use crate::decorator::state_provider::state_from_spec;
@@ -393,7 +394,7 @@ impl Rule {
 /// `finalizeProcessing`. Unless a processor evaluates the whole piece, blocks outside the
 /// bounding box are skipped before any processor sees them.
 pub(super) fn process_block_infos(
-    cx: &mut FeatureContext<'_, '_, '_>,
+    world: &mut TemplateWorld<'_, '_>,
     position: BlockPos,
     settings: &PlaceSettings<'_>,
     blocks: &[BlockInfo],
@@ -402,7 +403,6 @@ pub(super) fn process_block_infos(
         .processors
         .iter()
         .any(Processor::evaluates_entire_piece);
-    let env = cx.env;
     let mut out = Vec::with_capacity(blocks.len());
     for block in blocks {
         let moved = transform(
@@ -425,16 +425,16 @@ pub(super) fn process_block_infos(
         });
         for processor in settings.processors {
             let Some(current) = info else { break };
-            let world = block_in(cx.region, current.pos);
-            let stream =
-                (!settings.positional_random).then_some(&mut *cx.random as &mut dyn RandomSource);
-            info = processor.process(current, world, &env.block_tags, &env.facts, stream);
+            let existing = block_in(world.region, current.pos);
+            let stream = (!settings.positional_random)
+                .then_some(&mut *world.random as &mut dyn RandomSource);
+            info = processor.process(current, existing, world.block_tags, world.facts, stream);
         }
         out.extend(info);
     }
     for processor in settings.processors {
         if let Processor::Capped { delegate, limit } = processor {
-            finalize_capped(cx, position, delegate, *limit, &mut out);
+            finalize_capped(world, position, delegate, *limit, &mut out);
         }
     }
     out
@@ -444,7 +444,7 @@ pub(super) fn process_block_infos(
 /// forked from the world seed at the piece's position, go through `delegate`; only a change
 /// counts towards the limit.
 fn finalize_capped(
-    cx: &mut FeatureContext<'_, '_, '_>,
+    world: &mut TemplateWorld<'_, '_>,
     position: BlockPos,
     delegate: &Processor,
     limit: i32,
@@ -454,7 +454,7 @@ fn finalize_capped(
         return;
     }
     // `RandomSource.createThreadLocalInstance(seed).forkPositional().at(position)`.
-    let factory = LegacyPositionalRandomFactory::new(LegacyRandom::new(cx.env.seed).next_long());
+    let factory = LegacyPositionalRandomFactory::new(LegacyRandom::new(world.seed).next_long());
     let mut random = factory.at(position.x, position.y, position.z);
     let max_to_replace = limit.min(processed.len() as i32);
     if max_to_replace < 1 {
@@ -466,15 +466,15 @@ fn finalize_capped(
         let swap_to = random.next_int_bounded(i as i32) as usize;
         indices.swap(i - 1, swap_to);
     }
-    let env = cx.env;
     let mut replaced = 0;
     for index in indices {
         if replaced >= max_to_replace {
             break;
         }
         let current = processed[index].clone();
-        let world = block_in(cx.region, current.pos);
-        let Some(altered) = delegate.process(current, world, &env.block_tags, &env.facts, None)
+        let existing = block_in(world.region, current.pos);
+        let Some(altered) =
+            delegate.process(current, existing, world.block_tags, world.facts, None)
         else {
             continue;
         };

@@ -4,7 +4,7 @@
 use oxide_core::rotation::{Direction, Rotation};
 use oxide_core::RandomSource;
 
-use super::structure_template::{offset, place_in_world, PlaceSettings};
+use super::structure_template::{offset, place_in_world, PlaceSettings, TemplateWorld};
 use super::TemplateRef;
 use crate::decorator::context::FeatureContext;
 
@@ -48,6 +48,12 @@ impl TemplateFeature {
             );
         }
         let settings = PlaceSettings::new(rotation, None, &[]);
-        place_in_world(template, &template_ref.id, cx, pos, &settings)
+        place_in_world(
+            template,
+            &template_ref.id,
+            &mut TemplateWorld::from_feature(cx),
+            pos,
+            &settings,
+        )
     }
 }

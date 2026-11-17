@@ -215,7 +215,13 @@ fn place(
 ) -> Outcome {
     let id = ResourceLocation::minecraft("test");
     with_context(env, seed, position, prepare, |cx| {
-        place_in_world(template, &id, cx, position, &settings)
+        place_in_world(
+            template,
+            &id,
+            &mut TemplateWorld::from_feature(cx),
+            position,
+            &settings,
+        )
     })
 }
 
