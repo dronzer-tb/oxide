@@ -90,6 +90,7 @@ impl BiomeDecorator {
                         None => {
                             let key = placed.len() as u32;
                             placed.push(compiler.placed_by_id(feature_id)?);
+                            crate::deco_stats::name_feature(key, &feature_id.to_string());
                             key_of.insert(content, key);
                             key
                         }
@@ -230,6 +231,7 @@ impl Decorator for BiomeDecorator {
             .collect();
 
         let mut tally = UnsupportedTally::default();
+        let mut times: Vec<(u8, u32, u64)> = Vec::new();
         for (step, features) in self.steps.iter().enumerate() {
             let mut indices: Vec<u32> = present
                 .iter()
@@ -255,9 +257,14 @@ impl Decorator for BiomeDecorator {
                     unsupported: &mut tally,
                     top_feature: Some(key),
                 };
+                let timer = crate::deco_stats::Stopwatch::start();
                 place_placed(&self.placed[key as usize], &mut cx, origin, Some(key));
+                if cfg!(feature = "deco-stats") {
+                    times.push((step as u8, key, timer.nanos()));
+                }
             }
         }
+        crate::deco_stats::record_features(&times);
         if !tally.is_empty() {
             self.unsupported
                 .lock()

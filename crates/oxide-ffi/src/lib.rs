@@ -360,7 +360,7 @@ pub unsafe extern "C" fn oxide_pack_sections(
         || out_counts.is_null()
         || out_palettes.is_null()
         || out_packed.is_null()
-        || blocks_len % SECTION_BLOCKS != 0
+        || !blocks_len.is_multiple_of(SECTION_BLOCKS)
     {
         set_last_error("oxide_pack_sections: null pointer or blocks_len not a multiple of 4096");
         return -1;

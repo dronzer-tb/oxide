@@ -83,7 +83,7 @@ fn main() -> Result<()> {
     }
 
     let mut gaps = generator.decoration_gaps();
-    gaps.sort_by(|a, b| b.1.cmp(&a.1));
+    gaps.sort_by_key(|g| std::cmp::Reverse(g.1));
     println!("{} chunks, {} gap kinds", coords.len(), gaps.len());
     for (key, count) in gaps {
         println!("{count:>10}  {key}");

@@ -14,6 +14,11 @@
 //! real 26.2 datapack at all, like `weird_scaled_sampler`) stay `// PARITY-CHECK`-flagged
 //! per-node in `density.rs`.
 
+// The interpreter mirrors vanilla's operand order (`g * b` vs `b * g`, `c + p` vs `p + c`)
+// branch by branch so each line maps to its Java source; the results are equal, which is what
+// this lint objects to. Lane loops index several parallel arrays by one counter.
+#![allow(clippy::if_same_then_else, clippy::needless_range_loop)]
+
 mod blended_noise;
 mod cache;
 mod compiled;

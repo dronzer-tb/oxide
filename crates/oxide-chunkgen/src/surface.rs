@@ -209,15 +209,25 @@ fn flatten<'a>(rule: CompiledRule<'a>, ops: &mut Vec<Op<'a>>) {
 /// What is known about every position a specialised program (see [`fold`]) is offered. Both
 /// facts are plain functions of the position and its column.
 #[derive(Clone, Copy)]
-struct Facts {
+struct Facts<'f> {
     /// The positions' y lies in `y_lo..=y_hi`.
     y_lo: i32,
     y_hi: i32,
     /// The answer `above_preliminary_surface` gives at every one of them, when known.
     above_preliminary_surface: Option<bool>,
+    /// Every position is in one known chunk biome: `biome` conditions read its row of masks.
+    biome: Option<KnownBiome<'f>>,
 }
 
-impl Facts {
+/// One chunk biome, and the chunk's biome-set masks to answer `biome` conditions from.
+#[derive(Clone, Copy)]
+struct KnownBiome<'f> {
+    masks: &'f [bool],
+    count: usize,
+    biome: usize,
+}
+
+impl Facts<'_> {
     /// The value `condition` has at every position these facts describe, when they settle it
     /// without reading anything else. `None` keeps the test, evaluated as usual.
     fn known(&self, condition: &CompiledCondition<'_>) -> Option<bool> {
@@ -250,6 +260,10 @@ impl Facts {
                 }
             }
             CompiledCondition::AbovePreliminarySurface => self.above_preliminary_surface,
+            // A table lookup by biome: no memo, no draw.
+            CompiledCondition::Biome(set) => self
+                .biome
+                .map(|known| known.masks[set * known.count + known.biome]),
             _ => None,
         }
     }
@@ -295,7 +309,7 @@ fn fold<'a>(
     ops: &[Op<'a>],
     start: usize,
     end: usize,
-    facts: &Facts,
+    facts: &Facts<'_>,
     out: &mut Vec<Op<'a>>,
 ) -> bool {
     let mut i = start;
@@ -472,6 +486,7 @@ impl<'a> SurfaceSystem<'a> {
             y_lo: min_y,
             y_hi: min_y + height - 1,
             above_preliminary_surface: Some(true),
+            biome: None,
         };
         let mut program = Vec::new();
         fold(&full, 0, full.len(), &world, &mut program);
@@ -583,6 +598,11 @@ impl<'a> SurfaceSystem<'a> {
             })
             .collect();
         let biomes = self.chunk_biomes(chunk);
+        // Per program (0 = at or above the surface, 1 + band below it) and chunk biome, that
+        // program with every `biome` test settled, folded on first use. Half of all tests the
+        // scan makes are biome tests, and a chunk holds only a few biomes.
+        let mut specialised: Vec<Option<Vec<Op<'a>>>> =
+            vec![None; (1 + self.below_programs.len()) * biomes.count];
         // Per section, per rule result: the palette index that result has in that section,
         // once it has been written there. `u32::MAX` = not interned yet.
         let result_count = self.results.len() + BAND_COUNT;
@@ -681,12 +701,31 @@ impl<'a> SurfaceSystem<'a> {
                             biome: biomes.section_maps[section_index][biome_palette_index as usize]
                                 as usize,
                         };
-                        let program = if y >= column.min_surface_level {
-                            &self.program[..]
+                        let base = if y >= column.min_surface_level {
+                            0
                         } else {
-                            let band = self.below_band_of_y[(y - self.min_y) as usize];
-                            &self.below_programs[band as usize][..]
+                            1 + self.below_band_of_y[(y - self.min_y) as usize] as usize
                         };
+                        let program = specialised[base * biomes.count + cursor.biome]
+                            .get_or_insert_with(|| {
+                                let ops = match base {
+                                    0 => &self.program,
+                                    band => &self.below_programs[band - 1],
+                                };
+                                let facts = Facts {
+                                    y_lo: self.min_y,
+                                    y_hi: top_y,
+                                    above_preliminary_surface: None,
+                                    biome: Some(KnownBiome {
+                                        masks: &biomes.masks,
+                                        count: biomes.count,
+                                        biome: cursor.biome,
+                                    }),
+                                };
+                                let mut folded = Vec::new();
+                                fold(ops, 0, ops.len(), &facts, &mut folded);
+                                folded
+                            });
                         let Some(result) = self.eval_program(program, &cursor, &column, &biomes)
                         else {
                             continue;

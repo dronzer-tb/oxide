@@ -6,6 +6,14 @@
 //! large vanilla subsystem and are not built yet — see `fill.rs`'s module doc. Surface rules
 //! (grass/dirt/sand/bedrock) *are* evaluated now, with two named gaps — see `surface.rs`.
 
+// Ported loops keep vanilla's index form so each maps to its Java source, and feature enums
+// hold each compiled config once per feature, where boxing would only add an indirection.
+#![allow(
+    clippy::needless_range_loop,
+    clippy::large_enum_variant,
+    clippy::explicit_counter_loop
+)]
+
 pub mod aquifer;
 
 #[cfg(feature = "cull-stats")]
@@ -16,6 +24,7 @@ pub static CULL_BOUNDED: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomi
 pub static CULL_HI_NEG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 mod biome_grid;
 mod carver;
+pub mod deco_stats;
 pub mod decorate;
 pub mod decoration_seed;
 pub mod decorator;
@@ -88,7 +97,8 @@ pub struct CarverSetup<'a> {
     /// `Sync` so a caller can generate several chunks at once off one setup -- which is how
     /// Folia drives this, one region per thread. Nothing in generation mutates shared state:
     /// the caches and the aquifer are built per chunk inside [`generate_chunk`].
-    pub carvers_at: &'a (dyn Fn(ChunkPos) -> Vec<oxide_datapack::ConfiguredCarver> + Sync),
+    pub carvers_at:
+        &'a (dyn Fn(ChunkPos) -> std::sync::Arc<[oxide_datapack::ConfiguredCarver]> + Sync),
 }
 
 /// Generation must be usable from several threads at once against one shared router and one

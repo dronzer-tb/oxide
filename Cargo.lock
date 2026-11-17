@@ -927,11 +927,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "fastnbt",
+ "libc",
  "oxide-anvil",
+ "oxide-chunkgen",
  "oxide-core",
+ "oxide-ffi",
  "rayon",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

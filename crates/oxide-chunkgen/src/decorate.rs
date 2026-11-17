@@ -34,6 +34,7 @@ use oxide_core::{
 };
 use oxide_datapack::{BlockFact, BlockFacts};
 
+use crate::deco_stats::{self, MemoStats, Stopwatch};
 use crate::decorator::block_entity;
 use crate::fill::local_index;
 use crate::region::{height_fact, BlockEntityData, Bucket, ChunkExtras, DecorationRegion};
@@ -86,26 +87,30 @@ const SHARDS: usize = 16;
 /// outside it.
 struct Memo<V> {
     shards: Vec<Mutex<Bounded<ChunkPos, Slot<V>>>>,
+    stats: &'static MemoStats,
 }
 
 /// One memoised value: filled once, by whichever thread asked first.
 type Slot<V> = Arc<OnceLock<Arc<V>>>;
 
 impl<V> Memo<V> {
-    fn new(capacity: usize) -> Self {
+    fn new(capacity: usize, stats: &'static MemoStats) -> Self {
         Self {
             shards: (0..SHARDS)
                 .map(|_| Mutex::new(Bounded::new(capacity.div_ceil(SHARDS))))
                 .collect(),
+            stats,
         }
     }
 
     fn get_or_compute(&self, pos: ChunkPos, compute: impl FnOnce() -> V) -> Arc<V> {
         let shard = (pos.x.wrapping_mul(31).wrapping_add(pos.z)).rem_euclid(SHARDS as i32);
         let slot = {
+            let locking = Stopwatch::start();
             let mut map = self.shards[shard as usize]
                 .lock()
                 .expect("decoration cache poisoned");
+            locking.stop(&self.stats.lock);
             match map.get(&pos) {
                 Some(slot) => slot,
                 None => {
@@ -115,7 +120,24 @@ impl<V> Memo<V> {
                 }
             }
         };
-        slot.get_or_init(|| Arc::new(compute())).clone()
+        if let Some(value) = slot.get() {
+            deco_stats::hit(self.stats);
+            return value.clone();
+        }
+        let timer = Stopwatch::start();
+        let mut computed = false;
+        let value = slot
+            .get_or_init(|| {
+                computed = true;
+                Arc::new(compute())
+            })
+            .clone();
+        timer.stop(if computed {
+            &self.stats.computed
+        } else {
+            &self.stats.waited
+        });
+        value
     }
 }
 
@@ -136,9 +158,29 @@ impl DecorationCache {
     /// finishing one chunk touches the 5x5 around it.
     pub fn new(terrain_chunks: usize, write_lists: usize) -> Self {
         Self {
-            terrain: Memo::new(terrain_chunks.max(25)),
-            writes: Memo::new(write_lists.max(9)),
+            terrain: Memo::new(terrain_chunks.max(25), &deco_stats::TERRAIN),
+            writes: Memo::new(write_lists.max(9), &deco_stats::WRITES),
         }
+    }
+
+    /// Computes and caches `pos`'s terrain now, so a later chunk finds it.
+    pub fn prepare_terrain(
+        &self,
+        pos: ChunkPos,
+        generate: &(dyn Fn(ChunkPos) -> ChunkData + Sync),
+    ) {
+        self.terrain(pos, generate);
+    }
+
+    /// Computes and caches `pos`'s feature writes now, so a later chunk finds them.
+    pub fn prepare_writes(
+        &self,
+        pos: ChunkPos,
+        generate: &(dyn Fn(ChunkPos) -> ChunkData + Sync),
+        decorator: &dyn Decorator,
+        facts: &BlockFacts,
+    ) {
+        self.writes(pos, generate, decorator, facts);
     }
 
     fn terrain(
@@ -164,9 +206,16 @@ impl DecorationCache {
                 }
             }
             let chunks: [&ChunkData; 9] = std::array::from_fn(|index| ring[index].as_ref());
+            let timer = Stopwatch::start();
             let mut region = DecorationRegion::new(pos, chunks, facts);
+            timer.stop(&deco_stats::REGION_NEW);
+            let timer = Stopwatch::start();
             decorator.decorate(&mut region);
-            region.into_buckets()
+            timer.stop(&deco_stats::DECORATE);
+            let timer = Stopwatch::start();
+            let buckets = region.into_buckets();
+            timer.stop(&deco_stats::BUCKETS);
+            buckets
         })
     }
 }
@@ -200,7 +249,12 @@ pub fn decorated_chunk_with_extras(
     facts: &BlockFacts,
     cache: &DecorationCache,
 ) -> (ChunkData, ChunkExtras) {
-    let mut chunk = (*cache.terrain(pos, generate)).clone();
+    let whole = Stopwatch::start();
+    let terrain = cache.terrain(pos, generate);
+    let timer = Stopwatch::start();
+    let mut chunk = (*terrain).clone();
+    timer.stop(&deco_stats::CLONE);
+    let timer = Stopwatch::start();
     let inside = |at: &BlockPos| {
         at.chunk_pos() == pos && at.y >= chunk.min_y && at.y < chunk.min_y + chunk.height
     };
@@ -215,6 +269,8 @@ pub fn decorated_chunk_with_extras(
             sources.push((cache.writes(source, generate, decorator, facts), bucket));
         }
     }
+    timer.stop(&deco_stats::SOURCES);
+    let timer = Stopwatch::start();
     // Every write of a block-entity block, numbered in application order. The last write to a
     // position decides its block, so such a write stands only if the finished chunk holds its
     // state there and no later write of a block-entity block went to the same position.
@@ -241,6 +297,8 @@ pub fn decorated_chunk_with_extras(
         }
     }
 
+    timer.stop(&deco_stats::APPLY);
+    let timer = Stopwatch::start();
     let mut extras = ChunkExtras::default();
     let mut filled: FastHashMap<BlockPos, &BlockEntityData> = FastHashMap::default();
     for (output, _) in &sources {
@@ -288,8 +346,12 @@ pub fn decorated_chunk_with_extras(
         }
     }
 
+    timer.stop(&deco_stats::EXTRAS);
+    let timer = Stopwatch::start();
     chunk.heightmaps = heightmaps(&chunk, facts);
+    timer.stop(&deco_stats::HEIGHTMAPS);
     chunk.status = ChunkStatus::Features;
+    whole.stop(&deco_stats::CHUNK);
     (chunk, extras)
 }
 

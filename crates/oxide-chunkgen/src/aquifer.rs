@@ -489,6 +489,7 @@ impl<'a> Aquifer<'a> {
     ///   is within 50 of the nearest, so also has status `S`. `pressure` of two equal statuses
     ///   returns 0.0 before any noise, each `density + similarity * ... * 0.0` is
     ///   `density + 0.0`, never `> 0` for `density <= 0`, and the result is `S.at_kind(y)`.
+    ///
     /// The skipped calls only fill pure memos (`location`, `status`), so skipping them cannot
     /// change any other answer.
     #[allow(clippy::too_many_arguments)]

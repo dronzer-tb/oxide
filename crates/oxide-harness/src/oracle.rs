@@ -164,7 +164,7 @@ struct Oxide {
     router: NoiseRouterEvaluator,
     biome_tree: Option<BiomeSearchTree>,
     biome_temperatures: BiomeTemperatures,
-    biome_carvers: HashMap<ResourceLocation, Vec<oxide_datapack::ConfiguredCarver>>,
+    biome_carvers: HashMap<ResourceLocation, std::sync::Arc<[oxide_datapack::ConfiguredCarver]>>,
     seed: i64,
     decorator: BiomeDecorator,
     /// Per step, per global index: every placed-feature id with that content.
@@ -247,9 +247,9 @@ impl Oxide {
     }
 
     fn terrain(&self, pos: ChunkPos) -> ChunkData {
-        let carvers_at = |source: ChunkPos| -> Vec<oxide_datapack::ConfiguredCarver> {
+        let carvers_at = |source: ChunkPos| -> std::sync::Arc<[oxide_datapack::ConfiguredCarver]> {
             let Some(tree) = self.biome_tree.as_ref() else {
-                return Vec::new();
+                return std::sync::Arc::from([]);
             };
             let sample = oxide_biome::ClimateSample::sample(
                 &self.router,
@@ -258,8 +258,12 @@ impl Oxide {
                 source.min_block_z(),
             );
             match tree.nearest(sample) {
-                Some(biome) => self.biome_carvers.get(biome).cloned().unwrap_or_default(),
-                None => Vec::new(),
+                Some(biome) => self
+                    .biome_carvers
+                    .get(biome)
+                    .cloned()
+                    .unwrap_or_else(|| std::sync::Arc::from([])),
+                None => std::sync::Arc::from([]),
             }
         };
         let setup = CarverSetup {
@@ -867,6 +871,9 @@ pub struct WorldMap {
     pub decoration_ms: u64,
 }
 
+/// One region's serialized chunks, keyed by its region coordinates where collected.
+type RegionChunks = Vec<(ChunkPos, Vec<u8>)>;
+
 /// Writes `world` as Anvil regions under `<dir>/region`, for a map renderer to read. Not a
 /// world to load in a server: heightmaps are the undecorated terrain's and there is no light.
 fn save_world(dir: &Path, data_version: i32, world: &[ChunkData]) -> Result<()> {
@@ -877,7 +884,7 @@ fn save_world(dir: &Path, data_version: i32, world: &[ChunkData]) -> Result<()> 
         last_update: 0,
         inhabited_time: 0,
     };
-    let mut regions: BTreeMap<(i32, i32), Vec<(ChunkPos, Vec<u8>)>> = BTreeMap::new();
+    let mut regions: BTreeMap<(i32, i32), RegionChunks> = BTreeMap::new();
     for chunk in world {
         let bytes = oxide_anvil::nbt::serialize_chunk(chunk, &opts)?;
         regions
@@ -1007,6 +1014,7 @@ struct SiteRun<'a> {
 /// `run`, plus `<out>/run_<seed>_<dimension>.json` for the website and a refreshed
 /// `<out>/manifest.json` naming every run file there. A comparison that fails still leaves a
 /// run file, carrying the error and Oxide's map.
+#[allow(clippy::too_many_arguments)]
 pub fn site(
     datapack: &Path,
     root: &Path,

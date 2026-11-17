@@ -161,6 +161,7 @@ fn env() -> Environment {
 
 struct Outcome {
     writes: Vec<BlockWrite>,
+    #[allow(dead_code)] // kept so a failing test can print it
     tally: UnsupportedTally,
     placed: bool,
 }

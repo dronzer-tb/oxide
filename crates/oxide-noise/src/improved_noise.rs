@@ -790,7 +790,10 @@ mod tests {
         }
         let after = hash_stats::local();
         let (reused, computed) = (after[0] - before[0], after[1] - before[1]);
-        assert!(reused > 1000 && computed > 1000, "{reused} reused, {computed} computed");
+        assert!(
+            reused > 1000 && computed > 1000,
+            "{reused} reused, {computed} computed"
+        );
     }
 
     /// The phased block kernel must give, lane for lane, the exact bits of the scalar

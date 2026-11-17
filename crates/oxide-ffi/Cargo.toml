@@ -18,6 +18,7 @@ anyhow.workspace = true
 
 [features]
 cull-stats = ["oxide-chunkgen/cull-stats"]
+deco-stats = ["oxide-chunkgen/deco-stats"]
 
 [dev-dependencies]
 rayon.workspace = true

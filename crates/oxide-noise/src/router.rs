@@ -2,8 +2,8 @@
 //! `NoiseGeneratorSettings.noise_router` slot at a block position — vanilla's `RandomState` +
 //! `NoiseRouter`.
 
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use oxide_datapack::{
     DensityFunction, NoiseDimensionSettings, NoiseGeneratorSettings, NoiseRouter,
@@ -548,7 +548,11 @@ mod tests {
                         let expected = program.run(FunctionContext { x, y, z }, &cx);
                         let via_memo =
                             router.sample_in_chunk(&memo_caches, RouterSlot::FinalDensity, x, y, z);
-                        assert_eq!(expected.to_bits(), via_memo.to_bits(), "memo at {x} {y} {z}");
+                        assert_eq!(
+                            expected.to_bits(),
+                            via_memo.to_bits(),
+                            "memo at {x} {y} {z}"
+                        );
 
                         let (cell_x, cell_y, cell_z) = (local_x / 4, (y + 64) / 8, local_z / 4);
                         let cell = ((cell_y * 4 + cell_z) * 4 + cell_x) as usize * lanes;
@@ -568,7 +572,10 @@ mod tests {
                 }
             }
             // Both `range_choice` branches, and cells that mix them, must have been exercised.
-            assert!(in_range > 1000 && out_of_range > 1000, "{in_range} / {out_of_range}");
+            assert!(
+                in_range > 1000 && out_of_range > 1000,
+                "{in_range} / {out_of_range}"
+            );
         }
     }
 
@@ -696,7 +703,13 @@ mod tests {
             blended: &router.blended,
             caches: Some(&plain),
         };
-        for (x, y, z) in [(16, 0, 3), (-1, 10, 0), (4, 320, 4), (4, -65, 4), (5, 9, 16)] {
+        for (x, y, z) in [
+            (16, 0, 3),
+            (-1, 10, 0),
+            (4, 320, 4),
+            (4, -65, 4),
+            (5, 9, 16),
+        ] {
             assert_eq!(
                 program.run(FunctionContext { x, y, z }, &cx).to_bits(),
                 router
@@ -744,7 +757,11 @@ mod tests {
             let mut grids = 0;
             for slot in 0..slots {
                 let (a, b) = (shared.corner_grid(slot), plain.corner_grid(slot));
-                assert_eq!(a.is_some(), b.is_some(), "slot {slot} built in only one cache");
+                assert_eq!(
+                    a.is_some(),
+                    b.is_some(),
+                    "slot {slot} built in only one cache"
+                );
                 if let (Some(a), Some(b)) = (a, b) {
                     assert_eq!(a.len(), 5 * 49 * 5);
                     let a: Vec<u64> = a.iter().map(|v| v.to_bits()).collect();
@@ -759,7 +776,11 @@ mod tests {
             expected_lookups += 16 * grids;
             let (hits, misses) = router.corner_columns.counts();
             assert_eq!(hits, expected_hits, "hits after chunk {chunk_x} {chunk_z}");
-            assert_eq!(hits + misses, expected_lookups, "lookups after {chunk_x} {chunk_z}");
+            assert_eq!(
+                hits + misses,
+                expected_lookups,
+                "lookups after {chunk_x} {chunk_z}"
+            );
         }
     }
 
@@ -804,26 +825,37 @@ mod tests {
         };
         for (c_first, g_first) in [(true, true), (true, false), (false, true), (false, false)] {
             let mul = if g_first {
-                obj(O::Mul { argument1: gradient(), argument2: body() })
+                obj(O::Mul {
+                    argument1: gradient(),
+                    argument2: body(),
+                })
             } else {
-                obj(O::Mul { argument1: body(), argument2: gradient() })
+                obj(O::Mul {
+                    argument1: body(),
+                    argument2: gradient(),
+                })
             };
             let c = DensityFunction::Constant(-0.078125);
             let add = if c_first {
-                obj(O::Add { argument1: c, argument2: mul })
+                obj(O::Add {
+                    argument1: c,
+                    argument2: mul,
+                })
             } else {
-                obj(O::Add { argument1: mul, argument2: c })
+                obj(O::Add {
+                    argument1: mul,
+                    argument2: c,
+                })
             };
             let mut settings = minimal_settings();
             settings.noise_router.final_density = add;
-            let router = NoiseRouterEvaluator::new(
-                9,
-                &settings,
-                &Registry::default(),
-                &Registry::default(),
-            );
+            let router =
+                NoiseRouterEvaluator::new(9, &settings, &Registry::default(), &Registry::default());
             assert!(
-                router.dump_program(RouterSlot::FinalDensity).iter().any(|l| l.contains("GatedAdd")),
+                router
+                    .dump_program(RouterSlot::FinalDensity)
+                    .iter()
+                    .any(|l| l.contains("GatedAdd")),
                 "not gated: {:?}",
                 router.dump_program(RouterSlot::FinalDensity)
             );
@@ -831,17 +863,31 @@ mod tests {
             for y in -64..=320 {
                 for (x, z) in [(0, 0), (-37, 211), (1234, -999)] {
                     let g = crate::density::clamped_lerp(y, 240, 256, 1.0, 0.0);
-                    let b = 0.078125 + router.blended.compute(&params, x as f64, y as f64, z as f64);
+                    let b = 0.078125
+                        + router
+                            .blended
+                            .compute(&params, x as f64, y as f64, z as f64);
                     let product = if g_first { g * b } else { b * g };
-                    let expected = if c_first { -0.078125 + product } else { product + -0.078125 };
+                    let expected = if c_first {
+                        -0.078125 + product
+                    } else {
+                        product + -0.078125
+                    };
                     let got = router.sample(RouterSlot::FinalDensity, x, y, z);
-                    assert_eq!(got.to_bits(), expected.to_bits(), "{c_first} {g_first} at {x} {y} {z}");
+                    assert_eq!(
+                        got.to_bits(),
+                        expected.to_bits(),
+                        "{c_first} {g_first} at {x} {y} {z}"
+                    );
                     if g == 0.0 {
                         skipped += 1;
                     }
                 }
             }
-            assert!(skipped > 100, "the gate must have been exercised: {skipped}");
+            assert!(
+                skipped > 100,
+                "the gate must have been exercised: {skipped}"
+            );
         }
     }
 
@@ -891,20 +937,40 @@ mod tests {
             DensityFunction::Object(Box::new(o))
         }
         let noises: Registry<NormalNoiseParameters> = [
-            (Rl::new("minecraft", "t"), NormalNoiseParameters { first_octave: -10, amplitudes: vec![1.5, 0.0, 1.0, 0.0, 0.0, 0.0] }),
-            (Rl::new("minecraft", "offset"), NormalNoiseParameters { first_octave: -3, amplitudes: vec![1.0, 1.0, 1.0, 0.0] }),
+            (
+                Rl::new("minecraft", "t"),
+                NormalNoiseParameters {
+                    first_octave: -10,
+                    amplitudes: vec![1.5, 0.0, 1.0, 0.0, 0.0, 0.0],
+                },
+            ),
+            (
+                Rl::new("minecraft", "offset"),
+                NormalNoiseParameters {
+                    first_octave: -3,
+                    amplitudes: vec![1.0, 1.0, 1.0, 0.0],
+                },
+            ),
         ]
         .into_iter()
         .collect();
-        let shift = |o: O| obj(O::Cache2d { argument: obj(O::FlatCache { argument: obj(o) }) });
+        let shift = |o: O| {
+            obj(O::Cache2d {
+                argument: obj(O::FlatCache { argument: obj(o) }),
+            })
+        };
         let climate = |shift_y: f64, y_scale: f64| {
             obj(O::ShiftedNoise {
                 noise: Rl::new("minecraft", "t"),
                 xz_scale: 0.25,
                 y_scale,
-                shift_x: shift(O::ShiftA { argument: Rl::new("minecraft", "offset") }),
+                shift_x: shift(O::ShiftA {
+                    argument: Rl::new("minecraft", "offset"),
+                }),
                 shift_y: DensityFunction::Constant(shift_y),
-                shift_z: shift(O::ShiftB { argument: Rl::new("minecraft", "offset") }),
+                shift_z: shift(O::ShiftB {
+                    argument: Rl::new("minecraft", "offset"),
+                }),
             })
         };
         let cases: Vec<(&str, DensityFunction, bool)> = vec![
@@ -912,30 +978,82 @@ mod tests {
             ("nonzero shift_y", climate(3.5, 0.0), true),
             ("negative zero shift_y", climate(-0.0, 0.0), false),
             ("3d shifted noise", climate(0.0, 1.0), false),
-            ("plain noise with y_scale 0", obj(O::Noise { noise: Rl::new("minecraft", "t"), xz_scale: 1.0, y_scale: 0.0 }), false),
-            ("interpolated", obj(O::Interpolated { argument: climate(0.0, 0.0) }), false),
-            ("y gradient", obj(O::YClampedGradient { from_y: -64, to_y: 320, from_value: 1.0, to_value: -1.0 }), false),
-            ("sum of 2d terms", obj(O::Add { argument1: climate(0.0, 0.0), argument2: obj(O::Abs { argument: climate(0.0, 0.0) }) }), true),
+            (
+                "plain noise with y_scale 0",
+                obj(O::Noise {
+                    noise: Rl::new("minecraft", "t"),
+                    xz_scale: 1.0,
+                    y_scale: 0.0,
+                }),
+                false,
+            ),
+            (
+                "interpolated",
+                obj(O::Interpolated {
+                    argument: climate(0.0, 0.0),
+                }),
+                false,
+            ),
+            (
+                "y gradient",
+                obj(O::YClampedGradient {
+                    from_y: -64,
+                    to_y: 320,
+                    from_value: 1.0,
+                    to_value: -1.0,
+                }),
+                false,
+            ),
+            (
+                "sum of 2d terms",
+                obj(O::Add {
+                    argument1: climate(0.0, 0.0),
+                    argument2: obj(O::Abs {
+                        argument: climate(0.0, 0.0),
+                    }),
+                }),
+                true,
+            ),
         ];
         for (name, df, expected) in cases {
             let mut settings = minimal_settings();
             settings.noise_router.temperature = df;
             let router = NoiseRouterEvaluator::new(5, &settings, &Registry::default(), &noises);
-            assert_eq!(router.is_y_independent(RouterSlot::Temperature), expected, "{name}");
+            assert_eq!(
+                router.is_y_independent(RouterSlot::Temperature),
+                expected,
+                "{name}"
+            );
             if expected {
                 for (cx, cz) in [(0, 0), (-2, 7)] {
                     let caches = router.chunk_caches(cx, cz);
-                    for (x, z) in [(cx * 16, cz * 16 + 3), (cx * 16 + 15, cz * 16 + 16), (cx * 16 - 40, cz * 16 + 99)] {
-                        let first = router.sample_in_chunk(&caches, RouterSlot::Temperature, x, -64, z);
+                    for (x, z) in [
+                        (cx * 16, cz * 16 + 3),
+                        (cx * 16 + 15, cz * 16 + 16),
+                        (cx * 16 - 40, cz * 16 + 99),
+                    ] {
+                        let first =
+                            router.sample_in_chunk(&caches, RouterSlot::Temperature, x, -64, z);
                         // Another chunk's caches give the same column value.
                         let other = router.chunk_caches(cx + 1, cz - 1);
-                        assert_eq!(first.to_bits(), router.sample_in_chunk(&other, RouterSlot::Temperature, x, 77, z).to_bits(), "{name}, other chunk");
+                        assert_eq!(
+                            first.to_bits(),
+                            router
+                                .sample_in_chunk(&other, RouterSlot::Temperature, x, 77, z)
+                                .to_bits(),
+                            "{name}, other chunk"
+                        );
                         // Without caches the value differs (no flat_cache snapping) but is
                         // itself y-independent.
                         let bare = router.sample(RouterSlot::Temperature, x, -64, z);
-                        assert_eq!(bare.to_bits(), router.sample(RouterSlot::Temperature, x, 200, z).to_bits(), "{name}, no caches");
+                        assert_eq!(
+                            bare.to_bits(),
+                            router.sample(RouterSlot::Temperature, x, 200, z).to_bits(),
+                            "{name}, no caches"
+                        );
                         for y in [-64, -1, 0, 1, 63, 64, 319] {
-                            let v = router.sample_in_chunk(&caches, RouterSlot::Temperature, x, y, z);
+                            let v =
+                                router.sample_in_chunk(&caches, RouterSlot::Temperature, x, y, z);
                             assert_eq!(v.to_bits(), first.to_bits(), "{name} at {x} {y} {z}");
                         }
                     }
@@ -973,7 +1091,11 @@ mod tests {
                 smear_scale_multiplier: 8.0,
             })
         };
-        let once_blended = || obj(O::CacheOnce { argument: blended() });
+        let once_blended = || {
+            obj(O::CacheOnce {
+                argument: blended(),
+            })
+        };
         // `c + gradient * body`: shut (gradient exactly 0) above y = 200.
         let gated = obj(O::Add {
             argument1: DensityFunction::Constant(-0.078125),
@@ -1035,7 +1157,10 @@ mod tests {
         .collect();
         let router = NoiseRouterEvaluator::new(11, &settings, &df_registry, &noise_registry);
         let dump = router.dump_program(RouterSlot::FinalDensity);
-        assert!(dump.iter().any(|l| l.contains("GatedAdd")), "not gated: {dump:?}");
+        assert!(
+            dump.iter().any(|l| l.contains("GatedAdd")),
+            "not gated: {dump:?}"
+        );
         let program = &router.programs[RouterSlot::FinalDensity.index()];
 
         let (mut in_range, mut out_of_range) = (0, 0);
@@ -1055,8 +1180,13 @@ mod tests {
                 };
                 for (local_x, local_z) in [(0, 0), (4, 12), (16, 16), (7, 3)] {
                     let (x, z) = (chunk_x * 16 + local_x, chunk_z * 16 + local_z);
-                    let ctxs: Vec<FunctionContext> =
-                        (0..49).map(|cy| FunctionContext { x, y: -64 + cy * 8, z }).collect();
+                    let ctxs: Vec<FunctionContext> = (0..49)
+                        .map(|cy| FunctionContext {
+                            x,
+                            y: -64 + cy * 8,
+                            z,
+                        })
+                        .collect();
                     let lanes: Vec<u32> = (0..49).collect();
                     let mut out = vec![0.0; 49];
                     program.run_lanes(&lanes, &Batch::new(&ctxs), &lane_cx, &mut out);
@@ -1080,7 +1210,10 @@ mod tests {
                 }
             }
         }
-        assert!(in_range > 20 && out_of_range > 20, "{in_range} / {out_of_range}");
+        assert!(
+            in_range > 20 && out_of_range > 20,
+            "{in_range} / {out_of_range}"
+        );
     }
 
     /// The quart-invariance predicate accepts a `flat_cache` over noise and constants or
@@ -1095,37 +1228,104 @@ mod tests {
         }
         let noises: Registry<NormalNoiseParameters> = [(
             Rl::new("minecraft", "n"),
-            NormalNoiseParameters { first_octave: -4, amplitudes: vec![1.0, 1.0] },
+            NormalNoiseParameters {
+                first_octave: -4,
+                amplitudes: vec![1.0, 1.0],
+            },
         )]
         .into_iter()
         .collect();
-        let noise = || obj(O::Noise { noise: Rl::new("minecraft", "n"), xz_scale: 1.0, y_scale: 1.0 });
-        let gradient = || obj(O::YClampedGradient { from_y: -64, to_y: 320, from_value: 1.0, to_value: -1.0 });
+        let noise = || {
+            obj(O::Noise {
+                noise: Rl::new("minecraft", "n"),
+                xz_scale: 1.0,
+                y_scale: 1.0,
+            })
+        };
+        let gradient = || {
+            obj(O::YClampedGradient {
+                from_y: -64,
+                to_y: 320,
+                from_value: 1.0,
+                to_value: -1.0,
+            })
+        };
         let cases: Vec<(&str, DensityFunction, bool)> = vec![
-            ("flat_cache over 3d noise", obj(O::FlatCache { argument: noise() }), true),
-            ("flat_cache plus a gradient", obj(O::Add { argument1: obj(O::FlatCache { argument: noise() }), argument2: gradient() }), true),
+            (
+                "flat_cache over 3d noise",
+                obj(O::FlatCache { argument: noise() }),
+                true,
+            ),
+            (
+                "flat_cache plus a gradient",
+                obj(O::Add {
+                    argument1: obj(O::FlatCache { argument: noise() }),
+                    argument2: gradient(),
+                }),
+                true,
+            ),
             ("gradient alone", gradient(), true),
             ("noise", noise(), false),
-            ("cache_2d over noise", obj(O::Cache2d { argument: noise() }), false),
-            ("cache_2d over flat_cache", obj(O::Cache2d { argument: obj(O::FlatCache { argument: noise() }) }), true),
-            ("interpolated", obj(O::Interpolated { argument: obj(O::FlatCache { argument: noise() }) }), false),
-            ("flat_cache times noise", obj(O::Mul { argument1: obj(O::FlatCache { argument: noise() }), argument2: noise() }), false),
+            (
+                "cache_2d over noise",
+                obj(O::Cache2d { argument: noise() }),
+                false,
+            ),
+            (
+                "cache_2d over flat_cache",
+                obj(O::Cache2d {
+                    argument: obj(O::FlatCache { argument: noise() }),
+                }),
+                true,
+            ),
+            (
+                "interpolated",
+                obj(O::Interpolated {
+                    argument: obj(O::FlatCache { argument: noise() }),
+                }),
+                false,
+            ),
+            (
+                "flat_cache times noise",
+                obj(O::Mul {
+                    argument1: obj(O::FlatCache { argument: noise() }),
+                    argument2: noise(),
+                }),
+                false,
+            ),
         ];
         for (name, df, expected) in cases {
             let mut settings = minimal_settings();
             settings.noise_router.vegetation = df;
             let router = NoiseRouterEvaluator::new(3, &settings, &Registry::default(), &noises);
-            assert_eq!(router.is_quart_invariant(RouterSlot::Vegetation), expected, "{name}");
+            assert_eq!(
+                router.is_quart_invariant(RouterSlot::Vegetation),
+                expected,
+                "{name}"
+            );
             if expected {
                 for (cx, cz) in [(0, 0), (-3, 2)] {
                     let caches = router.chunk_caches(cx, cz);
                     for y in [-64, 0, 77, 319] {
                         for (qx, qz) in [(0, 0), (4, 12), (12, 8)] {
                             let (ox, oz) = (cx * 16 + qx, cz * 16 + qz);
-                            let origin = router.sample_in_chunk(&caches, RouterSlot::Vegetation, ox, y, oz);
+                            let origin =
+                                router.sample_in_chunk(&caches, RouterSlot::Vegetation, ox, y, oz);
                             for (dx, dz) in [(1, 0), (3, 3), (0, 2), (2, 1)] {
-                                let v = router.sample_in_chunk(&caches, RouterSlot::Vegetation, ox + dx, y, oz + dz);
-                                assert_eq!(v.to_bits(), origin.to_bits(), "{name} at {} {y} {}", ox + dx, oz + dz);
+                                let v = router.sample_in_chunk(
+                                    &caches,
+                                    RouterSlot::Vegetation,
+                                    ox + dx,
+                                    y,
+                                    oz + dz,
+                                );
+                                assert_eq!(
+                                    v.to_bits(),
+                                    origin.to_bits(),
+                                    "{name} at {} {y} {}",
+                                    ox + dx,
+                                    oz + dz
+                                );
                             }
                         }
                     }

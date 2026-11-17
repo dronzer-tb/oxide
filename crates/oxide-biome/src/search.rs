@@ -52,6 +52,7 @@ impl Param {
     }
 
     /// `Climate.Parameter.distance(long)`: 0 inside the range, else the gap to the nearer end.
+    #[cfg(test)]
     fn distance(&self, target: i64) -> i64 {
         let above = target - self.max;
         if above > 0 {
@@ -131,6 +132,8 @@ impl FlatNode {
     /// Vanilla's `Node.distance`: the per-axis [`Param::distance`] (`above` if positive, else
     /// `max(below, 0)`), squared and summed. Integer arithmetic, so the result is identical
     /// whatever order it is added in.
+    // One counter over three parallel arrays, kept as written so it vectorises.
+    #[allow(clippy::needless_range_loop)]
     #[inline(always)]
     fn distance(&self, target: &[i64; DIMENSIONS]) -> i64 {
         let mut total = 0i64;

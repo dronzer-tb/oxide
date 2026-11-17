@@ -9,7 +9,13 @@ use std::ffi::CString;
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::RwLock;
+use std::sync::{Arc, Mutex, RwLock};
+
+/// The carvers a biome configures, shared rather than copied per lookup.
+type CarverList = Arc<[oxide_datapack::ConfiguredCarver]>;
+const CARVER_CACHE_SHARDS: usize = 64;
+/// Bounds the cache at 64 x 4096 positions (a few MB of pointers); a full shard is cleared.
+const CARVER_CACHE_PER_SHARD: usize = 4096;
 
 use anyhow::{anyhow, Context, Result};
 
@@ -51,7 +57,9 @@ pub struct OxideGenerator {
     /// Carvers per biome id, as the biome's `carvers` list names them. Vanilla picks the
     /// carver set from the biome at each source chunk, so this is kept per biome rather than
     /// flattened into one list.
-    biome_carvers: HashMap<ResourceLocation, Vec<oxide_datapack::ConfiguredCarver>>,
+    biome_carvers: HashMap<ResourceLocation, CarverList>,
+    /// Source chunk -> its biome's carvers; see `terrain`.
+    carver_cache: Box<[Mutex<HashMap<ChunkPos, CarverList>>]>,
     seed: i64,
     /// Interned block-state strings, indexed by the u16 values `generate_chunk` writes. Grows
     /// as generation meets new states and never shrinks, so an index handed to the caller
@@ -157,19 +165,18 @@ impl OxideGenerator {
         // Carvers each biome configures, resolved once. A biome naming a carver the pack does
         // not define is skipped rather than failing the open -- the datapack's own resolution
         // report already flags dangling ids.
-        let biome_carvers: HashMap<ResourceLocation, Vec<oxide_datapack::ConfiguredCarver>> =
-            datapack
-                .biomes
-                .iter()
-                .map(|(id, biome)| {
-                    let carvers = biome
-                        .carvers
-                        .iter()
-                        .filter_map(|carver_id| datapack.configured_carvers.get(carver_id).cloned())
-                        .collect();
-                    (id.clone(), carvers)
-                })
-                .collect();
+        let biome_carvers: HashMap<ResourceLocation, CarverList> = datapack
+            .biomes
+            .iter()
+            .map(|(id, biome)| {
+                let carvers = biome
+                    .carvers
+                    .iter()
+                    .filter_map(|carver_id| datapack.configured_carvers.get(carver_id).cloned())
+                    .collect();
+                (id.clone(), carvers)
+            })
+            .collect();
 
         // Surface rules read each biome's base temperature; the rest of the biome definitions
         // are not needed after this point, which is why only this map is kept.
@@ -235,6 +242,7 @@ impl OxideGenerator {
             biome_tree,
             biome_temperatures,
             biome_carvers,
+            carver_cache: (0..CARVER_CACHE_SHARDS).map(|_| Mutex::default()).collect(),
             seed,
             block_palette: RwLock::new(Palette::default()),
             biome_palette: RwLock::new(biome_palette),
@@ -342,15 +350,43 @@ impl OxideGenerator {
         }
     }
 
-    pub fn generate_chunk(
-        &self,
-        chunk_x: i32,
-        chunk_z: i32,
-        out_blocks: &mut [u16],
-        out_biomes: &mut [u16],
-    ) -> Result<()> {
+    /// Replaces the decoration cache with one of the given sizes, dropping what it held. For a
+    /// caller that knows its working set, such as the offline pregen generating in bands.
+    pub fn resize_decoration_cache(&mut self, terrain_chunks: usize, write_lists: usize) {
+        if let Ok(decoration) = &mut self.decoration {
+            decoration.cache = DecorationCache::new(terrain_chunks, write_lists);
+        }
+    }
+
+    /// Caches the undecorated terrain at `(chunk_x, chunk_z)` for decoration to read. No-op
+    /// without decoration.
+    pub fn prepare_terrain(&self, chunk_x: i32, chunk_z: i32) {
+        if let Ok(decoration) = &self.decoration {
+            decoration
+                .cache
+                .prepare_terrain(ChunkPos::new(chunk_x, chunk_z), &|at| self.terrain(at));
+        }
+    }
+
+    /// Caches the feature writes of the chunk at `(chunk_x, chunk_z)`, generating any of the
+    /// 3x3 terrain around it not yet cached. No-op without decoration.
+    pub fn prepare_writes(&self, chunk_x: i32, chunk_z: i32) {
+        if let Ok(decoration) = &self.decoration {
+            decoration.cache.prepare_writes(
+                ChunkPos::new(chunk_x, chunk_z),
+                &|at| self.terrain(at),
+                &decoration.decorator,
+                decoration.decorator.facts(),
+            );
+        }
+    }
+
+    /// One chunk as `ChunkData` plus what decoration left besides blocks, for callers in Rust
+    /// that write chunks themselves (the offline pregen) and have no use for the flat arrays.
+    /// Terrain only, status `carvers`, unless decoration is on.
+    pub fn chunk_data(&self, chunk_x: i32, chunk_z: i32) -> (ChunkData, ChunkExtras) {
         let pos = ChunkPos::new(chunk_x, chunk_z);
-        let (chunk, extras) = match &self.decoration {
+        match &self.decoration {
             Ok(decoration) if self.decorate.load(Ordering::Acquire) => decorated_chunk_with_extras(
                 pos,
                 &|at| self.terrain(at),
@@ -359,7 +395,18 @@ impl OxideGenerator {
                 &decoration.cache,
             ),
             _ => (self.terrain(pos), ChunkExtras::default()),
-        };
+        }
+    }
+
+    pub fn generate_chunk(
+        &self,
+        chunk_x: i32,
+        chunk_z: i32,
+        out_blocks: &mut [u16],
+        out_biomes: &mut [u16],
+    ) -> Result<()> {
+        let pos = ChunkPos::new(chunk_x, chunk_z);
+        let (chunk, extras) = self.chunk_data(chunk_x, chunk_z);
         LAST_EXTRAS.with(|slot| *slot.borrow_mut() = Some((self.id, pos, extras_text(&extras))));
         self.write_out(&chunk, out_blocks, out_biomes)
     }
@@ -391,20 +438,34 @@ impl OxideGenerator {
     fn terrain(&self, pos: ChunkPos) -> ChunkData {
         // Which carvers reach into this chunk depends on the biome at each source chunk, the
         // same way vanilla's applyCarvers picks them.
-        let carvers_at = |source: ChunkPos| -> Vec<oxide_datapack::ConfiguredCarver> {
-            let Some(tree) = self.biome_tree.as_ref() else {
-                return Vec::new();
-            };
-            let sample = oxide_biome::ClimateSample::sample(
-                &self.router,
-                source.min_block_x(),
-                0,
-                source.min_block_z(),
-            );
-            match tree.nearest(sample) {
-                Some(biome) => self.biome_carvers.get(biome).cloned().unwrap_or_default(),
-                None => Vec::new(),
+        // Each source chunk is asked about by the ~289 chunks within carver range, so its answer
+        // (a climate sample and a biome search) is cached by position.
+        let carvers_at = |source: ChunkPos| -> CarverList {
+            let shard = &self.carver_cache
+                [(source.x as usize ^ (source.z as usize).wrapping_mul(31)) % CARVER_CACHE_SHARDS];
+            if let Some(hit) = shard.lock().unwrap().get(&source) {
+                return hit.clone();
             }
+            let carvers = match self.biome_tree.as_ref() {
+                Some(tree) => {
+                    let sample = oxide_biome::ClimateSample::sample(
+                        &self.router,
+                        source.min_block_x(),
+                        0,
+                        source.min_block_z(),
+                    );
+                    tree.nearest(sample)
+                        .and_then(|biome| self.biome_carvers.get(biome).cloned())
+                        .unwrap_or_else(|| CarverList::from([]))
+                }
+                None => CarverList::from([]),
+            };
+            let mut shard = shard.lock().unwrap();
+            if shard.len() >= CARVER_CACHE_PER_SHARD {
+                shard.clear();
+            }
+            shard.insert(source, carvers.clone());
+            carvers
         };
         let carver_setup = CarverSetup {
             seed: self.seed,

@@ -407,12 +407,17 @@ mod tests {
         let positional = WorldRandom::new(12345, false).fork_positional();
         // (first octave, amplitudes, xz scale, y scale) of overworld noises a corner grid reads.
         let specs: [(i32, Vec<f64>, f64, f64); 6] = [
-            (-8, vec![0.5, 1.0, 2.0, 1.0, 2.0, 1.0, 0.0, 2.0, 0.0], 1.0, 2.0 / 3.0), // cave_cheese
-            (-8, vec![1.0], 1.0, 8.0),                                               // cave_layer
-            (-7, vec![0.4, 0.5, 1.0], 0.75, 0.5),                                    // cave_entrance
-            (-7, vec![1.0, 1.0], 25.0, 0.3),                                         // pillar
-            (-8, vec![1.0], 1.0, 1.0),                                               // noodle
-            (-7, vec![1.0], 2.666_666_666_666_667, 2.666_666_666_666_667),           // noodle_ridge
+            (
+                -8,
+                vec![0.5, 1.0, 2.0, 1.0, 2.0, 1.0, 0.0, 2.0, 0.0],
+                1.0,
+                2.0 / 3.0,
+            ), // cave_cheese
+            (-8, vec![1.0], 1.0, 8.0),            // cave_layer
+            (-7, vec![0.4, 0.5, 1.0], 0.75, 0.5), // cave_entrance
+            (-7, vec![1.0, 1.0], 25.0, 0.3),      // pillar
+            (-8, vec![1.0], 1.0, 1.0),            // noodle
+            (-7, vec![1.0], 2.666_666_666_666_667, 2.666_666_666_666_667), // noodle_ridge
         ];
         let normals: Vec<(NormalNoise, f64, f64)> = specs
             .iter()
@@ -436,7 +441,12 @@ mod tests {
                 blended.compute_lanes(&overworld(), &xs, &ys, &zs, &mut out);
                 for (j, v) in out.iter().enumerate() {
                     let expected = blended.compute(&overworld(), x, ys[j], z);
-                    assert_eq!(v.to_bits(), expected.to_bits(), "blended at {x} {} {z}", ys[j]);
+                    assert_eq!(
+                        v.to_bits(),
+                        expected.to_bits(),
+                        "blended at {x} {} {z}",
+                        ys[j]
+                    );
                 }
                 for (n, xz, y) in &normals {
                     let sx: Vec<f64> = xs.iter().map(|v| v * xz).collect();
