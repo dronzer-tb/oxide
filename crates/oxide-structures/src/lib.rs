@@ -33,6 +33,7 @@
 mod datapack;
 mod frequency;
 pub mod jigsaw;
+pub mod pieces;
 mod placement;
 pub mod pool;
 pub use oxide_core::rotation;
