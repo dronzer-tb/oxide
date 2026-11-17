@@ -13,7 +13,11 @@
 //! Where structures start, reference bookkeeping, and which decoration step stamps them belong to
 //! the caller; this module answers "what are the pieces" and "what does a piece write here".
 
+pub mod buried_treasure;
+pub mod desert_pyramid;
+pub mod jungle_temple;
 pub mod mineshaft;
+pub mod swamp_hut;
 
 use std::fmt::Debug;
 

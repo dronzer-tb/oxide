@@ -374,6 +374,16 @@ impl<'a> DecorationRegion<'a> {
         Some(self.min_y)
     }
 
+    /// [`Self::height`] of the undecorated terrain, ignoring every write so far: a structure
+    /// spanning several chunks settles its height once in vanilla, and asking each chunk's own
+    /// writes would let its pieces disagree.
+    pub fn terrain_height(&self, kind: HeightmapType, x: i32, z: i32) -> Option<i32> {
+        let chunk = self.chunk_index(x, z)?;
+        let stored = self.heightmaps[chunk][kind_index(kind)]
+            .map(|map| map.get((x & 15) as usize, (z & 15) as usize) + self.min_y);
+        Some(stored.unwrap_or(self.min_y))
+    }
+
     /// The biome at `pos`, read from the nearest stored 4x4x4 quart, or `None` outside the
     /// window horizontally.
     ///
